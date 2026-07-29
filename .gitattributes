@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.py text eol=lf
+*.pyw text eol=lf
+*.ps1 text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.csv text eol=lf
+*.sqlite binary

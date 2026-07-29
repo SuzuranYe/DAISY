@@ -1,0 +1,776 @@
+"""DAISY 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
+
+实现后端调用、profile v1、规范化映射和元数据汇合状态机。
+ExifTool 仅允许白名单读取参数，任何写语法直接拒绝。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import re
+import sqlite3
+import subprocess
+import threading
+import time
+import zipfile
+import zlib
+from dataclasses import dataclass
+
+import Script_DAISY_Lib_01_Core as core
+
+PROFILE_VERSION = 1
+ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
+ET_VIDEO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l"]
+FF_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams",
+           "-show_chapters", "-show_programs", "-show_stream_groups", "-show_data"]
+ET_TIMEOUT_S = 60
+FF_TIMEOUT_S = 60
+ET_RESTART_EVERY = 5000
+
+_BANNED_ET = core.EXIFTOOL_BANNED_ARGS   # 与 Lib_01 共享只读参数黑名单
+
+
+def guard_exiftool_args(args: list[str]) -> None:
+    """只读防护：拒绝一切写语法与写参数。"""
+    for a in args:
+        low = a.lower()
+        if low in _BANNED_ET:
+            raise core.PreflightError(f"ExifTool 写参数被只读防护拦截：{a!r}")
+        if a.startswith("-") and "=" in a and not low.startswith("-charset"):
+            raise core.PreflightError(f"ExifTool 写语法被只读防护拦截：{a!r}")
+
+
+# === 标签索引与取值 ===
+def _score(mid_parts: list[str]) -> int:
+    if not mid_parts or mid_parts[0].lower() == "main":
+        return 0
+    return 1
+
+
+def build_tag_index(doc: dict) -> dict:
+    """(family1_lower, tag_lower) → 值；Main/无 doc 组优先于 DocN/CopyN。附 tag-only 索引。"""
+    idx: dict = {}
+    for key, raw in doc.items():
+        if key == "SourceFile":
+            continue
+        parts = key.split(":")
+        fam, tag = parts[0].lower(), parts[-1].lower()
+        val = raw.get("val") if isinstance(raw, dict) and "val" in raw else raw
+        score = _score(parts[1:-1])
+        for k in ((fam, tag), ("*", tag)):
+            if k not in idx or score < idx[k][0]:
+                idx[k] = (score, val)
+    return idx
+
+
+def tval(idx: dict, spec: str):
+    fam, _, tag = spec.partition(":")
+    hit = idx.get((fam.lower(), tag.lower()))
+    return hit[1] if hit else None
+
+
+def tchain(idx: dict, specs: list[str]):
+    for s in specs:
+        v = tval(idx, s)
+        if v not in (None, "", "n/a"):
+            return v
+    return None
+
+
+def tchain_src(idx: dict, specs: list[str]):
+    for s in specs:
+        v = tval(idx, s)
+        if v not in (None, "", "n/a"):
+            return v, s
+    return None, None
+
+
+def tany(idx: dict, tag: str):
+    hit = idx.get(("*", tag.lower()))
+    return hit[1] if hit else None
+
+
+def tany_chain(idx: dict, tags: list[str]):
+    for t in tags:
+        v = tany(idx, t)
+        if v not in (None, "", "n/a"):
+            return v
+    return None
+
+
+def as_json_text(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return json.dumps([value], ensure_ascii=False)
+
+
+# === 数值解析 ===
+_FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def first_float(v) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = _FLOAT_RE.search(str(v))
+    return float(m.group()) if m else None
+
+
+def first_int(v) -> int | None:
+    f = first_float(v)
+    return int(f) if f is not None else None
+
+
+def gps_decimal(v) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = re.match(r"\s*(\d+(?:\.\d+)?)\s*deg\s*(?:(\d+(?:\.\d+)?)')?\s*"
+                 r"(?:(\d+(?:\.\d+)?)\")?\s*([NSEW])?", str(v))
+    if not m:
+        return None
+    deg = float(m.group(1)) + float(m.group(2) or 0) / 60 + float(m.group(3) or 0) / 3600
+    if m.group(4) in ("S", "W"):
+        deg = -deg
+    return deg
+
+
+def offset_minutes(v) -> int | None:
+    if v is None:
+        return None
+    m = re.fullmatch(r"\s*([+-])(\d{2}):(\d{2})\s*", str(v))
+    if not m:
+        return None
+    sign = 1 if m.group(1) == "+" else -1
+    return sign * (int(m.group(2)) * 60 + int(m.group(3)))
+
+
+def offset_minutes_from_value(v) -> int | None:
+    if v is None:
+        return None
+    m = re.search(r"([+-]\d{2}:\d{2})\s*$", str(v))
+    return offset_minutes(m.group(1)) if m else None
+
+
+def capture_utc(raw, offset_min: int | None) -> str | None:
+    """拍摄时间原文＋显式偏移 → UTC；无偏移不推断（原则）。"""
+    if raw is None or offset_min is None:
+        return None
+    m = re.match(r"(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})", str(raw))
+    if not m:
+        return None
+    import calendar
+    y, mo, d, h, mi, s = (int(x) for x in m.groups())
+    epoch = calendar.timegm((y, mo, d, h, mi, s, 0, 0, 0)) - offset_min * 60
+    t = time.gmtime(epoch)
+    return (f"{t.tm_year:04d}-{t.tm_mon:02d}-{t.tm_mday:02d}"
+            f"T{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}Z")
+
+
+# === raw payload ===
+@dataclass
+class Payload:
+    zlib_blob: bytes
+    sha256: str
+    uncompressed_bytes: int
+
+
+def make_payload(doc: dict) -> Payload:
+    canon = json.dumps(doc, ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":")).encode("utf-8")
+    return Payload(zlib.compress(canon, 6),
+                   hashlib.sha256(canon).hexdigest(), len(canon))
+
+
+# === 压缩包后端（不解压、不递归） ===
+# zip 压缩方法与建档系统编号 → 可读名（PKWARE APPNOTE 4.4.2/4.4.5）
+_ZIP_METHOD = {0: "store", 8: "deflate", 9: "deflate64", 12: "bzip2",
+               14: "lzma", 93: "zstd", 95: "xz", 98: "ppmd", 99: "aes"}
+_ZIP_HOST = {0: "msdos", 3: "unix", 6: "os2_hpfs", 7: "macintosh",
+             10: "ntfs", 11: "vfat", 14: "vms", 19: "osx"}
+
+
+def _zip_member(idx: int, i) -> dict:
+    return {"member_index": idx,
+            "member_path": i.filename,
+            "is_dir": 1 if i.is_dir() else 0,
+            "size_bytes": i.file_size,
+            "packed_bytes": i.compress_size,
+            "crc32_hex": f"{i.CRC:08x}",
+            "method": _ZIP_METHOD.get(i.compress_type, str(i.compress_type)),
+            "flag_bits": i.flag_bits,
+            "host_os": _ZIP_HOST.get(i.create_system, str(i.create_system)),
+            "create_version": i.create_version,
+            "extract_version": i.extract_version,
+            "header_offset": i.header_offset,
+            "modified_raw": "%04d-%02d-%02d %02d:%02d:%02d" % i.date_time,
+            "attributes": f"0x{i.external_attr:08x}",
+            "encrypted": 1 if i.flag_bits & 0x1 else 0}
+
+
+def zip_summary(path: str) -> dict:
+    """中央目录读取（不解压）：聚合摘要＋逐成员清单。"""
+    with zipfile.ZipFile(path) as z:
+        infos = z.infolist()
+        return {"archive_format": "zip",
+                "member_count": len(infos),
+                "uncompressed_bytes": sum(i.file_size for i in infos),
+                "compressed_bytes": sum(i.compress_size for i in infos),
+                "has_encrypted": 1 if any(i.flag_bits & 0x1 for i in infos) else 0,
+                "members": [_zip_member(idx, i)
+                            for idx, i in enumerate(infos)]}
+
+
+def _new_7z_member(index: int, path: str) -> dict:
+    return {"member_index": index, "member_path": path, "is_dir": 0,
+            "size_bytes": None, "packed_bytes": None, "crc32_hex": None,
+            "method": None, "flag_bits": None, "host_os": None,
+            "create_version": None, "extract_version": None,
+            "header_offset": None, "modified_raw": None, "attributes": None,
+            "encrypted": 0}
+
+
+def parse_7z_slt(text: str) -> dict:
+    """`7z l -slt` 解析：聚合摘要＋逐成员（CRC/Method/Attributes/Host OS 等；
+    7z 列表不暴露局部偏移与 zip 版本字段，相应列为 NULL）。"""
+    members: list[dict] = []
+    in_body = False
+    cur: dict | None = None
+    for line in text.splitlines():
+        if line.startswith("----------"):
+            in_body = True
+            continue
+        if not in_body:
+            continue
+        if line.startswith("Path = "):
+            if cur is not None:
+                members.append(cur)
+            cur = _new_7z_member(len(members), line[7:])
+        elif cur is None:
+            continue
+        elif line.startswith("Size = "):
+            cur["size_bytes"] = first_int(line[7:])
+        elif line.startswith("Packed Size = "):
+            cur["packed_bytes"] = first_int(line[14:])
+        elif line.startswith("Modified = "):
+            cur["modified_raw"] = line[11:].strip() or None
+        elif line.startswith("Attributes = "):
+            v = line[13:].strip()
+            cur["attributes"] = v or None
+            if v and "D" in v.split()[0]:
+                cur["is_dir"] = 1
+        elif line.startswith("Folder = ") and line[9:].strip() == "+":
+            cur["is_dir"] = 1
+        elif line.startswith("CRC = "):
+            v = line[6:].strip().lower()
+            cur["crc32_hex"] = v or None
+        elif line.startswith("Method = "):
+            cur["method"] = line[9:].strip() or None
+        elif line.startswith("Host OS = "):
+            cur["host_os"] = line[10:].strip() or None
+        elif line.startswith("Encrypted = ") and line.endswith("+"):
+            cur["encrypted"] = 1
+    if cur is not None:
+        members.append(cur)
+    return {"member_count": len(members),
+            "uncompressed_bytes": sum(m["size_bytes"] or 0 for m in members),
+            "compressed_bytes": sum(m["packed_bytes"] or 0 for m in members),
+            "has_encrypted": 1 if any(m["encrypted"] for m in members) else 0,
+            "members": members}
+
+
+def sevenzip_summary(path: str, sevenzip: str, fmt: str) -> dict:
+    # -sccUTF-8：控制台输出定为 UTF-8，否则非 ASCII 成员名按 ANSI 码页输出致乱码
+    r = subprocess.run([sevenzip, "l", "-slt", "-sccUTF-8", path],
+                       capture_output=True, timeout=FF_TIMEOUT_S)
+    if r.returncode != 0:
+        raise RuntimeError("7z l 失败：" +
+                           r.stderr.decode("utf-8", "replace")[:200])
+    s = parse_7z_slt(r.stdout.decode("utf-8", "replace"))
+    s["archive_format"] = fmt
+    return s
+
+
+# === 规范化映射 ===
+_CAMERA_CHAINS = {
+    "camera_make": ["IFD0:Make"],
+    "camera_model": ["IFD0:Model", "Canon:CanonModelID"],
+    "camera_serial": ["ExifIFD:SerialNumber", "Canon:InternalSerialNumber"],
+    "lens_model": ["ExifIFD:LensModel", "Canon:LensModel", "Canon:RFLensType"],
+    "lens_serial": ["ExifIFD:LensSerialNumber", "Canon:LensSerialNumber"],
+}
+
+
+def _capture_fields(idx, time_chain, tz_chain=None):
+    raw, src = tchain_src(idx, time_chain)
+    tz = None
+    if tz_chain:
+        tz = offset_minutes(tchain(idx, tz_chain))
+    if tz is None:
+        tz = offset_minutes_from_value(raw)
+    return {"capture_time_raw": str(raw) if raw is not None else None,
+            "capture_time_source": src,
+            "capture_tz_offset_min": tz,
+            "capture_time_utc": capture_utc(raw, tz)}
+
+
+def photo_row(idx: dict) -> dict:
+    row = _capture_fields(
+        idx, ["ExifIFD:DateTimeOriginal", "ExifIFD:CreateDate", "IFD0:ModifyDate"],
+        ["ExifIFD:OffsetTimeOriginal", "ExifIFD:OffsetTimeDigitized",
+         "ExifIFD:OffsetTime"])
+    for col, chain in _CAMERA_CHAINS.items():
+        v = tchain(idx, chain)
+        row[col] = str(v) if v is not None else None
+    row["width"] = first_int(tchain(idx, ["ExifIFD:ExifImageWidth", "File:ImageWidth"]))
+    row["height"] = first_int(tchain(idx, ["ExifIFD:ExifImageHeight", "File:ImageHeight"]))
+    v = tval(idx, "IFD0:Orientation")
+    row["orientation"] = str(v) if v is not None else None
+    row["iso"] = first_int(tval(idx, "ExifIFD:ISO"))
+    row["f_number"] = first_float(tval(idx, "ExifIFD:FNumber"))
+    v = tval(idx, "ExifIFD:ExposureTime")
+    row["exposure_time"] = str(v) if v is not None else None
+    row["exposure_compensation"] = first_float(tval(idx, "ExifIFD:ExposureCompensation"))
+    row["focal_length_mm"] = first_float(tval(idx, "ExifIFD:FocalLength"))
+    row["focal_length_35mm"] = first_float(tchain(
+        idx, ["ExifIFD:FocalLengthIn35mmFormat", "Composite:FocalLength35efl"]))
+    v = tval(idx, "ExifIFD:WhiteBalance")
+    row["white_balance"] = str(v) if v is not None else None
+    row["color_temperature"] = first_int(tval(idx, "Canon:ColorTemperature"))
+    v = tval(idx, "ExifIFD:ColorSpace")
+    row["color_space"] = str(v) if v is not None else None
+    v = tval(idx, "ICC_Profile:ProfileDescription")
+    row["icc_profile"] = str(v) if v is not None else None
+    v = tchain(idx, ["IFD0:Software", "XMP-xmp:CreatorTool"])
+    row["software"] = str(v) if v is not None else None
+    row["bit_depth"] = first_int(tchain(idx, ["ExifIFD:BitsPerSample",
+                                              "File:BitsPerSample"]))
+    row["gps_latitude"] = gps_decimal(tval(idx, "Composite:GPSLatitude"))
+    row["gps_longitude"] = gps_decimal(tval(idx, "Composite:GPSLongitude"))
+    row["gps_altitude"] = first_float(tval(idx, "Composite:GPSAltitude"))
+    return row
+
+
+def working_row(idx: dict, ext: str) -> dict:
+    v_names = tchain(idx, ["Photoshop:LayerUnicodeNames", "Photoshop:LayerNames"])
+    cm = tchain(idx, ["Photoshop:ColorMode", "XMP-photoshop:ColorMode"])
+    app = tchain(idx, ["IFD0:Software", "XMP-xmp:CreatorTool"])
+    return {"file_variant": ext,
+            "creator_app": str(app) if app is not None else None,
+            "color_mode": str(cm) if cm is not None else None,
+            "bit_depth": first_int(tval(idx, "Photoshop:BitDepth")),
+            "width": first_int(tchain(idx, ["ExifIFD:ExifImageWidth",
+                                            "File:ImageWidth"])),
+            "height": first_int(tchain(idx, ["ExifIFD:ExifImageHeight",
+                                             "File:ImageHeight"])),
+            "layer_count": first_int(tval(idx, "Photoshop:LayerCount")),
+            "layer_names": as_json_text(v_names),
+            "has_thumbnail": 1 if tval(idx, "Photoshop:PhotoshopThumbnail")
+                              is not None else 0}
+
+
+def document_row(idx: dict, ext: str) -> dict:
+    def s(v):
+        return str(v) if v not in (None, "") else None
+    return {"doc_format": ext,
+            "title": s(tany(idx, "Title")),
+            "author": s(tany_chain(idx, ["Author", "Creator"])),
+            "last_modified_by": s(tany(idx, "LastModifiedBy")),
+            "creator_app": s(tany_chain(idx, ["Application", "Producer", "Software"])),
+            "created_prop_raw": s(tany_chain(idx, ["CreateDate", "CreationDate"])),
+            "modified_prop_raw": s(tany_chain(idx, ["ModifyDate", "ModDate"])),
+            "page_count": first_int(tany_chain(idx, ["Pages", "PageCount"])),
+            "is_encrypted": 1 if tany(idx, "Encryption") is not None else 0}
+
+
+def video_row(idx: dict, ff: dict) -> dict:
+    fmt = ff.get("format", {}) if ff else {}
+    ftags = fmt.get("tags", {}) or {}
+    vstreams = [s for s in (ff.get("streams", []) if ff else [])
+                if s.get("codec_type") == "video"]
+    timecode = ftags.get("timecode")
+    encoder = ftags.get("encoder")
+    for s in vstreams:
+        st = s.get("tags", {}) or {}
+        timecode = timecode or st.get("timecode")
+        encoder = encoder or st.get("encoder")
+    row = _capture_fields(idx, ["QuickTime:CreateDate", "Keys:CreationDate",
+                                "XMP-xmp:CreateDate"])
+    for col, chain in _CAMERA_CHAINS.items():
+        v = tchain(idx, chain)
+        row[col] = str(v) if v is not None else None
+    row.update({
+        "container_format": fmt.get("format_name"),
+        "duration_seconds": first_float(fmt.get("duration")),
+        "bit_rate": first_int(fmt.get("bit_rate")),
+        "stream_count": first_int(fmt.get("nb_streams")),
+        "timecode": timecode,
+        "iso": first_int(tchain(idx, ["ExifIFD:ISO", "Canon:AutoISO"])),
+        "white_balance": (lambda v: str(v) if v is not None else None)(
+            tchain(idx, ["Canon:WhiteBalance", "ExifIFD:WhiteBalance"])),
+        "shutter": (lambda v: str(v) if v is not None else None)(
+            tchain(idx, ["ExifIFD:ExposureTime", "Canon:ExposureTime"])),
+        "gamma": (lambda v: str(v) if v is not None else None)(
+            tval(idx, "Canon:CanonLogVersion")),
+        "color_gamut": (lambda v: str(v) if v is not None else None)(
+            tval(idx, "Canon:ColorSpace2")),
+        "encoder": encoder,
+        # 作者/来源尽量获取。优先 ffprobe 容器 tags
+        # （按格式正确处理编码——RIFF INFO 无标准编码，ExifTool 默认按
+        # Latin-1 解、UTF-8 标签会乱码，实测确认），ExifTool 任意组兜底
+        "title": as_json_text(ftags.get("title")
+                              or tany_chain(idx, ["Title"])),
+        "author": as_json_text(ftags.get("artist") or ftags.get("author")
+                               or tany_chain(idx, ["Artist", "Author",
+                                                   "Creator", "AlbumArtist",
+                                                   "Composer"])),
+        "album": as_json_text(ftags.get("album")
+                              or tany_chain(idx, ["Album"])),
+        "copyright": as_json_text(ftags.get("copyright")
+                                  or tany_chain(idx, ["Copyright",
+                                                      "CopyrightNotice"])),
+    })
+    return row
+
+
+def stream_rows(ff: dict) -> tuple[list[dict], list[dict]]:
+    vids, auds = [], []
+    for s in (ff.get("streams", []) if ff else []):
+        ctype = s.get("codec_type")
+        if ctype == "video":
+            vids.append({
+                "stream_index": s.get("index"),
+                "codec_name": s.get("codec_name"),
+                "codec_tag": s.get("codec_tag_string"),
+                "profile": s.get("profile"),
+                "width": s.get("width"), "height": s.get("height"),
+                "r_frame_rate": s.get("r_frame_rate"),
+                "avg_frame_rate": s.get("avg_frame_rate"),
+                "pix_fmt": s.get("pix_fmt"),
+                "bit_depth": first_int(s.get("bits_per_raw_sample")),
+                "color_space": s.get("color_space"),
+                "color_transfer": s.get("color_transfer"),
+                "color_primaries": s.get("color_primaries"),
+                "bit_rate": first_int(s.get("bit_rate")),
+                "nb_frames": first_int(s.get("nb_frames")),
+                "duration_seconds": first_float(s.get("duration"))})
+        elif ctype == "audio":
+            auds.append({
+                "stream_index": s.get("index"),
+                "codec_name": s.get("codec_name"),
+                "profile": s.get("profile"),
+                "sample_rate": first_int(s.get("sample_rate")),
+                "channels": first_int(s.get("channels")),
+                "channel_layout": s.get("channel_layout"),
+                "bit_rate": first_int(s.get("bit_rate")),
+                "duration_seconds": first_float(s.get("duration"))})
+    return vids, auds
+
+
+# === ExifTool stay_open 工作器 ===
+class ExifToolWorker:
+    def __init__(self, exiftool_path: str):
+        self.path = exiftool_path
+        self.count = 0
+        self._proc = None
+        self._reader_thread = None
+        self._q: queue.Queue = queue.Queue()
+        self._start()
+
+    def _start(self):
+        self._proc = subprocess.Popen(
+            [self.path, "-stay_open", "True", "-@", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL)
+        self._q = queue.Queue()
+        t = threading.Thread(target=self._reader, args=(self._proc, self._q),
+                             daemon=True)
+        t.start()
+        self._reader_thread = t
+
+    @staticmethod
+    def _reader(proc, q):
+        try:
+            for line in proc.stdout:
+                q.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            q.put(None)
+
+    def _release_process(self, proc):
+        thread = self._reader_thread
+        if thread is not None:
+            thread.join(timeout=1)
+        for stream in (proc.stdin, proc.stdout):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        if self._proc is proc:
+            self._proc = None
+            self._reader_thread = None
+
+    def _kill(self):
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            self._release_process(proc)
+
+    def restart(self):
+        self._kill()
+        self._start()
+        self.count = 0
+
+    def execute(self, args: list[str], timeout: float = ET_TIMEOUT_S) -> bytes:
+        guard_exiftool_args(args)
+        payload = "\n".join(args) + "\n-execute\n"
+        self._proc.stdin.write(payload.encode("utf-8"))
+        self._proc.stdin.flush()
+        out = bytearray()
+        deadline = time.monotonic() + timeout
+        while True:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                self.restart()
+                raise TimeoutError("exiftool 命令超时")
+            try:
+                line = self._q.get(timeout=min(remain, 1.0))
+            except queue.Empty:
+                continue
+            if line is None:
+                self.restart()
+                raise RuntimeError("exiftool 进程意外退出")
+            if line.strip() == b"{ready}":
+                break
+            out += line
+        self.count += 1
+        if self.count >= ET_RESTART_EVERY:
+            self.restart()
+        return bytes(out)
+
+    def extract(self, file_path: str, photo_profile: bool,
+                timeout: float = ET_TIMEOUT_S) -> dict:
+        args = (ET_PHOTO_ARGS if photo_profile else ET_VIDEO_ARGS) + [file_path]
+        out = self.execute(args, timeout)
+        docs = json.loads(out.decode("utf-8", "replace")) if out.strip() else []
+        if not docs:
+            raise RuntimeError("exiftool 无输出（文件不可解析？）")
+        return docs[0]
+
+    def close(self):
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.stdin.write(b"-stay_open\nFalse\n")
+                proc.stdin.flush()
+                proc.wait(timeout=5)
+        except Exception:
+            self._kill()
+            return
+        self._release_process(proc)
+
+
+def ffprobe_full(ffprobe_path: str, file_path: str,
+                 timeout: float = FF_TIMEOUT_S) -> dict:
+    r = subprocess.run([ffprobe_path] + FF_ARGS + [file_path],
+                       capture_output=True, timeout=timeout)
+    if r.returncode != 0:
+        raise RuntimeError("ffprobe 失败：" +
+                           r.stderr.decode("utf-8", "replace")[:200])
+    return json.loads(r.stdout.decode("utf-8", "replace"))
+
+
+# === 阶段执行（汇合状态机；逐文件断点续传） ===
+_PHOTO_KINDS = {"photo_raw", "photo_jpeg", "photo_working"}
+_VIDEO_KINDS = {"video_mp4", "video_crm"}
+_AV_KINDS = _VIDEO_KINDS | {"audio"}      # 音频与视频共用双后端管线
+
+
+def _insert_row(con, table: str, entry_id: int, row: dict, parser: str,
+                parser_version: str):
+    row = dict(row)
+    row["entry_id"] = entry_id
+    row["parser"] = parser
+    row["parser_version"] = parser_version
+    row["parsed_at_utc"] = core.now_utc_iso()
+    cols = ", ".join(row)
+    ph = ", ".join("?" for _ in row)
+    con.execute(f"INSERT INTO {table} ({cols}) VALUES ({ph})",
+                tuple(row.values()))
+
+
+def _insert_payload(con, entry_id: int, provider: str, doc: dict, version: str):
+    p = make_payload(doc)
+    con.execute("INSERT INTO raw_payloads (entry_id, provider, payload_zlib,"
+                " payload_sha256, uncompressed_bytes, provider_version,"
+                " profile_version, parsed_at_utc) VALUES (?,?,?,?,?,?,?,?)",
+                (entry_id, provider, p.zlib_blob, p.sha256,
+                 p.uncompressed_bytes, version, PROFILE_VERSION,
+                 core.now_utc_iso()))
+
+
+def _record_error(con, entry_id: int, code: str, msg: str):
+    con.execute("INSERT INTO errors (entry_id, stage, error_code, message,"
+                " occurred_at_utc) VALUES (?, 'metadata', ?, ?, ?)",
+                (entry_id, code, str(msg)[:500], core.now_utc_iso()))
+
+
+def process_metadata_stage(con: sqlite3.Connection, tools: dict,
+                           no_raw_payload: bool = False,
+                           on_progress=None) -> dict:
+    et_ver = tools["exiftool"]["version"]
+    ff_ver = tools["ffprobe"]["version"]
+    zip_ver = "python-zipfile " + ".".join(map(str, __import__("sys").version_info[:3]))
+    sz_ver = tools["sevenzip"]["version"]
+    roots = dict(con.execute("SELECT root_id, root_path FROM roots").fetchall())
+    con.execute("UPDATE entries SET meta_status='not_applicable'"
+                " WHERE meta_status='pending' AND media_kind='other'")
+    con.execute("UPDATE entries SET meta_status='skipped'"
+                " WHERE meta_status='pending' AND is_placeholder=1")
+    con.commit()
+    todo = con.execute(
+        "SELECT entry_id, root_id, rel_path, extension, media_kind, size_bytes,"
+        " modified_at_utc FROM entries WHERE meta_status='pending'"
+        " ORDER BY entry_id").fetchall()
+    stats = {"total": len(todo), "done": 0, "error": 0, "timeout": 0, "unstable": 0}
+    worker = ExifToolWorker(tools["exiftool"]["path"])
+    try:
+        for i, (eid, rid, rel, ext, kind, size0, mtime0) in enumerate(todo, 1):
+            path = os.path.join(roots[rid], rel)
+            ext_path = core.to_extended_path(path)
+            status = "done"
+            try:
+                for tbl in ("photo_metadata", "video_metadata", "working_metadata",
+                            "document_metadata", "archive_metadata",
+                            "archive_members",
+                            "video_streams", "audio_streams", "raw_payloads"):
+                    con.execute(f"DELETE FROM {tbl} WHERE entry_id=?", (eid,))
+                if kind in _PHOTO_KINDS:
+                    doc = worker.extract(path, photo_profile=True)
+                    idx = build_tag_index(doc)
+                    _insert_row(con, "photo_metadata", eid, photo_row(idx),
+                                "exiftool", et_ver)
+                    if kind == "photo_working":
+                        _insert_row(con, "working_metadata", eid,
+                                    working_row(idx, ext), "exiftool", et_ver)
+                    if not no_raw_payload:
+                        _insert_payload(con, eid, "exiftool", doc, et_ver)
+                elif kind in _AV_KINDS:
+                    doc = None
+                    ff = None
+                    errors = []
+                    try:
+                        doc = worker.extract(path, photo_profile=False)
+                    except TimeoutError:
+                        status = "timeout"
+                        _record_error(con, eid, "exiftool_timeout", path)
+                    except Exception as exc:
+                        errors.append(("exiftool_error", exc))
+                    try:
+                        ff = ffprobe_full(tools["ffprobe"]["path"], path)
+                    except subprocess.TimeoutExpired:
+                        status = "timeout"
+                        _record_error(con, eid, "ffprobe_timeout", path)
+                    except Exception as exc:
+                        errors.append(("ffprobe_error", exc))
+                    idx = build_tag_index(doc) if doc else {}
+                    if doc or ff:
+                        _insert_row(con, "video_metadata", eid, video_row(idx, ff),
+                                    "exiftool+ffprobe",
+                                    f"exiftool {et_ver}; ffprobe {ff_ver}")
+                        vids, auds = stream_rows(ff or {})
+                        for r in vids:
+                            r2 = dict(r)
+                            r2["entry_id"] = eid
+                            cols = ", ".join(r2)
+                            con.execute(f"INSERT INTO video_streams ({cols}) VALUES"
+                                        f" ({', '.join('?' for _ in r2)})",
+                                        tuple(r2.values()))
+                        for r in auds:
+                            r2 = dict(r)
+                            r2["entry_id"] = eid
+                            cols = ", ".join(r2)
+                            con.execute(f"INSERT INTO audio_streams ({cols}) VALUES"
+                                        f" ({', '.join('?' for _ in r2)})",
+                                        tuple(r2.values()))
+                    if not no_raw_payload:
+                        if doc:
+                            _insert_payload(con, eid, "exiftool", doc, et_ver)
+                        if ff:
+                            _insert_payload(con, eid, "ffprobe", ff, ff_ver)
+                    for code, exc in errors:
+                        status = "error" if status == "done" else status
+                        _record_error(con, eid, code, exc)
+                elif kind == "document":
+                    doc = worker.extract(path, photo_profile=False)
+                    idx = build_tag_index(doc)
+                    _insert_row(con, "document_metadata", eid,
+                                document_row(idx, ext), "exiftool", et_ver)
+                    if not no_raw_payload:
+                        _insert_payload(con, eid, "exiftool", doc, et_ver)
+                elif kind == "archive":
+                    if ext == "zip":
+                        s = zip_summary(ext_path)
+                        parser, ver = "python-zipfile", zip_ver
+                    else:
+                        s = sevenzip_summary(path, tools["sevenzip"]["path"], ext)
+                        parser, ver = "7-Zip", sz_ver
+                    members = s.pop("members", [])
+                    _insert_row(con, "archive_metadata", eid, s, parser, ver)
+                    con.executemany(
+                        "INSERT INTO archive_members (entry_id, member_index,"
+                        " member_path, is_dir, size_bytes, packed_bytes,"
+                        " crc32_hex, method, flag_bits, host_os,"
+                        " create_version, extract_version, header_offset,"
+                        " modified_raw, attributes, encrypted)"
+                        " VALUES (:eid, :member_index, :member_path, :is_dir,"
+                        " :size_bytes, :packed_bytes, :crc32_hex, :method,"
+                        " :flag_bits, :host_os, :create_version,"
+                        " :extract_version, :header_offset, :modified_raw,"
+                        " :attributes, :encrypted)",
+                        [{**m, "eid": eid} for m in members])
+            except TimeoutError:
+                status = "timeout"
+                _record_error(con, eid, "exiftool_timeout", path)
+            except Exception as exc:
+                status = "error"
+                _record_error(con, eid, type(exc).__name__, exc)
+            # 逐文件即时核对解析前后的 size/mtime
+            try:
+                st = os.stat(ext_path, follow_symlinks=False)
+                if st.st_size != size0 or core.ns_to_utc_iso(st.st_mtime_ns) != mtime0:
+                    status = "unstable"
+            except OSError:
+                status = "unstable"
+            con.execute("UPDATE entries SET meta_status=? WHERE entry_id=?",
+                        (status, eid))
+            stats[status if status in stats else "error"] = \
+                stats.get(status, 0) + 1
+            if i % 200 == 0:
+                con.commit()
+            if on_progress and i % 10 == 0:
+                on_progress(i, stats)
+        con.commit()
+    finally:
+        worker.close()
+    return stats

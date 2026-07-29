@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# DAISY runtime output
+Output/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.partial.sqlite.lock
+*.events.jsonl
+
+# Test and editor residue
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+
+# Windows
+Thumbs.db
+Desktop.ini
