@@ -186,9 +186,9 @@ DAISY\
    │  ├─ Script_DAISY_Tool_31_Diff.py
    │  └─ Script_DAISY_Tool_41_Export_Report.py
    └─ Test\
-      ├─ Test_DAISY_Tree.py
-      ├─ Test_DAISY_Unit.py
-      └─ Test_DAISY_No_Clobber.py
+      ├─ Script_DAISY_Test_Tree.py
+      ├─ Script_DAISY_Test_Unit.py
+      └─ Script_DAISY_Test_No_Clobber.py
 ```
 
 完整数据模型、不变量、哈希和 Diff 语义见[技术规格](Spec/Spec_DAISY_Technical.md)。
@@ -200,7 +200,7 @@ DAISY\
 外部工具，但不会下载依赖。在项目根目录运行全部自动化测试：
 
 ```powershell
-python -B -m unittest discover -s .\Script\Test -p "Test_DAISY_*.py" -v
+python -B -m unittest discover -s .\Script\Test -p "Script_DAISY_Test_*.py" -v
 ```
 
 也可以在 GUI 的“10 环境检测”页点击“运行项目自检”。它调用同一套
@@ -209,14 +209,14 @@ python -B -m unittest discover -s .\Script\Test -p "Test_DAISY_*.py" -v
 也可以分别运行两个测试套件：
 
 ```powershell
-python -B .\Script\Test\Test_DAISY_Unit.py
-python -B .\Script\Test\Test_DAISY_No_Clobber.py
+python -B .\Script\Test\Script_DAISY_Test_Unit.py
+python -B .\Script\Test\Script_DAISY_Test_No_Clobber.py
 ```
 
-`Test_DAISY_Tree.py` 是 Diff 合成场景生成器，可用以下命令查看场景：
+`Script_DAISY_Test_Tree.py` 是 Diff 合成场景生成器，可用以下命令查看场景：
 
 ```powershell
-python -B .\Script\Test\Test_DAISY_Tree.py --list
+python -B .\Script\Test\Script_DAISY_Test_Tree.py --list
 ```
 
 七项业务任务不导入 `Script\Test\`。测试层可以独立移除而不影响 DAISY

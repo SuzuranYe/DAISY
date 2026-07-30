@@ -1,6 +1,6 @@
 """DAISY 单元与集成测试（unittest，仅使用 Python 标准库）。
 
-运行：python -B .\\Script\\Test\\Test_DAISY_Unit.py
+运行：python -B .\\Script\\Test\\Script_DAISY_Test_Unit.py
 语义说明：Spec\\Spec_DAISY_Technical.md；DDL 与精确运行行为以当前代码为准。
 """
 from __future__ import annotations
@@ -307,7 +307,7 @@ class TestGuiArguments(unittest.TestCase):
             [
                 "python", "-B", "-m", "unittest", "discover",
                 "-s", gui._TEST_DIR,
-                "-p", "Test_DAISY_*.py",
+                "-p", "Script_DAISY_Test_*.py",
                 "-v",
             ],
         )
@@ -1542,7 +1542,7 @@ import shutil                                                  # noqa: E402
 import subprocess                                              # noqa: E402
 
 import Script_DAISY_Lib_04_Diff as dbdiff                                # noqa: E402
-import Test_DAISY_Tree as tt                                           # noqa: E402
+import Script_DAISY_Test_Tree as tt                                           # noqa: E402
 
 
 class TestDiffDdl(unittest.TestCase):

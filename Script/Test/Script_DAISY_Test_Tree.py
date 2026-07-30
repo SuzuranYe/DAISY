@@ -1,4 +1,4 @@
-r"""Test_DAISY_Tree：DAISY 合成测试树生成器。
+r"""Script_DAISY_Test_Tree：DAISY 合成测试树生成器。
 
 职责：
 - write：按相对路径造文件（自动建父目录，可指定 mtime）。
@@ -9,8 +9,8 @@ r"""Test_DAISY_Tree：DAISY 合成测试树生成器。
   时序/权限/链条类场景（T11/T11b/T13/T14/T16/T17）由黄金测试直接编排。
 
 用法：
-  python .\Script\Test\Test_DAISY_Tree.py --list
-  python .\Script\Test\Test_DAISY_Tree.py --scenario T05 --dest .\TreePair
+  python .\Script\Test\Script_DAISY_Test_Tree.py --list
+  python .\Script\Test\Script_DAISY_Test_Tree.py --scenario T05 --dest .\TreePair
 """
 from __future__ import annotations
 

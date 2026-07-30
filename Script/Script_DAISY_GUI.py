@@ -35,11 +35,11 @@ _DEFAULT_SNAPSHOTS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Snapshots")
 _DEFAULT_DIFFS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Diffs")
 _GUI_EVENT_PREFIX = "@@DAISY_GUI@@"
 _PROJECT_SELF_TEST_KEY = "project_self_test"
-_PROJECT_TEST_PATTERN = "Test_DAISY_*.py"
+_PROJECT_TEST_PATTERN = "Script_DAISY_Test_*.py"
 _PROJECT_TEST_FILES = (
-    "Test_DAISY_Unit.py",
-    "Test_DAISY_No_Clobber.py",
-    "Test_DAISY_Tree.py",
+    "Script_DAISY_Test_Unit.py",
+    "Script_DAISY_Test_No_Clobber.py",
+    "Script_DAISY_Test_Tree.py",
 )
 _MAX_ROOT_DIRECTORIES = 9
 _ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))

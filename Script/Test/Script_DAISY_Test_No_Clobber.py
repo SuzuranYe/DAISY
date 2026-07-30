@@ -2,7 +2,7 @@
 
 每项同时核对：退出码／文件数量／旧件 SHA-256／旧 snapshot_uuid／残留。
 
-运行：python -B .\\Script\\Test\\Test_DAISY_No_Clobber.py
+运行：python -B .\\Script\\Test\\Script_DAISY_Test_No_Clobber.py
 """
 from __future__ import annotations
 
