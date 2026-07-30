@@ -105,15 +105,26 @@ _DANGER_SOFT = _RED_SOFT
 _DANGER_HOVER = "#ddb9b1"
 _DANGER_BORDER = "#c99f98"
 
-_NAV_COLOURS = {
-    "env_check": (_GREEN_DARK, _GREEN_DEEP),
-    "full_scan": (_GREEN_DARK, _GREEN_DEEP),
-    "quick_scan": (_GREEN_DARK, _GREEN_DEEP),
-    "check_format": (_AMBER_DARK, _AMBER_DEEP),
-    "check_hash": (_AMBER_DARK, _AMBER_DEEP),
-    "diff": (_AMBER_DARK, _AMBER_DEEP),
-    "export_report": (_AMBER_DARK, _AMBER_DEEP),
+_TASK_ACCENTS = {
+    "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "full_scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "quick_scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "check_format": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "check_hash": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "diff": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "export_report": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
 }
+_NAV_COLOURS = {
+    key: (colours[0], colours[1])
+    for key, colours in _TASK_ACCENTS.items()
+}
+
+
+def task_accent_colours(task_key: str) -> tuple[str, str, str]:
+    """返回任务组的常态、按下和悬停强调色。"""
+    return _TASK_ACCENTS.get(
+        task_key, (_ACCENT, _ACCENT_DARK, _GREEN))
+
 
 _BRAND_NAME_SEGMENTS = (
     ("D", True),
@@ -1181,8 +1192,8 @@ def project_self_test_preview() -> str:
 def window_size_for_screen(screen_width: int,
                            screen_height: int) -> tuple[int, int]:
     """按当前屏幕留出边缘和任务栏空间，返回 Tk 窗口客户区尺寸。"""
-    width = min(1440, max(820, screen_width - 80))
-    height = min(920, max(640, screen_height - 60))
+    width = min(1280, max(820, screen_width - 80))
+    height = min(900, max(640, screen_height - 60))
     width = min(width, max(640, screen_width - 20))
     height = min(height, max(480, screen_height - 50))
     return width, height
@@ -1251,7 +1262,8 @@ class DaisyApp:
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self.root)
+        self.style = ttk.Style(self.root)
+        style = self.style
         if "clam" in style.theme_names():
             style.theme_use("clam")
         style.configure("TFrame", background=_SURFACE)
@@ -1366,6 +1378,38 @@ class DaisyApp:
                 bordercolor=_BORDER,
                 thickness=8,
             )
+        self._apply_task_accent(self.task.key)
+
+    def _apply_task_accent(self, task_key: str) -> None:
+        colour, pressed_colour, active_colour = task_accent_colours(task_key)
+        self.style.configure(
+            "Primary.TButton",
+            background=colour,
+            bordercolor=pressed_colour,
+            lightcolor=colour,
+            darkcolor=colour,
+        )
+        self.style.map(
+            "Primary.TButton",
+            background=[
+                ("disabled", "#afbeb6"),
+                ("pressed", pressed_colour),
+                ("active", active_colour),
+            ],
+        )
+        self.style.configure(
+            "Daisy.Vertical.TScrollbar",
+            background=colour,
+            lightcolor=colour,
+            darkcolor=colour,
+        )
+        self.style.map(
+            "Daisy.Vertical.TScrollbar",
+            background=[
+                ("pressed", pressed_colour),
+                ("active", active_colour),
+            ],
+        )
 
     def _build_shell(self) -> None:
         header_height = 78 if self.compact_layout else 86
@@ -1522,7 +1566,7 @@ class DaisyApp:
         self.main_pane.pack(fill="both", expand=True)
         self.form_pane_min_height = 150 if self.compact_layout else 180
         self.log_pane_min_height = 105 if self.compact_layout else 160
-        self.log_pane_initial_height = 150 if self.compact_layout else 230
+        self.log_pane_initial_height = 150 if self.compact_layout else 190
 
         form_host = tk.Frame(self.main_pane, bg=_SURFACE)
         self.main_pane.add(
@@ -1726,8 +1770,9 @@ class DaisyApp:
         if save_current:
             self._save_current_values()
         self.task = TASK_BY_KEY[task_key]
-        selected_colour, selected_hover = _NAV_COLOURS.get(
-            task_key, (_ACCENT, _ACCENT_DARK))
+        selected_colour, selected_hover, _active_colour = (
+            task_accent_colours(task_key))
+        self._apply_task_accent(task_key)
         for key, button in self.nav_buttons.items():
             selected = key == task_key
             button.configure(

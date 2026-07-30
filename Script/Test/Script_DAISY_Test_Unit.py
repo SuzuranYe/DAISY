@@ -348,9 +348,9 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1440, 920))
+            gui.window_size_for_screen(1920, 1080), (1280, 900))
         self.assertEqual(
-            gui.window_size_for_screen(1366, 768), (1286, 708))
+            gui.window_size_for_screen(1366, 768), (1280, 708))
         self.assertEqual(
             gui.window_size_for_screen(1024, 768), (944, 708))
         small = gui.window_size_for_screen(800, 600)
@@ -359,9 +359,18 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_initial_log_sash_position_preserves_log_height(self):
         self.assertEqual(
-            gui.initial_log_sash_position(442, 230, 180), 207)
+            gui.initial_log_sash_position(424, 190, 180), 229)
         self.assertEqual(
             gui.initial_log_sash_position(250, 150, 150), 150)
+
+    def test_task_accent_colours_follow_workflow_group(self):
+        green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
+        amber = (gui._AMBER_DARK, gui._AMBER_DEEP, gui._AMBER)
+        for task_key in ("env_check", "full_scan", "quick_scan"):
+            self.assertEqual(gui.task_accent_colours(task_key), green)
+        for task_key in (
+                "check_format", "check_hash", "diff", "export_report"):
+            self.assertEqual(gui.task_accent_colours(task_key), amber)
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
