@@ -1,9 +1,11 @@
-# DAISY v1.3.3 技术规格
+# DAISY v1.3.4 技术规格
 
 - 状态：**现行规范**。
-- 对应版本：**v1.3.3**。
+- 对应版本：**v1.3.4**。
 - 本文定义快照、哈希、元数据、格式校验和 Diff 的现行语义。
 - 安装、启动与常用工作流见项目根目录的 [README](../README.md)。
+- 从 `Kit_AL v1.0.2` 到当前版本的阶段变化见
+  [版本演化规格](Spec_DAISY_Version_Evolution.md)。
 
 ## 一、权威边界
 
@@ -303,12 +305,13 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 
 ## 十一、版本、性能与已知限制
 
-- `SCANNER_VERSION=1.3.3`；`schema_version=1`。
+- `SCANNER_VERSION=1.3.4`；`schema_version=1`。
 - v1.3.0 新增 `snapshot_manifest` 和 `run_events`，属于 additive DDL 扩展，因此 schema 版本仍为 1。
 - v1.3.0 对旧封装不兼容，是已明确记录的版本号例外，不能由次版本号推断兼容。
 - v1.3.1 整理 GitHub 发布结构、依赖安装说明和代码内历史命名，并加入 GUI 项目自检入口；不改变数据库 schema 或七项业务任务的运行语义。
 - v1.3.2 排除 `FileAccessDate` 对 Diff 元数据判断的干扰，加入运行时生成的截断媒体回归，移除未接入正式路径的 `block_hashes` 表和 `hash_coverage=partial` 值，并把依赖安装改为逐项说明、逐项确认；正式读写语义不变，`schema_version` 仍为 1。
-- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2。GUI 在同版本内统一侧栏与主标题、修正日志区和滚动条布局，并将后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`；两项当前文件校验不再回退到快照记录的旧绝对路径，必须显式指定当前 root。`schema_version` 仍为 1。
+- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2。`schema_version` 仍为 1。
+- v1.3.4 统一 GUI 侧栏与主标题，修正日志区、滚动条、底部控件、状态徽标和滚轮误改下拉值，并使用带正负极的莫比乌斯品牌图形；后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`。两项当前文件校验必须显式指定当前 root。Diff 在同版 ExifTool Raw Payload 复核中排除 `SourceFile`、`Directory` 和 `FileAccessDate` 等提取环境字段，避免盘符或根目录迁移造成元数据假阳性；内嵌元数据的真实变化仍照常检出。`schema_version` 仍为 1。
 - `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
   元数据 profile 和 GPS 表；改动前同版本但仍为 profile v1 的 partial
   会被明确拒绝。既有封存快照不迁移、不回写。

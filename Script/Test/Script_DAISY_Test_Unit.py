@@ -366,6 +366,22 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             gui.initial_log_sash_position(250, 150, 150), 150)
 
+    def test_form_mousewheel_scrolls_and_stops_widget_defaults(self):
+        class CanvasProbe:
+            def __init__(self):
+                self.calls = []
+
+            def yview_scroll(self, units, mode):
+                self.calls.append((units, mode))
+
+        class Event:
+            delta = -60
+
+        app = object.__new__(gui.DaisyApp)
+        app.form_canvas = CanvasProbe()
+        self.assertEqual(app._scroll_form(Event()), "break")
+        self.assertEqual(app.form_canvas.calls, [(1, "units")])
+
     def test_technical_spec_declares_powershell_compatibility(self):
         spec_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
@@ -373,6 +389,13 @@ class TestGuiArguments(unittest.TestCase):
             spec = f.read()
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
+        evolution_path = os.path.join(
+            gui._BASE, "Spec", "Spec_DAISY_Version_Evolution.md")
+        with open(evolution_path, "r", encoding="utf-8") as f:
+            evolution = f.read()
+        self.assertIn("Kit_AL v1.0.2", evolution)
+        self.assertIn("DAISY v1.3.4", evolution)
+        self.assertIn("设计过渡点", evolution)
 
     def test_task_accent_colours_follow_workflow_group(self):
         green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
@@ -472,7 +495,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.3.3")
+        self.assertEqual(core.SCANNER_VERSION, "1.3.4")
         self.assertEqual(
             core.PROJECT_FULL_NAME,
             "Database for Archive Integrity by Suzuran Ye",
@@ -2407,6 +2430,49 @@ class TestDiffGolden(_DiffFixture):
         self.assertEqual(
             actual_change["status"], "metadata_extraction_changed")
         self.assertEqual(actual_change["metadata_changed"], 1)
+
+    def test_exiftool_root_path_fields_are_ignored(self):
+        tt.write(self.old_tree, "m.bin", b"meta-data")
+        self.clone()
+
+        def inject(source_file, directory):
+            document = {
+                "SourceFile": source_file,
+                "System:Main:Directory": {
+                    "id": 0,
+                    "val": directory,
+                },
+                "EXIF:Main:Model": {
+                    "id": 272,
+                    "val": "Same",
+                },
+            }
+            payload = meta.make_payload(document)
+
+            def apply(con):
+                eid, = con.execute(
+                    "SELECT entry_id FROM entries WHERE rel_path='m.bin'"
+                ).fetchone()
+                con.execute(
+                    "INSERT INTO raw_payloads (entry_id, provider,"
+                    " payload_zlib, payload_sha256, uncompressed_bytes,"
+                    " provider_version, profile_version, parsed_at_utc)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (eid, "exiftool", payload.zlib_blob, payload.sha256,
+                     payload.uncompressed_bytes, "13.59", 1, "t"))
+            return apply
+
+        s1 = self.snap(
+            self.old_tree, "old",
+            pre_finalize=inject(
+                r"E:\OldRoot\m.bin", r"E:\OldRoot"))
+        s2 = self.snap(
+            self.new_tree, "new",
+            pre_finalize=inject(
+                r"F:\MovedRoot\m.bin", r"F:\MovedRoot"))
+        row = self.row(self.diff(s1, s2), "m.bin")
+        self.assertEqual(row["status"], "unchanged")
+        self.assertEqual(row["metadata_changed"], 0)
 
 
 import csv                                                     # noqa: E402

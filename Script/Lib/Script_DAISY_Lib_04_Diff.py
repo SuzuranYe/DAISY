@@ -233,11 +233,15 @@ def _under(pk: str, failed: list[str]) -> bool:
 
 
 _META_EXIFTOOL_PENDING = object()
-_VOLATILE_EXIFTOOL_TAGS = {"fileaccessdate"}
+_VOLATILE_EXIFTOOL_TAGS = {
+    "sourcefile",
+    "directory",
+    "fileaccessdate",
+}
 
 
 def _meta_eval(po: dict, pn: dict):
-    """先比较摘要与版本；仅 FileAccessDate 候选延后读取载荷复核。"""
+    """先比较摘要与版本；同版 ExifTool 差异延后排除环境字段复核。"""
     common = set(po) & set(pn)
     if not common:
         return None
@@ -255,7 +259,7 @@ def _meta_eval(po: dict, pn: dict):
 
 
 def _drop_volatile_exiftool_tags(value):
-    """复制 JSON 结构，同时移除会因只读访问而变化的 ExifTool 标签。"""
+    """复制 JSON 结构，同时移除访问时间与提取目标路径等环境字段。"""
     if isinstance(value, dict):
         return {
             key: _drop_volatile_exiftool_tags(item)

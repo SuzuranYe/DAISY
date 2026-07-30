@@ -150,6 +150,64 @@ _BRAND_NAME_SEGMENTS = (
 )
 
 
+def build_mobius_logo(parent: tk.Misc, compact: bool = False) -> tk.Canvas:
+    """绘制无外部图片依赖的极简莫比乌斯环标志。"""
+    width, height = ((38, 24) if compact else (44, 28))
+    scale_x = width / 44
+    scale_y = height / 28
+    point_values = (
+        3, 14, 7, 6, 14, 5, 22, 14,
+        30, 23, 37, 22, 41, 14,
+        37, 6, 30, 5, 22, 14,
+        14, 23, 7, 22, 3, 14,
+    )
+    points = [
+        value * (scale_x if index % 2 == 0 else scale_y)
+        for index, value in enumerate(point_values)
+    ]
+    canvas = tk.Canvas(
+        parent, width=width, height=height, bg=_SURFACE,
+        highlightthickness=0, bd=0,
+    )
+    canvas.create_line(
+        *points, smooth=True, splinesteps=36,
+        fill=_GREEN_DEEP, width=5 if compact else 6,
+        capstyle="round", joinstyle="round",
+        tags=("mobius_logo",),
+    )
+    crossing_values = (18, 10, 26, 18)
+    crossing = [
+        value * (scale_x if index % 2 == 0 else scale_y)
+        for index, value in enumerate(crossing_values)
+    ]
+    canvas.create_line(
+        *crossing, fill=_SURFACE, width=7 if compact else 8,
+        capstyle="round", tags=("mobius_cut",),
+    )
+    canvas.create_line(
+        *crossing, fill=_AMBER_DARK, width=3 if compact else 4,
+        capstyle="round", tags=("mobius_twist",),
+    )
+    symbol_width = 2 if compact else 3
+    symbol_extent_x = 3 * scale_x
+    symbol_extent_y = 3 * scale_y
+    for center_x, tag in ((10 * scale_x, "mobius_positive"),
+                          (34 * scale_x, "mobius_negative")):
+        canvas.create_line(
+            center_x - symbol_extent_x, 14 * scale_y,
+            center_x + symbol_extent_x, 14 * scale_y,
+            fill=_AMBER_DEEP, width=symbol_width,
+            capstyle="round", tags=(tag,),
+        )
+    canvas.create_line(
+        10 * scale_x, 14 * scale_y - symbol_extent_y,
+        10 * scale_x, 14 * scale_y + symbol_extent_y,
+        fill=_AMBER_DEEP, width=symbol_width,
+        capstyle="round", tags=("mobius_positive",),
+    )
+    return canvas
+
+
 def parse_gui_stream(
     buffer: str, text: str, *, final: bool = False,
 ) -> tuple[str, list[tuple[str, object]]]:
@@ -1493,18 +1551,11 @@ class DaisyApp:
         brand_x = 20 if self.compact_layout else 24
         brand = tk.Frame(header, bg=_SURFACE)
         brand.pack(side="left", fill="y", padx=(brand_x, 0))
-        tk.Label(
-            brand, text=core.PROJECT_NAME, bg=_SURFACE, fg=_TEXT,
-            font=("Microsoft YaHei UI",
-                  14 if self.compact_layout else 16, "bold"),
-            anchor="w",
-        ).pack(side="left", anchor="center")
-        tk.Label(
-            brand, text="·", bg=_SURFACE, fg=_BORDER,
-            font=("Segoe UI", 12, "bold"),
-        ).pack(side="left", anchor="center", padx=(9, 8))
+        logo = build_mobius_logo(brand, self.compact_layout)
+        logo.pack(side="left", anchor="center")
         expansion = tk.Frame(brand, bg=_SURFACE)
-        expansion.pack(side="left", anchor="center", pady=(5, 0))
+        expansion.pack(
+            side="left", anchor="center", padx=(10, 0), pady=(5, 0))
         expansion_size = 8 if self.compact_layout else 9
         for text, emphasized in _BRAND_NAME_SEGMENTS:
             tk.Label(
@@ -1838,8 +1889,13 @@ class DaisyApp:
         )
         self.main_pane.sash_place(0, 0, sash_y)
 
-    def _scroll_form(self, event: tk.Event) -> None:
-        self.form_canvas.yview_scroll(int(-event.delta / 120), "units")
+    def _scroll_form(self, event: tk.Event) -> str:
+        units = int(-event.delta / 120)
+        if units == 0 and event.delta:
+            units = -1 if event.delta > 0 else 1
+        if units:
+            self.form_canvas.yview_scroll(units, "units")
+        return "break"
 
     def _save_current_values(self) -> None:
         if self.values:
@@ -1965,6 +2021,7 @@ class DaisyApp:
                 widget.grid(row=0, column=0, sticky="ew")
                 widget.bind("<<ComboboxSelected>>",
                             self._choice_changed)
+                widget.bind("<MouseWheel>", self._scroll_form)
                 self.values[spec.key] = var
             elif spec.kind == "multidir":
                 widget = DirectoryListEditor(

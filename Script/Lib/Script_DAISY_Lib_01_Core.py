@@ -20,7 +20,7 @@ import uuid
 PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
-SCANNER_VERSION = "1.3.3"      # 包版本
+SCANNER_VERSION = "1.3.4"      # 包版本
 SCHEMA_VERSION = 1
 PATH_KEY_RULE = 1
 

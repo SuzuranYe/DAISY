@@ -2,7 +2,7 @@
 
 **Database for Archive Integrity by Suzuran Ye**
 
-版本：**v1.3.3**
+版本：**v1.3.4**
 
 许可证：**MIT**
 
@@ -152,8 +152,8 @@ Payload 中保留原值。经纬度会规范化为数值并校验范围；海拔
 
 由于规范化 profile 和 additive 表已变化，中断的 `.partial.sqlite`
 必须同时匹配当前 DAISY 的版本、schema、profile 和 GPS 表后才允许续传。
-改动前同为 v1.3.3、但仍使用 profile v1 的 partial 也会被明确拒绝，以免
-同一快照混用两套解析语义。封存快照不受此限制。
+旧版本或仍使用 profile v1 的 partial 会被明确拒绝，以免同一快照混用
+两套解析语义。封存快照不受此限制。
 
 ### 数据库文件名指纹
 
@@ -191,7 +191,8 @@ DAISY\
 ├─ README.md
 ├─ Start_DAISY_GUI.pyw
 ├─ Spec\
-│  └─ Spec_DAISY_Technical.md
+│  ├─ Spec_DAISY_Technical.md
+│  └─ Spec_DAISY_Version_Evolution.md
 └─ Script\
    ├─ Script_DAISY_MAIN.py
    ├─ Script_DAISY_GUI.py
@@ -214,7 +215,9 @@ DAISY\
       └─ Script_DAISY_Test_No_Clobber.py
 ```
 
-完整数据模型、不变量、哈希和 Diff 语义见[技术规格](Spec/Spec_DAISY_Technical.md)。
+完整数据模型、不变量、哈希和 Diff 语义见
+[技术规格](Spec/Spec_DAISY_Technical.md)；从 `Kit_AL v1.0.2` 到当前版本的
+阶段变化见[版本演化规格](Spec/Spec_DAISY_Version_Evolution.md)。
 
 ## 测试
 
