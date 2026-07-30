@@ -114,10 +114,15 @@ python .\Script\Script_DAISY_MAIN.py <子命令> --help
 | 10 | 环境检测／`env-check` | 检查四项外部工具、版本、只读冒烟和 SHA-256 |
 | 11 | 完整登记／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
 | 12 | 快速清点／`quick-scan` | 只登记树、大小、时间和可选 File ID |
-| 21 | 格式校验／`check-format` | 检查当前文件结构和可解析性 |
-| 22 | 哈希巡检／`check-hash` | 用独立实现复算 SHA-256 |
-| 31 | 快照对比／`diff` | 对两份快照分类并判定证据等级 |
-| 41 | 导出报告／`export-report` | 导出 CSV 和 Markdown |
+| 21 | 快照对比／`diff` | 对两份快照分类并判定证据等级 |
+| 22 | 哈希校验／`check-hash` | 用独立实现复算 SHA-256 |
+| 23 | 格式校验／`check-format` | 检查当前文件结构和可解析性 |
+| 31 | 导出报告／`export-report` | 导出 CSV 和 Markdown |
+
+哈希校验和格式校验必须指定当前档案根目录。单根快照可直接选择当前文件夹；
+多根快照须为每个根使用 `label=当前路径`，其中 label 必须与快照记录一致。
+`--root` 接受文件夹，不接受普通文件；因此盘符或根文件夹名称变化不会依赖
+快照中的旧绝对路径。
 
 ## 重要边界
 
@@ -199,10 +204,10 @@ DAISY\
    │  ├─ Script_DAISY_Tool_10_Env_Check.py
    │  ├─ Script_DAISY_Tool_11_Full_Scan.py
    │  ├─ Script_DAISY_Tool_12_Quick_Scan.py
-   │  ├─ Script_DAISY_Tool_21_Check_Format.py
+   │  ├─ Script_DAISY_Tool_21_Diff.py
    │  ├─ Script_DAISY_Tool_22_Check_Hash.py
-   │  ├─ Script_DAISY_Tool_31_Diff.py
-   │  └─ Script_DAISY_Tool_41_Export_Report.py
+   │  ├─ Script_DAISY_Tool_23_Check_Format.py
+   │  └─ Script_DAISY_Tool_31_Export_Report.py
    └─ Test\
       ├─ Script_DAISY_Test_Tree.py
       ├─ Script_DAISY_Test_Unit.py

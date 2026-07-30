@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_31_Diff：对比两个封存快照，产出 Diff 数据库（权威结果）。
+r"""Script_DAISY_Tool_21_Diff：对比两个封存快照，产出 Diff 数据库（权威结果）。
 
 语义说明：Spec/Spec_DAISY_Technical.md。摘要／CSV 导出由 `export-report`
 子命令从 Diff 数据库生成；本脚本输出控制台摘要。

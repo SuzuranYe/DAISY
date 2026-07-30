@@ -25,6 +25,7 @@ sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _TOOL]
 
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_GUI as gui
+import Script_DAISY_MAIN as entry
 
 
 class TestGuiArguments(unittest.TestCase):
@@ -382,6 +383,70 @@ class TestGuiArguments(unittest.TestCase):
                 "check_format", "check_hash", "diff", "export_report"):
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
+    def test_task_titles_match_sidebar_names(self):
+        for task in gui.TASKS:
+            sidebar_name = task.nav.split(maxsplit=1)[1]
+            self.assertEqual(task.title, sidebar_name)
+
+    def test_final_task_numbering_and_sidebar_order(self):
+        self.assertEqual(
+            [gui.TASK_BY_KEY[key].nav for key in gui._SIDEBAR_TASK_ORDER],
+            [
+                "10  环境检测",
+                "11  完整登记",
+                "12  快速清点",
+                "21  快照对比",
+                "22  哈希校验",
+                "23  格式校验",
+                "31  导出报告",
+            ],
+        )
+        self.assertEqual(
+            entry.COMMANDS["diff"][0], "Script_DAISY_Tool_21_Diff")
+        self.assertEqual(
+            entry.COMMANDS["check-hash"][0],
+            "Script_DAISY_Tool_22_Check_Hash")
+        self.assertEqual(
+            entry.COMMANDS["check-format"][0],
+            "Script_DAISY_Tool_23_Check_Format")
+        self.assertEqual(
+            entry.COMMANDS["export-report"][0],
+            "Script_DAISY_Tool_31_Export_Report")
+
+    def test_validation_tasks_require_current_root(self):
+        for task_key in ("check_hash", "check_format"):
+            root_field = next(
+                spec for spec in gui.TASK_BY_KEY[task_key].fields
+                if spec.key == "root_map")
+            self.assertTrue(root_field.required)
+            issues = gui.validate_values(
+                task_key, {"snapshot": __file__, "root_map": ""})
+            self.assertIn("请填写“当前档案根目录”。", issues)
+
+    def test_validation_task_args_include_current_root(self):
+        with tempfile.TemporaryDirectory() as current_root:
+            expected_root = os.path.abspath(current_root)
+            for task_key in ("check_hash", "check_format"):
+                args = gui.build_tool_args(
+                    task_key,
+                    {"snapshot": __file__, "root_map": current_root},
+                )
+                root_index = args.index("--root")
+                self.assertEqual(args[root_index + 1], expected_root)
+
+                mapped_args = gui.build_tool_args(
+                    task_key,
+                    {
+                        "snapshot": __file__,
+                        "root_map": f"archive={current_root}",
+                    },
+                )
+                mapped_root_index = mapped_args.index("--root")
+                self.assertEqual(
+                    mapped_args[mapped_root_index + 1],
+                    f"archive={expected_root}",
+                )
+
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
         self.assertEqual(core.SCANNER_VERSION, "1.3.3")
@@ -717,6 +782,31 @@ class TestRootSpec(unittest.TestCase):
     def test_drive_root_rejected(self):
         with self.assertRaises(core.PreflightError):
             core.validate_root(os.path.abspath(os.sep))
+
+    def test_single_snapshot_root_accepts_direct_folder(self):
+        with tempfile.TemporaryDirectory() as td:
+            mapping = core.resolve_current_root_specs(["Archive"], [td])
+            self.assertEqual(mapping, {"Archive": os.path.abspath(td)})
+
+    def test_multiple_snapshot_roots_require_complete_label_mapping(self):
+        with tempfile.TemporaryDirectory() as td:
+            left = os.path.join(td, "left")
+            right = os.path.join(td, "right")
+            os.makedirs(left)
+            os.makedirs(right)
+            mapping = core.resolve_current_root_specs(
+                ["A", "B"], [f"A={left}", f"B={right}"])
+            self.assertEqual(mapping["A"], os.path.abspath(left))
+            self.assertEqual(mapping["B"], os.path.abspath(right))
+            with self.assertRaisesRegex(
+                    core.PreflightError, "只适用于单根快照"):
+                core.resolve_current_root_specs(["A", "B"], [left, right])
+            with self.assertRaisesRegex(
+                    core.PreflightError, "尚未指定"):
+                core.resolve_current_root_specs(["A", "B"], [f"A={left}"])
+            with self.assertRaisesRegex(
+                    core.PreflightError, "不存在"):
+                core.resolve_current_root_specs(["A"], [f"X={left}"])
 
 
 class TestVersionParsing(unittest.TestCase):
@@ -2298,7 +2388,7 @@ class TestDiffGolden(_DiffFixture):
 
 import csv                                                     # noqa: E402
 
-Export = importlib.import_module("Script_DAISY_Tool_41_Export_Report")
+Export = importlib.import_module("Script_DAISY_Tool_31_Export_Report")
 
 
 class TestExportSnapshot(_DiffFixture):
@@ -2459,7 +2549,7 @@ class TestExportDiff(_DiffFixture):
         self.assertIn("不构成独立验证", md)   # propagated 不得表述为已验证一致
 
 
-Validate = importlib.import_module("Script_DAISY_Tool_21_Check_Format")
+Validate = importlib.import_module("Script_DAISY_Tool_23_Check_Format")
 
 
 class TestValidators(unittest.TestCase):
@@ -2781,7 +2871,7 @@ class TestQuickScan(unittest.TestCase):
         s1 = tt.build_snapshot(self.arch, self.out, "d1", label="测试库")
         s2 = tt.build_snapshot(self.arch, self.out, "d2", label="测试库")
         diffs = os.path.join(self._td.name, "Diffs")
-        script = os.path.join(_TOOL, "Script_DAISY_Tool_31_Diff.py")
+        script = os.path.join(_TOOL, "Script_DAISY_Tool_21_Diff.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--old", s1, "--new", s2,
                             "--output-dir", diffs], capture_output=True,

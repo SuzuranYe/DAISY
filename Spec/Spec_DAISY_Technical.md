@@ -31,7 +31,7 @@
 
 ### 2.1 内容读取边界
 
-- Full 哈希和哈希巡检会读取文件内容，但字节只进入 SHA-256 实现。
+- Full 哈希和哈希校验会读取文件内容，但字节只进入 SHA-256 实现。
 - 元数据阶段不提取文本正文、单元格、幻灯片正文或压缩包成员内容。
 - 文档只读取属性区，例如 OOXML `docProps/*`、PDF Info／XMP。
 - 压缩包登记只读取目录结构和成员描述，不读取成员数据。
@@ -244,14 +244,18 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 
 唯一可降级项是**文件名缺少指纹**。`--force` 允许继续，但结果必须标记为异常。当前版本不读取旧 sidecar、散置 `.sha256` 或旧 `SHA8-` 命名；旧快照需对原档案重新登记。
 
-`check-hash`：
+`22 check-hash` 和 `23 check-format` 都必须用 `--root` 指定当前档案根目录，
+不回退到快照保存的旧绝对路径。单根快照可直接传一个文件夹路径；多根快照
+必须为每个 root 使用 `label=当前路径`。普通文件不能作为 root。
+
+`22 check-hash`：
 
 - 总是先检查记录条目的存在性、size 和 mtime；
 - 默认抽样 1%，至少 100 个有有效基准哈希的条目；
 - `--full` 对所有有有效基准哈希的条目独立复算；
 - 结论只覆盖本次实际检查口径。
 
-`check-format`：
+`23 check-format`：
 
 - 默认检查全部可校验文件，GUI 可选择按比例抽样；
 - ZIP／OOXML 可读取成员并校验 CRC；
@@ -304,7 +308,7 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 - v1.3.0 对旧封装不兼容，是已明确记录的版本号例外，不能由次版本号推断兼容。
 - v1.3.1 整理 GitHub 发布结构、依赖安装说明和代码内历史命名，并加入 GUI 项目自检入口；不改变数据库 schema 或七项业务任务的运行语义。
 - v1.3.2 排除 `FileAccessDate` 对 Diff 元数据判断的干扰，加入运行时生成的截断媒体回归，移除未接入正式路径的 `block_hashes` 表和 `hash_coverage=partial` 值，并把依赖安装改为逐项说明、逐项确认；正式读写语义不变，`schema_version` 仍为 1。
-- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2，`schema_version` 仍为 1。
+- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2。GUI 在同版本内统一侧栏与主标题、修正日志区和滚动条布局，并将后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`；两项当前文件校验不再回退到快照记录的旧绝对路径，必须显式指定当前 root。`schema_version` 仍为 1。
 - `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
   元数据 profile 和 GPS 表；改动前同版本但仍为 profile v1 的 partial
   会被明确拒绝。既有封存快照不迁移、不回写。

@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_21_Check_Format：格式完整性校验。
+r"""Script_DAISY_Tool_23_Check_Format：格式完整性校验。
 
 哈希证明「没变」，本脚本回答「是不是好的」。从快照读目标清单，对当前磁盘
 文件执行结构级校验（每格式一档，不做深度解码），产出 JSON＋CSV＋MD 报告，
@@ -166,7 +166,8 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
                       exiftool: str | None = None,
                       ffprobe: str | None = None,
                       sevenzip: str | None = None,
-                      force: bool = False, on_progress=None) -> dict:
+                      force: bool = False, on_progress=None,
+                      root_specs: list[str] | None = None) -> dict:
     snapshot_path = os.path.abspath(snapshot_path)
     if not os.path.isfile(snapshot_path):
         raise core.PreflightError(f"快照不存在：{snapshot_path}")
@@ -184,17 +185,22 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
         if status != "complete":
             raise core.PreflightError(f"快照未封存（scan_status={status}）")
         roots = {}
-        labels = []
+        root_rows = list(con.execute(
+            "SELECT root_id, root_label, root_path FROM roots"))
+        labels = [label for _rid, label, _rpath in root_rows]
+        specs = (
+            root_specs if root_specs is not None
+            else [f"{label}={path}" for label, path in (root_map or {}).items()]
+        )
+        current_roots = core.resolve_current_root_specs(labels, specs)
         label_by_rid = {}
-        for rid, label, rpath in con.execute(
-                "SELECT root_id, root_label, root_path FROM roots"):
-            cur = (root_map or {}).get(label, rpath)
+        for rid, label, _recorded_path in root_rows:
+            cur = current_roots[label]
             if not os.path.isdir(cur):
                 raise core.PreflightError(
                     f"root「{label}」当前路径不存在：{cur}"
                     f"（用 --root \"{label}=当前路径\" 指定）")
             roots[rid] = cur
-            labels.append(label)
             label_by_rid[rid] = label
         entries = con.execute(
             "SELECT entry_id, root_id, rel_path, extension, media_kind,"
@@ -336,8 +342,9 @@ def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(description="格式完整性校验（只读，独立报告）")
     ap.add_argument("--snapshot", required=True)
-    ap.add_argument("--root", action="append", default=[],
-                    help="label=当前路径，可重复；缺省用快照记录的 root_path")
+    ap.add_argument(
+        "--root", action="append", required=True,
+        help="当前根目录；单根可直接给路径，多根须逐项 label=当前路径")
     ap.add_argument("--sample-percent", type=float, default=100.0)
     ap.add_argument("--report-dir")
     ap.add_argument("--exiftool-path")
@@ -346,20 +353,13 @@ def main() -> int:
     ap.add_argument("--force", action="store_true",
                     help="文件名高32bit指纹缺失时仍继续（不符仍拒绝）")
     args = ap.parse_args()
-    root_map = {}
-    for spec in args.root:
-        label, sep, path = spec.partition("=")
-        if not sep or not label or not path:
-            print(f"--root 语法应为 label=路径：{spec}", file=sys.stderr)
-            return 2
-        root_map[label] = path
     try:
         prog = core.Progress(1, 1, "格式校验")
         rep = validate_snapshot(
-            args.snapshot, root_map, sample_percent=args.sample_percent,
+            args.snapshot, sample_percent=args.sample_percent,
             report_dir=args.report_dir, exiftool=args.exiftool_path,
             ffprobe=args.ffprobe_path, sevenzip=args.sevenzip_path,
-            force=args.force,
+            force=args.force, root_specs=args.root,
             on_progress=lambda i, n: prog.update(i, total=n))
     except core.PreflightError as exc:
         print(f"校验失败：{exc}", file=sys.stderr)

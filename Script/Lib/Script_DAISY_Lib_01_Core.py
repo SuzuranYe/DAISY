@@ -150,6 +150,55 @@ def parse_root_spec(spec: str) -> tuple[str, str]:
     return label, path
 
 
+def resolve_current_root_specs(labels: list[str],
+                               specs: list[str]) -> dict[str, str]:
+    """把当前根目录参数解析为快照 root label 到现路径的完整映射。"""
+    if not specs:
+        raise PreflightError("必须用 --root 指定当前档案根目录")
+
+    known_labels = set(labels)
+    mapping: dict[str, str] = {}
+    direct_paths: list[str] = []
+    for raw_spec in specs:
+        spec = str(raw_spec or "").strip()
+        if not spec:
+            raise PreflightError("当前根目录不能为空")
+        if "=" not in spec or os.path.isabs(spec.strip('"')):
+            direct_paths.append(spec)
+            continue
+        label, _separator, path = spec.partition("=")
+        label = label.strip()
+        path = path.strip()
+        if not label or not path:
+            raise PreflightError(f"根目录映射应为 label=路径：{spec}")
+        if label in mapping:
+            raise PreflightError(f"根目录 label 重复：{label}")
+        mapping[label] = path
+
+    if direct_paths:
+        if len(labels) != 1 or len(direct_paths) != 1 or mapping:
+            raise PreflightError(
+                "不带 label 的 --root 只适用于单根快照；"
+                "多根快照请逐项使用 label=当前路径")
+        mapping[labels[0]] = direct_paths[0]
+
+    unknown = sorted(set(mapping) - known_labels)
+    if unknown:
+        raise PreflightError(
+            "快照中不存在以下 root label：" + "、".join(unknown))
+    missing = [label for label in labels if label not in mapping]
+    if missing:
+        raise PreflightError(
+            "尚未指定以下当前根目录：" + "、".join(missing))
+
+    return {
+        label: os.path.abspath(
+            os.path.expandvars(
+                os.path.expanduser(path.strip().strip('"'))))
+        for label, path in mapping.items()
+    }
+
+
 def validate_root(path: str) -> None:
     """root 必须是存在的档案根文件夹；拒绝直接扫描盘根。"""
     p = os.path.abspath(path)

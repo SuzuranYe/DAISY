@@ -360,7 +360,7 @@ TASKS = (
         "env_check",
         "env-check",
         "10  环境检测",
-        "运行环境检查",
+        "环境检测",
         "检查 ExifTool、ffprobe、7-Zip 与 PowerShell 的发现、版本和只读"
         "冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能测试，也不"
         "保存全局设置。",
@@ -588,8 +588,8 @@ TASKS = (
     TaskSpec(
         "check_format",
         "check-format",
-        "21  格式校验",
-        "格式完整性校验",
+        "23  格式校验",
+        "格式校验",
         "依据封存快照定位当前文件，调用对应后端检查照片、视频、音频、文档和"
         "压缩包是否可读。",
         "档案只读 · 生成 CSV/Markdown 报告",
@@ -599,8 +599,10 @@ TASKS = (
                 required=True, filetypes=_SQLITE_TYPES, section="输入",
             ),
             FieldSpec(
-                "root_map", "当前根目录映射", "--root", "multimapdir",
-                help="可选；每行“label=当前路径”。留空时使用快照记录的路径。",
+                "root_map", "当前档案根目录", "--root", "multimapdir",
+                required=True,
+                help="必须指定。单根快照可直接添加当前文件夹；多根快照需逐项"
+                     "填写“label=当前路径”，label 必须与快照一致。",
                 section="当前档案位置",
             ),
             FieldSpec(
@@ -651,8 +653,8 @@ TASKS = (
     TaskSpec(
         "check_hash",
         "check-hash",
-        "22  哈希巡检",
-        "哈希巡检",
+        "22  哈希校验",
+        "哈希校验",
         "将封存快照与当前磁盘核对：先检查文件状态，再抽样或全量重新计算"
         " SHA-256。",
         "档案只读 · 生成 JSON 报告",
@@ -662,8 +664,10 @@ TASKS = (
                 required=True, filetypes=_SQLITE_TYPES, section="输入",
             ),
             FieldSpec(
-                "root_map", "当前根目录映射", "--root", "multimapdir",
-                help="可选；每行“label=当前路径”。留空时使用快照记录的路径。",
+                "root_map", "当前档案根目录", "--root", "multimapdir",
+                required=True,
+                help="必须指定。单根快照可直接添加当前文件夹；多根快照需逐项"
+                     "填写“label=当前路径”，label 必须与快照一致。",
                 section="当前档案位置",
             ),
             FieldSpec(
@@ -703,8 +707,8 @@ TASKS = (
     TaskSpec(
         "diff",
         "diff",
-        "31  快照对比",
-        "两份快照对比",
+        "21  快照对比",
+        "快照对比",
         "以旧快照为基准，与新快照进行 11 状态分类和证据等级判定，生成权威"
         " Diff 数据库。",
         "输入只读 · 生成 Diff 数据库",
@@ -738,8 +742,8 @@ TASKS = (
     TaskSpec(
         "export_report",
         "export-report",
-        "41  导出报告",
-        "导出人读报告",
+        "31  导出报告",
+        "导出报告",
         "从封存快照或 Diff 数据库生成 CSV 与 Markdown 报告。输入数据库保持"
         "只读，报告可随时删除并重新生成。",
         "输入只读 · 生成 CSV/Markdown",
@@ -767,6 +771,15 @@ TASKS = (
 )
 
 TASK_BY_KEY = {task.key: task for task in TASKS}
+_SIDEBAR_TASK_ORDER = (
+    "env_check",
+    "full_scan",
+    "quick_scan",
+    "diff",
+    "check_hash",
+    "check_format",
+    "export_report",
+)
 
 
 def _lines(value: object) -> list[str]:
@@ -863,7 +876,19 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
             text = str(value or "").strip()
             if text:
                 args += [spec.flag, _absolute(text)]
-        elif spec.kind in ("multidir", "multimapdir", "multiline"):
+        elif spec.kind == "multimapdir":
+            for item in _lines(value):
+                is_mapping = "=" in item and not os.path.isabs(
+                    item.strip().strip('"'))
+                label, separator, path = (
+                    item.partition("=") if is_mapping else ("", "", item))
+                current_path = _absolute(path if separator else item)
+                root_arg = (
+                    f"{label.strip()}={current_path}"
+                    if separator else current_path
+                )
+                args += [spec.flag, root_arg]
+        elif spec.kind in ("multidir", "multiline"):
             for item in _lines(value):
                 args += [spec.flag, item]
         else:
@@ -990,12 +1015,27 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
     for key in ("root_map",):
         if key not in active_keys:
             continue
-        for root_spec in _lines(values.get(key)):
-            label, sep, path = root_spec.partition("=")
-            if not sep or not label or not path:
+        root_specs = _lines(values.get(key))
+        direct_specs = [
+            spec for spec in root_specs
+            if "=" not in spec or os.path.isabs(spec.strip().strip('"'))
+        ]
+        if direct_specs and len(root_specs) != 1:
+            issues.append(
+                "不带 label 的当前根目录只适用于单根快照；"
+                "多根快照应逐项使用 label=当前路径。")
+        for root_spec in root_specs:
+            is_mapping = "=" in root_spec and not os.path.isabs(
+                root_spec.strip().strip('"'))
+            label, sep, path = (
+                root_spec.partition("=")
+                if is_mapping else ("", "", root_spec))
+            if sep and (not label.strip() or not path.strip()):
                 issues.append(f"根目录映射应为 label=路径：{root_spec}")
-            elif not os.path.isdir(_absolute(path)):
-                issues.append(f"映射后的根目录不存在：{path}")
+                continue
+            current_path = path if sep else root_spec
+            if not os.path.isdir(_absolute(current_path)):
+                issues.append(f"当前档案根目录不存在：{current_path}")
 
     for key in ("map_root",):
         if key not in active_keys:
@@ -1354,7 +1394,20 @@ class DaisyApp:
             background=_GREEN_DARK, troughcolor=_CONTROL,
             bordercolor=_BORDER, lightcolor=_GREEN_DARK,
             darkcolor=_GREEN_DARK, arrowcolor=_MUTED,
-            relief="flat", width=16, arrowsize=13,
+            relief="flat", width=16, arrowsize=13, gripcount=0,
+        )
+        style.layout(
+            "Daisy.Vertical.TScrollbar",
+            [(
+                "Vertical.Scrollbar.trough",
+                {
+                    "sticky": "ns",
+                    "children": [(
+                        "Vertical.Scrollbar.thumb",
+                        {"sticky": "nswe"},
+                    )],
+                },
+            )],
         )
         style.map(
             "Daisy.Vertical.TScrollbar",
@@ -1485,11 +1538,12 @@ class DaisyApp:
         groups = {
             "env_check": ("准备", _GREEN_DARK),
             "full_scan": ("运行", _GREEN_DARK),
-            "check_format": ("核验", _AMBER_DARK),
-            "diff": ("结果", _AMBER_DARK),
+            "diff": ("分析", _AMBER_DARK),
+            "check_hash": ("核验", _AMBER_DARK),
             "export_report": ("导出", _AMBER_DARK),
         }
-        for task in TASKS:
+        for task_key in _SIDEBAR_TASK_ORDER:
+            task = TASK_BY_KEY[task_key]
             if task.key in groups:
                 group_label, group_colour = groups[task.key]
                 tk.Label(
@@ -2084,8 +2138,6 @@ class DaisyApp:
         if not chosen:
             return
         value = os.path.normpath(chosen)
-        if spec.kind == "multimapdir":
-            value = os.path.basename(value.rstrip("\\/")) + "=" + value
         existing = widget.get("1.0", "end-1c")
         widget.insert("end", ("\n" if existing and not existing.endswith("\n")
                               else "") + value)

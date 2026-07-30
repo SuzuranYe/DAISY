@@ -1,10 +1,10 @@
-r"""Script_DAISY_Tool_22_Check_Hash：哈希巡检——既有快照 vs 当前磁盘的按需核对。
+r"""Script_DAISY_Tool_22_Check_Hash：哈希校验——既有快照 vs 当前磁盘的按需核对。
 
 ① 全量 stat 核对：快照全部条目的存在性与 size/mtime（枚举级，分钟级）；
 ② 哈希核对：stat 未变者中抽样（默认 1%，至少 100，按大小分层）或 --full 全量，
    用独立实现（PowerShell Get-FileHash）重算比对。
 只读快照与磁盘，产出 JSON 报告，不生成新快照。盘符可以变化：
-用 --root "label=当前路径" 指定本次挂载点，缺省用快照记录的 root_path。
+必须用 --root 指定当前根目录；单根可直接给路径，多根使用 label=当前路径。
 
 用法：
   python .\Script\Script_DAISY_MAIN.py check-hash --snapshot .\Output\Snapshots\Scan_x.sqlite ^
@@ -28,7 +28,8 @@ import Script_DAISY_Lib_03_Hash as dbh
 def patrol(snapshot_path: str, root_map: dict | None = None,
            sample_percent: float = 1.0, full: bool = False,
            powershell: str | None = None, force: bool = False,
-           on_progress=None) -> dict:
+           on_progress=None,
+           root_specs: list[str] | None = None) -> dict:
     """执行巡检并返回报告 dict。root_map={label: 当前路径}。"""
     snapshot_path = os.path.abspath(snapshot_path)
     if not os.path.isfile(snapshot_path):
@@ -48,17 +49,22 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
         if status != "complete":
             raise core.PreflightError(f"快照未封存（scan_status={status}）")
         roots = {}
-        labels = []
+        root_rows = list(con.execute(
+            "SELECT root_id, root_label, root_path FROM roots"))
+        labels = [label for _root_id, label, _rpath in root_rows]
+        specs = (
+            root_specs if root_specs is not None
+            else [f"{label}={path}" for label, path in (root_map or {}).items()]
+        )
+        current_roots = core.resolve_current_root_specs(labels, specs)
         label_by_rid = {}
-        for root_id, label, rpath in con.execute(
-                "SELECT root_id, root_label, root_path FROM roots"):
-            cur = (root_map or {}).get(label, rpath)
+        for root_id, label, _recorded_path in root_rows:
+            cur = current_roots[label]
             if not os.path.isdir(cur):
                 raise core.PreflightError(
                     f"root「{label}」当前路径不存在：{cur}"
                     f"（用 --root \"{label}=当前路径\" 指定）")
             roots[root_id] = cur
-            labels.append(label)
             label_by_rid[root_id] = label
 
         # ① 全量 stat 核对（存在性＋size/mtime）
@@ -147,10 +153,11 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="哈希巡检：快照 vs 当前磁盘（只读）")
+    ap = argparse.ArgumentParser(description="哈希校验：快照 vs 当前磁盘（只读）")
     ap.add_argument("--snapshot", required=True, help="封存快照 .sqlite 路径")
-    ap.add_argument("--root", action="append", default=[],
-                    help="label=当前路径，可重复；缺省用快照记录的 root_path")
+    ap.add_argument(
+        "--root", action="append", required=True,
+        help="当前根目录；单根可直接给路径，多根须逐项 label=当前路径")
     ap.add_argument("--sample-percent", type=float, default=1.0)
     ap.add_argument("--full", action="store_true", help="全量哈希核对")
     ap.add_argument("--powershell-path")
@@ -159,18 +166,12 @@ def main() -> int:
     ap.add_argument("--report", help="报告 JSON 输出路径（默认 Output/Reports）")
     args = ap.parse_args()
 
-    root_map = {}
-    for spec in args.root:
-        label, _, path = spec.partition("=")
-        if not _ or not label or not path:
-            print(f"--root 语法应为 label=路径：{spec}", file=sys.stderr)
-            return 2
-        root_map[label] = path
     try:
-        prog = core.Progress(1, 1, "哈希巡检")
-        rep = patrol(args.snapshot, root_map,
+        prog = core.Progress(1, 1, "哈希校验")
+        rep = patrol(args.snapshot,
                      sample_percent=args.sample_percent, full=args.full,
                      powershell=args.powershell_path, force=args.force,
+                     root_specs=args.root,
                      on_progress=lambda i, n: prog.update(i, total=n))
     except core.PreflightError as exc:
         print(f"巡检失败：{exc}", file=sys.stderr)
