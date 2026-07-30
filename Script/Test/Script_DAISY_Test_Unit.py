@@ -348,14 +348,20 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1180, 790))
+            gui.window_size_for_screen(1920, 1080), (1440, 920))
         self.assertEqual(
-            gui.window_size_for_screen(1366, 768), (1180, 658))
+            gui.window_size_for_screen(1366, 768), (1286, 708))
         self.assertEqual(
-            gui.window_size_for_screen(1024, 768), (944, 658))
+            gui.window_size_for_screen(1024, 768), (944, 708))
         small = gui.window_size_for_screen(800, 600)
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
+
+    def test_initial_log_sash_position_preserves_log_height(self):
+        self.assertEqual(
+            gui.initial_log_sash_position(442, 230, 180), 207)
+        self.assertEqual(
+            gui.initial_log_sash_position(250, 150, 150), 150)
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")

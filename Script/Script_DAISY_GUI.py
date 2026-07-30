@@ -1181,11 +1181,20 @@ def project_self_test_preview() -> str:
 def window_size_for_screen(screen_width: int,
                            screen_height: int) -> tuple[int, int]:
     """按当前屏幕留出边缘和任务栏空间，返回 Tk 窗口客户区尺寸。"""
-    width = min(1180, max(760, screen_width - 80))
-    height = min(790, max(560, screen_height - 110))
+    width = min(1440, max(820, screen_width - 80))
+    height = min(920, max(640, screen_height - 60))
     width = min(width, max(640, screen_width - 20))
     height = min(height, max(480, screen_height - 50))
     return width, height
+
+
+def initial_log_sash_position(total_height: int,
+                              desired_log_height: int,
+                              form_min_height: int,
+                              sash_width: int = 5) -> int:
+    """返回垂直分栏初始分隔线位置，优先保证日志区的可读高度。"""
+    usable_height = max(0, total_height - sash_width)
+    return max(form_min_height, usable_height - desired_log_height)
 
 
 def _version() -> str:
@@ -1237,7 +1246,7 @@ class DaisyApp:
         y = max(0, (screen_height - height) // 2)
         self.compact_layout = width < 1080 or height < 700
         self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.root.minsize(min(900, width), min(600, height))
+        self.root.minsize(min(1040, width), min(680, height))
         self.root.configure(bg=_BG)
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
 
@@ -1303,8 +1312,9 @@ class DaisyApp:
         )
         style.configure(
             "Primary.TButton", background=_ACCENT, foreground="white",
-            padding=(18, 9), font=("Microsoft YaHei UI", 10, "bold"),
-            borderwidth=0,
+            padding=(18, 8), font=("Microsoft YaHei UI", 10, "bold"),
+            borderwidth=1, bordercolor=_ACCENT_DARK,
+            lightcolor=_ACCENT, darkcolor=_ACCENT,
         )
         style.map(
             "Primary.TButton",
@@ -1313,20 +1323,33 @@ class DaisyApp:
         )
         style.configure(
             "Stop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
-            padding=(15, 9), font=("Microsoft YaHei UI", 10, "bold"),
-            bordercolor=_DANGER_BORDER,
+            padding=(15, 8), font=("Microsoft YaHei UI", 10, "bold"),
+            borderwidth=1, bordercolor=_DANGER_BORDER,
+            lightcolor=_DANGER_BORDER, darkcolor=_DANGER_BORDER,
         )
         style.map(
             "Stop.TButton", background=[("active", _DANGER_HOVER)])
         style.configure(
             "Secondary.TButton", background=_CONTROL, foreground=_TEXT,
-            padding=(12, 8), bordercolor=_BORDER,
+            padding=(12, 8), font=("Microsoft YaHei UI", 10),
+            borderwidth=1, bordercolor=_BORDER,
+            lightcolor=_BORDER, darkcolor=_BORDER,
         )
         style.map(
             "Secondary.TButton", background=[("active", _CONTROL_HOVER)])
         style.configure(
-            "Vertical.TScrollbar", background=_BORDER,
-            troughcolor=_SURFACE, bordercolor=_SURFACE,
+            "Daisy.Vertical.TScrollbar",
+            background=_GREEN_DARK, troughcolor=_CONTROL,
+            bordercolor=_BORDER, lightcolor=_GREEN_DARK,
+            darkcolor=_GREEN_DARK, arrowcolor=_MUTED,
+            relief="flat", width=16, arrowsize=13,
+        )
+        style.map(
+            "Daisy.Vertical.TScrollbar",
+            background=[
+                ("pressed", _GREEN_DEEP),
+                ("active", _GREEN),
+            ],
         )
         for name, colour in (
                 ("Stage", _AMBER),
@@ -1492,16 +1515,19 @@ class DaisyApp:
         separator = tk.Frame(self.task_card, bg=_BORDER, height=1)
         separator.pack(fill="x")
 
-        middle = tk.PanedWindow(
+        self.main_pane = tk.PanedWindow(
             self.task_card, orient="vertical", bg=_BORDER, sashwidth=5,
             bd=0, relief="flat", showhandle=False,
         )
-        middle.pack(fill="both", expand=True)
+        self.main_pane.pack(fill="both", expand=True)
+        self.form_pane_min_height = 150 if self.compact_layout else 180
+        self.log_pane_min_height = 105 if self.compact_layout else 160
+        self.log_pane_initial_height = 150 if self.compact_layout else 230
 
-        form_host = tk.Frame(middle, bg=_SURFACE)
-        middle.add(
+        form_host = tk.Frame(self.main_pane, bg=_SURFACE)
+        self.main_pane.add(
             form_host,
-            minsize=150 if self.compact_layout else 180,
+            minsize=self.form_pane_min_height,
             stretch="always",
         )
         self.form_canvas = tk.Canvas(
@@ -1509,6 +1535,7 @@ class DaisyApp:
         )
         form_scroll = ttk.Scrollbar(
             form_host, orient="vertical", command=self.form_canvas.yview,
+            style="Daisy.Vertical.TScrollbar",
         )
         self.form_canvas.configure(yscrollcommand=form_scroll.set)
         form_scroll.pack(side="right", fill="y")
@@ -1535,10 +1562,10 @@ class DaisyApp:
             "<Leave>", lambda _e: self.form_canvas.unbind_all("<MouseWheel>"),
         )
 
-        log_frame = tk.Frame(middle, bg=_LOG_BG)
-        middle.add(
-            log_frame, minsize=90 if self.compact_layout else 110,
-            height=125 if self.compact_layout else 150,
+        log_frame = tk.Frame(self.main_pane, bg=_LOG_BG)
+        self.main_pane.add(
+            log_frame, minsize=self.log_pane_min_height,
+            height=self.log_pane_initial_height, stretch="never",
         )
         log_header = tk.Frame(log_frame, bg=_LOG_HEADER, height=38)
         log_header.pack(fill="x")
@@ -1554,6 +1581,7 @@ class DaisyApp:
         )
         log_scroll = ttk.Scrollbar(
             log_frame, orient="vertical", command=self.log.yview,
+            style="Daisy.Vertical.TScrollbar",
         )
         self.log.configure(yscrollcommand=log_scroll.set)
         log_scroll.pack(side="right", fill="y")
@@ -1672,6 +1700,20 @@ class DaisyApp:
             actions, text="运行项目自检", style="Secondary.TButton",
             command=self._run_self_test,
         )
+        self.root.after_idle(self._position_initial_log_sash)
+
+    def _position_initial_log_sash(self) -> None:
+        total_height = self.main_pane.winfo_height()
+        if total_height <= 1:
+            return
+        sash_width = int(self.main_pane.cget("sashwidth"))
+        sash_y = initial_log_sash_position(
+            total_height,
+            self.log_pane_initial_height,
+            self.form_pane_min_height,
+            sash_width,
+        )
+        self.main_pane.sash_place(0, 0, sash_y)
 
     def _scroll_form(self, event: tk.Event) -> None:
         self.form_canvas.yview_scroll(int(-event.delta / 120), "units")
