@@ -348,9 +348,11 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1280, 900))
+            gui.window_size_for_screen(2048, 1280), (1920, 1080))
         self.assertEqual(
-            gui.window_size_for_screen(1366, 768), (1280, 708))
+            gui.window_size_for_screen(1920, 1080), (1840, 1020))
+        self.assertEqual(
+            gui.window_size_for_screen(1366, 768), (1286, 708))
         self.assertEqual(
             gui.window_size_for_screen(1024, 768), (944, 708))
         small = gui.window_size_for_screen(800, 600)
@@ -359,9 +361,17 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_initial_log_sash_position_preserves_log_height(self):
         self.assertEqual(
-            gui.initial_log_sash_position(424, 190, 180), 229)
+            gui.initial_log_sash_position(604, 230, 180), 369)
         self.assertEqual(
             gui.initial_log_sash_position(250, 150, 150), 150)
+
+    def test_technical_spec_declares_powershell_compatibility(self):
+        spec_path = os.path.join(
+            gui._BASE, "Spec", "Spec_DAISY_Technical.md")
+        with open(spec_path, "r", encoding="utf-8") as f:
+            spec = f.read()
+        self.assertIn("Windows PowerShell 5.1", spec)
+        self.assertIn("PowerShell 7.x", spec)
 
     def test_task_accent_colours_follow_workflow_group(self):
         green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)

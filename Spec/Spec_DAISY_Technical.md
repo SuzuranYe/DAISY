@@ -221,6 +221,10 @@ Full 运行态包含：
 
 Full 的独立抽验和 `check-hash` 使用 PowerShell `Get-FileHash`，与主哈希实现分离。抽验不一致时双方重算；仍不一致则标记异常并留证。
 
+正式兼容范围包括 Windows PowerShell 5.1（`powershell.exe`）和
+PowerShell 7.x（`pwsh.exe`）。两个系列使用相同的 `Get-FileHash` 调用路径，
+均须通过启动、版本读取和命令可用性验证后才会被采用。
+
 PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现。自动发现会
 逐个验证候选是否可启动、能否报告版本以及是否提供 `Get-FileHash`；单个坏候选
 不会阻断后续候选。便携版或自定义安装位置通过 `--powershell-path` 指定。

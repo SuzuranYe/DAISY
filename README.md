@@ -34,9 +34,10 @@ Quick 快速清点除 Python 外不依赖 ExifTool、ffprobe、7-Zip 或 PowerSh
 ExifTool、FFmpeg 和 7-Zip 由用户通过 WinGet 独立安装，DAISY 不捆绑或
 再分发这些程序；它们分别遵循各自的许可证。
 
-PowerShell 自动发现顺序为：手动路径、当前进程的 `PATH`、Windows PowerShell
-5.1 与 PowerShell 7 的常规安装位置。便携版或自定义目录仍可在 GUI 高级选项
-中选择，也可通过 CLI 的 `--powershell-path` 指定。
+DAISY 兼容 Windows PowerShell 5.1 与 PowerShell 7.x。自动发现顺序为：
+手动路径、当前进程的 `PATH`、两个系列的 Windows 常规安装位置。便携版或
+自定义目录仍可在 GUI 高级选项中选择，也可通过 CLI 的
+`--powershell-path` 指定。
 
 ### 自动安装依赖
 

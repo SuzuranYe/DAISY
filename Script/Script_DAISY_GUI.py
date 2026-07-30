@@ -1192,8 +1192,8 @@ def project_self_test_preview() -> str:
 def window_size_for_screen(screen_width: int,
                            screen_height: int) -> tuple[int, int]:
     """按当前屏幕留出边缘和任务栏空间，返回 Tk 窗口客户区尺寸。"""
-    width = min(1280, max(820, screen_width - 80))
-    height = min(900, max(640, screen_height - 60))
+    width = min(1920, max(820, screen_width - 80))
+    height = min(1080, max(640, screen_height - 60))
     width = min(width, max(640, screen_width - 20))
     height = min(height, max(480, screen_height - 50))
     return width, height
@@ -1487,6 +1487,7 @@ class DaisyApp:
             "full_scan": ("运行", _GREEN_DARK),
             "check_format": ("核验", _AMBER_DARK),
             "diff": ("结果", _AMBER_DARK),
+            "export_report": ("导出", _AMBER_DARK),
         }
         for task in TASKS:
             if task.key in groups:
@@ -1511,11 +1512,23 @@ class DaisyApp:
             button.pack(fill="x")
             self.nav_buttons[task.key] = button
 
-        tk.Label(
-            sidebar, text="Ctrl+Enter  开始\nCtrl+L        清空日志",
-            bg=_SIDEBAR, fg=_SIDEBAR_MUTED, justify="left",
-            font=("Consolas", 8),
-        ).pack(side="bottom", anchor="w", padx=20, pady=(6, 10))
+        shortcut_panel = tk.Frame(sidebar, bg=_SIDEBAR)
+        shortcut_panel.pack(
+            side="bottom", anchor="w", padx=20, pady=(6, 10))
+        for row, (shortcut, action) in enumerate((
+                ("Ctrl+Enter", "开始"),
+                ("Ctrl+L", "清空日志"),
+        )):
+            tk.Label(
+                shortcut_panel, text=shortcut,
+                bg=_SIDEBAR, fg=_SIDEBAR_MUTED,
+                font=("Consolas", 8), anchor="w",
+            ).grid(row=row, column=0, sticky="w")
+            tk.Label(
+                shortcut_panel, text=action,
+                bg=_SIDEBAR, fg=_SIDEBAR_MUTED,
+                font=("Microsoft YaHei UI", 8), anchor="w",
+            ).grid(row=row, column=1, sticky="w", padx=(8, 0))
 
         content = tk.Frame(body, bg=_BG)
         content.pack(
@@ -1566,7 +1579,7 @@ class DaisyApp:
         self.main_pane.pack(fill="both", expand=True)
         self.form_pane_min_height = 150 if self.compact_layout else 180
         self.log_pane_min_height = 105 if self.compact_layout else 160
-        self.log_pane_initial_height = 150 if self.compact_layout else 190
+        self.log_pane_initial_height = 150 if self.compact_layout else 230
 
         form_host = tk.Frame(self.main_pane, bg=_SURFACE)
         self.main_pane.add(
