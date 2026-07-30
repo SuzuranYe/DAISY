@@ -59,8 +59,8 @@ _TOOL_DISPLAY_NAMES = {
     "powershell": "PowerShell",
 }
 _TASK_TOOL_NAMES = {
-    "env_check": ("exiftool", "ffprobe", "sevenzip"),
-    "full_scan": ("exiftool", "ffprobe", "sevenzip"),
+    "env_check": ("exiftool", "ffprobe", "sevenzip", "powershell"),
+    "full_scan": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "check_format": ("exiftool", "ffprobe", "sevenzip"),
     "check_hash": ("powershell",),
 }
@@ -339,6 +339,7 @@ _FULL_HASHED = (
     ("start_mode", ("new",)),
     ("hash_mode", ("incremental", "full")),
 )
+_FULL_POWERSHELL = (("hash_mode", ("incremental", "full")),)
 _FORMAT_SAMPLE = (("check_scope", ("sample",)),)
 _HASH_SAMPLE = (("check_scope", ("sample",)),)
 
@@ -349,8 +350,9 @@ TASKS = (
         "env-check",
         "10  环境检测",
         "运行环境检查",
-        "检查 ExifTool、ffprobe 与 7-Zip 的发现、版本和只读冒烟结果，并执行"
-        " SHA-256 自检。本页不读取档案进行性能测试，也不保存全局设置。",
+        "检查 ExifTool、ffprobe、7-Zip 与 PowerShell 的发现、版本和只读"
+        "冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能测试，也不"
+        "保存全局设置。",
         "只读检查 · 不读取档案 · 不保存设置",
         (
             FieldSpec(
@@ -372,6 +374,12 @@ TASKS = (
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径覆盖", "--sevenzip-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
+                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+            ),
+            FieldSpec(
+                "powershell_path", "PowerShell 路径覆盖",
+                "--powershell-path", "file",
+                help="通常留空；会依次检查 PATH 与 Windows 常规安装位置。",
                 filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
             ),
         ),
@@ -509,6 +517,13 @@ TASKS = (
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径覆盖", advanced=True,
+            ),
+            FieldSpec(
+                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "file",
+                help="独立哈希抽验使用；留空时优先继承已验证路径，其次自动发现。",
+                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                active_when=_FULL_POWERSHELL,
             ),
         ),
     ),

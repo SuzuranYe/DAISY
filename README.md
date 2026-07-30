@@ -2,7 +2,7 @@
 
 **Database for Archive Integrity by Suzuran Ye**
 
-版本：**v1.3.2**
+版本：**v1.3.3**
 
 许可证：**MIT**
 
@@ -28,11 +28,15 @@ DAISY 仅支持 Windows，当前版本在 Python 3.14 上完成验证。
 | ExifTool | 13 | 环境检测、完整登记、格式校验 |
 | ffprobe（随 FFmpeg 安装） | 8 | 环境检测、完整登记、格式校验 |
 | 7-Zip | 24 | 环境检测、完整登记、格式校验 |
-| PowerShell `Get-FileHash` | Windows 内置 | SHA-256 独立复算 |
+| PowerShell `Get-FileHash` | Windows 内置 | 环境检测、完整登记、SHA-256 独立复算 |
 
-Quick 快速清点除 Python 外不依赖 ExifTool、ffprobe 或 7-Zip。
+Quick 快速清点除 Python 外不依赖 ExifTool、ffprobe、7-Zip 或 PowerShell。
 ExifTool、FFmpeg 和 7-Zip 由用户通过 WinGet 独立安装，DAISY 不捆绑或
 再分发这些程序；它们分别遵循各自的许可证。
+
+PowerShell 自动发现顺序为：手动路径、当前进程的 `PATH`、Windows PowerShell
+5.1 与 PowerShell 7 的常规安装位置。便携版或自定义目录仍可在 GUI 高级选项
+中选择，也可通过 CLI 的 `--powershell-path` 指定。
 
 ### 自动安装依赖
 
@@ -70,6 +74,17 @@ winget install --exact --id 7zip.7zip --source winget
 python .\Script\Script_DAISY_MAIN.py env-check
 ```
 
+如果系统可以打开 PowerShell，但 DAISY 仍无法发现它，可先查询实际路径：
+
+```powershell
+Get-Command powershell.exe,pwsh.exe -ErrorAction SilentlyContinue |
+    Select-Object Name,Source
+```
+
+随后在「10 环境检测」或「11 完整登记」的高级选项中选择对应的 `.exe`。CLI
+也可以运行 `env-check --powershell-path "完整路径"`；验证成功后，GUI 会在
+当前窗口中缓存该路径。
+
 ## 快速开始
 
 普通用户直接双击根目录的 `Start_DAISY_GUI.pyw`。
@@ -95,7 +110,7 @@ python .\Script\Script_DAISY_MAIN.py <子命令> --help
 
 | 编号 | GUI／CLI | 用途 |
 |---|---|---|
-| 10 | 环境检测／`env-check` | 检查外部工具、版本、只读冒烟和 SHA-256 |
+| 10 | 环境检测／`env-check` | 检查四项外部工具、版本、只读冒烟和 SHA-256 |
 | 11 | 完整登记／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
 | 12 | 快速清点／`quick-scan` | 只登记树、大小、时间和可选 File ID |
 | 21 | 格式校验／`check-format` | 检查当前文件结构和可解析性 |

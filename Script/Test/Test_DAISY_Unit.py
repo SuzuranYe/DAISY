@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -51,6 +52,7 @@ class TestGuiArguments(unittest.TestCase):
             fields,
             [
                 "output_dir", "exiftool_path", "ffprobe_path", "sevenzip_path",
+                "powershell_path",
             ],
         )
         args = gui.build_tool_args("env_check", {})
@@ -107,6 +109,21 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             defaults[defaults.index("--hash") + 1], "full",
             "Full 的 GUI 默认值必须登记完整 SHA-256")
+        powershell = r"C:\Tools\pwsh.exe"
+        hashed = gui.build_tool_args(
+            "full_scan",
+            {"roots": r"E:\Archive", "powershell_path": powershell},
+        )
+        self.assertEqual(
+            hashed[hashed.index("--powershell-path") + 1], powershell)
+        no_hash = gui.build_tool_args(
+            "full_scan",
+            {
+                "roots": r"E:\Archive", "hash_mode": "none",
+                "powershell_path": powershell,
+            },
+        )
+        self.assertNotIn("--powershell-path", no_hash)
 
         reduced = gui.build_tool_args(
             "full_scan",
@@ -134,9 +151,11 @@ class TestGuiArguments(unittest.TestCase):
                 "roots": r"E:\Archive",
                 "hash_mode": "full",
                 "keep_raw_payload": False,
+                "powershell_path": r"C:\Tools\pwsh.exe",
             },
         )
         self.assertIn("--resume", resumed)
+        self.assertIn("--powershell-path", resumed)
         for inactive in (
                 "--root", "--output-dir", "--hash",
                 "--no-raw-payload", "--verify-sample-percent"):
@@ -168,14 +187,14 @@ class TestGuiArguments(unittest.TestCase):
         expected = {
             "env_check": {
                 "--output-dir", "--exiftool-path", "--ffprobe-path",
-                "--sevenzip-path",
+                "--sevenzip-path", "--powershell-path",
             },
             "full_scan": {
                 "--root", "--output-dir", "--hash", "--previous-snapshot",
                 "--map-root", "--verify-sample-percent", "--no-raw-payload",
                 "--no-file-id", "--settle-seconds",
                 "--allow-abnormal-source", "--resume", "--exiftool-path",
-                "--ffprobe-path", "--sevenzip-path",
+                "--ffprobe-path", "--sevenzip-path", "--powershell-path",
             },
             "quick_scan": {"--root", "--output-dir", "--no-file-id"},
             "check_format": {
@@ -340,7 +359,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.3.2")
+        self.assertEqual(core.SCANNER_VERSION, "1.3.3")
         self.assertEqual(
             core.PROJECT_FULL_NAME,
             "Database for Archive Integrity by Suzuran Ye",
@@ -409,6 +428,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(sources["exiftool"], "session_cache")
         self.assertEqual(sources["ffprobe"], "manual")
         self.assertEqual(sources["sevenzip"], "auto_discovery")
+        self.assertEqual(effective["powershell_path"],
+                         r"C:\Windows\pwsh.exe")
+        self.assertEqual(sources["powershell"], "session_cache")
         quick, quick_sources = gui.merge_session_tool_paths(
             "quick_scan", {"roots": "X"}, cache,
             path_exists=lambda _path: True)
@@ -423,7 +445,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             gui.session_tool_cache_summary(
                 "full_scan", cache, path_exists=lambda _path: True),
-            "已缓存：ExifTool、ffprobe",
+            "已缓存：ExifTool、ffprobe、PowerShell",
         )
         self.assertEqual(
             gui.session_tool_cache_summary(
@@ -1039,6 +1061,7 @@ import importlib                                               # noqa: E402
 import time                                                    # noqa: E402
 
 import Script_DAISY_Lib_03_Hash as dbh                                   # noqa: E402
+import Script_DAISY_Tool_10_Env_Check as envcheck                         # noqa: E402
 
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
@@ -1310,6 +1333,111 @@ class TestPowershellDiscovery(unittest.TestCase):
         path, version = dbh.discover_powershell()
         self.assertTrue(os.path.isfile(path))
         self.assertTrue(version)
+
+    def test_candidates_include_standard_windows_location_without_path(self):
+        environment = {
+            "SystemRoot": r"D:\Windows",
+            "ProgramW6432": r"D:\Program Files",
+            "ProgramFiles": r"D:\Program Files",
+            "ProgramFiles(x86)": r"D:\Program Files (x86)",
+            "LOCALAPPDATA": r"D:\Users\Test\AppData\Local",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch.object(dbh.shutil, "which", return_value=None):
+                candidates = dbh._powershell_candidates()
+        self.assertIn(
+            r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            candidates,
+        )
+        self.assertIn(
+            r"D:\Program Files\PowerShell\7\pwsh.exe", candidates)
+        self.assertEqual(
+            candidates.count(r"D:\Program Files\PowerShell\7\pwsh.exe"), 1)
+
+    def test_auto_discovery_skips_broken_candidate(self):
+        bad = r"C:\Broken\powershell.exe"
+        good = r"C:\PowerShell\7\pwsh.exe"
+        success = subprocess.CompletedProcess(
+            [], 0, stdout="7.5.2\n", stderr="")
+        with patch.object(
+                dbh, "_powershell_candidates", return_value=[bad, good]):
+            with patch.object(dbh.os.path, "isfile", return_value=True):
+                with patch.object(
+                        dbh.subprocess, "run",
+                        side_effect=[OSError("blocked"), success]):
+                    path, version = dbh.discover_powershell()
+        self.assertEqual(path, good)
+        self.assertEqual(version, "7.5.2")
+
+    def test_explicit_path_is_authoritative(self):
+        explicit = r"D:\Portable\pwsh.exe"
+        success = subprocess.CompletedProcess(
+            [], 0, stdout="7.4.7\n", stderr="")
+        with patch.object(dbh.os.path, "isfile", return_value=True):
+            with patch.object(dbh.subprocess, "run", return_value=success):
+                with patch.object(dbh, "_powershell_candidates") as automatic:
+                    path, version = dbh.discover_powershell(explicit)
+        automatic.assert_not_called()
+        self.assertEqual(path, explicit)
+        self.assertEqual(version, "7.4.7")
+
+    def test_unusable_candidates_have_distinct_error(self):
+        candidate = r"C:\Broken\powershell.exe"
+        failed = subprocess.CompletedProcess(
+            [], 3, stdout="", stderr="Get-FileHash unavailable")
+        with patch.object(
+                dbh, "_powershell_candidates", return_value=[candidate]):
+            with patch.object(dbh.os.path, "isfile", return_value=True):
+                with patch.object(dbh.subprocess, "run", return_value=failed):
+                    with self.assertRaisesRegex(
+                            core.PreflightError, "候选.*均无法"):
+                        dbh.discover_powershell()
+
+    def test_missing_error_mentions_manual_override(self):
+        with patch.object(dbh, "_powershell_candidates", return_value=[]):
+            with self.assertRaisesRegex(
+                    core.PreflightError, "--powershell-path"):
+                dbh.discover_powershell()
+
+
+class TestEnvironmentCheckPowershell(unittest.TestCase):
+    def test_report_contains_verified_powershell_smoke(self):
+        tools = {
+            name: {
+                "path": rf"C:\Tools\{name}.exe",
+                "version": "99",
+                "resolution": "auto_discovery",
+                "verified": True,
+            }
+            for name in ("exiftool", "ffprobe", "sevenzip")
+        }
+        with tempfile.TemporaryDirectory() as td:
+            argv = ["env-check", "--output-dir", td]
+            with patch.object(sys, "argv", argv):
+                with patch.object(
+                        envcheck.core, "run_preflight",
+                        return_value=tools):
+                    with patch.object(
+                            envcheck.dbh, "discover_powershell",
+                            return_value=(r"C:\Windows\powershell.exe",
+                                          "5.1.0")):
+                        with patch.object(
+                                envcheck.dbh, "get_filehash_batch",
+                                return_value=[SHA_ABC]):
+                            with patch.object(sys, "stdout", io.StringIO()):
+                                with patch.object(
+                                        sys, "stderr", io.StringIO()):
+                                    self.assertEqual(envcheck.main(), 0)
+            reports = [
+                os.path.join(td, name) for name in os.listdir(td)
+                if name.startswith("Env_Check_") and name.endswith(".json")
+            ]
+            self.assertEqual(len(reports), 1)
+            with open(reports[0], encoding="utf-8") as f:
+                report = json.load(f)
+        self.assertEqual(report["tools"]["powershell"]["version"], "5.1.0")
+        self.assertEqual(
+            report["checks"]["powershell_get_filehash"], "passed")
 
 
 class TestIndependentVerify(_SnapshotFixture):

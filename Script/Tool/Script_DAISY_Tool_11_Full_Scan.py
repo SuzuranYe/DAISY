@@ -69,6 +69,7 @@ def main() -> int:
     ap.add_argument("--exiftool-path")
     ap.add_argument("--ffprobe-path")
     ap.add_argument("--sevenzip-path")
+    ap.add_argument("--powershell-path")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -125,9 +126,10 @@ def main() -> int:
             output_dir=args.output_dir)
         if args.hash != "none":
             # 独立抽验依赖 Get-FileHash，因此在预检阶段提前失败
-            ps_path, ps_ver = dbh.discover_powershell()
+            ps_path, ps_ver = dbh.discover_powershell(args.powershell_path)
             tools["powershell"] = core.resolved_tool_info(
-                "powershell", ps_path, explicit=False, version=ps_ver)
+                "powershell", ps_path, explicit=bool(args.powershell_path),
+                version=ps_ver)
             core.emit_gui_event(
                 "tools_detected", tools={"powershell": tools["powershell"]})
     except core.PreflightError as exc:

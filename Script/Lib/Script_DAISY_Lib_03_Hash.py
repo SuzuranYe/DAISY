@@ -381,25 +381,100 @@ def process_hash_stage(con: sqlite3.Connection, mode: str,
 
 
 # === 独立实现抽验（PowerShell Get-FileHash） ===
+_PS_PROBE = (
+    "if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {"
+    " [Console]::Error.Write('Get-FileHash unavailable'); exit 3 };"
+    "$PSVersionTable.PSVersion.ToString()"
+)
+
+
+def _powershell_candidates() -> list[str]:
+    """按 PATH → Windows 常规位置返回去重后的 PowerShell 候选。"""
+    candidates = []
+    for command in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        found = shutil.which(command)
+        if found:
+            candidates.append(found)
+
+    if os.name == "nt":
+        windows_root = (os.environ.get("SystemRoot")
+                        or os.environ.get("WINDIR"))
+        if windows_root:
+            candidates.append(os.path.join(
+                windows_root, "System32", "WindowsPowerShell", "v1.0",
+                "powershell.exe"))
+
+        program_roots = [
+            os.environ.get("ProgramW6432"),
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        ]
+        for root in program_roots:
+            if root:
+                candidates.append(
+                    os.path.join(root, "PowerShell", "7", "pwsh.exe"))
+
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(os.path.join(
+                local_app_data, "Microsoft", "WindowsApps", "pwsh.exe"))
+
+    unique = []
+    seen = set()
+    for path in candidates:
+        absolute = os.path.abspath(path)
+        key = os.path.normcase(absolute)
+        if key not in seen:
+            seen.add(key)
+            unique.append(absolute)
+    return unique
+
+
+def _probe_powershell(path: str) -> tuple[str, str]:
+    """验证 PowerShell 可启动、可报告版本并提供 Get-FileHash。"""
+    try:
+        proc = subprocess.run(
+            [path, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+             _PS_PROBE],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise core.PreflightError(
+            f"PowerShell 无法启动：{path}（{exc}）") from exc
+    version = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        reason = (proc.stderr or "").strip()
+        suffix = f"（{reason}）" if reason else ""
+        raise core.PreflightError(
+            f"PowerShell 缺少 Get-FileHash 或探测失败：{path}{suffix}")
+    if not version:
+        raise core.PreflightError(f"无法取得 PowerShell 版本：{path}")
+    return os.path.abspath(path), version
+
+
 def discover_powershell(explicit: str | None = None) -> tuple[str, str]:
     if explicit:
         if not os.path.isfile(explicit):
             raise core.PreflightError(
                 f"PowerShell 显式路径不存在：{explicit}")
-        path = os.path.abspath(explicit)
-    else:
-        path = shutil.which("powershell") or shutil.which("pwsh")
-    if not path:
+        return _probe_powershell(os.path.abspath(explicit))
+
+    failures = []
+    for path in _powershell_candidates():
+        if not os.path.isfile(path):
+            continue
+        try:
+            return _probe_powershell(path)
+        except core.PreflightError as exc:
+            failures.append(str(exc))
+
+    if failures:
         raise core.PreflightError(
-            "未找到 PowerShell（独立哈希抽验需要 Get-FileHash）")
-    p = subprocess.run([path, "-NoProfile", "-Command",
-                        "$PSVersionTable.PSVersion.ToString()"],
-                       capture_output=True, text=True, timeout=60)
-    version = (p.stdout or "").strip()
-    if p.returncode != 0 or not version:
-        raise core.PreflightError(
-            f"无法取得 PowerShell 版本：{path}")
-    return os.path.abspath(path), version
+            "找到了 PowerShell 候选，但均无法用于独立哈希抽验：\n  "
+            + "\n  ".join(failures))
+    raise core.PreflightError(
+        "未找到 PowerShell（已检查 PATH 与 Windows 常规安装位置；"
+        "可用 --powershell-path 手动指定）")
 
 
 _PS_BATCH = (

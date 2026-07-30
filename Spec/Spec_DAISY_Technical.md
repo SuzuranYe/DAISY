@@ -1,7 +1,7 @@
-# DAISY v1.3.2 技术规格
+# DAISY v1.3.3 技术规格
 
 - 状态：**现行规范**。
-- 对应版本：**v1.3.2**。
+- 对应版本：**v1.3.3**。
 - 本文定义快照、哈希、元数据、格式校验和 Diff 的现行语义。
 - 安装、启动与常用工作流见项目根目录的 [README](../README.md)。
 
@@ -214,6 +214,12 @@ Full 运行态包含：
 
 Full 的独立抽验和 `check-hash` 使用 PowerShell `Get-FileHash`，与主哈希实现分离。抽验不一致时双方重算；仍不一致则标记异常并留证。
 
+PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现。自动发现会
+逐个验证候选是否可启动、能否报告版本以及是否提供 `Get-FileHash`；单个坏候选
+不会阻断后续候选。便携版或自定义安装位置通过 `--powershell-path` 指定。
+`env-check` 还会在系统临时目录对固定样本实际执行一次 `Get-FileHash`，不读取
+档案内容。
+
 已知边界：攻击者可以刻意保持 size／mtime；因此增量快照不能永久替代定期 full hash。
 
 ## 九、快照准入与核验
@@ -282,11 +288,12 @@ Full 的独立抽验和 `check-hash` 使用 PowerShell `Get-FileHash`，与主�
 
 ## 十一、版本、性能与已知限制
 
-- `SCANNER_VERSION=1.3.2`；`schema_version=1`。
+- `SCANNER_VERSION=1.3.3`；`schema_version=1`。
 - v1.3.0 新增 `snapshot_manifest` 和 `run_events`，属于 additive DDL 扩展，因此 schema 版本仍为 1。
 - v1.3.0 对旧封装不兼容，是已明确记录的版本号例外，不能由次版本号推断兼容。
 - v1.3.1 整理 GitHub 发布结构、依赖安装说明和代码内历史命名，并加入 GUI 项目自检入口；不改变数据库 schema 或七项业务任务的运行语义。
 - v1.3.2 排除 `FileAccessDate` 对 Diff 元数据判断的干扰，加入运行时生成的截断媒体回归，移除未接入正式路径的 `block_hashes` 表和 `hash_coverage=partial` 值，并把依赖安装改为逐项说明、逐项确认；正式读写语义不变，`schema_version` 仍为 1。
+- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；数据库 schema 和档案只读语义不变。
 - Diff 当前把两侧条目载入内存，内存占用随条目数增长。
 - Full 哈希针对机械盘采用顺序读取，不在同一介质并行争抢。
 - 正式环境检测和 GUI 不执行介质性能跑分。
