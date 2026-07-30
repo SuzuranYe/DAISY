@@ -126,6 +126,16 @@ def task_accent_colours(task_key: str) -> tuple[str, str, str]:
         task_key, (_ACCENT, _ACCENT_DARK, _GREEN))
 
 
+def status_badge_background(
+    task_key: str, semantic_colour: str | None = None,
+) -> str:
+    """返回状态徽标底色；常态随任务，结果态使用语义色。"""
+    return (
+        task_accent_colours(task_key)[0]
+        if semantic_colour is None else semantic_colour
+    )
+
+
 _BRAND_NAME_SEGMENTS = (
     ("D", True),
     ("atabase for ", False),
@@ -780,6 +790,12 @@ _SIDEBAR_TASK_ORDER = (
     "check_format",
     "export_report",
 )
+_SIDEBAR_GROUPS = {
+    "env_check": ("准备", _GREEN_DARK),
+    "full_scan": ("运行", _GREEN_DARK),
+    "diff": ("分析", _AMBER_DARK),
+    "export_report": ("导出", _AMBER_DARK),
+}
 
 
 def _lines(value: object) -> list[str]:
@@ -1535,17 +1551,10 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         ).pack(fill="x", padx=20, pady=(22, 8))
 
-        groups = {
-            "env_check": ("准备", _GREEN_DARK),
-            "full_scan": ("运行", _GREEN_DARK),
-            "diff": ("分析", _AMBER_DARK),
-            "check_hash": ("核验", _AMBER_DARK),
-            "export_report": ("导出", _AMBER_DARK),
-        }
         for task_key in _SIDEBAR_TASK_ORDER:
             task = TASK_BY_KEY[task_key]
-            if task.key in groups:
-                group_label, group_colour = groups[task.key]
+            if task.key in _SIDEBAR_GROUPS:
+                group_label, group_colour = _SIDEBAR_GROUPS[task.key]
                 tk.Label(
                     sidebar, text=group_label, bg=_SIDEBAR,
                     fg=group_colour, font=("Microsoft YaHei UI", 8, "bold"),
@@ -1633,7 +1642,7 @@ class DaisyApp:
         self.main_pane.pack(fill="both", expand=True)
         self.form_pane_min_height = 150 if self.compact_layout else 180
         self.log_pane_min_height = 105 if self.compact_layout else 160
-        self.log_pane_initial_height = 150 if self.compact_layout else 230
+        self.log_pane_initial_height = 150 if self.compact_layout else 180
 
         form_host = tk.Frame(self.main_pane, bg=_SURFACE)
         self.main_pane.add(
@@ -1784,11 +1793,14 @@ class DaisyApp:
 
         actions = tk.Frame(command_panel, bg=_BG)
         actions.pack(fill="x")
+        status_area = tk.Frame(actions, bg=_BG)
+        status_area.pack(side="left", fill="both", expand=True)
         self.status_label = tk.Label(
-            actions, text="就绪", bg=_BG, fg=_MUTED,
-            font=("Microsoft YaHei UI", 9), anchor="w",
+            status_area, text="就绪", bg=_GREEN_DARK, fg="white",
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+            padx=10, pady=5,
         )
-        self.status_label.pack(side="left", fill="x", expand=True)
+        self.status_label.pack(side="left", anchor="center")
         ttk.Button(
             actions, text="打开结果目录", style="Secondary.TButton",
             command=self._open_output,
@@ -1870,6 +1882,8 @@ class DaisyApp:
             self.self_test_button.pack_forget()
         if self.process is None:
             self._reset_progress(self.task.title)
+            if not self.run_jobs:
+                self._set_status("就绪")
 
     def _choice_display(self, spec: FieldSpec, value: object) -> str:
         for label, internal in spec.choices:
@@ -1895,63 +1909,7 @@ class DaisyApp:
         self.form_inner.grid_columnconfigure(1, weight=1)
         row = 0
 
-        notice = "本页只配置本次运行，不修改系统设置；关闭窗口后不保留。"
-        if self.task.key == "full_scan":
-            notice += " 新建登记参数会写入快照；续传时以 partial 内配置为准。"
-        notice_frame = tk.Frame(
-            self.form_inner, bg=_GREEN_SOFT,
-            highlightbackground="#c5d9cf", highlightthickness=1,
-        )
-        notice_frame.grid(
-            row=row, column=0, columnspan=2, sticky="ew",
-            padx=form_pad, pady=(12 if self.compact_layout else 14, 5),
-        )
-        notice_label = tk.Label(
-            notice_frame, text=notice, bg=_GREEN_SOFT, fg=_GREEN_DEEP,
-            font=("Microsoft YaHei UI", 8), anchor="w", justify="left",
-            wraplength=720 if self.compact_layout else 790,
-        )
-        notice_label.pack(fill="x", padx=10, pady=7)
-        notice_frame.bind(
-            "<Configure>",
-            lambda e, label=notice_label: label.configure(
-                wraplength=max(260, e.width - 20)),
-        )
-        row += 1
-
         advanced_specs = [spec for spec in active_specs if spec.advanced]
-        if advanced_specs:
-            configured_advanced = sum(
-                saved.get(spec.key, spec.default) != spec.default
-                for spec in advanced_specs
-            )
-            advanced_row = tk.Frame(self.form_inner, bg=_SURFACE)
-            advanced_row.grid(
-                row=row, column=0, columnspan=2, sticky="ew",
-                padx=form_pad, pady=(3, 2),
-            )
-            advanced_row.grid_columnconfigure(0, weight=1)
-            advanced_names = "、".join(dict.fromkeys(
-                spec.section for spec in advanced_specs))
-            action = "收起" if advanced_visible else "显示"
-            configured_text = (
-                f" · 已设置 {configured_advanced} 项"
-                if configured_advanced else "")
-            ttk.Button(
-                advanced_row,
-                text=f"{action}高级选项{configured_text}",
-                style="Browse.TButton",
-                command=self._toggle_advanced,
-            ).grid(row=0, column=1, sticky="e")
-            tk.Label(
-                advanced_row,
-                text=f"高级选项：{advanced_names}",
-                bg=_SURFACE,
-                fg=_AMBER_DARK if configured_advanced else _MUTED,
-                font=("Microsoft YaHei UI", 8), anchor="w",
-            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
-            row += 1
-
         current_section: str | None = None
         section_colour = _NAV_COLOURS.get(
             self.task.key, (_ACCENT, _ACCENT_DARK))[0]
@@ -2067,6 +2025,39 @@ class DaisyApp:
                         wraplength=max(260, e.width - 10)),
                 )
             row += 1
+
+        if advanced_specs:
+            configured_advanced = sum(
+                saved.get(spec.key, spec.default) != spec.default
+                for spec in advanced_specs
+            )
+            advanced_names = "、".join(dict.fromkeys(
+                spec.section for spec in advanced_specs))
+            action = "收起" if advanced_visible else "显示"
+            configured_text = (
+                f" · 已设置 {configured_advanced} 项"
+                if configured_advanced else "")
+            advanced_row = tk.Frame(self.form_inner, bg=_SURFACE)
+            advanced_row.grid(
+                row=row, column=0, columnspan=2, sticky="ew",
+                padx=form_pad, pady=(14, 5),
+            )
+            advanced_row.grid_columnconfigure(0, weight=1)
+            tk.Label(
+                advanced_row,
+                text=f"高级选项：{advanced_names}",
+                bg=_SURFACE,
+                fg=_AMBER_DARK if configured_advanced else _MUTED,
+                font=("Microsoft YaHei UI", 8), anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
+            ttk.Button(
+                advanced_row,
+                text=f"{action}高级选项{configured_text}",
+                style="Browse.TButton",
+                command=self._toggle_advanced,
+            ).grid(row=0, column=1, sticky="e")
+            row += 1
+
         self.form_inner.grid_rowconfigure(row, minsize=10)
         self.form_canvas.update_idletasks()
         self.form_canvas.yview_moveto(scroll_fraction)
@@ -2189,7 +2180,7 @@ class DaisyApp:
         status = (
             f"{len(previews)} 条队列命令已复制。"
             if len(previews) > 1 else "命令已复制到剪贴板。")
-        self._set_status(status, _ACCENT)
+        self._set_status(status)
 
     def _output_path(self) -> str:
         values = self._collect_values()
@@ -2237,8 +2228,10 @@ class DaisyApp:
         self.log.see("end")
         self.log.configure(state="disabled")
 
-    def _set_status(self, text: str, colour: str = _MUTED) -> None:
-        self.status_label.configure(text=text, fg=colour)
+    def _set_status(self, text: str, colour: str | None = None) -> None:
+        background = status_badge_background(self.task.key, colour)
+        self.status_label.configure(
+            text=text, bg=background, fg="white")
 
     def _refresh_tool_cache_labels(self) -> None:
         summary = session_tool_cache_summary(
@@ -2508,12 +2501,11 @@ class DaisyApp:
         for button in self.nav_buttons.values():
             button.configure(state="disabled")
         if task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("正在启动项目自检…", _ACCENT)
+            self._set_status("正在启动项目自检…")
         else:
             self._set_status(
                 f"队列已准备：{len(jobs)} 项。" if len(jobs) > 1
-                else "正在启动任务…",
-                _ACCENT,
+                else "正在启动任务…"
             )
         self._start_next_job()
 
@@ -2582,13 +2574,12 @@ class DaisyApp:
         total = len(self.run_jobs)
         if total > 1:
             self._set_status(
-                f"队列 {next_index + 1}/{total} · 正在启动 {job.label}…",
-                _ACCENT,
+                f"队列 {next_index + 1}/{total} · 正在启动 {job.label}…"
             )
         elif task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("项目自检运行中…", _ACCENT)
+            self._set_status("项目自检运行中…")
         else:
-            self._set_status("正在启动任务…", _ACCENT)
+            self._set_status("正在启动任务…")
         self._begin_progress()
         heading = (
             f"队列 {next_index + 1}/{total}「{job.label}」"
@@ -2675,7 +2666,7 @@ class DaisyApp:
                         self.stop_button.configure(state="normal")
                         self._set_status(
                             f"{self._queue_prefix()}运行中"
-                            f"（PID {self.process.pid}）…", _ACCENT)
+                            f"（PID {self.process.pid}）…")
                 elif kind == "output":
                     self._append_log(event[1])
                 elif kind == "gui_event":

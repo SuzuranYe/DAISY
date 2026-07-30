@@ -383,6 +383,29 @@ class TestGuiArguments(unittest.TestCase):
                 "check_format", "check_hash", "diff", "export_report"):
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
+    def test_analysis_sidebar_group_includes_validation_tasks(self):
+        self.assertEqual(
+            [gui._SIDEBAR_GROUPS[key][0]
+             for key in gui._SIDEBAR_GROUPS],
+            ["准备", "运行", "分析", "导出"],
+        )
+        self.assertNotIn("check_hash", gui._SIDEBAR_GROUPS)
+        analysis_index = gui._SIDEBAR_TASK_ORDER.index("diff")
+        self.assertEqual(
+            gui._SIDEBAR_TASK_ORDER[analysis_index:analysis_index + 3],
+            ("diff", "check_hash", "check_format"),
+        )
+
+    def test_status_badge_uses_task_or_semantic_colour(self):
+        self.assertEqual(
+            gui.status_badge_background("full_scan"), gui._GREEN_DARK)
+        self.assertEqual(
+            gui.status_badge_background("diff"), gui._AMBER_DARK)
+        self.assertEqual(
+            gui.status_badge_background("diff", gui._DANGER),
+            gui._DANGER,
+        )
+
     def test_task_titles_match_sidebar_names(self):
         for task in gui.TASKS:
             sidebar_name = task.nav.split(maxsplit=1)[1]
