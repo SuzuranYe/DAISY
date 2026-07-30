@@ -32,16 +32,45 @@ def open_resume(partial: str) -> tuple[sqlite3.Connection, list]:
         raise core.PreflightError(f"--resume 需要指向 .partial.sqlite：{partial}")
     # 续传须先取得所有权：owner 存活则拒绝，已终止才可接管
     core.acquire_scan_lock(partial, takeover=True)
-    con = sqlite3.connect(partial)
-    con.execute("PRAGMA foreign_keys=ON")
-    status, = con.execute("SELECT scan_status FROM snapshot_info").fetchone()
-    if status != "running":
-        raise core.PreflightError(f"该 partial 状态为 {status}，不可续传")
-    roots = con.execute(
-        "SELECT root_label, root_path FROM roots ORDER BY root_id").fetchall()
-    for _, p in roots:
-        core.validate_root(p)
-    return con, roots
+    con = None
+    try:
+        con = sqlite3.connect(partial)
+        con.execute("PRAGMA foreign_keys=ON")
+        status, scanner_version, schema_version, config_text = con.execute(
+            "SELECT scan_status,scanner_version,schema_version,config_json"
+            " FROM snapshot_info").fetchone()
+        if status != "running":
+            raise core.PreflightError(
+                f"该 partial 状态为 {status}，不可续传")
+        try:
+            profile_version = json.loads(config_text).get("profile_version")
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise core.PreflightError(
+                "partial 的 config_json 无法解析，禁止续传") from exc
+        has_gps_table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='video_gps_points'").fetchone() is not None
+        if (scanner_version != core.SCANNER_VERSION
+                or schema_version != core.SCHEMA_VERSION
+                or profile_version != meta.PROFILE_VERSION
+                or not has_gps_table):
+            raise core.PreflightError(
+                "partial 与当前解析语义不一致，禁止跨版本或 profile 续传："
+                f"partial=v{scanner_version}/schema {schema_version}/"
+                f"profile {profile_version}/GPS表 {int(has_gps_table)}，"
+                f"当前=v{core.SCANNER_VERSION}/schema {core.SCHEMA_VERSION}/"
+                f"profile {meta.PROFILE_VERSION}/GPS表 1。"
+                "请用创建它的 DAISY 版本续传，或重新开始扫描")
+        roots = con.execute(
+            "SELECT root_label, root_path FROM roots ORDER BY root_id").fetchall()
+        for _, p in roots:
+            core.validate_root(p)
+        return con, roots
+    except Exception:
+        if con is not None:
+            con.close()
+        core.release_scan_lock(partial)
+        raise
 
 
 def main() -> int:

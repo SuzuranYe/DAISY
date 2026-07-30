@@ -1,6 +1,6 @@
 """DAISY 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
 
-实现后端调用、profile v1、规范化映射和元数据汇合状态机。
+实现后端调用、profile v2、规范化映射和元数据汇合状态机。
 ExifTool 仅允许白名单读取参数，任何写语法直接拒绝。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import Script_DAISY_Lib_01_Core as core
 
-PROFILE_VERSION = 1
+PROFILE_VERSION = 2
 ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
 ET_VIDEO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l"]
 FF_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams",
@@ -139,6 +139,30 @@ def gps_decimal(v) -> float | None:
     if m.group(4) in ("S", "W"):
         deg = -deg
     return deg
+
+
+_ISO6709_LOCATION_RE = re.compile(
+    r"\s*([+-]\d{1,2}(?:\.\d+)?)"
+    r"([+-]\d{1,3}(?:\.\d+)?)"
+    r"([+-]\d+(?:\.\d+)?)?/\s*"
+)
+
+
+def parse_iso6709_location(v) -> tuple[float, float, float | None] | None:
+    """解析 QuickTime/ffprobe location 的 ISO 6709 十进制度表示。"""
+    if not isinstance(v, str):
+        return None
+    m = _ISO6709_LOCATION_RE.fullmatch(v)
+    if not m:
+        return None
+    latitude = float(m.group(1))
+    longitude = float(m.group(2))
+    altitude = float(m.group(3)) if m.group(3) is not None else None
+    if not (-90.0 <= latitude <= 90.0):
+        return None
+    if not (-180.0 <= longitude <= 180.0):
+        return None
+    return latitude, longitude, altitude
 
 
 def offset_minutes(v) -> int | None:
@@ -473,6 +497,34 @@ def stream_rows(ff: dict) -> tuple[list[dict], list[dict]]:
     return vids, auds
 
 
+def video_gps_rows(ff: dict) -> list[dict]:
+    """把 ffprobe 文件级 location tag 规范化为静态 GPS 点。"""
+    fmt = ff.get("format", {}) if ff else {}
+    tags = fmt.get("tags", {}) or {}
+    if not isinstance(tags, dict):
+        return []
+    rows = []
+    for key in sorted(tags, key=lambda x: (str(x).casefold(), str(x))):
+        if str(key).casefold() != "location":
+            continue
+        raw_values = tags[key] if isinstance(tags[key], list) else [tags[key]]
+        for raw in raw_values:
+            parsed = parse_iso6709_location(raw)
+            if parsed is None:
+                continue
+            latitude, longitude, altitude = parsed
+            rows.append({
+                "point_index": len(rows),
+                "timestamp_seconds": None,
+                "gps_latitude": latitude,
+                "gps_longitude": longitude,
+                "gps_altitude": altitude,
+                "source": f"ffprobe:format.tags.{key}",
+                "raw_value": raw,
+            })
+    return rows
+
+
 # === ExifTool stay_open 工作器 ===
 class ExifToolWorker:
     def __init__(self, exiftool_path: str):
@@ -663,7 +715,8 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 for tbl in ("photo_metadata", "video_metadata", "working_metadata",
                             "document_metadata", "archive_metadata",
                             "archive_members",
-                            "video_streams", "audio_streams", "raw_payloads"):
+                            "video_gps_points", "video_streams",
+                            "audio_streams", "raw_payloads"):
                     con.execute(f"DELETE FROM {tbl} WHERE entry_id=?", (eid,))
                 if kind in _PHOTO_KINDS:
                     doc = worker.extract(path, photo_profile=True)
@@ -699,6 +752,16 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                                     "exiftool+ffprobe",
                                     f"exiftool {et_ver}; ffprobe {ff_ver}")
                         vids, auds = stream_rows(ff or {})
+                        gps_points = (video_gps_rows(ff or {})
+                                      if kind in _VIDEO_KINDS else [])
+                        for r in gps_points:
+                            r2 = dict(r)
+                            r2["entry_id"] = eid
+                            cols = ", ".join(r2)
+                            con.execute(
+                                f"INSERT INTO video_gps_points ({cols}) VALUES"
+                                f" ({', '.join('?' for _ in r2)})",
+                                tuple(r2.values()))
                         for r in vids:
                             r2 = dict(r)
                             r2["entry_id"] = eid

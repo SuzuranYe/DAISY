@@ -630,6 +630,7 @@ class TestDdl(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type='table'")
         }
         self.assertNotIn("block_hashes", tables)
+        self.assertIn("video_gps_points", tables)
         with self.assertRaises(sqlite3.IntegrityError):
             con.execute(
                 "INSERT INTO snapshot_info"
@@ -646,6 +647,24 @@ class TestDdl(unittest.TestCase):
         con.execute(ins + "(1,1,1,'café.txt','café.txt','x','txt','other',1,'t',0,'t')")
         # path_key 碰撞行可入库（rel_path 不同）
         con.execute(ins + "(2,1,1,'café.txt','café.txt','x','txt','other',1,'t',0,'t')")
+        con.execute(
+            "INSERT INTO video_gps_points"
+            " (entry_id,point_index,timestamp_seconds,gps_latitude,"
+            " gps_longitude,gps_altitude,source,raw_value)"
+            " VALUES (1,0,NULL,27.25,111.75,NULL,'ffprobe:test',"
+            " '+27.25+111.75/')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO video_gps_points"
+                " (entry_id,point_index,gps_latitude,gps_longitude,"
+                " source,raw_value)"
+                " VALUES (1,1,90.1,111.75,'ffprobe:test','bad')")
+        with self.assertRaises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO video_gps_points"
+                " (entry_id,point_index,timestamp_seconds,gps_latitude,"
+                " gps_longitude,source,raw_value)"
+                " VALUES (1,2,-0.1,27.25,111.75,'ffprobe:test','bad')")
         with self.assertRaises(sqlite3.IntegrityError):   # 同 rel_path 拦截
             con.execute(ins + "(3,1,1,'café.txt','café.txt','x','txt','other',1,'t',0,'t')")
         with self.assertRaises(sqlite3.IntegrityError):   # valid 无 hash_hex 拦截
@@ -865,6 +884,40 @@ class TestValueParsers(unittest.TestCase):
         self.assertAlmostEqual(v, -(111 + 44 / 60 + 36.91 / 3600), places=6)
         self.assertIsNone(meta.gps_decimal(None))
 
+    def test_iso6709_video_location(self):
+        self.assertEqual(
+            meta.parse_iso6709_location("+27.278636+111.743586/"),
+            (27.278636, 111.743586, None))
+        self.assertEqual(
+            meta.parse_iso6709_location("-27.5-111.25+123.75/"),
+            (-27.5, -111.25, 123.75))
+        for invalid in (
+                "+91.0+111.0/", "+27.0+181.0/",
+                "27.0+111.0/", "+27.0+111.0", None):
+            self.assertIsNone(meta.parse_iso6709_location(invalid), invalid)
+
+    def test_video_gps_rows_support_multiple_points(self):
+        rows = meta.video_gps_rows({
+            "format": {
+                "tags": {
+                    "LOCATION": [
+                        "+27.1000+111.2000/",
+                        "+27.3000+111.4000+12.5/",
+                    ],
+                },
+            },
+        })
+        self.assertEqual([r["point_index"] for r in rows], [0, 1])
+        self.assertEqual([r["timestamp_seconds"] for r in rows], [None, None])
+        self.assertEqual(rows[0]["source"],
+                         "ffprobe:format.tags.LOCATION")
+        self.assertEqual(
+            (rows[1]["gps_latitude"], rows[1]["gps_longitude"],
+             rows[1]["gps_altitude"]),
+            (27.3, 111.4, 12.5))
+        self.assertEqual(rows[1]["raw_value"],
+                         "+27.3000+111.4000+12.5/")
+
     def test_offset_minutes(self):
         self.assertEqual(meta.offset_minutes("+08:00"), 480)
         self.assertEqual(meta.offset_minutes("-05:30"), -330)
@@ -1057,6 +1110,94 @@ class TestPhotoMapping(unittest.TestCase):
         self.assertAlmostEqual(row["gps_longitude"], 111.7435861, places=5)
 
 
+class TestVideoGpsStage(unittest.TestCase):
+    class _ExifWorker:
+        def __init__(self, _path):
+            pass
+
+        def extract(self, file_path, photo_profile=False, timeout=None):
+            return {"SourceFile": file_path}
+
+        def close(self):
+            pass
+
+    def test_video_point_written_raw_retained_and_retry_replaced(self):
+        import zlib as _z
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        td = temp_dir.name
+        con = None
+        try:
+            arch = os.path.join(td, "Arch")
+            os.makedirs(arch)
+            for name in ("clip.mp4", "song.mp3"):
+                with open(os.path.join(arch, name), "wb") as f:
+                    f.write(b"fixture")
+            partial = os.path.join(td, "Scan_t.partial.sqlite")
+            con = core.create_partial_snapshot(
+                partial, [("A", arch)], config={"phase": "test"})
+            core.enumerate_and_reconcile(con)
+            tools = {
+                "exiftool": {"path": "unused", "version": "13.test"},
+                "ffprobe": {"path": "unused", "version": "8.test"},
+                "sevenzip": {"path": "unused", "version": "24.test"},
+            }
+            ff = {
+                "format": {
+                    "format_name": "mov,mp4",
+                    "tags": {"location": "+27.1250+111.8750/"},
+                },
+                "streams": [],
+            }
+            with patch.object(meta, "ExifToolWorker", self._ExifWorker), \
+                    patch.object(meta, "ffprobe_full", return_value=ff):
+                stats = meta.process_metadata_stage(con, tools)
+            self.assertEqual(stats["done"], 2)
+            rows = con.execute(
+                "SELECT e.rel_path,g.point_index,g.timestamp_seconds,"
+                " g.gps_latitude,g.gps_longitude,g.gps_altitude,"
+                " g.source,g.raw_value"
+                " FROM video_gps_points g JOIN entries e"
+                " ON e.entry_id=g.entry_id").fetchall()
+            self.assertEqual(
+                rows,
+                [("clip.mp4", 0, None, 27.125, 111.875, None,
+                  "ffprobe:format.tags.location",
+                  "+27.1250+111.8750/")])
+
+            payload, profile = con.execute(
+                "SELECT p.payload_zlib,p.profile_version"
+                " FROM raw_payloads p JOIN entries e"
+                " ON e.entry_id=p.entry_id"
+                " WHERE e.rel_path='clip.mp4' AND p.provider='ffprobe'"
+            ).fetchone()
+            self.assertEqual(profile, 2)
+            raw = json.loads(_z.decompress(payload).decode("utf-8"))
+            self.assertEqual(raw["format"]["tags"]["location"],
+                             "+27.1250+111.8750/")
+
+            con.execute(
+                "UPDATE entries SET meta_status='pending'"
+                " WHERE rel_path='clip.mp4'")
+            con.commit()
+            ff["format"]["tags"]["location"] = "-27.5-111.25+8.0/"
+            with patch.object(meta, "ExifToolWorker", self._ExifWorker), \
+                    patch.object(meta, "ffprobe_full", return_value=ff):
+                meta.process_metadata_stage(con, tools)
+            retried = con.execute(
+                "SELECT gps_latitude,gps_longitude,gps_altitude,raw_value"
+                " FROM video_gps_points").fetchall()
+            self.assertEqual(
+                retried, [(-27.5, -111.25, 8.0, "-27.5-111.25+8.0/")])
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM raw_payloads p JOIN entries e"
+                " ON e.entry_id=p.entry_id"
+                " WHERE e.rel_path='clip.mp4'").fetchone()[0], 2)
+        finally:
+            if con is not None:
+                con.close()
+
+
 import importlib                                               # noqa: E402
 import time                                                    # noqa: E402
 
@@ -1064,6 +1205,59 @@ import Script_DAISY_Lib_03_Hash as dbh                                   # noqa:
 import Script_DAISY_Tool_10_Env_Check as envcheck                         # noqa: E402
 
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+FullScan = importlib.import_module("Script_DAISY_Tool_11_Full_Scan")
+
+
+class TestResumeProfileGuard(unittest.TestCase):
+    def test_current_profile_partial_opens(self):
+        with tempfile.TemporaryDirectory() as td:
+            arch = os.path.join(td, "Arch")
+            os.makedirs(arch)
+            partial = os.path.join(td, "current.partial.sqlite")
+            con = core.create_partial_snapshot(
+                partial, [("A", arch)],
+                config={"profile_version": meta.PROFILE_VERSION})
+            con.close()
+            core.release_scan_lock(partial)
+            resumed = None
+            try:
+                resumed, roots = FullScan.open_resume(partial)
+                self.assertEqual(roots, [("A", arch)])
+            finally:
+                if resumed is not None:
+                    resumed.close()
+                core.release_scan_lock(partial)
+
+    def test_same_scanner_old_profile_is_rejected_without_stale_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            arch = os.path.join(td, "Arch")
+            os.makedirs(arch)
+            partial = os.path.join(td, "old-profile.partial.sqlite")
+            con = core.create_partial_snapshot(
+                partial, [("A", arch)], config={"profile_version": 1})
+            con.close()
+            core.release_scan_lock(partial)
+            with self.assertRaisesRegex(
+                    core.PreflightError, "禁止跨版本或 profile 续传"):
+                FullScan.open_resume(partial)
+            self.assertFalse(os.path.exists(partial + ".lock"))
+
+    def test_profile_two_without_gps_table_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            arch = os.path.join(td, "Arch")
+            os.makedirs(arch)
+            partial = os.path.join(td, "missing-table.partial.sqlite")
+            con = core.create_partial_snapshot(
+                partial, [("A", arch)], config={"profile_version": 2})
+            con.execute("DROP TABLE video_gps_points")
+            con.commit()
+            con.close()
+            core.release_scan_lock(partial)
+            with self.assertRaisesRegex(
+                    core.PreflightError, "禁止跨版本或 profile 续传"):
+                FullScan.open_resume(partial)
+            self.assertFalse(os.path.exists(partial + ".lock"))
 
 
 class TestHashOneFile(unittest.TestCase):
@@ -2104,7 +2298,7 @@ class TestExportSnapshot(_DiffFixture):
         res = Export.export_snapshot(snap, out_dir)
         folder = res["folder"]
         for page in ("Tree.csv", "Tree_dirs.csv", "Hash_inventory.csv",
-                     "Summary.csv", "Errors.csv"):
+                     "GPS_inventory_video.csv", "Summary.csv", "Errors.csv"):
             self.assertTrue(os.path.isfile(os.path.join(folder, page)), page)
         tree = self._read_csv(os.path.join(folder, "Tree.csv"))
         self.assertEqual(len(tree) - 1, 3)              # 表头＋3 文件
@@ -2121,6 +2315,48 @@ class TestExportSnapshot(_DiffFixture):
         self.assertIn("origin", hashes[0])
         summary = self._read_csv(os.path.join(folder, "Summary.csv"))
         self.assertGreater(len(summary), 5)             # 键值对簿记
+
+    def test_snapshot_export_video_gps_points(self):
+        tt.write(self.old_tree, "clip.mp4", b"video-like")
+
+        def add_gps(con):
+            eid, = con.execute(
+                "SELECT entry_id FROM entries WHERE rel_path='clip.mp4'"
+            ).fetchone()
+            con.execute(
+                "INSERT INTO video_gps_points"
+                " (entry_id,point_index,timestamp_seconds,gps_latitude,"
+                " gps_longitude,gps_altitude,source,raw_value)"
+                " VALUES (?,0,NULL,27.25,111.75,8.5,"
+                " 'ffprobe:format.tags.location','+27.25+111.75+8.5/')",
+                (eid,))
+
+        snap = self.snap(self.old_tree, "gps", pre_finalize=add_gps)
+        res = Export.export_snapshot(
+            snap, os.path.join(self.base, "Exports"))
+        rows = self._read_csv(
+            os.path.join(res["folder"], "GPS_inventory_video.csv"))
+        self.assertEqual(len(rows) - 1, 1)
+        row = dict(zip(rows[0], rows[1]))
+        self.assertEqual(row["path"], "T\\clip.mp4")
+        self.assertEqual(row["point_index"], "0")
+        self.assertEqual(row["timestamp_seconds"], "")
+        self.assertEqual(row["gps_latitude"], "27.25")
+        self.assertEqual(row["raw_value"], "+27.25+111.75+8.5/")
+
+    def test_snapshot_export_legacy_schema_skips_gps_page(self):
+        tt.write(self.old_tree, "a.bin", b"old-schema")
+
+        def emulate_legacy(con):
+            con.execute("DROP TABLE video_gps_points")
+
+        snap = self.snap(
+            self.old_tree, "legacy", pre_finalize=emulate_legacy)
+        res = Export.export_snapshot(
+            snap, os.path.join(self.base, "Exports"))
+        self.assertNotIn("GPS_inventory_video.csv", res["files"])
+        self.assertFalse(os.path.exists(
+            os.path.join(res["folder"], "GPS_inventory_video.csv")))
 
     def test_snapshot_export_archive_pages(self):
         import zipfile as _zf
@@ -2483,7 +2719,8 @@ class TestQuickScan(unittest.TestCase):
             self.assertIsNotNone(r[7], rel)                  # file_id 照常采集
         self.assertEqual(rows["a.CR3"][5], "skipped")        # 媒体：元数据跳过
         self.assertEqual(rows["b.txt"][5], "not_applicable")  # other 照常
-        for tbl in ("hashes", "photo_metadata", "raw_payloads"):
+        for tbl in ("hashes", "photo_metadata", "video_gps_points",
+                    "raw_payloads"):
             self.assertEqual(con.execute(
                 f"SELECT COUNT(*) FROM {tbl}").fetchone()[0], 0, tbl)
         manifest = json.loads(con.execute(

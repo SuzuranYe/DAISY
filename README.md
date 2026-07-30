@@ -132,6 +132,23 @@ Raw Payload 控制是否在快照中保留外部工具返回的完整原始 JSON
 - 关闭：ExifTool／ffprobe 仍会运行，但不写入 `raw_payloads`；
 - 它不是隐私开关，规范化列仍可能包含位置、作者、设备或序列号。
 
+### 视频 GPS
+
+Full 会把 ffprobe 容器级 `format.tags.location` 中合法的 ISO 6709
+十进制度坐标写入 `video_gps_points`，同时在默认开启的 ffprobe Raw
+Payload 中保留原值。经纬度会规范化为数值并校验范围；海拔可为空。
+
+容器级 `location` 表示文件级静态位置，因此 `timestamp_seconds` 为
+`NULL`。表结构允许同一视频保存多个点，也预留了点时间，但当前版本尚不
+提取逐帧或连续 GPS 轨迹。Quick 不读取文件内容，所以该表保持为空。
+`export-report` 会生成 `GPS_inventory_video.csv`。profile v1 的既有
+快照不会被回写，导出时也不会凭空生成这一页。
+
+由于规范化 profile 和 additive 表已变化，中断的 `.partial.sqlite`
+必须同时匹配当前 DAISY 的版本、schema、profile 和 GPS 表后才允许续传。
+改动前同为 v1.3.3、但仍使用 profile v1 的 partial 也会被明确拒绝，以免
+同一快照混用两套解析语义。封存快照不受此限制。
+
 ### 数据库文件名指纹
 
 成功快照和 Diff 数据库以 `_XXXXXXXX.sqlite` 结尾。`XXXXXXXX` 是最终 SQLite 完整 SHA-256 的前 8 个十六进制字符：

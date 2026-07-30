@@ -3,6 +3,7 @@ r"""Script_DAISY_Tool_41_Export_Report：全量报表导出。
 快照导出（分组清单＋簿记，多 CSV、UTF-8 无 BOM、LF；规范化字段不剔除）：
   Tree.csv / Tree_dirs.csv                 —— 树
   Exif_inventory_photo/video/working/document.csv —— EXIF 组
+  GPS_inventory_video.csv                       —— 视频规范化 GPS 点
   Stream_inventory_video/audio.csv         —— ffmpeg 组
   Hash_inventory.csv                       —— 哈希组
   Archive_inventory.csv / _members.csv     —— 压缩包组
@@ -54,6 +55,7 @@ def _dump_query(con: sqlite3.Connection, folder: str, name: str,
 _ENTRY_PAGES = [
     ("Exif_inventory_photo.csv", "photo_metadata"),
     ("Exif_inventory_video.csv", "video_metadata"),
+    ("GPS_inventory_video.csv", "video_gps_points"),
     ("Exif_inventory_working.csv", "working_metadata"),
     ("Exif_inventory_document.csv", "document_metadata"),
     ("Stream_inventory_video.csv", "video_streams"),
@@ -97,14 +99,25 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
             " r.root_label, d.* FROM dirs d"
             " JOIN roots r ON r.root_id = d.root_id"
             " ORDER BY r.root_label, d.rel_path"))
+        available_tables = {
+            row[0] for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+        }
         for name, tbl in _ENTRY_PAGES:
+            # profile v1 及更早的 schema_version=1 快照没有此 additive 表；
+            # 旧快照仍可导出，只是不生成对应页。
+            if tbl == "video_gps_points" and tbl not in available_tables:
+                continue
+            order = "r.root_label, e.rel_path"
+            if tbl == "video_gps_points":
+                order += ", t.timestamp_seconds, t.point_index"
             files.append(_dump_query(
                 con, folder, name,
                 f"SELECT r.root_label || '\\' || e.rel_path AS path,"
                 f" r.root_label, e.rel_path, t.* FROM {tbl} t"
                 " JOIN entries e ON e.entry_id = t.entry_id"
                 " JOIN roots r ON r.root_id = e.root_id"
-                " ORDER BY r.root_label, e.rel_path"))
+                f" ORDER BY {order}"))
         files.append(_dump_query(
             con, folder, "Errors.csv",
             "SELECT er.error_pk, er.stage, er.error_code, er.message,"

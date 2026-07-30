@@ -53,11 +53,13 @@
 
 “支持”表示代码具有对应处理路径，不表示所有厂商、固件和损坏形态都经过真实样本验证。
 
-ExifTool profile v1：
+元数据 profile v2：
 
 - 照片：`-j -G1:3:4 -a -u -D -l -ee -charset filename=utf8`；
 - 视频、音频、文档：同组参数但不含 `-ee`；
 - ffprobe：`-print_format json -show_format -show_streams -show_chapters -show_programs -show_stream_groups -show_data`。
+- v2 新增 ffprobe 容器级 `format.tags.location` 的 ISO 6709 规范化；外部
+  工具读取参数相对 v1 不变。
 
 ## 四、Raw Payload 与规范化元数据
 
@@ -80,6 +82,11 @@ Raw Payload 是**后端原始 JSON 的保留开关**，不是元数据提取总�
 - 色彩优先采用 ICC profile；EXIF ColorSpace 只作辅助。
 - Canon gamma／gamut 取 CanonLogVersion／ColorSpace2；其他厂商没有可靠来源时留空。
 - 音频文本标签优先使用 ffprobe，避免 RIFF INFO 非标准编码造成误解。
+- 视频容器级 `location` 解析为 `video_gps_points`：经纬度为有范围约束的
+  十进制度，海拔可空，原始字符串写入 `raw_value`。文件级静态位置没有
+  点时间，故 `timestamp_seconds=NULL`；当前不提取逐帧或连续轨迹。
+- 无法按 ISO 6709 解析或超出经纬度范围的 `location` 不写规范化点；默认
+  开启 Raw Payload 时，ffprobe 原值仍完整保留，可供审计和后续重解释。
 - 工具版本写入快照和 Raw Payload。跨工具版本的原始 JSON 差异可归为 `metadata_extraction_changed`，不等同于文件内容变化。
 
 ## 五、快照数据模型
@@ -92,13 +99,13 @@ Raw Payload 是**后端原始 JSON 的保留开关**，不是元数据提取总�
 | 内嵌证据 | `snapshot_manifest`、`run_events` | 成功运行的清单和事件时间线 |
 | 多 root | `roots` | root label、当次路径及枚举状态 |
 | 树 | `dirs`、`entries` | 目录、文件、stat、媒体类型和处理状态 |
-| 规范化元数据 | `photo_metadata`、`video_metadata`、`video_streams`、`audio_streams`、`working_metadata`、`document_metadata`、`archive_metadata`、`archive_members` | 固定查询列 |
+| 规范化元数据 | `photo_metadata`、`video_metadata`、`video_gps_points`、`video_streams`、`audio_streams`、`working_metadata`、`document_metadata`、`archive_metadata`、`archive_members` | 固定查询列；视频 GPS 点支持一文件多行 |
 | 原始元数据 | `raw_payloads` | ExifTool／ffprobe 原始 JSON |
 | 完整性 | `hashes` | SHA-256、读取字节、状态和复用溯源 |
 | 错误 | `errors` | 阶段、后端、错误码和文本 |
 | 视图 | `v_file_manifest`、`v_dir_problems` | 常用清单与目录问题查询 |
 
-Quick 与 Full 使用相同核心 schema。Quick 不生成内容哈希、专用元数据或 Raw Payload，但保持统一的数据结构和明确的状态值。
+Quick 与 Full 使用相同核心 schema。Quick 不生成内容哈希、专用元数据或 Raw Payload，`video_gps_points` 因此为空，但保持统一的数据结构和明确的状态值。快照报告把视频 GPS 点导出为 `GPS_inventory_video.csv`；profile v1 的既有快照没有该 additive 表，仍可导出其余页面。
 
 ### 5.2 Diff 数据库
 
@@ -293,7 +300,10 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 - v1.3.0 对旧封装不兼容，是已明确记录的版本号例外，不能由次版本号推断兼容。
 - v1.3.1 整理 GitHub 发布结构、依赖安装说明和代码内历史命名，并加入 GUI 项目自检入口；不改变数据库 schema 或七项业务任务的运行语义。
 - v1.3.2 排除 `FileAccessDate` 对 Diff 元数据判断的干扰，加入运行时生成的截断媒体回归，移除未接入正式路径的 `block_hashes` 表和 `hash_coverage=partial` 值，并把依赖安装改为逐项说明、逐项确认；正式读写语义不变，`schema_version` 仍为 1。
-- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；数据库 schema 和档案只读语义不变。
+- v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2，`schema_version` 仍为 1。
+- `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
+  元数据 profile 和 GPS 表；改动前同版本但仍为 profile v1 的 partial
+  会被明确拒绝。既有封存快照不迁移、不回写。
 - Diff 当前把两侧条目载入内存，内存占用随条目数增长。
 - Full 哈希针对机械盘采用顺序读取，不在同一介质并行争抢。
 - 正式环境检测和 GUI 不执行介质性能跑分。

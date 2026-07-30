@@ -350,6 +350,23 @@ CREATE TABLE video_metadata (
     parsed_at_utc         TEXT    NOT NULL
 );
 
+CREATE TABLE video_gps_points (
+    gps_point_pk      INTEGER PRIMARY KEY,
+    entry_id          INTEGER NOT NULL REFERENCES entries(entry_id),
+    point_index       INTEGER NOT NULL CHECK (point_index >= 0),
+    timestamp_seconds REAL CHECK (timestamp_seconds IS NULL OR
+                                  timestamp_seconds >= 0),
+    gps_latitude      REAL NOT NULL CHECK (gps_latitude BETWEEN -90.0 AND 90.0),
+    gps_longitude     REAL NOT NULL CHECK (gps_longitude BETWEEN -180.0 AND 180.0),
+    gps_altitude      REAL,
+    source            TEXT NOT NULL CHECK (source <> ''),
+    raw_value         TEXT NOT NULL CHECK (raw_value <> ''),
+    UNIQUE (entry_id, source, point_index)
+);
+
+CREATE INDEX idx_video_gps_entry_time
+    ON video_gps_points(entry_id, timestamp_seconds, point_index);
+
 CREATE TABLE video_streams (
     stream_pk        INTEGER PRIMARY KEY,
     entry_id         INTEGER NOT NULL REFERENCES entries(entry_id),
