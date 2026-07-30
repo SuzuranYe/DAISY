@@ -1,6 +1,6 @@
 """DAISY 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
 
-实现后端调用、profile v2、规范化映射和元数据汇合状态机。
+实现后端调用、profile v3、规范化映射和元数据汇合状态机。
 ExifTool 仅允许白名单读取参数，任何写语法直接拒绝。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import Script_DAISY_Lib_01_Core as core
 
-PROFILE_VERSION = 2
+PROFILE_VERSION = 3
 ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
 ET_VIDEO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l"]
 FF_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams",
@@ -695,8 +695,9 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
     zip_ver = "python-zipfile " + ".".join(map(str, __import__("sys").version_info[:3]))
     sz_ver = tools["sevenzip"]["version"]
     roots = dict(con.execute("SELECT root_id, root_path FROM roots").fetchall())
-    con.execute("UPDATE entries SET meta_status='not_applicable'"
-                " WHERE meta_status='pending' AND media_kind='other'")
+    if no_raw_payload:
+        con.execute("UPDATE entries SET meta_status='not_applicable'"
+                    " WHERE meta_status='pending' AND media_kind='other'")
     con.execute("UPDATE entries SET meta_status='skipped'"
                 " WHERE meta_status='pending' AND is_placeholder=1")
     con.commit()
@@ -704,7 +705,12 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         "SELECT entry_id, root_id, rel_path, extension, media_kind, size_bytes,"
         " modified_at_utc FROM entries WHERE meta_status='pending'"
         " ORDER BY entry_id").fetchall()
-    stats = {"total": len(todo), "done": 0, "error": 0, "timeout": 0, "unstable": 0}
+    stats = {
+        "total": len(todo), "done": 0, "error": 0, "timeout": 0,
+        "unstable": 0, "ffprobe_payloads": 0,
+        "ffprobe_optional_unreadable": 0,
+        "ffprobe_optional_timeouts": 0,
+    }
     worker = ExifToolWorker(tools["exiftool"]["path"])
     try:
         for i, (eid, rid, rel, ext, kind, size0, mtime0) in enumerate(todo, 1):
@@ -781,6 +787,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                             _insert_payload(con, eid, "exiftool", doc, et_ver)
                         if ff:
                             _insert_payload(con, eid, "ffprobe", ff, ff_ver)
+                            stats["ffprobe_payloads"] += 1
                     for code, exc in errors:
                         status = "error" if status == "done" else status
                         _record_error(con, eid, code, exc)
@@ -812,12 +819,40 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         " :extract_version, :header_offset, :modified_raw,"
                         " :attributes, :encrypted)",
                         [{**m, "eid": eid} for m in members])
+                    if not no_raw_payload:
+                        doc = worker.extract(path, photo_profile=False)
+                        _insert_payload(con, eid, "exiftool", doc, et_ver)
+                elif kind == "other":
+                    # Raw 开启时对每个非占位普通文件保留 ExifTool 的实际
+                    # 输出；没有规范化表或格式验证器不等于没有可读元数据。
+                    doc = worker.extract(path, photo_profile=False)
+                    _insert_payload(con, eid, "exiftool", doc, et_ver)
             except TimeoutError:
                 status = "timeout"
                 _record_error(con, eid, "exiftool_timeout", path)
             except Exception as exc:
                 status = "error"
                 _record_error(con, eid, type(exc).__name__, exc)
+            # 非音视频的 ffprobe 仅是 Raw 增补探测：返回成功就保留完整
+            # JSON；失败表示该后端不支持或无法读取，不覆盖主解析状态。
+            if not no_raw_payload and kind not in _AV_KINDS:
+                try:
+                    ff_optional = ffprobe_full(
+                        tools["ffprobe"]["path"], path)
+                except subprocess.TimeoutExpired:
+                    stats["ffprobe_optional_timeouts"] += 1
+                except Exception:
+                    stats["ffprobe_optional_unreadable"] += 1
+                else:
+                    try:
+                        _insert_payload(
+                            con, eid, "ffprobe", ff_optional, ff_ver)
+                    except Exception as exc:
+                        status = "error" if status == "done" else status
+                        _record_error(
+                            con, eid, "ffprobe_payload_error", exc)
+                    else:
+                        stats["ffprobe_payloads"] += 1
             # 逐文件即时核对解析前后的 size/mtime
             try:
                 st = os.stat(ext_path, follow_symlinks=False)

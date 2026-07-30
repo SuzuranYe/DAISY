@@ -278,8 +278,15 @@ def main() -> int:
             con, tools, no_raw_payload=args.no_raw_payload,
             on_progress=lambda i, st: prog.update(
                 i, total=st["total"], errors=st["error"] + st["timeout"]))
+        ff_summary = ""
+        if not args.no_raw_payload:
+            ff_summary = (
+                f" / ffprobe Raw {mstats['ffprobe_payloads']}"
+                f" / 可选探测不可读 {mstats['ffprobe_optional_unreadable']}"
+                f" / 可选探测超时 {mstats['ffprobe_optional_timeouts']}")
         prog.finish(f"{mstats['done']}/{mstats['total']} 成功 / 错误 {mstats['error']}"
-                    f" / 超时 {mstats['timeout']} / unstable {mstats['unstable']}")
+                    f" / 超时 {mstats['timeout']} / unstable {mstats['unstable']}"
+                    f"{ff_summary}")
         events.emit("stage_finished", stage="metadata", **mstats)
 
         # [5/6] 复扫校验＋独立实现抽验

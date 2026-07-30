@@ -40,7 +40,7 @@ DAISY v1.3.3
   PowerShell 与视频 GPS
         ↓
 DAISY v1.3.4
-  GUI、当前根目录与 Diff 可靠性修复
+  GUI、当前根目录、Diff 与 Raw 证据覆盖修复
 ```
 
 ## 二、版本总览
@@ -57,7 +57,7 @@ DAISY v1.3.4
 | `v1.3.1` | DAISY | 正式版本 | 整理 `Script/Lib`、`Script/Tool`、`Script/Test`、`Spec` 和 GUI 项目自检 |
 | `v1.3.2` | DAISY | 正式公开基线 | 排除 `FileAccessDate` Diff 假阳性，补充损坏媒体回归，删除未使用的哈希预留设计并完成公开发布 |
 | `v1.3.3` | DAISY | 正式版本 | 完善 PowerShell 兼容并新增视频 GPS 规范化 |
-| `v1.3.4` | DAISY | 当前版本 | 完善校验根目录、任务编号和 GUI，并修复跨根目录 Diff 元数据假阳性 |
+| `v1.3.4` | DAISY | 当前版本 | 完善校验根目录、任务编号和 GUI，修复跨根目录 Diff 元数据假阳性，并扩展 Raw 证据覆盖 |
 
 ## 三、关键版本变化
 
@@ -173,6 +173,10 @@ Git 对象证明。
   `Directory` 和 `FileAccessDate` 等提取环境字段，避免盘符或根目录迁移
   产生元数据假阳性；
 - 内嵌元数据的真实变化仍照常检出；
+- Raw 开启时，每个非占位普通文件都尝试保存 ExifTool 原始 JSON；
+- 同时对每个文件调用 ffprobe，成功返回才保存其 Raw；音频／视频失败仍是
+  元数据错误，其他类型失败只表示该后端不支持或无法读取；
+- 元数据 profile 升至 3；
 - `SCANNER_VERSION` 升至 `1.3.4`，`schema_version` 仍为 1。
 
 任务编号固定为：

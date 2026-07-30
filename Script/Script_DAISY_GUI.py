@@ -521,8 +521,9 @@ TASKS = (
                     ("关闭：不保留 Raw Payload（No-Raw）", False),
                 ),
                 flag_value=False,
-                help="默认开启并保留；选择“关闭”可显著缩小快照，但以后"
-                     "无法重新解释原始后端数据，也无法判定 "
+                help="默认开启：每个文件保留 ExifTool Raw，并保留 ffprobe"
+                     " 成功结果；选择“关闭”可显著缩小快照，但以后无法重新"
+                     "解释原始后端数据，也无法判定 "
                      "metadata_extraction_changed。",
                 section="快照内容", active_when=_FULL_NEW,
             ),

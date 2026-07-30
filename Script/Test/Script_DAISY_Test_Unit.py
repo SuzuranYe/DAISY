@@ -1238,6 +1238,117 @@ class TestArchiveMembers(unittest.TestCase):
             con.close()
 
 
+class TestAllFileRawCoverage(unittest.TestCase):
+    class _ExifWorker:
+        extracted = []
+
+        def __init__(self, _path):
+            type(self).extracted = []
+
+        def extract(self, file_path, photo_profile=False, timeout=None):
+            type(self).extracted.append((file_path, photo_profile))
+            return {
+                "SourceFile": file_path,
+                "File:Main:FileType": {
+                    "desc": "File Type",
+                    "val": os.path.splitext(file_path)[1].lstrip(".").upper(),
+                },
+            }
+
+        def close(self):
+            pass
+
+    def _snapshot(self, td):
+        arch = os.path.join(td, "Arch")
+        os.makedirs(arch)
+        tt.write(arch, "opaque.bin", b"opaque")
+        import zipfile as _zf
+        with _zf.ZipFile(os.path.join(arch, "pack.zip"), "w") as z:
+            z.writestr("member.txt", b"member")
+        partial = os.path.join(td, "Scan_t.partial.sqlite")
+        con = core.create_partial_snapshot(
+            partial, [("A", arch)], config={"phase": "test"})
+        core.enumerate_and_reconcile(con)
+        return con
+
+    @staticmethod
+    def _optional_ffprobe(_path, file_path, timeout=None):
+        if file_path.lower().endswith("opaque.bin"):
+            return {
+                "format": {"format_name": "test"},
+                "streams": [{"codec_type": "data"}],
+            }
+        raise RuntimeError("unsupported fixture")
+
+    def test_raw_enabled_captures_all_exiftool_and_successful_ffprobe(self):
+        with tempfile.TemporaryDirectory() as td:
+            con = self._snapshot(td)
+            tools = {
+                "exiftool": {"path": "unused", "version": "13.test"},
+                "ffprobe": {"path": "unused", "version": "8.test"},
+                "sevenzip": {"path": "unused", "version": "24.test"},
+            }
+            with patch.object(
+                    meta, "ExifToolWorker", self._ExifWorker), \
+                    patch.object(
+                        meta, "ffprobe_full",
+                        side_effect=self._optional_ffprobe):
+                stats = meta.process_metadata_stage(con, tools)
+            self.assertEqual(stats["done"], 2)
+            self.assertEqual(stats["ffprobe_payloads"], 1)
+            self.assertEqual(stats["ffprobe_optional_unreadable"], 1)
+            self.assertEqual(stats["ffprobe_optional_timeouts"], 0)
+            rows = con.execute(
+                "SELECT e.rel_path,e.media_kind,e.meta_status,p.provider,"
+                " p.profile_version FROM entries e JOIN raw_payloads p"
+                " ON p.entry_id=e.entry_id"
+                " ORDER BY e.rel_path,p.provider").fetchall()
+            self.assertEqual(
+                rows,
+                [("opaque.bin", "other", "done", "exiftool",
+                  meta.PROFILE_VERSION),
+                 ("opaque.bin", "other", "done", "ffprobe",
+                  meta.PROFILE_VERSION),
+                 ("pack.zip", "archive", "done", "exiftool",
+                  meta.PROFILE_VERSION)])
+            self.assertEqual(
+                [os.path.basename(x[0])
+                 for x in self._ExifWorker.extracted],
+                ["opaque.bin", "pack.zip"])
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM archive_members").fetchone(),
+                (1,))
+            con.close()
+
+    def test_no_raw_keeps_other_not_applicable(self):
+        with tempfile.TemporaryDirectory() as td:
+            con = self._snapshot(td)
+            tools = {
+                "exiftool": {"path": "unused", "version": "13.test"},
+                "ffprobe": {"path": "unused", "version": "8.test"},
+                "sevenzip": {"path": "unused", "version": "24.test"},
+            }
+            with patch.object(
+                    meta, "ExifToolWorker", self._ExifWorker), \
+                    patch.object(
+                        meta, "ffprobe_full",
+                        side_effect=AssertionError("Raw 关闭时不应可选探测")):
+                stats = meta.process_metadata_stage(
+                    con, tools, no_raw_payload=True)
+            self.assertEqual(stats["done"], 1)
+            self.assertEqual(
+                con.execute(
+                    "SELECT meta_status FROM entries"
+                    " WHERE rel_path='opaque.bin'").fetchone(),
+                ("not_applicable",))
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM raw_payloads").fetchone(),
+                (0,))
+            self.assertEqual(self._ExifWorker.extracted, [])
+            self.assertEqual(stats["ffprobe_payloads"], 0)
+            con.close()
+
+
 class TestPhotoMapping(unittest.TestCase):
     def test_photo_row_from_captured_json(self):
         d = {
@@ -1332,7 +1443,7 @@ class TestVideoGpsStage(unittest.TestCase):
                 " ON e.entry_id=p.entry_id"
                 " WHERE e.rel_path='clip.mp4' AND p.provider='ffprobe'"
             ).fetchone()
-            self.assertEqual(profile, 2)
+            self.assertEqual(profile, meta.PROFILE_VERSION)
             raw = json.loads(_z.decompress(payload).decode("utf-8"))
             self.assertEqual(raw["format"]["tags"]["location"],
                              "+27.1250+111.8750/")
@@ -1404,13 +1515,14 @@ class TestResumeProfileGuard(unittest.TestCase):
                 FullScan.open_resume(partial)
             self.assertFalse(os.path.exists(partial + ".lock"))
 
-    def test_profile_two_without_gps_table_is_rejected(self):
+    def test_current_profile_without_gps_table_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             arch = os.path.join(td, "Arch")
             os.makedirs(arch)
             partial = os.path.join(td, "missing-table.partial.sqlite")
             con = core.create_partial_snapshot(
-                partial, [("A", arch)], config={"profile_version": 2})
+                partial, [("A", arch)],
+                config={"profile_version": meta.PROFILE_VERSION})
             con.execute("DROP TABLE video_gps_points")
             con.commit()
             con.close()

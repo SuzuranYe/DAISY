@@ -43,39 +43,48 @@
 
 | `media_kind` | 扩展名 | Full 元数据处理 |
 |---|---|---|
-| `photo_raw` | cr2 cr3 nef arw raf orf rw2 dng | ExifTool 照片 profile |
-| `photo_jpeg` | jpg jpeg | ExifTool |
-| `photo_working` | tif tiff psd psb png | ExifTool＋`working_metadata` |
+| `photo_raw` | cr2 cr3 nef arw raf orf rw2 dng | ExifTool 照片 profile；Raw 开启时另存成功的 ffprobe Raw |
+| `photo_jpeg` | jpg jpeg | ExifTool；Raw 开启时另存成功的 ffprobe Raw |
+| `photo_working` | tif tiff psd psb png | ExifTool＋`working_metadata`；Raw 开启时另存成功的 ffprobe Raw |
 | `video_mp4` | mp4 mov lrf | ExifTool＋ffprobe |
 | `video_crm` | crm | ExifTool＋ffprobe，允许 CTMD 长尾字段进入 Raw Payload |
 | `audio` | wav mp3 | 视频同管线；title／author／album／copyright 优先采用 ffprobe tags |
-| `archive` | zip 7z rar tar gz bz2 xz | ZIP 使用 `zipfile` 目录；其他格式使用 7-Zip 列表 |
-| `document` | pdf docx xlsx pptx | 只登记属性，不读取正文 |
-| `other` | 其他全部 | 进入树和哈希；不做专用元数据解析 |
+| `archive` | zip 7z rar tar gz bz2 xz | ZIP 使用 `zipfile` 目录；其他格式使用 7-Zip 列表；Raw 开启时另存 ExifTool Raw 和成功的 ffprobe Raw |
+| `document` | pdf docx xlsx pptx | 只登记属性，不读取正文；Raw 开启时另存成功的 ffprobe Raw |
+| `other` | 其他全部 | 进入树和哈希；Raw 开启时尝试 ExifTool 和 ffprobe，成功输出只进 Raw，不写专用规范化表 |
 
 “支持”表示代码具有对应处理路径，不表示所有厂商、固件和损坏形态都经过真实样本验证。
 
-元数据 profile v2：
+元数据 profile v3：
 
 - 照片：`-j -G1:3:4 -a -u -D -l -ee -charset filename=utf8`；
-- 视频、音频、文档：同组参数但不含 `-ee`；
+- 视频、音频、文档、压缩包和 `other`：同组参数但不含 `-ee`；
 - ffprobe：`-print_format json -show_format -show_streams -show_chapters -show_programs -show_stream_groups -show_data`。
-- v2 新增 ffprobe 容器级 `format.tags.location` 的 ISO 6709 规范化；外部
-  工具读取参数相对 v1 不变。
+- v2 新增 ffprobe 容器级 `format.tags.location` 的 ISO 6709 规范化。
+- v3 在 Raw 开启时把 ExifTool 覆盖扩展到每个非占位普通文件，并对每个
+  文件调用 ffprobe，返回成功才保留其 Raw。音频／视频的 ffprobe 是规范化
+  管线的必需后端，失败会记录元数据错误；其他类型只是可选 Raw 增补，失败
+  只表示 ffprobe 不支持或无法读取，不覆盖主解析状态。现有规范化表不变。
+- ffprobe 成功不等于读到了照片意义上的传统 EXIF。静态图像通常被表示为
+  单帧视频流，主要补充 demuxer、codec、尺寸和内部 stream／data track；
+  这些字段可能与 ExifTool 重叠，不能替代 ExifTool。
 
 ## 四、Raw Payload 与规范化元数据
 
 Raw Payload 是**后端原始 JSON 的保留开关**，不是元数据提取总开关：
 
 - 默认保留。后端 JSON canonicalize 后以 zlib level 6 压缩，`payload_sha256` 是未压缩 canonical JSON 的 SHA-256。
-- `--no-raw-payload` 仍执行 ExifTool／ffprobe 并写规范化表，只是不写 `raw_payloads`。
+- `--no-raw-payload` 仍执行生成规范化表所需的 ExifTool、ffprobe 或
+  压缩包解析器，只是不写 `raw_payloads`；`other` 不为 Raw 单独调用
+  ExifTool，非音视频也不为 Raw 单独探测 ffprobe。
 - 关闭后无法重新解释历史后端字段，也无法用原始载荷判断 `metadata_extraction_changed`。
 - Raw Payload 不是隐私开关；规范化列仍可能包含作者、设备、时间或位置等元数据。
 - “全部字段”仅指**当前 profile 返回的 JSON 字段全部保留**，不代表外部工具未返回的字段也被采集。
 - `payload_zlib` 和 `payload_sha256` 保留完整原始载荷；Diff 只有在 ExifTool
   摘要不同且工具版本相同时，才按需解压候选载荷，并在比较副本中排除
-  `FileAccessDate`。该字段会因只读访问而变化，不构成提取语义变化；其他字段
-  或工具版本变化仍判为 `metadata_extraction_changed`。
+  `SourceFile`、`Directory` 和 `FileAccessDate`。这些提取环境字段会因
+  根目录迁移或只读访问而变化，不构成提取语义变化；其他字段或工具版本变化
+  仍判为 `metadata_extraction_changed`。
 
 规范化取值要点：
 
@@ -311,9 +320,9 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 - v1.3.1 整理 GitHub 发布结构、依赖安装说明和代码内历史命名，并加入 GUI 项目自检入口；不改变数据库 schema 或七项业务任务的运行语义。
 - v1.3.2 排除 `FileAccessDate` 对 Diff 元数据判断的干扰，加入运行时生成的截断媒体回归，移除未接入正式路径的 `block_hashes` 表和 `hash_coverage=partial` 值，并把依赖安装改为逐项说明、逐项确认；正式读写语义不变，`schema_version` 仍为 1。
 - v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2。`schema_version` 仍为 1。
-- v1.3.4 统一 GUI 侧栏与主标题，修正日志区、滚动条、底部控件、状态徽标和滚轮误改下拉值，并使用带正负极的莫比乌斯品牌图形；后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`。两项当前文件校验必须显式指定当前 root。Diff 在同版 ExifTool Raw Payload 复核中排除 `SourceFile`、`Directory` 和 `FileAccessDate` 等提取环境字段，避免盘符或根目录迁移造成元数据假阳性；内嵌元数据的真实变化仍照常检出。`schema_version` 仍为 1。
+- v1.3.4 统一 GUI 侧栏与主标题，修正日志区、滚动条、底部控件、状态徽标和滚轮误改下拉值，并使用带正负极的莫比乌斯品牌图形；后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`。两项当前文件校验必须显式指定当前 root。Diff 在同版 ExifTool Raw Payload 复核中排除 `SourceFile`、`Directory` 和 `FileAccessDate` 等提取环境字段，避免盘符或根目录迁移造成元数据假阳性；内嵌元数据的真实变化仍照常检出。Raw 开启时 ExifTool 扩展到每个非占位普通文件，并保留每次 ffprobe 成功返回的 Raw；元数据 profile 升至 3。`schema_version` 仍为 1。
 - `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
-  元数据 profile 和 GPS 表；改动前同版本但仍为 profile v1 的 partial
+  元数据 profile 和 GPS 表；改动前同版本但仍为旧 profile 的 partial
   会被明确拒绝。既有封存快照不迁移、不回写。
 - Diff 当前把两侧条目载入内存，内存占用随条目数增长。
 - Full 哈希针对机械盘采用顺序读取，不在同一介质并行争抢。

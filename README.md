@@ -51,7 +51,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install_DAISY_Dependen
 
 - `Python.Python.3.14`：运行 GUI 和全部任务；
 - `OliverBetz.ExifTool`：读取照片／视频元数据并参与格式校验；
-- `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流和校验媒体容器；
+- `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流和校验媒体容器；Raw
+  开启时也会探测其他文件，并保留成功返回的完整 JSON；
 - `7zip.7zip`：读取并测试 7z、RAR、TAR 等归档格式。
 
 每一项只有明确输入 `y` 才会执行，其他输入只跳过当前项，不影响后续依赖的确认。逐项处理后，脚本会运行 DAISY 环境检测。若当前 PowerShell 尚未取得新的 PATH，请关闭终端和 DAISY，再重新打开。
@@ -134,8 +135,11 @@ DAISY 不会在被扫描的档案目录中创建、修改、重命名或删除�
 
 Raw Payload 控制是否在快照中保留外部工具返回的完整原始 JSON，不是“是否提取元数据”的总开关：
 
-- 默认开启：同时保留规范化元数据和原始后端字段；
-- 关闭：ExifTool／ffprobe 仍会运行，但不写入 `raw_payloads`；
+- 默认开启：对每个非占位普通文件尝试保留 ExifTool Raw，并逐文件调用
+  ffprobe，成功返回时保留其 Raw；已支持类型同时写规范化元数据；
+- 关闭：仍运行生成规范化表所需的 ExifTool、ffprobe 或压缩包解析器，但
+  不写 `raw_payloads`；`other` 不再为 Raw 单独调用 ExifTool，非音视频
+  也不再为 Raw 单独探测 ffprobe；
 - 它不是隐私开关，规范化列仍可能包含位置、作者、设备或序列号。
 
 ### 视频 GPS
@@ -147,7 +151,7 @@ Payload 中保留原值。经纬度会规范化为数值并校验范围；海拔
 容器级 `location` 表示文件级静态位置，因此 `timestamp_seconds` 为
 `NULL`。表结构允许同一视频保存多个点，也预留了点时间，但当前版本尚不
 提取逐帧或连续 GPS 轨迹。Quick 不读取文件内容，所以该表保持为空。
-`export-report` 会生成 `GPS_inventory_video.csv`。profile v1 的既有
+`export-report` 会生成 `GPS_inventory_video.csv`。旧 profile 的既有
 快照不会被回写，导出时也不会凭空生成这一页。
 
 由于规范化 profile 和 additive 表已变化，中断的 `.partial.sqlite`
