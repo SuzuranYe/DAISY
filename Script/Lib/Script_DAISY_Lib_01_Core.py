@@ -20,25 +20,42 @@ import uuid
 PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
-SCANNER_VERSION = "1.3.4"      # 包版本
-SCHEMA_VERSION = 1
+SCANNER_VERSION = "1.4.0"      # 包版本
+SCHEMA_VERSION = 2
+READABLE_SCHEMA_VERSIONS = frozenset({1, SCHEMA_VERSION})
+MIN_READER_VERSION = "1.4.0"
+DATA_CONTRACT = "daisy-snapshot-v2"
 PATH_KEY_RULE = 1
 
 # 支持格式映射；配置可扩展，新增格式须附样本实测
 EXT_TO_KIND = {
     **dict.fromkeys(["cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "dng"], "photo_raw"),
-    **dict.fromkeys(["jpg", "jpeg"], "photo_jpeg"),
+    **dict.fromkeys(["jpg", "jpeg", "jfif"], "photo_jpeg"),
+    "gif": "image_gif",
     **dict.fromkeys(["tif", "tiff", "psd", "psb", "png"], "photo_working"),
     **dict.fromkeys(["mp4", "mov", "lrf"], "video_mp4"),
     "crm": "video_crm",
     **dict.fromkeys(["wav", "mp3"], "audio"),
     **dict.fromkeys(["zip", "7z", "rar", "tar", "gz", "bz2", "xz"], "archive"),
-    **dict.fromkeys(["pdf", "docx", "xlsx", "pptx"], "document"),
+    **dict.fromkeys(["pdf", "doc", "docx", "xlsx", "pptx"], "document"),
 }
 
 
 class PreflightError(RuntimeError):
     """预检失败：环境不满足运行前提。"""
+
+
+def require_readable_schema_version(
+    schema_version: int, artifact: str = "快照",
+) -> int:
+    """拒绝本工具未声明可读的数据库契约版本。"""
+    if schema_version not in READABLE_SCHEMA_VERSIONS:
+        supported = "、".join(
+            str(v) for v in sorted(READABLE_SCHEMA_VERSIONS))
+        raise PreflightError(
+            f"{artifact} schema_version={schema_version} 非本工具可读范围"
+            f"（{supported}）")
+    return schema_version
 
 
 def force_utf8_io() -> None:
@@ -110,12 +127,12 @@ def snapshot_profile_tokens(kind: str, hash_mode: str = "full",
         elif hash_mode == "incremental":
             tokens.append("Hash-Inc")
         if not raw_payload:
-            tokens.append("No-Raw")
+            tokens.append("Basic-Metadata")
         if not file_id:
             tokens.append("No-FID")
         return tokens
     if normalized == "quick":
-        # Quick 已经明确蕴含无哈希、无元数据 Payload，不重复制造冗余标记。
+        # Quick 已经明确蕴含无哈希、无元数据原文，不重复制造冗余标记。
         return [] if file_id else ["No-FID"]
     return []
 
@@ -254,8 +271,8 @@ CREATE TABLE snapshot_info (
     counts_json            TEXT
 );
 
--- v1.3.0 附加证据表：核心登记语义未变，因此 schema_version 仍为 1；
--- 本版本不承诺读取旧版 sidecar／散置摘要产物。
+-- v1.4.0 数据契约为 schema_version=2；v1.4 reader 仍可只读解释
+-- schema_version=1 的封存快照，但 v1.3.x reader 不保证解释 v1.4 产物。
 CREATE TABLE snapshot_manifest (
     id                INTEGER PRIMARY KEY CHECK (id = 1),
     manifest_version  INTEGER NOT NULL,
@@ -309,7 +326,7 @@ CREATE TABLE entries (
     name            TEXT    NOT NULL,
     extension       TEXT    NOT NULL,
     media_kind      TEXT    NOT NULL
-                    CHECK (media_kind IN ('photo_raw','photo_jpeg','photo_working','video_mp4','video_crm','audio','archive','document','other')),
+                    CHECK (media_kind IN ('photo_raw','photo_jpeg','image_gif','photo_working','video_mp4','video_crm','audio','archive','document','other')),
     size_bytes      INTEGER NOT NULL,
     created_at_utc  TEXT,
     modified_at_utc TEXT    NOT NULL,
@@ -729,6 +746,9 @@ def create_partial_snapshot(partial_path: str,
         raise PreflightError("root 路径重复")
     for _, p in roots:
         validate_root(p)
+    config = dict(config)
+    config["data_contract"] = DATA_CONTRACT
+    config["min_reader_version"] = MIN_READER_VERSION
     tv = tool_versions or {}
     # partial 独占预留：路径已存在立即失败，绝不打开续用
     try:
@@ -994,13 +1014,20 @@ def effective_snapshot_profile(
     config = json.loads(config_text)
     scan_kind = str(config.get("phase") or "full")
     hash_mode = str(config.get("hash") or hash_coverage)
-    raw_payload = (
-        scan_kind == "full" and not bool(config.get("no_raw_payload", False)))
+    metadata_storage = config.get("metadata_storage")
+    if metadata_storage not in ("complete", "normalized"):
+        # v1.3.4 早期 partial／快照使用旧布尔键，续传与读取时保持兼容。
+        metadata_storage = (
+            "normalized" if bool(config.get("no_raw_payload", False))
+            else "complete"
+        )
+    raw_payload = scan_kind == "full" and metadata_storage == "complete"
     file_id = not bool(config.get("no_file_id", False))
     return {
         "scan_kind": scan_kind,
         "hash_mode_requested": hash_mode,
         "hash_coverage_actual": hash_coverage,
+        "metadata_storage": metadata_storage,
         "raw_payload_retained": raw_payload,
         "raw_payload_rows": con.execute(
             "SELECT COUNT(*) FROM raw_payloads").fetchone()[0],
@@ -1091,6 +1118,9 @@ def _embed_snapshot_evidence(
         "snapshot_filename_pattern": filename_pattern,
         "snapshot_uuid": snapshot_uuid,
         "schema_version": schema_version,
+        "data_contract": config.get("data_contract", DATA_CONTRACT),
+        "min_reader_version": config.get(
+            "min_reader_version", MIN_READER_VERSION),
         "path_key_rule": path_key_rule,
         "scanner_version": scanner_version,
         "started_at_utc": started_at_utc,

@@ -19,6 +19,51 @@ import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_03_Hash as dbh
 
 
+_TOOL_DISPLAY_NAMES = {
+    "exiftool": "ExifTool",
+    "ffprobe": "ffprobe",
+    "sevenzip": "7-Zip",
+    "powershell": "PowerShell",
+}
+_GUI_INSTALLABLE_TOOLS = frozenset(("exiftool", "ffprobe", "sevenzip"))
+
+
+def inspect_local_tools(
+    explicit: dict[str, str | None],
+) -> tuple[dict[str, dict], list[dict[str, object]]]:
+    """独立检查每项工具，使 GUI 能一次列全本机版本与缺失项。"""
+    tools: dict[str, dict] = {}
+    issues: list[dict[str, object]] = []
+    for name in ("exiftool", "ffprobe", "sevenzip"):
+        try:
+            path = core.discover_tool(name, explicit.get(name))
+            tools[name] = core.resolved_tool_info(
+                name, path, explicit=bool(explicit.get(name)))
+        except core.PreflightError as exc:
+            issues.append({
+                "name": name,
+                "display": _TOOL_DISPLAY_NAMES[name],
+                "installable": name in _GUI_INSTALLABLE_TOOLS,
+                "reason": str(exc),
+            })
+    try:
+        ps_path, ps_version = dbh.discover_powershell(
+            explicit.get("powershell"))
+        tools["powershell"] = core.resolved_tool_info(
+            "powershell", ps_path,
+            explicit=bool(explicit.get("powershell")),
+            version=ps_version,
+        )
+    except core.PreflightError as exc:
+        issues.append({
+            "name": "powershell",
+            "display": _TOOL_DISPLAY_NAMES["powershell"],
+            "installable": False,
+            "reason": str(exc),
+        })
+    return tools, issues
+
+
 def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(description="DAISY 运行环境检查")
@@ -31,6 +76,33 @@ def main() -> int:
 
     print("== DAISY 运行环境检查 ==")
     prog = core.Progress(1, 1, "环境检查")
+    explicit = {
+        "exiftool": args.exiftool_path,
+        "ffprobe": args.ffprobe_path,
+        "sevenzip": args.sevenzip_path,
+        "powershell": args.powershell_path,
+    }
+    inventory, issues = inspect_local_tools(explicit)
+    core.emit_gui_event(
+        "environment_inventory", tools=inventory, missing=issues)
+    if inventory:
+        core.emit_gui_event("tools_detected", tools=inventory)
+    print("本机工具版本：")
+    for name in ("exiftool", "ffprobe", "sevenzip", "powershell"):
+        info = inventory.get(name)
+        if info:
+            print(
+                f"  {_TOOL_DISPLAY_NAMES[name]:<10} "
+                f"{info['version']:<12} {info['path']}")
+    if issues:
+        print("缺失或不可用：", file=sys.stderr)
+        for issue in issues:
+            print(
+                f"  {issue['display']}：{issue['reason']}",
+                file=sys.stderr,
+            )
+        return 2
+
     try:
         tools = core.run_preflight(
             {"exiftool": args.exiftool_path, "ffprobe": args.ffprobe_path,
@@ -50,12 +122,10 @@ def main() -> int:
                 raise core.PreflightError(
                     "PowerShell Get-FileHash 冒烟测试失败")
         core.emit_gui_event(
-            "tools_detected", tools={"powershell": tools["powershell"]})
+            "tools_detected", tools=tools)
     except core.PreflightError as exc:
         print(f"环境不就绪：\n{exc}", file=sys.stderr)
         return 2
-    for name, info in tools.items():
-        print(f"  {name:<10} {info['version']:<8} {info['path']}")
     print("  SHA-256 NIST 向量 / 四工具冒烟＋只读断言：通过")
 
     report = {"generated_at_utc": core.now_utc_iso(),

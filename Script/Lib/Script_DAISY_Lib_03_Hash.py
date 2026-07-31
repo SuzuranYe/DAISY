@@ -175,10 +175,12 @@ def load_previous(prev_path: str, map_root: dict | None = None,
             " counts_json FROM snapshot_info").fetchone()
         if status != "complete":
             raise core.PreflightError(f"上一快照未封存（scan_status={status}）")
-        if schema_v != core.SCHEMA_VERSION or pk_rule != core.PATH_KEY_RULE:
+        if (schema_v not in core.READABLE_SCHEMA_VERSIONS
+                or pk_rule != core.PATH_KEY_RULE):
             raise core.PreflightError(
                 f"上一快照 schema_version/path_key_rule 不符：{schema_v}/{pk_rule}"
-                f"（当前 {core.SCHEMA_VERSION}/{core.PATH_KEY_RULE}）")
+                f"（可读 schema {sorted(core.READABLE_SCHEMA_VERSIONS)}；"
+                f"当前 path_key_rule {core.PATH_KEY_RULE}）")
         counts = json.loads(counts_json) if counts_json else {}
         # 旧版快照无 abnormal 键：按封存时的同一公式从 counts 现算
         abnormal_src = bool(counts.get("abnormal")) or bool(
@@ -247,7 +249,6 @@ def process_hash_stage(con: sqlite3.Connection, mode: str,
                        commit_every: int = 100,
                        max_files: int | None = None,
                        stall_seconds: float = 30.0,
-                       settle_seconds: int = 0,
                        on_progress=None, on_event=None,
                        error_warn_ratio: float = 0.2,
                        error_abort_ratio: float = 0.5) -> dict:
@@ -266,17 +267,6 @@ def process_hash_stage(con: sqlite3.Connection, mode: str,
     n_placeholder = cur.rowcount
     con.execute("UPDATE entries SET hash_status='pending'"
                 " WHERE hash_status='processing'")   # 遗留 processing 重置续传
-    n_settled = 0
-    if settle_seconds > 0:                # 跳过静置窗口内刚修改的文件
-        thr = core.ns_to_utc_iso(
-            time.time_ns() - settle_seconds * 1_000_000_000)
-        cur = con.execute(
-            "UPDATE entries SET hash_status='skipped'"
-            " WHERE hash_status='pending' AND modified_at_utc >= ?", (thr,))
-        n_settled = cur.rowcount
-        if n_settled and on_event:
-            on_event("settle_skipped", count=n_settled,
-                     settle_seconds=settle_seconds, threshold_utc=thr)
     con.commit()
     roots = dict(con.execute("SELECT root_id, root_path FROM roots"))
     labels = dict(con.execute("SELECT root_id, root_label FROM roots"))
@@ -287,7 +277,6 @@ def process_hash_stage(con: sqlite3.Connection, mode: str,
         " ORDER BY root_id, rel_path").fetchall()
     stats = {"total": len(todo), "done": 0, "reused": 0, "error": 0,
              "unstable": 0, "skipped": n_placeholder,
-             "settle_skipped": n_settled,
              "bytes_total": sum(r[4] for r in todo), "bytes_hashed": 0}
     warned = False
     wd = StallWatchdog(stall_seconds, lambda label, idle: (

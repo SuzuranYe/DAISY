@@ -25,6 +25,8 @@ CREATE TABLE diff_info (
     id                INTEGER PRIMARY KEY CHECK (id = 1),
     diff_uuid         TEXT    NOT NULL UNIQUE,
     schema_version    INTEGER NOT NULL,
+    old_schema_version INTEGER NOT NULL,
+    new_schema_version INTEGER NOT NULL,
     old_snapshot_uuid TEXT    NOT NULL,
     new_snapshot_uuid TEXT    NOT NULL,
     old_snapshot_file TEXT    NOT NULL,
@@ -374,14 +376,18 @@ def compare(old_path: str, new_path: str, out_path: str,
     """执行对比，写出 Diff 数据库，返回计数摘要。"""
     old = load_side(old_path, force)
     new = load_side(new_path, force)
-    if old["schema"] != new["schema"] or old["pk_rule"] != new["pk_rule"]:
+    core.require_readable_schema_version(
+        old["schema"], f"旧快照 {old['file']}")
+    core.require_readable_schema_version(
+        new["schema"], f"新快照 {new['file']}")
+    if old["pk_rule"] != new["pk_rule"]:
         raise core.PreflightError(
-            f"schema_version/path_key_rule 双侧不等（硬性项）："
+            f"path_key_rule 双侧不等（硬性项）："
             f"{old['schema']}/{old['pk_rule']} vs {new['schema']}/{new['pk_rule']}")
-    if old["schema"] != core.SCHEMA_VERSION:
+    if old["pk_rule"] != core.PATH_KEY_RULE:
         raise core.PreflightError(
-            f"快照 schema_version={old['schema']} 非本工具支持的"
-            f" {core.SCHEMA_VERSION}")
+            f"快照 path_key_rule={old['pk_rule']} 非本工具支持的"
+            f" {core.PATH_KEY_RULE}")
     _root_consistency(old)
     _root_consistency(new)
 
@@ -702,6 +708,8 @@ def compare(old_path: str, new_path: str, out_path: str,
                                       if s["side"] == "old"),
                            "new": sum(1 for s in subtree_rows
                                       if s["side"] == "new")},
+              "snapshot_schemas": {"old": old["schema"],
+                                   "new": new["schema"]},
               "payload_rows": {"old": old["n_payload"],
                                "new": new["n_payload"]}}
     root_mapping = {"pairs": [[olb, nlb] for _, _, olb, nlb in pairs],
@@ -712,11 +720,13 @@ def compare(old_path: str, new_path: str, out_path: str,
                                      for r in unpaired_new]}
     out.execute(
         "INSERT INTO diff_info (id, diff_uuid, schema_version,"
+        " old_schema_version, new_schema_version,"
         " old_snapshot_uuid, new_snapshot_uuid, old_snapshot_file,"
         " new_snapshot_file, old_hash_coverage, new_hash_coverage,"
         " root_mapping_json, forced, tool_version, created_at_utc,"
-        " counts_json) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (uuid_mod.uuid4().hex, old["schema"], old["uuid"], new["uuid"],
+        " counts_json) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (uuid_mod.uuid4().hex, core.SCHEMA_VERSION,
+         old["schema"], new["schema"], old["uuid"], new["uuid"],
          old["file"], new["file"], old["coverage"], new["coverage"],
          json.dumps(root_mapping, ensure_ascii=False),
          1 if (old["forced"] or new["forced"]) else 0,

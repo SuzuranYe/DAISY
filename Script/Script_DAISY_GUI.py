@@ -5,16 +5,21 @@ Script\Script_DAISY_MAIN.py 的既有子命令完成，避免形成第二套业�
 """
 from __future__ import annotations
 
+import base64
 import codecs
 import json
+import math
 import os
 import queue
 import re
 import signal
+import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -35,6 +40,7 @@ _DEFAULT_SNAPSHOTS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Snapshots")
 _DEFAULT_DIFFS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Diffs")
 _GUI_EVENT_PREFIX = "@@DAISY_GUI@@"
 _PROJECT_SELF_TEST_KEY = "project_self_test"
+_DEPENDENCY_INSTALL_KEY = "dependency_install"
 _PROJECT_TEST_PATTERN = "Script_DAISY_Test_*.py"
 _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Unit.py",
@@ -58,12 +64,24 @@ _TOOL_DISPLAY_NAMES = {
     "sevenzip": "7-Zip",
     "powershell": "PowerShell",
 }
+_INSTALLABLE_TOOL_PACKAGES = {
+    "exiftool": ("ExifTool", "OliverBetz.ExifTool"),
+    "ffprobe": ("ffprobe（FFmpeg）", "Gyan.FFmpeg"),
+    "sevenzip": ("7-Zip", "7zip.7zip"),
+}
 _TASK_TOOL_NAMES = {
     "env_check": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "full_scan": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "check_format": ("exiftool", "ffprobe", "sevenzip"),
     "check_hash": ("powershell",),
 }
+_PROJECT_CACHE_DIR_NAMES = frozenset((
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+))
+_PROJECT_CACHE_FILE_SUFFIXES = (".pyc", ".pyo")
+_CACHE_SCAN_EXCLUDED_DIR_NAMES = frozenset((
+    ".git", ".venv", "venv", "node_modules", "output",
+))
 
 # 《孤星》专项调查取色：米黄色纸面＋薄荷绿、橙黄、深红三种强调色。
 # 三个基准色取自官方素材右上角色条，米白取自设备外壳。
@@ -185,7 +203,7 @@ def build_mobius_logo(parent: tk.Misc, compact: bool = False) -> tk.Canvas:
         capstyle="round", tags=("mobius_cut",),
     )
     canvas.create_line(
-        *crossing, fill=_AMBER_DARK, width=3 if compact else 4,
+        *crossing, fill=_GREEN_DEEP, width=3 if compact else 4,
         capstyle="round", tags=("mobius_twist",),
     )
     symbol_width = 2 if compact else 3
@@ -196,16 +214,166 @@ def build_mobius_logo(parent: tk.Misc, compact: bool = False) -> tk.Canvas:
         canvas.create_line(
             center_x - symbol_extent_x, 14 * scale_y,
             center_x + symbol_extent_x, 14 * scale_y,
-            fill=_AMBER_DEEP, width=symbol_width,
+            fill=_GREEN_DEEP, width=symbol_width,
             capstyle="round", tags=(tag,),
         )
     canvas.create_line(
         10 * scale_x, 14 * scale_y - symbol_extent_y,
         10 * scale_x, 14 * scale_y + symbol_extent_y,
-        fill=_AMBER_DEEP, width=symbol_width,
+        fill=_GREEN_DEEP, width=symbol_width,
         capstyle="round", tags=("mobius_positive",),
     )
     return canvas
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    """生成一个 PNG chunk。"""
+    checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
+    return (
+        struct.pack(">I", len(payload))
+        + kind + payload + struct.pack(">I", checksum)
+    )
+
+
+def _paint_disc(
+    mask: bytearray, side: int, center_x: float, center_y: float,
+    radius: float, value: int,
+) -> None:
+    """在超采样 alpha mask 上绘制或擦除实心圆。"""
+    x0 = max(0, int(center_x - radius - 1))
+    x1 = min(side - 1, int(center_x + radius + 1))
+    y0 = max(0, int(center_y - radius - 1))
+    y1 = min(side - 1, int(center_y + radius + 1))
+    radius_sq = radius * radius
+    for y in range(y0, y1 + 1):
+        dy_sq = (y + 0.5 - center_y) ** 2
+        for x in range(x0, x1 + 1):
+            if (x + 0.5 - center_x) ** 2 + dy_sq <= radius_sq:
+                mask[y * side + x] = value
+
+
+def _paint_path(
+    mask: bytearray, side: int, points: list[tuple[float, float]],
+    radius: float, value: int,
+) -> None:
+    """用相邻圆覆盖生成平滑、圆头的粗路径。"""
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        distance = math.hypot(x1 - x0, y1 - y0)
+        steps = max(1, math.ceil(distance))
+        for step in range(steps + 1):
+            ratio = step / steps
+            _paint_disc(
+                mask, side,
+                x0 + (x1 - x0) * ratio,
+                y0 + (y1 - y0) * ratio,
+                radius, value,
+            )
+
+
+def _mobius_points(
+    side: int, start: float, stop: float, count: int,
+) -> list[tuple[float, float]]:
+    """返回单色 Möbius 标志使用的双叶曲线点。"""
+    center = side / 2
+    radius_x = side * 0.39
+    radius_y = side * 0.25
+    return [
+        (
+            center + radius_x * math.sin(t),
+            center - radius_y * math.sin(2 * t),
+        )
+        for t in (
+            start + (stop - start) * index / (count - 1)
+            for index in range(count)
+        )
+    ]
+
+
+def mobius_icon_png(size: int = 64) -> bytes:
+    """生成平滑、透明背景、单色的窗口 Möbius PNG。"""
+    if not 16 <= size <= 256:
+        raise ValueError("窗口图标尺寸必须在 16～256 px 之间")
+    supersample = 4
+    side = size * supersample
+    mask = bytearray(side * side)
+    stroke_radius = side * 0.052
+    _paint_path(
+        mask, side, _mobius_points(side, 0.0, math.tau, 257),
+        stroke_radius, 255,
+    )
+
+    # 中心先擦除下穿分支，再重绘上跨分支，保留莫比乌斯交叠关系。
+    crossing_span = 0.12
+    _paint_path(
+        mask, side,
+        _mobius_points(
+            side, math.pi - crossing_span,
+            math.pi + crossing_span, 33,
+        ),
+        stroke_radius + side * 0.012, 0,
+    )
+    _paint_path(
+        mask, side,
+        _mobius_points(side, -crossing_span, crossing_span, 33),
+        stroke_radius, 255,
+    )
+
+    # 正负极保持为标志的一部分，但只使用与环相同的前景色。
+    symbol_radius = side * 0.015
+    symbol_half = side * 0.055
+    center = side / 2
+    for symbol_x in (side * 0.27, side * 0.73):
+        _paint_path(
+            mask, side,
+            [(symbol_x - symbol_half, center),
+             (symbol_x + symbol_half, center)],
+            symbol_radius, 255,
+        )
+    _paint_path(
+        mask, side,
+        [(side * 0.27, center - symbol_half),
+         (side * 0.27, center + symbol_half)],
+        symbol_radius, 255,
+    )
+
+    foreground = tuple(
+        int(_GREEN_DEEP[index:index + 2], 16)
+        for index in (1, 3, 5)
+    )
+    rows = bytearray()
+    area = supersample * supersample
+    for y in range(size):
+        rows.append(0)
+        for x in range(size):
+            alpha_sum = 0
+            for sample_y in range(supersample):
+                offset = (y * supersample + sample_y) * side
+                for sample_x in range(supersample):
+                    alpha_sum += mask[
+                        offset + x * supersample + sample_x]
+            alpha = round(alpha_sum / area)
+            rows.extend((*foreground, alpha))
+
+    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", zlib.compress(bytes(rows), level=9))
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+def build_mobius_window_icons(root: tk.Misc) -> tuple[tk.PhotoImage, ...]:
+    """设置标题栏／任务栏图标，并返回需由应用持有的图像引用。"""
+    icons = tuple(
+        tk.PhotoImage(
+            master=root,
+            data=base64.b64encode(mobius_icon_png(size)).decode("ascii"),
+        )
+        for size in (64, 32, 16)
+    )
+    root.iconphoto(True, *icons)
+    return icons
 
 
 def parse_gui_stream(
@@ -356,8 +524,174 @@ def session_tool_cache_summary(
         info = cache.get(name) or {}
         path = str(info.get("path") or "").strip()
         if path and info.get("verified") is True and path_exists(path):
-            cached.append(_TOOL_DISPLAY_NAMES[name])
-    return "已缓存：" + "、".join(cached) if cached else ""
+            display = _TOOL_DISPLAY_NAMES[name]
+            if task_key == "env_check":
+                version = str(info.get("version") or "版本未知")
+                cached.append(f"{display} {version}")
+            else:
+                cached.append(display)
+    if not cached:
+        return ""
+    prefix = "本机版本：" if task_key == "env_check" else "已缓存："
+    return prefix + "、".join(cached)
+
+
+def clear_session_tool_cache(
+    cache: dict[str, dict[str, object]],
+) -> int:
+    """清空可安全重建的本窗口工具路径缓存，返回移除的记录数。"""
+    count = len(cache)
+    cache.clear()
+    return count
+
+
+@dataclass(frozen=True)
+class ProjectCacheCleanup:
+    directories: tuple[str, ...]
+    files: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+def clean_project_caches(project_root: str = _BASE) -> ProjectCacheCleanup:
+    """只清理项目内白名单缓存，不跟随链接，也不扫描输出与依赖目录。"""
+    root = os.path.abspath(project_root)
+    root_real = os.path.normcase(os.path.realpath(root))
+    removed_dirs: list[str] = []
+    removed_files: list[str] = []
+    errors: list[str] = []
+    cache_dirs: list[tuple[str, str]] = []
+    cache_files: list[tuple[str, str]] = []
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+
+    if not os.path.isdir(root):
+        return ProjectCacheCleanup(
+            (), (), (f"项目目录不存在：{root}",))
+
+    def relative_if_safe(path: str) -> str | None:
+        try:
+            candidate_real = os.path.normcase(os.path.realpath(path))
+            if (candidate_real == root_real
+                    or os.path.commonpath((root_real, candidate_real))
+                    != root_real):
+                return None
+            return os.path.relpath(path, root)
+        except (OSError, ValueError):
+            return None
+
+    def walk_error(exc: OSError) -> None:
+        errors.append(f"无法扫描：{exc}")
+
+    for current, dirnames, filenames in os.walk(
+            root, topdown=True, onerror=walk_error, followlinks=False):
+        descend: list[str] = []
+        for name in dirnames:
+            path = os.path.join(current, name)
+            lower_name = name.casefold()
+            relative = relative_if_safe(path)
+            linked = os.path.islink(path) or is_junction(path)
+            if lower_name in _PROJECT_CACHE_DIR_NAMES:
+                if relative is None or linked:
+                    errors.append(
+                        f"跳过不安全的缓存目录："
+                        f"{relative or os.path.abspath(path)}")
+                else:
+                    cache_dirs.append((path, relative))
+                continue
+            if (lower_name in _CACHE_SCAN_EXCLUDED_DIR_NAMES
+                    or linked or relative is None):
+                continue
+            descend.append(name)
+        dirnames[:] = descend
+
+        for name in filenames:
+            if not name.casefold().endswith(_PROJECT_CACHE_FILE_SUFFIXES):
+                continue
+            path = os.path.join(current, name)
+            relative = relative_if_safe(path)
+            if (relative is None or os.path.islink(path)
+                    or is_junction(path)):
+                errors.append(
+                    f"跳过不安全的缓存文件："
+                    f"{relative or os.path.abspath(path)}")
+                continue
+            cache_files.append((path, relative))
+
+    for path, relative in sorted(
+            cache_dirs, key=lambda item: item[1].casefold()):
+        try:
+            shutil.rmtree(path)
+            removed_dirs.append(relative)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"无法清理目录 {relative}：{exc}")
+
+    for path, relative in sorted(
+            cache_files, key=lambda item: item[1].casefold()):
+        try:
+            os.remove(path)
+            removed_files.append(relative)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"无法清理文件 {relative}：{exc}")
+
+    return ProjectCacheCleanup(
+        tuple(removed_dirs), tuple(removed_files), tuple(errors))
+
+
+def dependency_install_command(
+    tool_name: str, winget_path: str = "winget.exe",
+) -> list[str]:
+    """返回固定白名单工具的 WinGet 非交互安装命令。"""
+    try:
+        _display, package_id = _INSTALLABLE_TOOL_PACKAGES[tool_name]
+    except KeyError as exc:
+        raise ValueError(f"不允许安装未知工具：{tool_name}") from exc
+    return [
+        winget_path,
+        "install",
+        "--exact",
+        "--id", package_id,
+        "--source", "winget",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+        "--disable-interactivity",
+    ]
+
+
+def discover_winget(path_lookup=shutil.which) -> str | None:
+    """查找 WinGet；不联网、不安装 App Installer。"""
+    found = path_lookup("winget.exe") or path_lookup("winget")
+    if found and os.path.isfile(found):
+        return os.path.abspath(found)
+    candidate = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Microsoft", "WindowsApps", "winget.exe",
+    )
+    return os.path.abspath(candidate) if os.path.isfile(candidate) else None
+
+
+def refresh_windows_process_path() -> bool:
+    """安装后从注册表刷新当前 GUI 进程 PATH，失败时保持原值。"""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ) as key:
+            machine_path = str(winreg.QueryValueEx(key, "Path")[0])
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Environment",
+        ) as key:
+            user_path = str(winreg.QueryValueEx(key, "Path")[0])
+    except (OSError, ValueError):
+        return False
+    os.environ["PATH"] = os.path.expandvars(
+        machine_path + os.pathsep + user_path)
+    return True
 
 
 @dataclass(frozen=True)
@@ -466,8 +800,8 @@ TASKS = (
     TaskSpec(
         "full_scan",
         "full-scan",
-        "11  完整登记",
-        "完整登记",
+        "11  完整扫描",
+        "完整扫描",
         "登记文件树、元数据与哈希，默认完整 SHA-256；生成可续传、封存后"
         "不可变的单文件 SQLite 快照。适合首次建账和周期性完整复核。",
         "档案只读 · 长时任务 · 生成快照",
@@ -475,7 +809,7 @@ TASKS = (
             FieldSpec(
                 "start_mode", "启动方式", None, "choice", "new",
                 choices=(
-                    ("新建完整登记（默认）", "new"),
+                    ("新建完整扫描（默认）", "new"),
                     ("续传未完成的 partial 快照", "resume"),
                 ),
                 help="续传时，哈希、Payload 与 File ID 等设置沿用 partial "
@@ -514,16 +848,18 @@ TASKS = (
                 section="输出", active_when=_FULL_NEW,
             ),
             FieldSpec(
-                "keep_raw_payload", "Raw Payload（原始元数据）",
-                "--no-raw-payload", "choice_flag", True,
+                "metadata_storage", "元数据范围",
+                "--metadata-storage", "choice", "complete",
                 choices=(
-                    ("开启：保留 Raw Payload（默认）", True),
-                    ("关闭：不保留 Raw Payload（No-Raw）", False),
+                    ("全量元数据：基础字段＋原始工具输出（默认）", "complete"),
+                    ("基础元数据：仅保留规范化常用字段", "normalized"),
                 ),
-                flag_value=False,
-                help="默认开启：每个文件保留 ExifTool Raw，并保留 ffprobe"
-                     " 成功结果；选择“关闭”可显著缩小快照，但以后无法重新"
-                     "解释原始后端数据，也无法判定 "
+                help="基础元数据通过 ExifTool 生成有映射类型的规范化字段，"
+                     "视频和音频还通过 ffprobe 生成容器与流字段；GIF 在"
+                     "基础范围只使用 ExifTool。全量元数据在此基础上，"
+                     "为本地所有文件保留 ExifTool 原文，并为视频、音频"
+                     "和 GIF 保留 ffprobe 原文。基础范围可显著缩小快照，"
+                     "但以后无法重新解释原始输出，也无法判定 "
                      "metadata_extraction_changed。",
                 section="快照内容", active_when=_FULL_NEW,
             ),
@@ -558,14 +894,13 @@ TASKS = (
             FieldSpec(
                 "verify_percent", "独立哈希抽验比例（%）",
                 "--verify-sample-percent", default="1.0",
-                help="默认 1%，且至少抽验 100 个可哈希文件。",
-                section="哈希与稳定性", active_when=_FULL_HASHED,
-            ),
-            FieldSpec(
-                "settle_seconds", "文件静置秒数", "--settle-seconds",
-                default="", help="留空为 0；填写后跳过距离扫描开始过近的文件。",
+                help=(
+                    "主 SHA-256 完成后，按比例抽取本次实际计算且有效的条目，"
+                    "再由 PowerShell Get-FileHash 独立重算；默认 1%，至少 "
+                    "100 个（不足则全验）。这不是主哈希的覆盖比例。"
+                ),
                 section="扫描稳定性", advanced=True,
-                active_when=_FULL_NEW,
+                active_when=_FULL_HASHED,
             ),
             FieldSpec(
                 "map_root", "增量根标签映射", "--map-root", "multiline",
@@ -610,8 +945,8 @@ TASKS = (
     TaskSpec(
         "quick_scan",
         "quick-scan",
-        "12  快速清点",
-        "快速清点",
+        "12  快速扫描",
+        "快速扫描",
         "只登记文件树、大小、时间与文件标识，不读取文件内容，也不依赖外部"
         "工具。适合接盘后快速确认目录结构。",
         "档案只读 · 快速 · 生成快照",
@@ -1026,7 +1361,6 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
 
     numeric_rules = {
         ("full_scan", "verify_percent"): (0.0, 100.0, True, False),
-        ("full_scan", "settle_seconds"): (0.0, None, True, True),
         ("check_format", "sample_percent"): (0.0, 100.0, False, False),
         ("check_hash", "sample_percent"): (0.0, 100.0, False, False),
     }
@@ -1342,6 +1676,8 @@ class DaisyApp:
         self.advanced_visible: dict[str, bool] = {}
         self.nav_buttons: dict[str, tk.Button] = {}
         self.detected_tools: dict[str, dict[str, object]] = {}
+        self.environment_missing_names: tuple[str, ...] = ()
+        self.missing_installable_tools: tuple[str, ...] = ()
         self._work_progress_indeterminate = False
         self.process: subprocess.Popen[bytes] | None = None
         self.process_started = 0.0
@@ -1365,6 +1701,7 @@ class DaisyApp:
 
     def _configure_window(self) -> None:
         self.root.title(project_window_title())
+        self.window_icons = build_mobius_window_icons(self.root)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         width, height = window_size_for_screen(screen_width, screen_height)
@@ -1705,12 +2042,12 @@ class DaisyApp:
         self.form_canvas = tk.Canvas(
             form_host, bg=_SURFACE, highlightthickness=0, bd=0,
         )
-        form_scroll = ttk.Scrollbar(
+        self.form_scroll = ttk.Scrollbar(
             form_host, orient="vertical", command=self.form_canvas.yview,
             style="Daisy.Vertical.TScrollbar",
         )
-        self.form_canvas.configure(yscrollcommand=form_scroll.set)
-        form_scroll.pack(side="right", fill="y")
+        self.form_canvas.configure(yscrollcommand=self.form_scroll.set)
+        self.form_scroll.pack(side="right", fill="y")
         self.form_canvas.pack(side="left", fill="both", expand=True)
         self.form_inner = tk.Frame(self.form_canvas, bg=_SURFACE)
         self.form_window = self.form_canvas.create_window(
@@ -1853,14 +2190,21 @@ class DaisyApp:
             padx=10, pady=5,
         )
         self.status_label.pack(side="left", anchor="center")
-        ttk.Button(
+        self.open_output_button = ttk.Button(
             actions, text="打开结果目录", style="Secondary.TButton",
             command=self._open_output,
-        ).pack(side="right", padx=(8, 0))
-        ttk.Button(
+        )
+        self.open_output_button.pack(side="right", padx=(8, 0))
+        self.clear_log_button = ttk.Button(
             actions, text="清空日志", style="Secondary.TButton",
             command=self._clear_log,
-        ).pack(side="right", padx=(8, 0))
+        )
+        self.clear_log_button.pack(side="right", padx=(8, 0))
+        self.clear_cache_button = ttk.Button(
+            actions, text="清理缓存", style="Secondary.TButton",
+            command=self._clear_tool_cache, state="disabled",
+        )
+        self.clear_cache_button.pack(side="right", padx=(8, 0))
         self.stop_button = ttk.Button(
             actions, text="停止", style="Stop.TButton",
             command=self._stop, state="disabled",
@@ -1874,6 +2218,11 @@ class DaisyApp:
         self.self_test_button = ttk.Button(
             actions, text="运行项目自检", style="Secondary.TButton",
             command=self._run_self_test,
+        )
+        self.install_tools_button = ttk.Button(
+            actions, text="下载并安装缺失工具",
+            style="Secondary.TButton",
+            command=self._install_missing_tools,
         )
         self.root.after_idle(self._position_initial_log_sash)
 
@@ -1937,6 +2286,7 @@ class DaisyApp:
                 self.self_test_button.pack(side="right", padx=(0, 8))
         else:
             self.self_test_button.pack_forget()
+        self._refresh_environment_actions()
         if self.process is None:
             self._reset_progress(self.task.title)
             if not self.run_jobs:
@@ -2100,20 +2450,21 @@ class DaisyApp:
                 row=row, column=0, columnspan=2, sticky="ew",
                 padx=form_pad, pady=(14, 5),
             )
-            advanced_row.grid_columnconfigure(0, weight=1)
             tk.Label(
                 advanced_row,
                 text=f"高级选项：{advanced_names}",
                 bg=_SURFACE,
                 fg=_AMBER_DARK if configured_advanced else _MUTED,
-                font=("Microsoft YaHei UI", 8), anchor="w",
-            ).grid(row=0, column=0, sticky="w", padx=(0, 12))
-            ttk.Button(
+                font=("Microsoft YaHei UI", 8), anchor="center",
+                justify="center",
+            ).pack(anchor="center", pady=(0, 5))
+            self.advanced_button = ttk.Button(
                 advanced_row,
                 text=f"{action}高级选项{configured_text}",
                 style="Browse.TButton",
                 command=self._toggle_advanced,
-            ).grid(row=0, column=1, sticky="e")
+            )
+            self.advanced_button.pack(anchor="center")
             row += 1
 
         self.form_inner.grid_rowconfigure(row, minsize=10)
@@ -2276,6 +2627,45 @@ class DaisyApp:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
+    def _clear_tool_cache(self) -> None:
+        if self.process is not None or self.worker_starting or self.run_jobs:
+            messagebox.showinfo(
+                "暂不能清理缓存",
+                "任务队列运行期间不能清理工具路径缓存。",
+                parent=self.root,
+            )
+            return
+        tool_names = tuple(
+            _TOOL_DISPLAY_NAMES.get(name, name)
+            for name in self.detected_tools)
+        count = clear_session_tool_cache(self.detected_tools)
+        disk = clean_project_caches()
+        self._refresh_tool_cache_labels()
+        self._update_preview()
+        lines = ["", "缓存清理结果："]
+        if count:
+            lines.append(
+                f"  本窗口工具路径：{count} 项"
+                f"（{'、'.join(tool_names)}）")
+        for path in disk.directories:
+            lines.append(f"  缓存目录：{path}")
+        for path in disk.files:
+            lines.append(f"  缓存文件：{path}")
+        for error in disk.errors:
+            lines.append(f"  未清理：{error}")
+        removed = count + len(disk.directories) + len(disk.files)
+        if not removed and not disk.errors:
+            lines.append("  未发现可清理的缓存。")
+        lines.append("")
+        self._append_log("\n".join(lines), "meta")
+        if disk.errors:
+            self._set_status(
+                f"缓存清理完成，{len(disk.errors)} 项未清理", _WARNING)
+        elif removed:
+            self._set_status(f"已清理 {removed} 项缓存", _SUCCESS)
+        else:
+            self._set_status("没有可清理的缓存", _SUCCESS)
+
     def _append_log(self, text: str, tag: str | None = None) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         self.log.configure(state="normal")
@@ -2294,11 +2684,72 @@ class DaisyApp:
     def _refresh_tool_cache_labels(self) -> None:
         summary = session_tool_cache_summary(
             self.task.key, self.detected_tools)
+        if self.task.key == "env_check" and self.environment_missing_names:
+            missing = "、".join(
+                _TOOL_DISPLAY_NAMES.get(name, name)
+                for name in self.environment_missing_names)
+            summary = (
+                summary + "\n" if summary else ""
+            ) + f"缺失或不可用：{missing}"
         self.tool_cache_label.configure(text=summary)
         if summary:
             self.tool_cache_label.grid()
         else:
             self.tool_cache_label.grid_remove()
+        self.clear_cache_button.configure(
+            state=(
+                "normal"
+                if self.process is None
+                and not self.worker_starting
+                and not self.run_jobs
+                else "disabled"
+            ))
+        self._refresh_environment_actions()
+
+    def _refresh_environment_actions(self) -> None:
+        if (self.task.key == "env_check"
+                and self.missing_installable_tools):
+            count = len(self.missing_installable_tools)
+            self.install_tools_button.configure(
+                text=f"下载并安装缺失工具（{count}）",
+                state=(
+                    "normal"
+                    if self.process is None
+                    and not self.worker_starting
+                    and not self.run_jobs
+                    else "disabled"
+                ),
+            )
+            if not self.install_tools_button.winfo_manager():
+                self.install_tools_button.pack(side="right", padx=(0, 8))
+        else:
+            self.install_tools_button.pack_forget()
+
+    def _apply_environment_inventory(
+        self, payload: dict[str, object],
+    ) -> None:
+        tools = payload.get("tools")
+        if isinstance(tools, dict):
+            self._cache_detected_tools({"tools": tools})
+        raw_missing = payload.get("missing")
+        missing_names: list[str] = []
+        installable: list[str] = []
+        if isinstance(raw_missing, list):
+            for item in raw_missing:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                if name not in _TOOL_DISPLAY_NAMES:
+                    continue
+                if name not in missing_names:
+                    missing_names.append(name)
+                if (item.get("installable") is True
+                        and name in _INSTALLABLE_TOOL_PACKAGES
+                        and name not in installable):
+                    installable.append(name)
+        self.environment_missing_names = tuple(missing_names)
+        self.missing_installable_tools = tuple(installable)
+        self._refresh_tool_cache_labels()
 
     def _cache_detected_tools(self, payload: dict[str, object]) -> None:
         tools = payload.get("tools")
@@ -2388,7 +2839,12 @@ class DaisyApp:
     def _begin_progress(self) -> None:
         start_value = self._queue_stage_value(0.0)
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
-        title = "项目自检" if self_test else self.task.title
+        installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
+        title = (
+            "项目自检" if self_test else
+            "安装缺失工具" if installing else
+            self.task.title
+        )
         self.progress_stage_bar.configure(
             mode="determinate", maximum=100, value=start_value,
             style="Stage.Horizontal.TProgressbar",
@@ -2400,7 +2856,10 @@ class DaisyApp:
         self.progress_detail_label.configure(
             text=(
                 "正在运行 unittest；详细结果见实时日志…"
-                if self_test else "等待任务报告阶段…"
+                if self_test else
+                "正在等待 WinGet 输出…"
+                if installing else
+                "等待任务报告阶段…"
             ),
             fg=_MUTED,
         )
@@ -2413,6 +2872,9 @@ class DaisyApp:
 
     def _apply_gui_event(self, payload: dict[str, object]) -> None:
         event_name = payload.get("event")
+        if event_name == "environment_inventory":
+            self._apply_environment_inventory(payload)
+            return
         if event_name == "tools_detected":
             self._cache_detected_tools(payload)
             return
@@ -2469,19 +2931,22 @@ class DaisyApp:
     def _finish_progress(self, returncode: int | None, elapsed: float) -> None:
         self._stop_work_progress()
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
+        installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         if returncode == 0 and not self.stop_requested:
             style, colour, detail = (
                 "Success", _SUCCESS,
                 (
                     f"项目自检通过 · 总用时 {_format_duration(elapsed)}"
                     if self_test else
+                    f"安装命令完成 · 用时 {_format_duration(elapsed)}"
+                    if installing else
                     f"任务完成 · 总用时 {_format_duration(elapsed)}"
                 ))
             self.progress_stage_bar.configure(value=100)
             self._set_work_fraction(100, style=style)
             self.progress_percent_label.configure(text="完成", fg=colour)
         elif (returncode == 1 and not self.stop_requested
-              and not self_test):
+              and not self_test and not installing):
             style, colour, detail = (
                 "Warning", _WARNING,
                 f"任务完成，但结果需要检查 · {_format_duration(elapsed)}")
@@ -2513,7 +2978,7 @@ class DaisyApp:
         active_keys = active_field_keys(self.task.key, values)
         if self.task.key == "full_scan":
             warnings.append(
-                "完整登记可能持续数小时；停止时可能保留可续传的 partial 快照。")
+                "完整扫描可能持续数小时；停止时可能保留可续传的 partial 快照。")
             if job_count > 1:
                 warnings.append(
                     f"将按列表顺序分别生成 {job_count} 个独立数据库。")
@@ -2522,10 +2987,10 @@ class DaisyApp:
             else:
                 if values.get("hash_mode") == "full":
                     warnings.append("完整 SHA-256 会读取每个文件的全部内容。")
-                if not values.get("keep_raw_payload", True):
+                if values.get("metadata_storage", "complete") == "normalized":
                     warnings.append(
-                        "已关闭原始元数据 Payload 保留；本次快照将失去未来"
-                        "重新解释原始后端数据的能力。")
+                        "已选择基础元数据；仍会生成规范化字段，但不会保留"
+                        "外部工具原始全文，未来重新解释能力会减少。")
                 if not values.get("collect_file_id", True):
                     warnings.append(
                         "已关闭 NTFS File ID 采集；移动／重命名判定证据会减少。")
@@ -2555,6 +3020,7 @@ class DaisyApp:
         self.run_queue_started = time.monotonic()
         self.run_button.configure(state="disabled")
         self.self_test_button.configure(state="disabled")
+        self.install_tools_button.configure(state="disabled")
         self.stop_button.configure(state="disabled")
         for button in self.nav_buttons.values():
             button.configure(state="disabled")
@@ -2593,6 +3059,53 @@ class DaisyApp:
         self._begin_run_jobs(
             _PROJECT_SELF_TEST_KEY, [RunJob("项目自检", {})])
 
+    def _install_missing_tools(self) -> None:
+        if self.process is not None or self.run_jobs or self.worker_starting:
+            return
+        tool_names = tuple(
+            name for name in self.missing_installable_tools
+            if name in _INSTALLABLE_TOOL_PACKAGES)
+        if not tool_names:
+            messagebox.showinfo(
+                "没有可安装项",
+                "请先运行环境检测；当前没有检测到可由 GUI 安装的缺失工具。",
+                parent=self.root,
+            )
+            return
+        winget = discover_winget()
+        if not winget:
+            messagebox.showerror(
+                "WinGet 不可用",
+                "未找到 winget.exe。请先从 Microsoft Store 安装或更新"
+                "“应用安装程序”（App Installer），然后重新打开 DAISY。",
+                parent=self.root,
+            )
+            return
+        package_lines = [
+            f"• {_INSTALLABLE_TOOL_PACKAGES[name][0]}"
+            f"（{_INSTALLABLE_TOOL_PACKAGES[name][1]}）"
+            for name in tool_names
+        ]
+        confirmed = messagebox.askyesno(
+            "下载并安装缺失工具",
+            "将通过 WinGet 的 winget 源逐项下载并安装：\n"
+            + "\n".join(package_lines)
+            + "\n\n此操作会修改本机软件安装状态，并接受对应的"
+            "源协议与软件包协议。安装输出会显示在运行日志中；"
+            "完成后 DAISY 将自动重新检测环境。\n\n确定继续吗？",
+            icon="question", parent=self.root,
+        )
+        if not confirmed:
+            return
+        jobs = [
+            RunJob(
+                _INSTALLABLE_TOOL_PACKAGES[name][0],
+                {"tool_name": name, "winget_path": winget},
+            )
+            for name in tool_names
+        ]
+        self._begin_run_jobs(_DEPENDENCY_INSTALL_KEY, jobs)
+
     def _run(self) -> None:
         if self.process is not None or self.run_jobs:
             return
@@ -2623,6 +3136,14 @@ class DaisyApp:
             tool_sources: dict[str, str] = {}
             command = project_self_test_command()
             command_text = project_self_test_preview()
+        elif task_key == _DEPENDENCY_INSTALL_KEY:
+            effective = {}
+            tool_sources = {}
+            command = dependency_install_command(
+                str(job.values["tool_name"]),
+                str(job.values["winget_path"]),
+            )
+            command_text = subprocess.list2cmdline(command)
         else:
             effective, tool_sources = merge_session_tool_paths(
                 task_key, job.values, self.detected_tools)
@@ -2636,6 +3157,9 @@ class DaisyApp:
             )
         elif task_key == _PROJECT_SELF_TEST_KEY:
             self._set_status("项目自检运行中…")
+        elif task_key == _DEPENDENCY_INSTALL_KEY:
+            self._set_status(
+                f"正在下载并安装 {job.label}…")
         else:
             self._set_status("正在启动任务…")
         self._begin_progress()
@@ -2658,7 +3182,8 @@ class DaisyApp:
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
-        if self.process_task_key == _PROJECT_SELF_TEST_KEY:
+        if self.process_task_key in (
+                _PROJECT_SELF_TEST_KEY, _DEPENDENCY_INSTALL_KEY):
             env["PYTHONDONTWRITEBYTECODE"] = "1"
             env.pop("DAISY_GUI_PROGRESS", None)
             env.pop("DAISY_TOOL_SOURCES", None)
@@ -2779,10 +3304,16 @@ class DaisyApp:
         total = max(1, len(self.run_jobs))
         returncode = self.run_results[-1] if self.run_results else None
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
+        installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
+        stopped = self.stop_requested
         if total <= 1:
             if returncode is None:
                 self._set_status(
-                    "项目自检未能启动。" if self_test else "任务未能启动。",
+                    (
+                        "项目自检未能启动。" if self_test else
+                        "安装命令未能启动。" if installing else
+                        "任务未能启动。"
+                    ),
                     _DANGER,
                 )
             elif self.stop_requested:
@@ -2790,22 +3321,30 @@ class DaisyApp:
                     (
                         "项目自检已停止；请检查日志。"
                         if self_test else
+                        "安装已停止；请检查日志与本机软件状态。"
+                        if installing else
                         "任务已停止；请检查日志与 partial 产物。"
                     ),
                     _WARNING,
                 )
             elif returncode == 0:
                 self._set_status(
-                    "项目自检通过。" if self_test else "任务完成。",
+                    (
+                        "项目自检通过。" if self_test else
+                        "安装命令完成。" if installing else
+                        "任务完成。"
+                    ),
                     _SUCCESS,
                 )
-            elif returncode == 1 and not self_test:
+            elif returncode == 1 and not self_test and not installing:
                 self._set_status("任务完成，但结果需要检查。", _WARNING)
             else:
                 self._set_status(
                     (
                         "项目自检失败；请查看日志。"
                         if self_test else
+                        "安装失败；请查看日志。"
+                        if installing else
                         "任务失败；请查看日志。"
                     ),
                     _DANGER,
@@ -2847,7 +3386,6 @@ class DaisyApp:
         self.stop_button.configure(state="disabled")
         for button in self.nav_buttons.values():
             button.configure(state="normal")
-        self._refresh_tool_cache_labels()
         self.process_task_key = None
         self.stop_requested = False
         self.run_jobs = []
@@ -2855,9 +3393,20 @@ class DaisyApp:
         self.run_results = []
         self.run_queue_started = 0.0
         self.worker_starting = False
+        self._refresh_tool_cache_labels()
         if self.close_after_stop:
             self.close_after_stop = False
             self.root.after_idle(self.root.destroy)
+        elif installing and not stopped:
+            refresh_windows_process_path()
+            self.environment_missing_names = ()
+            self.missing_installable_tools = ()
+            self._refresh_tool_cache_labels()
+            self._append_log(
+                "\nWinGet 安装流程已结束，正在重新检测本机环境…\n",
+                "meta",
+            )
+            self.root.after(250, self._run)
 
 
     def _finish_ui(
@@ -2890,7 +3439,8 @@ class DaisyApp:
         elif returncode == 0:
             self._append_log(
                 f"\n{item}完成（用时 {elapsed:.1f}s）。\n", "success")
-        elif returncode == 1 and total <= 1 and not self_test:
+        elif (returncode == 1 and total <= 1 and not self_test
+              and self.process_task_key != _DEPENDENCY_INSTALL_KEY):
             self._append_log(
                 f"\n任务完成，但发现差异或异常（退出码 1，用时 "
                 f"{elapsed:.1f}s）。\n", "warning")
@@ -2917,9 +3467,14 @@ class DaisyApp:
                 "这会中断当前项目自检；测试夹具仍会由测试清理流程处理。"
                 "\n\n确定停止吗？"
             )
+        elif self.process_task_key == _DEPENDENCY_INSTALL_KEY:
+            prompt = (
+                "这会中断当前 WinGet 进程；已经完成安装的软件不会回滚，"
+                "尚未开始的工具会取消。\n\n确定停止吗？"
+            )
         else:
             prompt = (
-                "停止可能留下 partial、WAL、lock 或未完成报告；完整登记通常可从 "
+                "停止可能留下 partial、WAL、lock 或未完成报告；完整扫描通常可从 "
                 "partial 快照续传。\n\n确定停止吗？"
             )
         if len(self.run_jobs) > 1:

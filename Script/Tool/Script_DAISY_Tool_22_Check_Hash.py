@@ -43,9 +43,10 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
             f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
     try:
-        uuid_, coverage, status = con.execute(
-            "SELECT snapshot_uuid, hash_coverage, scan_status"
+        uuid_, coverage, status, schema_version = con.execute(
+            "SELECT snapshot_uuid, hash_coverage, scan_status, schema_version"
             " FROM snapshot_info").fetchone()
+        core.require_readable_schema_version(schema_version)
         if status != "complete":
             raise core.PreflightError(f"快照未封存（scan_status={status}）")
         roots = {}

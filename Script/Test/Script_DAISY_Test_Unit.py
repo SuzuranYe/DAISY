@@ -10,10 +10,12 @@ import json
 import os
 import re
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest.mock import patch
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -82,18 +84,19 @@ class TestGuiArguments(unittest.TestCase):
         quick_fields = {
             spec.key: spec for spec in gui.TASK_BY_KEY["quick_scan"].fields
         }
-        raw_payload = full_fields["keep_raw_payload"]
-        self.assertIs(raw_payload.default, True)
+        metadata_storage = full_fields["metadata_storage"]
+        self.assertEqual(metadata_storage.default, "complete")
         self.assertEqual(
-            raw_payload.choices,
+            metadata_storage.choices,
             (
-                ("开启：保留 Raw Payload（默认）", True),
-                ("关闭：不保留 Raw Payload（No-Raw）", False),
+                ("全量元数据：基础字段＋原始工具输出（默认）", "complete"),
+                ("基础元数据：仅保留规范化常用字段", "normalized"),
             ),
         )
-        self.assertIn("默认开启", raw_payload.help)
+        self.assertIn("视频和音频还通过 ffprobe", metadata_storage.help)
+        self.assertIn("GIF 在基础范围只使用 ExifTool", metadata_storage.help)
+        self.assertEqual(metadata_storage.kind, "choice")
         for spec in (
-                full_fields["keep_raw_payload"],
                 full_fields["collect_file_id"],
                 quick_fields["collect_file_id"]):
             self.assertEqual(spec.kind, "choice_flag")
@@ -105,7 +108,8 @@ class TestGuiArguments(unittest.TestCase):
 
         defaults = gui.build_tool_args(
             "full_scan", {"roots": r"E:\Archive"})
-        self.assertNotIn("--no-raw-payload", defaults)
+        self.assertEqual(
+            defaults[defaults.index("--metadata-storage") + 1], "complete")
         self.assertNotIn("--no-file-id", defaults)
         self.assertEqual(
             defaults[defaults.index("--hash") + 1], "full",
@@ -130,11 +134,12 @@ class TestGuiArguments(unittest.TestCase):
             "full_scan",
             {
                 "roots": r"E:\Archive",
-                "keep_raw_payload": False,
+                "metadata_storage": "normalized",
                 "collect_file_id": False,
             },
         )
-        self.assertIn("--no-raw-payload", reduced)
+        self.assertEqual(
+            reduced[reduced.index("--metadata-storage") + 1], "normalized")
         self.assertIn("--no-file-id", reduced)
 
         quick_reduced = gui.build_tool_args(
@@ -151,7 +156,7 @@ class TestGuiArguments(unittest.TestCase):
                 "resume": r"E:\Runs\A.partial.sqlite",
                 "roots": r"E:\Archive",
                 "hash_mode": "full",
-                "keep_raw_payload": False,
+                "metadata_storage": "normalized",
                 "powershell_path": r"C:\Tools\pwsh.exe",
             },
         )
@@ -159,7 +164,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("--powershell-path", resumed)
         for inactive in (
                 "--root", "--output-dir", "--hash",
-                "--no-raw-payload", "--verify-sample-percent"):
+                "--metadata-storage", "--verify-sample-percent"):
             self.assertNotIn(inactive, resumed)
 
         full_hash_check = gui.build_tool_args(
@@ -192,9 +197,9 @@ class TestGuiArguments(unittest.TestCase):
             },
             "full_scan": {
                 "--root", "--output-dir", "--hash", "--previous-snapshot",
-                "--map-root", "--verify-sample-percent", "--no-raw-payload",
-                "--no-file-id", "--settle-seconds",
-                "--allow-abnormal-source", "--resume", "--exiftool-path",
+                "--map-root", "--verify-sample-percent", "--metadata-storage",
+                "--no-file-id", "--allow-abnormal-source", "--resume",
+                "--exiftool-path",
                 "--ffprobe-path", "--sevenzip-path", "--powershell-path",
             },
             "quick_scan": {"--root", "--output-dir", "--no-file-id"},
@@ -282,7 +287,6 @@ class TestGuiArguments(unittest.TestCase):
             {
                 ".gitattributes",
                 ".gitignore",
-                "Install_DAISY_Dependencies.ps1",
                 "LICENSE",
                 "README.md",
                 "Start_DAISY_GUI.pyw",
@@ -327,25 +331,106 @@ class TestGuiArguments(unittest.TestCase):
             "quick_scan", {"roots": r"E:\Archive"})
         self.assertIn(r".\Script\Script_DAISY_MAIN.py", preview)
 
-    def test_dependency_installer_confirms_each_explained_package(self):
+    def test_cold_start_installer_only_installs_python(self):
         installer_path = os.path.join(
-            gui._BASE, "Install_DAISY_Dependencies.ps1")
+            gui._SCRIPT_DIR, "Script_DAISY_Install_Python.ps1")
         with open(installer_path, "r", encoding="utf-8") as f:
             installer = f.read()
-        self.assertEqual(installer.count("Purpose = "), 4)
+        self.assertIn('"Python.Python.3.14"', installer)
         for package_id in (
-                "Python.Python.3.14", "OliverBetz.ExifTool",
-                "Gyan.FFmpeg", "7zip.7zip"):
-            self.assertIn(f'Id = "{package_id}"', installer)
-        loop_index = installer.index("foreach ($package in $packages)")
+                "OliverBetz.ExifTool", "Gyan.FFmpeg", "7zip.7zip"):
+            self.assertNotIn(package_id, installer)
         prompt_index = installer.index(
-            '$answer = Read-Host "Install or update this package? [y/N]"')
+            '$answer = Read-Host "Install or update Python 3.14? [y/N]"')
         install_index = installer.index("& $winget.Source install")
-        self.assertLess(loop_index, prompt_index)
         self.assertLess(prompt_index, install_index)
-        self.assertIn('Write-Host ("Purpose: {0}"', installer)
         self.assertIn('if ($answer -notmatch "^[Yy]$")', installer)
-        self.assertNotIn('Read-Host "Continue? [y/N]"', installer)
+        self.assertIn("--disable-interactivity", installer)
+        self.assertFalse(os.path.exists(os.path.join(
+            gui._BASE, "Install_DAISY_Dependencies.ps1")))
+        with open(os.path.join(gui._BASE, "README.md"),
+                  "r", encoding="utf-8") as f:
+            readme = f.read()
+        self.assertIn(
+            r".\Script\Script_DAISY_Install_Python.ps1", readme)
+        self.assertNotIn(r".\Install_DAISY_Dependencies.ps1", readme)
+
+    def test_gui_dependency_commands_are_fixed_and_allowlisted(self):
+        winget = r"C:\WindowsApps\winget.exe"
+        expected = {
+            "exiftool": "OliverBetz.ExifTool",
+            "ffprobe": "Gyan.FFmpeg",
+            "sevenzip": "7zip.7zip",
+        }
+        for name, package_id in expected.items():
+            command = gui.dependency_install_command(name, winget)
+            self.assertEqual(command[0], winget)
+            self.assertEqual(
+                command[command.index("--id") + 1], package_id)
+            for required in (
+                    "--exact", "--source", "--accept-source-agreements",
+                    "--accept-package-agreements", "--disable-interactivity"):
+                self.assertIn(required, command)
+        with self.assertRaises(ValueError):
+            gui.dependency_install_command("arbitrary")
+
+    def test_gui_dependency_install_requires_confirmation_and_builds_queue(
+            self):
+        app = object.__new__(gui.DaisyApp)
+        app.process = None
+        app.run_jobs = []
+        app.worker_starting = False
+        app.missing_installable_tools = (
+            "exiftool", "ffprobe", "arbitrary")
+        app.root = object()
+        started = []
+        app._begin_run_jobs = lambda key, jobs: started.append((key, jobs))
+
+        with patch.object(
+                gui, "discover_winget",
+                return_value=r"C:\WindowsApps\winget.exe"), \
+                patch.object(
+                    gui.messagebox, "askyesno", return_value=True):
+            app._install_missing_tools()
+
+        self.assertEqual(started[0][0], gui._DEPENDENCY_INSTALL_KEY)
+        jobs = started[0][1]
+        self.assertEqual(
+            [job.values["tool_name"] for job in jobs],
+            ["exiftool", "ffprobe"],
+        )
+        self.assertTrue(all(
+            job.values["winget_path"] == r"C:\WindowsApps\winget.exe"
+            for job in jobs))
+
+        started.clear()
+        with patch.object(
+                gui, "discover_winget",
+                return_value=r"C:\WindowsApps\winget.exe"), \
+                patch.object(
+                    gui.messagebox, "askyesno", return_value=False):
+            app._install_missing_tools()
+        self.assertEqual(started, [])
+
+    def test_environment_summary_displays_local_versions(self):
+        cache = {
+            "exiftool": {
+                "path": r"C:\Tools\exiftool.exe",
+                "version": "13.59",
+                "verified": True,
+            },
+            "powershell": {
+                "path": r"C:\Windows\powershell.exe",
+                "version": "5.1.26100.1",
+                "verified": True,
+            },
+        }
+        summary = gui.session_tool_cache_summary(
+            "env_check", cache, path_exists=lambda _path: True)
+        self.assertEqual(
+            summary,
+            "本机版本：ExifTool 13.59、PowerShell 5.1.26100.1",
+        )
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
@@ -359,6 +444,78 @@ class TestGuiArguments(unittest.TestCase):
         small = gui.window_size_for_screen(800, 600)
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
+
+    def test_mobius_icon_png_is_smooth_and_single_colour(self):
+        size = 64
+        png = gui.mobius_icon_png(size)
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        position = 8
+        chunks = []
+        while position < len(png):
+            length, = struct.unpack(">I", png[position:position + 4])
+            kind = png[position + 4:position + 8]
+            payload = png[position + 8:position + 8 + length]
+            chunks.append((kind, payload))
+            position += 12 + length
+        ihdr = next(payload for kind, payload in chunks if kind == b"IHDR")
+        width, height, depth, colour_type, _c, _f, _i = struct.unpack(
+            ">IIBBBBB", ihdr)
+        self.assertEqual((width, height, depth, colour_type), (64, 64, 8, 6))
+        pixels = zlib.decompress(b"".join(
+            payload for kind, payload in chunks if kind == b"IDAT"))
+        self.assertEqual(len(pixels), size * (1 + size * 4))
+        colours = set()
+        alphas = set()
+        for y in range(size):
+            row = pixels[y * (1 + size * 4):(y + 1) * (1 + size * 4)]
+            self.assertEqual(row[0], 0)
+            for x in range(size):
+                r, g, b, alpha = row[1 + x * 4:1 + (x + 1) * 4]
+                alphas.add(alpha)
+                if alpha:
+                    colours.add((r, g, b))
+        expected = tuple(
+            int(gui._GREEN_DEEP[index:index + 2], 16)
+            for index in (1, 3, 5)
+        )
+        self.assertEqual(colours, {expected})
+        self.assertIn(0, alphas)
+        self.assertIn(255, alphas)
+        self.assertTrue(any(0 < alpha < 255 for alpha in alphas))
+
+    def test_canvas_mobius_logo_uses_one_foreground_colour(self):
+        class CanvasProbe:
+            def __init__(self):
+                self.lines = []
+
+            def create_line(self, *points, **options):
+                self.lines.append((points, options))
+
+        probe = CanvasProbe()
+        with patch.object(gui.tk, "Canvas", return_value=probe):
+            self.assertIs(gui.build_mobius_logo(object()), probe)
+        foreground = {
+            options["fill"]
+            for _points, options in probe.lines
+            if "mobius_cut" not in options["tags"]
+        }
+        self.assertEqual(foreground, {gui._GREEN_DEEP})
+
+    def test_full_hash_independent_sample_is_explained_and_advanced(self):
+        fields = {
+            spec.key: spec for spec in gui.TASK_BY_KEY["full_scan"].fields
+        }
+        verify = fields["verify_percent"]
+        self.assertTrue(verify.advanced)
+        self.assertEqual(verify.section, "扫描稳定性")
+        for phrase in (
+                "PowerShell Get-FileHash", "至少 100 个",
+                "不是主哈希的覆盖比例"):
+            self.assertIn(phrase, verify.help)
+        args = gui.build_tool_args(
+            "full_scan", {"roots": r"E:\Archive"})
+        index = args.index("--verify-sample-percent")
+        self.assertEqual(args[index + 1], "1.0")
 
     def test_initial_log_sash_position_preserves_log_height(self):
         self.assertEqual(
@@ -389,13 +546,26 @@ class TestGuiArguments(unittest.TestCase):
             spec = f.read()
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
+        self.assertIn("元数据 profile v6", spec)
+        self.assertIn("视频、音频和 GIF", spec)
+        self.assertIn("schema_version=2", spec)
+        self.assertIn("不前向兼容", spec)
+        self.assertIn("不提供按 mtime 静默跳过", spec)
         evolution_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Version_Evolution.md")
         with open(evolution_path, "r", encoding="utf-8") as f:
             evolution = f.read()
         self.assertIn("Kit_AL v1.0.2", evolution)
-        self.assertIn("DAISY v1.3.4", evolution)
+        self.assertIn("DAISY v1.4.0", evolution)
         self.assertIn("设计过渡点", evolution)
+        for dated_version in (
+                "## 2026-07-21～22 — Kit_AL v1.0.3",
+                "## 2026-07-26 — Kit_AL v1.1.0",
+                "## 2026-07-29 — DAISY v1.3.1",
+                "## 2026-07-29 形成、2026-07-30 公开 — DAISY v1.3.2"):
+            self.assertIn(dated_version, evolution)
+        for change_kind in ("新增：", "修复：", "删除："):
+            self.assertIn(change_kind, evolution)
 
     def test_task_accent_colours_follow_workflow_group(self):
         green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
@@ -439,8 +609,8 @@ class TestGuiArguments(unittest.TestCase):
             [gui.TASK_BY_KEY[key].nav for key in gui._SIDEBAR_TASK_ORDER],
             [
                 "10  环境检测",
-                "11  完整登记",
-                "12  快速清点",
+                "11  完整扫描",
+                "12  快速扫描",
                 "21  快照对比",
                 "22  哈希校验",
                 "23  格式校验",
@@ -495,7 +665,10 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.3.4")
+        self.assertEqual(core.SCANNER_VERSION, "1.4.0")
+        self.assertEqual(core.SCHEMA_VERSION, 2)
+        self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({1, 2}))
+        self.assertEqual(core.MIN_READER_VERSION, "1.4.0")
         self.assertEqual(
             core.PROJECT_FULL_NAME,
             "Database for Archive Integrity by Suzuran Ye",
@@ -593,6 +766,88 @@ class TestGuiArguments(unittest.TestCase):
                 "full_scan", {}, path_exists=lambda _path: True),
             "",
         )
+
+    def test_session_tool_cache_clear_is_complete_and_idempotent(self):
+        cache = {
+            "exiftool": {"path": r"C:\Tools\exiftool.exe", "verified": True},
+            "sevenzip": {"path": r"C:\Tools\7z.exe", "verified": False},
+        }
+        self.assertEqual(gui.clear_session_tool_cache(cache), 2)
+        self.assertEqual(cache, {})
+        self.assertEqual(gui.clear_session_tool_cache(cache), 0)
+
+    def test_project_cache_cleanup_is_allowlisted_and_reports_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            cache_dirs = (
+                os.path.join(td, "__pycache__"),
+                os.path.join(td, "Script", ".pytest_cache"),
+                os.path.join(td, "Script", "Lib", ".mypy_cache"),
+                os.path.join(td, "Script", "Test", ".ruff_cache"),
+            )
+            for path in cache_dirs:
+                os.makedirs(path)
+                with open(
+                        os.path.join(path, "marker.bin"), "wb") as stream:
+                    stream.write(b"cache")
+            standalone = os.path.join(td, "Script", "orphan.pyc")
+            with open(standalone, "wb") as stream:
+                stream.write(b"compiled")
+            ordinary = os.path.join(td, "Script", "keep.py")
+            with open(ordinary, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write("print('keep')\n")
+            excluded = os.path.join(td, "Output", "__pycache__")
+            os.makedirs(excluded)
+            with open(
+                    os.path.join(excluded, "keep.pyc"), "wb") as stream:
+                stream.write(b"output")
+
+            result = gui.clean_project_caches(td)
+
+            self.assertEqual(len(result.directories), 4)
+            self.assertEqual(result.files, (
+                os.path.join("Script", "orphan.pyc"),))
+            self.assertEqual(result.errors, ())
+            for path in cache_dirs:
+                self.assertFalse(os.path.exists(path))
+            self.assertFalse(os.path.exists(standalone))
+            self.assertTrue(os.path.isfile(ordinary))
+            self.assertTrue(os.path.isdir(excluded))
+
+    def test_gui_cache_button_logs_each_removed_directory_and_file(self):
+        app = object.__new__(gui.DaisyApp)
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.detected_tools = {
+            "exiftool": {
+                "path": r"C:\Tools\exiftool.exe", "verified": True,
+            },
+        }
+        logs = []
+        statuses = []
+        app._refresh_tool_cache_labels = lambda: None
+        app._update_preview = lambda: None
+        app._append_log = lambda text, tag=None: logs.append((text, tag))
+        app._set_status = lambda text, colour=None: (
+            statuses.append((text, colour)))
+        cleanup = gui.ProjectCacheCleanup(
+            directories=(os.path.join("Script", "__pycache__"),),
+            files=(os.path.join("Script", "orphan.pyc"),),
+            errors=(),
+        )
+
+        with patch.object(
+                gui, "clean_project_caches", return_value=cleanup):
+            app._clear_tool_cache()
+
+        self.assertEqual(app.detected_tools, {})
+        text = logs[0][0]
+        self.assertIn("本窗口工具路径：1 项（ExifTool）", text)
+        self.assertIn(
+            "缓存目录：" + os.path.join("Script", "__pycache__"), text)
+        self.assertIn(
+            "缓存文件：" + os.path.join("Script", "orphan.pyc"), text)
+        self.assertEqual(statuses[0][0], "已清理 3 项缓存")
 
     def test_multi_root_default_separates_and_preserves_order(self):
         root_specs = [r"Alpha=E:\Archive A", r"Beta=F:\Archive B"]
@@ -737,15 +992,17 @@ class TestFileId(unittest.TestCase):
 class TestMediaKind(unittest.TestCase):
     CASES = {
         "cr3": "photo_raw", "CR2": "photo_raw", "dng": "photo_raw",
-        "jpg": "photo_jpeg", "JPEG": "photo_jpeg",
+        "jpg": "photo_jpeg", "JPEG": "photo_jpeg", "jfif": "photo_jpeg",
+        "gif": "image_gif", "GIF": "image_gif",
         "psd": "photo_working", "psb": "photo_working", "tif": "photo_working",
         "tiff": "photo_working", "png": "photo_working",
         "mp4": "video_mp4", "MOV": "video_mp4", "lrf": "video_mp4",
         "crm": "video_crm",
         "zip": "archive", "7z": "archive", "rar": "archive",
         "tar": "archive", "gz": "archive", "bz2": "archive", "xz": "archive",
-        "pdf": "document", "docx": "document", "xlsx": "document", "pptx": "document",
-        "doc": "other", "xls": "other", "ppt": "other",
+        "pdf": "document", "doc": "document", "docx": "document",
+        "xlsx": "document", "pptx": "document",
+        "xls": "other", "ppt": "other",
         "txt": "other", "md": "other", "csv": "other", "srt": "other", "": "other",
     }
 
@@ -803,6 +1060,7 @@ class TestDdl(unittest.TestCase):
                 " VALUES (1,2,-0.1,27.25,111.75,'ffprobe:test','bad')")
         with self.assertRaises(sqlite3.IntegrityError):   # 同 rel_path 拦截
             con.execute(ins + "(3,1,1,'café.txt','café.txt','x','txt','other',1,'t',0,'t')")
+
         with self.assertRaises(sqlite3.IntegrityError):   # valid 无 hash_hex 拦截
             con.execute("INSERT INTO hashes (entry_id,origin,size_bytes,bytes_read,"
                         "status,tool,tool_version) VALUES (1,'computed',1,1,'valid','t','1')")
@@ -810,6 +1068,13 @@ class TestDdl(unittest.TestCase):
             con.execute("INSERT INTO hashes (entry_id,hash_hex,origin,"
                         "source_snapshot_uuid,size_bytes,status,tool,tool_version)"
                         " VALUES (1,'ab','reused','u0',1,'valid','t','1')")
+
+    def test_v14_reader_schema_boundary(self):
+        self.assertEqual(core.require_readable_schema_version(1), 1)
+        self.assertEqual(core.require_readable_schema_version(2), 2)
+        for unsupported in (0, 3, 99):
+            with self.assertRaises(core.PreflightError):
+                core.require_readable_schema_version(unsupported)
 
 
 class TestRootSpec(unittest.TestCase):
@@ -969,6 +1234,13 @@ class TestFinalize(_SnapshotFixture):
         self.assertEqual((status, cov), ("complete", "none"))
         manifest = json.loads(con2.execute(
             "SELECT manifest_json FROM snapshot_manifest").fetchone()[0])
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(manifest["data_contract"], "daisy-snapshot-v2")
+        self.assertEqual(manifest["min_reader_version"], "1.4.0")
+        config = json.loads(con2.execute(
+            "SELECT config_json FROM snapshot_info").fetchone()[0])
+        self.assertEqual(config["data_contract"], "daisy-snapshot-v2")
+        self.assertEqual(config["min_reader_version"], "1.4.0")
         self.assertEqual(manifest["integrity"]["retained_bits"], 32)
         self.assertFalse(manifest["integrity"]["full_digest_retained"])
         self.assertNotIn("snapshot_sha256", manifest)
@@ -1221,7 +1493,8 @@ class TestArchiveMembers(unittest.TestCase):
             core.enumerate_and_reconcile(con)
             tools = {k: {"path": core.discover_tool(k, None), "version": "t"}
                      for k in ("exiftool", "ffprobe", "sevenzip")}
-            meta.process_metadata_stage(con, tools, no_raw_payload=True)
+            meta.process_metadata_stage(
+                con, tools, retain_original_metadata=False)
             st, = con.execute("SELECT meta_status FROM entries"
                               " WHERE rel_path='arch.zip'").fetchone()
             self.assertEqual(st, "done")
@@ -1238,7 +1511,7 @@ class TestArchiveMembers(unittest.TestCase):
             con.close()
 
 
-class TestAllFileRawCoverage(unittest.TestCase):
+class TestRawBackendCoverage(unittest.TestCase):
     class _ExifWorker:
         extracted = []
 
@@ -1262,6 +1535,10 @@ class TestAllFileRawCoverage(unittest.TestCase):
         arch = os.path.join(td, "Arch")
         os.makedirs(arch)
         tt.write(arch, "opaque.bin", b"opaque")
+        tt.write(arch, "motion.gif", b"GIF89a")
+        tt.write(arch, "legacy.doc", b"not-a-real-doc")
+        tt.write(arch, "photo.jfif", b"not-a-real-jfif")
+        tt.write(arch, "still.cr3", b"not-a-real-cr3")
         import zipfile as _zf
         with _zf.ZipFile(os.path.join(arch, "pack.zip"), "w") as z:
             z.writestr("member.txt", b"member")
@@ -1272,15 +1549,15 @@ class TestAllFileRawCoverage(unittest.TestCase):
         return con
 
     @staticmethod
-    def _optional_ffprobe(_path, file_path, timeout=None):
-        if file_path.lower().endswith("opaque.bin"):
-            return {
-                "format": {"format_name": "test"},
-                "streams": [{"codec_type": "data"}],
-            }
-        raise RuntimeError("unsupported fixture")
+    def _gif_ffprobe(_path, file_path, timeout=None):
+        if not file_path.lower().endswith(".gif"):
+            raise AssertionError("非视频、非音频且非 GIF 不应调用 ffprobe")
+        return {
+            "format": {"format_name": "gif", "duration": "0.2"},
+            "streams": [{"codec_type": "video", "codec_name": "gif"}],
+        }
 
-    def test_raw_enabled_captures_all_exiftool_and_successful_ffprobe(self):
+    def test_raw_enabled_captures_all_exiftool_and_only_gif_ffprobe(self):
         with tempfile.TemporaryDirectory() as td:
             con = self._snapshot(td)
             tools = {
@@ -1292,12 +1569,16 @@ class TestAllFileRawCoverage(unittest.TestCase):
                     meta, "ExifToolWorker", self._ExifWorker), \
                     patch.object(
                         meta, "ffprobe_full",
-                        side_effect=self._optional_ffprobe):
+                        side_effect=self._gif_ffprobe) as ffprobe_mock:
                 stats = meta.process_metadata_stage(con, tools)
-            self.assertEqual(stats["done"], 2)
+            self.assertEqual(meta.PROFILE_VERSION, 6)
+            self.assertEqual(stats["done"], 6)
             self.assertEqual(stats["ffprobe_payloads"], 1)
-            self.assertEqual(stats["ffprobe_optional_unreadable"], 1)
+            self.assertEqual(stats["ffprobe_optional_unreadable"], 0)
             self.assertEqual(stats["ffprobe_optional_timeouts"], 0)
+            self.assertEqual(ffprobe_mock.call_count, 1)
+            self.assertTrue(
+                ffprobe_mock.call_args.args[1].lower().endswith(".gif"))
             rows = con.execute(
                 "SELECT e.rel_path,e.media_kind,e.meta_status,p.provider,"
                 " p.profile_version FROM entries e JOIN raw_payloads p"
@@ -1305,22 +1586,31 @@ class TestAllFileRawCoverage(unittest.TestCase):
                 " ORDER BY e.rel_path,p.provider").fetchall()
             self.assertEqual(
                 rows,
-                [("opaque.bin", "other", "done", "exiftool",
+                [("legacy.doc", "document", "done", "exiftool",
                   meta.PROFILE_VERSION),
-                 ("opaque.bin", "other", "done", "ffprobe",
+                 ("motion.gif", "image_gif", "done", "exiftool",
+                  meta.PROFILE_VERSION),
+                 ("motion.gif", "image_gif", "done", "ffprobe",
+                  meta.PROFILE_VERSION),
+                 ("opaque.bin", "other", "done", "exiftool",
                   meta.PROFILE_VERSION),
                  ("pack.zip", "archive", "done", "exiftool",
+                  meta.PROFILE_VERSION),
+                 ("photo.jfif", "photo_jpeg", "done", "exiftool",
+                  meta.PROFILE_VERSION),
+                 ("still.cr3", "photo_raw", "done", "exiftool",
                   meta.PROFILE_VERSION)])
             self.assertEqual(
                 [os.path.basename(x[0])
                  for x in self._ExifWorker.extracted],
-                ["opaque.bin", "pack.zip"])
+                ["legacy.doc", "motion.gif", "opaque.bin", "pack.zip",
+                 "photo.jfif", "still.cr3"])
             self.assertEqual(
                 con.execute("SELECT COUNT(*) FROM archive_members").fetchone(),
                 (1,))
             con.close()
 
-    def test_no_raw_keeps_other_not_applicable(self):
+    def test_normalized_mode_keeps_known_other_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             con = self._snapshot(td)
             tools = {
@@ -1332,19 +1622,44 @@ class TestAllFileRawCoverage(unittest.TestCase):
                     meta, "ExifToolWorker", self._ExifWorker), \
                     patch.object(
                         meta, "ffprobe_full",
-                        side_effect=AssertionError("Raw 关闭时不应可选探测")):
+                        side_effect=AssertionError(
+                            "基础元数据不应为 GIF 调用可选 ffprobe")):
                 stats = meta.process_metadata_stage(
-                    con, tools, no_raw_payload=True)
-            self.assertEqual(stats["done"], 1)
+                    con, tools, retain_original_metadata=False)
+            self.assertEqual(stats["done"], 5)
             self.assertEqual(
                 con.execute(
                     "SELECT meta_status FROM entries"
                     " WHERE rel_path='opaque.bin'").fetchone(),
                 ("not_applicable",))
             self.assertEqual(
+                con.execute(
+                    "SELECT media_kind,meta_status FROM entries"
+                    " WHERE rel_path='motion.gif'").fetchone(),
+                ("image_gif", "done"))
+            self.assertEqual(
+                con.execute(
+                    "SELECT media_kind,meta_status FROM entries"
+                    " WHERE rel_path='legacy.doc'").fetchone(),
+                ("document", "done"))
+            self.assertEqual(
+                con.execute(
+                    "SELECT media_kind,meta_status FROM entries"
+                    " WHERE rel_path='photo.jfif'").fetchone(),
+                ("photo_jpeg", "done"))
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM photo_metadata").fetchone(),
+                (3,))
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM document_metadata").fetchone(),
+                (1,))
+            self.assertEqual(
                 con.execute("SELECT COUNT(*) FROM raw_payloads").fetchone(),
                 (0,))
-            self.assertEqual(self._ExifWorker.extracted, [])
+            self.assertEqual(
+                [os.path.basename(x[0])
+                 for x in self._ExifWorker.extracted],
+                ["legacy.doc", "motion.gif", "photo.jfif", "still.cr3"])
             self.assertEqual(stats["ffprobe_payloads"], 0)
             con.close()
 
@@ -1479,6 +1794,82 @@ import Script_DAISY_Tool_10_Env_Check as envcheck                         # noqa
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
 FullScan = importlib.import_module("Script_DAISY_Tool_11_Full_Scan")
+
+
+class TestEnvironmentInventory(unittest.TestCase):
+    def test_inventory_lists_all_available_versions_and_every_missing_tool(
+            self):
+        def discover(name, _explicit):
+            if name == "ffprobe":
+                raise core.PreflightError("未找到 ffprobe")
+            return rf"C:\Tools\{name}.exe"
+
+        def resolved(name, path, *, explicit, version=None):
+            return {
+                "path": path,
+                "version": version or {
+                    "exiftool": "13.59",
+                    "sevenzip": "26.02",
+                }[name],
+                "resolution": "manual" if explicit else "auto_discovery",
+                "verified": True,
+            }
+
+        with patch.object(core, "discover_tool", side_effect=discover), \
+                patch.object(
+                    core, "resolved_tool_info", side_effect=resolved), \
+                patch.object(
+                    dbh, "discover_powershell",
+                    return_value=(r"C:\Windows\powershell.exe", "5.1")):
+            tools, issues = envcheck.inspect_local_tools({
+                "exiftool": None,
+                "ffprobe": None,
+                "sevenzip": None,
+                "powershell": None,
+            })
+
+        self.assertEqual(
+            set(tools), {"exiftool", "sevenzip", "powershell"})
+        self.assertEqual(tools["exiftool"]["version"], "13.59")
+        self.assertEqual(tools["powershell"]["version"], "5.1")
+        self.assertEqual(
+            issues,
+            [{
+                "name": "ffprobe",
+                "display": "ffprobe",
+                "installable": True,
+                "reason": "未找到 ffprobe",
+            }],
+        )
+
+    def test_gui_inventory_event_keeps_only_allowlisted_install_targets(self):
+        app = object.__new__(gui.DaisyApp)
+        app.detected_tools = {}
+        app.environment_missing_names = ()
+        app.missing_installable_tools = ()
+        app._cache_detected_tools = lambda payload: (
+            app.detected_tools.update(payload["tools"]))
+        app._refresh_tool_cache_labels = lambda: None
+
+        app._apply_environment_inventory({
+            "tools": {
+                "exiftool": {
+                    "path": r"C:\Tools\exiftool.exe",
+                    "version": "13.59",
+                    "verified": True,
+                },
+            },
+            "missing": [
+                {"name": "ffprobe", "installable": True},
+                {"name": "powershell", "installable": False},
+                {"name": "arbitrary", "installable": True},
+            ],
+        })
+
+        self.assertEqual(
+            app.environment_missing_names, ("ffprobe", "powershell"))
+        self.assertEqual(app.missing_installable_tools, ("ffprobe",))
+        self.assertIn("exiftool", app.detected_tools)
 
 
 class TestResumeProfileGuard(unittest.TestCase):
@@ -2021,6 +2412,13 @@ class TestDiffDdl(unittest.TestCase):
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertLessEqual({"diff_info", "diff_entries", "diff_dirs",
                               "diff_hash_groups", "diff_subtrees"}, tables)
+        info_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(diff_info)")
+        }
+        self.assertLessEqual(
+            {"schema_version", "old_schema_version", "new_schema_version"},
+            info_columns,
+        )
         con.close()
 
 
@@ -2069,6 +2467,43 @@ class _DiffFixture(unittest.TestCase):
 
 
 class TestDiffAdmission(_DiffFixture):
+    def _copy_with_schema(self, snapshot, schema_version, stem):
+        plain = os.path.join(self.snaps, stem + ".sqlite")
+        shutil.copyfile(snapshot, plain)
+        con = sqlite3.connect(plain)
+        con.execute(
+            "UPDATE snapshot_info SET schema_version=?, scanner_version=?",
+            (schema_version,
+             "1.3.4" if schema_version == 1 else core.SCANNER_VERSION),
+        )
+        config_text, = con.execute(
+            "SELECT config_json FROM snapshot_info").fetchone()
+        config = json.loads(config_text)
+        if schema_version == 1:
+            config.pop("data_contract", None)
+            config.pop("min_reader_version", None)
+        con.execute(
+            "UPDATE snapshot_info SET config_json=?",
+            (json.dumps(config, ensure_ascii=False),),
+        )
+        manifest_text, = con.execute(
+            "SELECT manifest_json FROM snapshot_manifest").fetchone()
+        manifest = json.loads(manifest_text)
+        manifest["schema_version"] = schema_version
+        if schema_version == 1:
+            manifest.pop("data_contract", None)
+            manifest.pop("min_reader_version", None)
+        con.execute(
+            "UPDATE snapshot_manifest SET manifest_json=?",
+            (json.dumps(manifest, ensure_ascii=False),),
+        )
+        con.commit()
+        con.close()
+        suffix = core.sha256_file(plain)[:8].upper()
+        final = os.path.join(self.snaps, f"{stem}_{suffix}.sqlite")
+        os.replace(plain, final)
+        return final
+
     def test_admission_rules(self):
         tt.write(self.old_tree, "a.bin", b"data")
         s1 = self.snap(self.old_tree, "A")
@@ -2096,6 +2531,29 @@ class TestDiffAdmission(_DiffFixture):
         with self.assertRaises(core.PreflightError):
             dbdiff.compare(s1, s3, os.path.join(self.base, "d2.sqlite"),
                            force=True)
+
+    def test_schema_1_to_2_is_readable_but_future_schema_is_rejected(self):
+        tt.write(self.old_tree, "a.bin", b"same")
+        current = self.snap(self.old_tree, "current")
+        legacy = self._copy_with_schema(current, 1, "legacy")
+        out = os.path.join(self.base, "cross.sqlite")
+        dbdiff.compare(legacy, current, out)
+        con = sqlite3.connect(out)
+        info = con.execute(
+            "SELECT schema_version,old_schema_version,new_schema_version"
+            " FROM diff_info").fetchone()
+        statuses = {
+            row[0] for row in con.execute(
+                "SELECT status FROM diff_entries")
+        }
+        con.close()
+        self.assertEqual(info, (2, 1, 2))
+        self.assertEqual(statuses, {"unchanged"})
+
+        future = self._copy_with_schema(current, 99, "future")
+        with self.assertRaises(core.PreflightError):
+            dbdiff.compare(
+                current, future, os.path.join(self.base, "future.sqlite"))
 
 
 class TestDiffGolden(_DiffFixture):
@@ -2665,6 +3123,7 @@ class TestExportSnapshot(_DiffFixture):
 
         def emulate_legacy(con):
             con.execute("DROP TABLE video_gps_points")
+            con.execute("UPDATE snapshot_info SET schema_version=1")
 
         snap = self.snap(
             self.old_tree, "legacy", pre_finalize=emulate_legacy)
@@ -2685,7 +3144,8 @@ class TestExportSnapshot(_DiffFixture):
         def run_meta(con, tree):
             tools = {k: {"path": core.discover_tool(k, None), "version": "t"}
                      for k in ("exiftool", "ffprobe", "sevenzip")}
-            meta.process_metadata_stage(con, tools, no_raw_payload=True)
+            meta.process_metadata_stage(
+                con, tools, retain_original_metadata=False)
 
         snap = tt.build_snapshot(self.old_tree, self.snaps, "arc", label="T",
                                  post_enum=run_meta)
@@ -2822,6 +3282,73 @@ class TestValidators(unittest.TestCase):
             f.write(raw[:len(raw) // 2])
         self.assertEqual(Validate.validate_sevenzip(bad, sz)[0], "invalid")
 
+    def test_legacy_doc_and_gif_validator_routing(self):
+        ole = os.path.join(self.dir, "legacy.doc")
+        with open(ole, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32)
+        with patch.object(
+                Validate, "validate_sevenzip",
+                return_value=("valid", None)) as sevenzip_check:
+            self.assertEqual(
+                Validate.validate_legacy_office(ole, "7z"),
+                ("valid", None),
+            )
+        sevenzip_check.assert_called_once_with(ole, "7z")
+
+        rtf = os.path.join(self.dir, "rtf-as-doc.doc")
+        with open(rtf, "wb") as f:
+            f.write(b"{\\rtf1 test}")
+        status, detail = Validate.validate_legacy_office(rtf, "7z")
+        self.assertEqual(status, "unsupported")
+        self.assertIn("不是 OLE", detail)
+        self.assertEqual(Validate._pick_validator("doc", "document"), "ole")
+        self.assertEqual(
+            Validate._pick_validator("gif", "image_gif"), "gif")
+        self.assertEqual(
+            Validate._pick_validator("gif", "other"), "gif")
+        self.assertEqual(
+            Validate._pick_validator("jfif", "photo_jpeg"), "media")
+        self.assertEqual(
+            Validate._pick_validator("jfif", "other"), "media")
+
+    def test_gif_ffprobe_success_timeout_and_missing_tool(self):
+        class Worker:
+            @staticmethod
+            def execute(_args):
+                return b""
+
+        success = subprocess.CompletedProcess(
+            [], 0,
+            stdout=b'{"streams":[{"codec_type":"video","codec_name":"gif"}]}',
+            stderr=b"",
+        )
+        with patch.object(
+                Validate.subprocess, "run", return_value=success):
+            self.assertEqual(
+                Validate.validate_media(
+                    "motion.gif", "image_gif", Worker(), "ffprobe"),
+                ("valid", None),
+            )
+        with patch.object(
+                Validate.subprocess, "run",
+                side_effect=subprocess.TimeoutExpired(["ffprobe"], 600)):
+            status, detail = Validate.validate_media(
+                "motion.gif", "image_gif", Worker(), "ffprobe")
+        self.assertEqual(status, "invalid")
+        self.assertIn("ffprobe: 超时", detail)
+        with self.assertRaises(core.PreflightError):
+            Validate.validate_media(
+                "motion.gif", "image_gif", Worker(), None)
+
+    def test_sevenzip_timeout_is_reported_not_raised(self):
+        with patch.object(
+                Validate.subprocess, "run",
+                side_effect=subprocess.TimeoutExpired(["7z"], 3600)):
+            self.assertEqual(
+                Validate.validate_sevenzip("slow.7z", "7z"),
+                ("invalid", "7z t 超时"),
+            )
+
     def test_exiftool_criteria(self):
         # 完好相机 JPG 的合规性警告不应被判为损坏
         ok_lines = [("Warning", "[minor] Odd offset for IFD0 tag 0x011a"),
@@ -2884,7 +3411,11 @@ class TestValidateSnapshot(_DiffFixture):
         tt.write(self.old_tree, "generated_truncated.png", png[:-12])
         tt.write(self.old_tree, "note.txt", b"plain")
         tt.write(self.old_tree, "gone.bin", b"will-vanish")
-        snap = self.snap(self.old_tree, "val", hash_mode="none")
+        snap = self.snap(
+            self.old_tree, "val", hash_mode="none",
+            pre_finalize=lambda con: con.execute(
+                "UPDATE snapshot_info SET schema_version=1"),
+        )
         os.remove(os.path.join(self.old_tree, "gone.bin"))
         rep = Validate.validate_snapshot(snap, {"T": self.old_tree},
                                          report_dir=self.base)
@@ -2963,7 +3494,7 @@ class TestSnapshotNaming(unittest.TestCase):
         self.assertEqual(
             core.snapshot_profile_tokens(
                 "full", "none", raw_payload=False, file_id=False),
-            ["No-Hash", "No-Raw", "No-FID"])
+            ["No-Hash", "Basic-Metadata", "No-FID"])
         self.assertEqual(
             core.snapshot_profile_tokens("full", "incremental"),
             ["Hash-Inc"])
@@ -2972,8 +3503,9 @@ class TestSnapshotNaming(unittest.TestCase):
             core.snapshot_profile_tokens("quick", file_id=False),
             ["No-FID"])
         name = core.snapshot_name(
-            ["A"], "Full", ["No-Hash", "No-Raw", "No-FID"])
-        self.assertTrue(name.startswith("A_Full_No-Hash_No-Raw_No-FID_"))
+            ["A"], "Full", ["No-Hash", "Basic-Metadata", "No-FID"])
+        self.assertTrue(
+            name.startswith("A_Full_No-Hash_Basic-Metadata_No-FID_"))
 
 
 class TestQuickScan(unittest.TestCase):

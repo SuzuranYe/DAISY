@@ -2,7 +2,7 @@
 
 **Database for Archive Integrity by Suzuran Ye**
 
-版本：**v1.3.4**
+版本：**v1.4.0**
 
 许可证：**MIT**
 
@@ -10,8 +10,8 @@ DAISY 是面向摄影素材库与个人档案的本地清点、登记、核验�
 
 ## 主要能力
 
-- 完整登记文件树、时间、元数据、Raw Payload、File ID 和 SHA-256；
-- 快速清点目录与文件信息，不读取文件内容；
+- 完整扫描文件树、时间、规范化元数据、可选原始元数据全文、File ID 和 SHA-256；
+- 快速扫描目录与文件信息，不读取文件内容；
 - 校验当前文件的结构和可解析性；
 - 独立复算 SHA-256，检查当前磁盘是否仍与快照一致；
 - 对比两份快照，区分内容变化、移动、复制、元数据提取差异和证据不足；
@@ -25,12 +25,12 @@ DAISY 仅支持 Windows，当前版本在 Python 3.14 上完成验证。
 | 依赖 | 最低版本 | 使用范围 |
 |---|---:|---|
 | Python | 3.14 | GUI 和全部任务 |
-| ExifTool | 13 | 环境检测、完整登记、格式校验 |
-| ffprobe（随 FFmpeg 安装） | 8 | 环境检测、完整登记、格式校验 |
-| 7-Zip | 24 | 环境检测、完整登记、格式校验 |
-| PowerShell `Get-FileHash` | Windows 内置 | 环境检测、完整登记、SHA-256 独立复算 |
+| ExifTool | 13 | 环境检测、完整扫描、格式校验 |
+| ffprobe（随 FFmpeg 安装） | 8 | 环境检测、完整扫描、格式校验 |
+| 7-Zip | 24 | 环境检测、完整扫描、格式校验 |
+| PowerShell `Get-FileHash` | Windows 内置 | 环境检测、完整扫描、SHA-256 独立复算 |
 
-Quick 快速清点除 Python 外不依赖 ExifTool、ffprobe、7-Zip 或 PowerShell。
+Quick 快速扫描除 Python 外不依赖 ExifTool、ffprobe、7-Zip 或 PowerShell。
 ExifTool、FFmpeg 和 7-Zip 由用户通过 WinGet 独立安装，DAISY 不捆绑或
 再分发这些程序；它们分别遵循各自的许可证。
 
@@ -41,23 +41,31 @@ DAISY 兼容 Windows PowerShell 5.1 与 PowerShell 7.x。自动发现顺序为�
 
 ### 自动安装依赖
 
-如果双击 `Start_DAISY_GUI.pyw` 没有反应，通常是尚未安装 Python 或 `.pyw` 文件关联不可用。请先在项目根目录打开 PowerShell，然后运行：
+如果双击 `Start_DAISY_GUI.pyw` 没有反应，通常是尚未安装 Python 或 `.pyw`
+文件关联不可用。请先在项目根目录打开 PowerShell，再运行只负责安装
+Python 3.14 的引导脚本：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Install_DAISY_Dependencies.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Script\Script_DAISY_Install_Python.ps1
 ```
 
-脚本会依次说明每个依赖的用途，并在安装或更新每一项之前单独询问：
+脚本会先说明用途，并且只有明确输入 `y` 后才通过 WinGet 安装或更新
+`Python.Python.3.14`；它不会安装 ExifTool、FFmpeg 或 7-Zip。安装完成后
+请重新打开 DAISY。
 
-- `Python.Python.3.14`：运行 GUI 和全部任务；
+Python 已可用时，进入「10 环境检测」运行检测。页面会显示本机实际发现的
+版本；若缺少 ExifTool、ffprobe 或 7-Zip，会出现“下载并安装缺失工具”
+按钮。用户再次确认后，GUI 才会通过 WinGet 的固定白名单包逐项安装：
+
 - `OliverBetz.ExifTool`：读取照片／视频元数据并参与格式校验；
-- `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流和校验媒体容器；Raw
-  开启时也会探测其他文件，并保留成功返回的完整 JSON；
+- `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流、校验媒体容器，并在
+  全量元数据模式下保留视频、音频和 GIF 的完整 JSON；
 - `7zip.7zip`：读取并测试 7z、RAR、TAR 等归档格式。
 
-每一项只有明确输入 `y` 才会执行，其他输入只跳过当前项，不影响后续依赖的确认。逐项处理后，脚本会运行 DAISY 环境检测。若当前 PowerShell 尚未取得新的 PATH，请关闭终端和 DAISY，再重新打开。
-
-如果系统找不到 `winget`，请先从 Microsoft Store 安装或更新“应用安装程序”（App Installer）。
+GUI 不提供任意包名输入，也不会自动安装 PowerShell。安装队列结束后会刷新
+当前进程的 PATH 并重新运行环境检测。若新程序仍未被发现，请关闭 DAISY
+后重新打开。如果系统找不到 `winget`，请先从 Microsoft Store 安装或更新
+“应用安装程序”（App Installer）。
 
 ### 手动安装
 
@@ -83,7 +91,7 @@ Get-Command powershell.exe,pwsh.exe -ErrorAction SilentlyContinue |
     Select-Object Name,Source
 ```
 
-随后在「10 环境检测」或「11 完整登记」的高级选项中选择对应的 `.exe`。CLI
+随后在「10 环境检测」或「11 完整扫描」的高级选项中选择对应的 `.exe`。CLI
 也可以运行 `env-check --powershell-path "完整路径"`；验证成功后，GUI 会在
 当前窗口中缓存该路径。
 
@@ -99,12 +107,16 @@ python .\Script\Script_DAISY_MAIN.py gui
 python .\Script\Script_DAISY_MAIN.py <子命令> --help
 ```
 
-首次建立正式基准时，在 GUI 中选择“11 完整登记”并保留默认值：
+首次建立正式基准时，在 GUI 中选择“11 完整扫描”并保留默认值：
 
 - 完整 SHA-256：开启；
-- Raw Payload：保留；
+- 元数据范围：全量元数据；
 - NTFS File ID：采集；
 - 多目录：按添加顺序分别生成。
+
+“独立哈希抽验比例”位于高级设置。它是在主 SHA-256 完成后，使用
+PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%，至少
+100 个，候选不足时全验。它不是主哈希的覆盖比例。
 
 扫描可能持续数小时；GUI 提供进度、实时日志和停止控制。
 
@@ -113,8 +125,8 @@ python .\Script\Script_DAISY_MAIN.py <子命令> --help
 | 编号 | GUI／CLI | 用途 |
 |---|---|---|
 | 10 | 环境检测／`env-check` | 检查四项外部工具、版本、只读冒烟和 SHA-256 |
-| 11 | 完整登记／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
-| 12 | 快速清点／`quick-scan` | 只登记树、大小、时间和可选 File ID |
+| 11 | 完整扫描／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
+| 12 | 快速扫描／`quick-scan` | 只登记树、大小、时间和可选 File ID |
 | 21 | 快照对比／`diff` | 对两份快照分类并判定证据等级 |
 | 22 | 哈希校验／`check-hash` | 用独立实现复算 SHA-256 |
 | 23 | 格式校验／`check-format` | 检查当前文件结构和可解析性 |
@@ -131,16 +143,39 @@ python .\Script\Script_DAISY_MAIN.py <子命令> --help
 
 DAISY 不会在被扫描的档案目录中创建、修改、重命名或删除文件。Full 哈希和格式校验会读取内容，但不会写回源文件。
 
-### Raw Payload
+Full 没有“静置窗口”或按 mtime 静默跳过近期文件的选项。建立权威基线前
+应先停止对源目录写入；对已登记文件，扫描会通过哈希读前／读后 stat、
+元数据读后 stat 和末次复扫识别变化，并标为 `unstable`。这不是 VSS
+原子快照：枚举完成后新增的路径不会进入本次快照，长时间扫描期间也不能保证
+所有文件对应同一个瞬时时刻。
 
-Raw Payload 控制是否在快照中保留外部工具返回的完整原始 JSON，不是“是否提取元数据”的总开关：
+### 元数据范围
 
-- 默认开启：对每个非占位普通文件尝试保留 ExifTool Raw，并逐文件调用
-  ffprobe，成功返回时保留其 Raw；已支持类型同时写规范化元数据；
-- 关闭：仍运行生成规范化表所需的 ExifTool、ffprobe 或压缩包解析器，但
-  不写 `raw_payloads`；`other` 不再为 Raw 单独调用 ExifTool，非音视频
-  也不再为 Raw 单独探测 ffprobe；
-- 它不是隐私开关，规范化列仍可能包含位置、作者、设备或序列号。
+完整扫描再按元数据范围分为“基础元数据”和“全量元数据”。这个选项决定
+“保留多少解析结果”，不是“是否读取 ExifTool 元数据”：
+
+- 全量元数据（默认）：写入照片、GIF、视频、音频、文档、压缩包等规范化字段；同时
+  对本地所有文件尝试保存 ExifTool 原始 JSON，并为视频、音频和
+  GIF 保存 ffprobe 原始 JSON；
+- 基础元数据：仍解析文件并写入规范化字段，但不写 `raw_payloads`。
+  视频和音频仍运行 ffprobe 以生成容器与流字段；GIF 在基础范围只运行
+  ExifTool。`.jfif` 按 JPEG、`.doc` 按文档、GIF 按 `image_gif` 处理，
+  GIF 的通用图像字段写入
+  `photo_metadata`；真正没有规范化落点的未知类型才标为“不适用”；
+- 基础元数据会显著缩小快照，但以后无法从历史快照重新解释外部工具原始字段，
+  也无法判定 `metadata_extraction_changed`；
+- 两种模式都不是隐私开关，规范化字段仍可能包含位置、作者、设备或序列号。
+
+### v1.4 兼容边界
+
+v1.4.0 写出的快照和 Diff 使用 `schema_version=2`，最低阅读器版本为
+`v1.4.0`。**v1.4 不提供旧版阅读器读取新产物的前向兼容保证**：
+不得假定 `v1.3.x`、Kit_AL 或更早工具能正确分析、核验或导出 v1.4 产物。
+
+这里的“不前向兼容”特指“旧工具读取新产物”。v1.4 工具仍可只读接纳
+`schema_version=1` 的既有封存快照，用于核验、导出或与 v1.4 快照进行
+Diff；跨 schema Diff 会分别记录两侧 schema。旧版 partial 不能由 v1.4
+续传，既有封存快照不会被迁移或回写。
 
 ### 视频 GPS
 
@@ -156,7 +191,7 @@ Payload 中保留原值。经纬度会规范化为数值并校验范围；海拔
 
 由于规范化 profile 和 additive 表已变化，中断的 `.partial.sqlite`
 必须同时匹配当前 DAISY 的版本、schema、profile 和 GPS 表后才允许续传。
-旧版本或仍使用 profile v1 的 partial 会被明确拒绝，以免同一快照混用
+旧版本或不是当前 profile v6 的 partial 会被明确拒绝，以免同一快照混用
 两套解析语义。封存快照不受此限制。
 
 ### 数据库文件名指纹
@@ -190,7 +225,6 @@ Issue 或其他公共位置；需要反馈问题时，应先移除或替换私�
 DAISY\
 ├─ .gitattributes
 ├─ .gitignore
-├─ Install_DAISY_Dependencies.ps1
 ├─ LICENSE
 ├─ README.md
 ├─ Start_DAISY_GUI.pyw
@@ -198,6 +232,7 @@ DAISY\
 │  ├─ Spec_DAISY_Technical.md
 │  └─ Spec_DAISY_Version_Evolution.md
 └─ Script\
+   ├─ Script_DAISY_Install_Python.ps1
    ├─ Script_DAISY_MAIN.py
    ├─ Script_DAISY_GUI.py
    ├─ Lib\
@@ -251,6 +286,12 @@ python -B .\Script\Test\Script_DAISY_Test_Tree.py --list
 
 七项业务任务不导入 `Script\Test\`。测试层可以独立移除而不影响 DAISY
 业务功能；缺少测试文件时，GUI 的“运行项目自检”按钮会禁用。
+
+GUI 左下角的“清理缓存”只删除项目目录内可安全重建的 `__pycache__`、
+`.pytest_cache`、`.mypy_cache`、`.ruff_cache` 和独立 `.pyc`／`.pyo`
+文件，并清空当前窗口缓存的工具路径。每个实际删除的目录或文件都会写入
+运行日志。它不会跟随链接，不会进入 `.git`、虚拟环境、`node_modules`
+或 `Output`，也不会删除快照、Diff、报告、运行日志或未完成数据库。
 
 ## 问题反馈
 

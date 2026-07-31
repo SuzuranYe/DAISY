@@ -85,6 +85,13 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
     files = []
     try:
+        schema_version, status = con.execute(
+            "SELECT schema_version, scan_status FROM snapshot_info"
+        ).fetchone()
+        core.require_readable_schema_version(schema_version)
+        if status != "complete":
+            raise core.PreflightError(
+                f"快照未封存（scan_status={status}）")
         # 人读路径一律拼接为「label\rel_path」完整逻辑路径
         files.append(_dump_query(
             con, folder, "Tree.csv",
@@ -173,6 +180,10 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
     con = sqlite3.connect(f"file:{diff_path}?mode=ro", uri=True)
     files = []
     try:
+        schema_version, = con.execute(
+            "SELECT schema_version FROM diff_info").fetchone()
+        core.require_readable_schema_version(
+            schema_version, "Diff 数据库")
         _full = ("CASE WHEN {r} IS NULL THEN NULL WHEN {r} = ''"
                  " THEN {l} ELSE {l} || '\\' || {r} END")
         files.append(_dump_query(

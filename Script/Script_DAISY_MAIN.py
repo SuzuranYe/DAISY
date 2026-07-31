@@ -33,9 +33,9 @@ COMMANDS = {
     "env-check": ("Script_DAISY_Tool_10_Env_Check",
                   "运行环境检查：工具发现、版本、冒烟与只读断言"),
     "full-scan": ("Script_DAISY_Tool_11_Full_Scan",
-                  "完整登记：文件树＋元数据＋哈希 → 不可变快照"),
+                  "完整扫描：文件树＋元数据＋哈希 → 不可变快照"),
     "quick-scan": ("Script_DAISY_Tool_12_Quick_Scan",
-                   "快速清点：仅文件信息，零外部工具依赖，秒到分钟级"),
+                   "快速扫描：仅文件信息，零外部工具依赖，秒到分钟级"),
     "diff": ("Script_DAISY_Tool_21_Diff",
              "两快照对比：11 状态分类＋证据等级"),
     "check-hash": ("Script_DAISY_Tool_22_Check_Hash",
@@ -43,7 +43,7 @@ COMMANDS = {
     "check-format": ("Script_DAISY_Tool_23_Check_Format",
                      "格式完整性校验：这些文件是不是好的"),
     "export-report": ("Script_DAISY_Tool_31_Export_Report",
-                      "从快照/Diff 库导出人读报表"),
+                      "从快照/Diff 库导出报告"),
 }
 
 
@@ -79,11 +79,11 @@ def guide() -> str:
         "",
         "典型流程：",
         "  图形界面        python .\\Script\\Script_DAISY_MAIN.py gui",
-        "  首次登记        python .\\Script\\Script_DAISY_MAIN.py full-scan --root \"E:\\档案2024\""
+        "  首次完整扫描    python .\\Script\\Script_DAISY_MAIN.py full-scan --root \"E:\\档案2024\""
         "   （默认完整 SHA-256）",
-        "  接盘快速清点    python .\\Script\\Script_DAISY_MAIN.py quick-scan --root \"E:\\档案2024\"",
+        "  接盘快速扫描    python .\\Script\\Script_DAISY_MAIN.py quick-scan --root \"E:\\档案2024\"",
         "  盘接上的安心检查 python .\\Script\\Script_DAISY_MAIN.py check-hash --snapshot .\\Output\\Snapshots\\基准.sqlite --root \"档案2024=E:\\档案2024\"",
-        "  完整性复核      full-scan --hash full --no-raw-payload 后与首扫快照 diff",
+        "  完整性复核      full-scan --hash full --metadata-storage normalized 后与首扫快照 diff",
         "",
         "产物去向：Output\\Snapshots\\（单文件自描述快照，文件名带高32bit指纹）",
         "          Output\\Diffs\\（单文件对比库）｜Output\\Reports\\（报告报表，可删可重生）",

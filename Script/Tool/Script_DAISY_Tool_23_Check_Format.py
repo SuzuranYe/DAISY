@@ -7,12 +7,13 @@ r"""Script_DAISY_Tool_23_Check_Format：格式完整性校验。
 校验规则：
   zip 与 OOXML（docx/xlsx/pptx）→ 双层：zipfile 结构＋testzip 全成员 CRC；
     OLE 魔数（加密 Office）→ unsupported；加密成员 → unsupported
+  旧 DOC OLE 复合文档 → 魔数确认＋`7z t` 结构测试
   pdf → %PDF 头＋%%EOF 尾＋startxref 存在性
-  照片/视频/RAW/CRM → ExifTool -validate（stay_open 通道）；判据为经验模式表：
+  照片/GIF/视频/RAW/CRM → ExifTool -validate（stay_open 通道）；判据为经验模式表：
     Error 键，或命中损坏模式的非 minor 警告
     （format error/Truncated/Error reading/corrupt/坏头等）→ invalid；
     相机文件常见的合规性警告（Missing required tag、[minor]）不误伤；
-    视频叠加 ffprobe 解析退出码与流计数双保险
+    GIF、视频和音频叠加 ffprobe 解析退出码与流计数双保险
   7z/rar/tar/gz/bz2/xz → `7z t`（结构＋CRC）；需密码 → unsupported
   其他 → unsupported（不读取，哈希层兜底）
 
@@ -43,9 +44,9 @@ import Script_DAISY_Lib_02_Meta as meta
 
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _OOXML_EXTS = {"docx", "xlsx", "pptx"}
-_MEDIA_KINDS = {"photo_raw", "photo_jpeg", "photo_working",
+_MEDIA_KINDS = {"photo_raw", "photo_jpeg", "image_gif", "photo_working",
                 "video_mp4", "video_crm", "audio"}
-_VIDEO_KINDS = {"video_mp4", "video_crm", "audio"}
+_FFPROBE_KINDS = {"image_gif", "video_mp4", "video_crm", "audio"}
 
 # 损坏模式表（v1，判据来自截断 JPG/MP4/CR3 与坏头 JPG 的探针输出）
 _CORRUPT_RE = re.compile(
@@ -92,9 +93,26 @@ def validate_pdf(path: str) -> tuple[str, str | None]:
     return "valid", None
 
 
+def validate_legacy_office(
+    path: str, sevenzip: str,
+) -> tuple[str, str | None]:
+    """旧 Office 仅在确认是 OLE 复合文档后交给 7-Zip 做结构测试。"""
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(len(_OLE_MAGIC))
+    except OSError as exc:
+        return "invalid", str(exc)
+    if magic != _OLE_MAGIC:
+        return "unsupported", "不是 OLE 复合文档；可能是 RTF 或扩展名不符"
+    return validate_sevenzip(path, sevenzip)
+
+
 def validate_sevenzip(path: str, sevenzip: str) -> tuple[str, str | None]:
-    r = subprocess.run([sevenzip, "t", "-p", "-y", "-sccUTF-8", path],
-                       capture_output=True, timeout=3600)
+    try:
+        r = subprocess.run([sevenzip, "t", "-p", "-y", "-sccUTF-8", path],
+                           capture_output=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return "invalid", "7z t 超时"
     if r.returncode == 0:
         return "valid", None
     text = (r.stderr + r.stdout).decode("utf-8", "replace")
@@ -126,15 +144,23 @@ def classify_et_findings(findings: list[tuple[str, str]]) -> list[str]:
     return bad
 
 
-def validate_media(path: str, kind: str, worker, ffprobe: str) \
+def validate_media(path: str, kind: str, worker, ffprobe: str | None) \
         -> tuple[str, str | None]:
     out = worker.execute(["-validate", "-a", "-s", "-Warning", "-Error",
                           "-charset", "filename=utf8", path])
     bad = classify_et_findings(parse_et_text(out.decode("utf-8", "replace")))
-    if kind in _VIDEO_KINDS:                       # 双保险：容器可解析＋有流
-        r = subprocess.run([ffprobe, "-v", "error", "-print_format", "json",
-                            "-show_streams", path],
-                           capture_output=True, timeout=600)
+    if kind in _FFPROBE_KINDS:                     # 双保险：容器可解析＋有流
+        if not ffprobe:
+            raise core.PreflightError(
+                f"{kind} 格式校验需要 ffprobe")
+        try:
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-print_format", "json",
+                 "-show_streams", path],
+                capture_output=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            bad.append("ffprobe: 超时")
+            return "invalid", "；".join(bad)
         streams = []
         try:
             streams = json.loads(r.stdout.decode("utf-8", "replace")
@@ -153,6 +179,12 @@ def _pick_validator(ext: str, kind: str) -> str:
         return "zip"
     if ext == "pdf":
         return "pdf"
+    if ext == "doc":
+        return "ole"
+    if ext == "gif":
+        return "gif"
+    if ext == "jfif":
+        return "media"
     if kind in _MEDIA_KINDS:
         return "media"
     if kind == "archive":
@@ -180,8 +212,10 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
             f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
     try:
-        uuid_, status = con.execute(
-            "SELECT snapshot_uuid, scan_status FROM snapshot_info").fetchone()
+        uuid_, status, schema_version = con.execute(
+            "SELECT snapshot_uuid, scan_status, schema_version"
+            " FROM snapshot_info").fetchone()
+        core.require_readable_schema_version(schema_version)
         if status != "complete":
             raise core.PreflightError(f"快照未封存（scan_status={status}）")
         roots = {}
@@ -256,6 +290,9 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
                 status_, detail = validate_zip(ext_path)
             elif validator == "pdf":
                 status_, detail = validate_pdf(ext_path)
+            elif validator == "ole":
+                status_, detail = validate_legacy_office(
+                    path, resolve_once("sevenzip", sevenzip))
             elif validator == "7z":
                 status_, detail = validate_sevenzip(
                     path, resolve_once("sevenzip", sevenzip))
@@ -263,10 +300,15 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
                 if worker is None:
                     worker = meta.ExifToolWorker(
                         resolve_once("exiftool", exiftool))
-                    ffprobe = resolve_once("ffprobe", ffprobe)
                 try:
-                    status_, detail = validate_media(path, kind, worker,
-                                                     ffprobe)
+                    effective_kind = (
+                        "image_gif" if validator == "gif" else kind)
+                    ffprobe_path = (
+                        resolve_once("ffprobe", ffprobe)
+                        if effective_kind in _FFPROBE_KINDS else None
+                    )
+                    status_, detail = validate_media(path, effective_kind, worker,
+                                                     ffprobe_path)
                 except TimeoutError:
                     status_, detail = "invalid", "exiftool -validate 超时"
             rows.append({"path": label_by_rid[rid] + "\\" + rel,

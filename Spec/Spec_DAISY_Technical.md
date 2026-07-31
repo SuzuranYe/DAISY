@@ -1,7 +1,7 @@
-# DAISY v1.3.4 技术规格
+# DAISY v1.4.0 技术规格
 
 - 状态：**现行规范**。
-- 对应版本：**v1.3.4**。
+- 对应版本：**v1.4.0**。
 - 本文定义快照、哈希、元数据、格式校验和 Diff 的现行语义。
 - 安装、启动与常用工作流见项目根目录的 [README](../README.md)。
 - 从 `Kit_AL v1.0.2` 到当前版本的阶段变化见
@@ -25,7 +25,7 @@
 1. **源档案只读**：DAISY 不创建、修改、重命名或删除源目录中的任何项目。
 2. **快照封存后不可变**：后续核验、Diff 和导出只读输入数据库；新分析产生新文件。
 3. **无有效内容哈希时不得推断内容相同**：大小和时间相同只能证明 stat 未变，不能替代内容证据。
-4. **业务运行纯本地**：七项业务任务没有网络、遥测、上传或在线查询；云占位文件不会被触发下载。根目录的依赖安装脚本不属于业务运行，执行时会通过 WinGet 联网。
+4. **业务运行纯本地**：七项业务任务没有网络、遥测、上传或在线查询；云占位文件不会被触发下载。只有用户明确确认后，Python 引导脚本或 GUI 缺失工具安装流程才会通过 WinGet 联网。
 5. **路径可迁移**：身份以 root label 和相对路径表示，不依赖盘符；当次 `root_path` 仅作定位与审计。
 6. **时间可审计**：自产时间使用 UTC ISO 8601 `Z`；本地时间只用于显示和文件名。
 7. **文本统一**：正式文本输出使用 UTF-8（无 BOM）和 LF。
@@ -43,42 +43,53 @@
 
 | `media_kind` | 扩展名 | Full 元数据处理 |
 |---|---|---|
-| `photo_raw` | cr2 cr3 nef arw raf orf rw2 dng | ExifTool 照片 profile；Raw 开启时另存成功的 ffprobe Raw |
-| `photo_jpeg` | jpg jpeg | ExifTool；Raw 开启时另存成功的 ffprobe Raw |
-| `photo_working` | tif tiff psd psb png | ExifTool＋`working_metadata`；Raw 开启时另存成功的 ffprobe Raw |
+| `photo_raw` | cr2 cr3 nef arw raf orf rw2 dng | ExifTool 照片 profile |
+| `photo_jpeg` | jpg jpeg jfif | ExifTool |
+| `image_gif` | gif | ExifTool；全量元数据另存成功的 ffprobe 原文 |
+| `photo_working` | tif tiff psd psb png | ExifTool＋`working_metadata` |
 | `video_mp4` | mp4 mov lrf | ExifTool＋ffprobe |
 | `video_crm` | crm | ExifTool＋ffprobe，允许 CTMD 长尾字段进入 Raw Payload |
 | `audio` | wav mp3 | 视频同管线；title／author／album／copyright 优先采用 ffprobe tags |
-| `archive` | zip 7z rar tar gz bz2 xz | ZIP 使用 `zipfile` 目录；其他格式使用 7-Zip 列表；Raw 开启时另存 ExifTool Raw 和成功的 ffprobe Raw |
-| `document` | pdf docx xlsx pptx | 只登记属性，不读取正文；Raw 开启时另存成功的 ffprobe Raw |
-| `other` | 其他全部 | 进入树和哈希；Raw 开启时尝试 ExifTool 和 ffprobe，成功输出只进 Raw，不写专用规范化表 |
+| `archive` | zip 7z rar tar gz bz2 xz | ZIP 使用 `zipfile` 目录；其他格式使用 7-Zip 列表；全量元数据另存 ExifTool 原文 |
+| `document` | pdf doc docx xlsx pptx | 只登记属性，不读取正文；全量元数据另存 ExifTool 原文 |
+| `other` | 其他全部 | 进入树和哈希；仅在全量元数据范围保存 ExifTool 原文 |
 
 “支持”表示代码具有对应处理路径，不表示所有厂商、固件和损坏形态都经过真实样本验证。
 
-元数据 profile v3：
+元数据 profile v6：
 
 - 照片：`-j -G1:3:4 -a -u -D -l -ee -charset filename=utf8`；
 - 视频、音频、文档、压缩包和 `other`：同组参数但不含 `-ee`；
 - ffprobe：`-print_format json -show_format -show_streams -show_chapters -show_programs -show_stream_groups -show_data`。
 - v2 新增 ffprobe 容器级 `format.tags.location` 的 ISO 6709 规范化。
-- v3 在 Raw 开启时把 ExifTool 覆盖扩展到每个非占位普通文件，并对每个
-  文件调用 ffprobe，返回成功才保留其 Raw。音频／视频的 ffprobe 是规范化
-  管线的必需后端，失败会记录元数据错误；其他类型只是可选 Raw 增补，失败
-  只表示 ffprobe 不支持或无法读取，不覆盖主解析状态。现有规范化表不变。
-- ffprobe 成功不等于读到了照片意义上的传统 EXIF。静态图像通常被表示为
-  单帧视频流，主要补充 demuxer、codec、尺寸和内部 stream／data track；
-  这些字段可能与 ExifTool 重叠，不能替代 ExifTool。
+- v3 在 Raw 开启时把 ExifTool 覆盖扩展到本地所有文件，并对每个
+  文件调用 ffprobe；该范围用于开发期全类型价值实测。
+- v4 保留本地所有文件的 ExifTool Raw，但把 ffprobe 收敛为视频、
+  音频和 GIF。音频／视频的 ffprobe 是规范化管线的必需后端，失败会记录
+  元数据错误；GIF 只作 Raw 动画证据增补，失败不覆盖 ExifTool 主解析
+  状态。其他照片、文档、压缩包和普通文件不调用 ffprobe。
+- v5 补齐 `.jfif` 的 JPEG 分类、`.doc` 的文档分类和 GIF 的通用照片
+  规范化字段，并把 ffprobe 原文收敛为视频、音频和 GIF。
+- v6 把 GIF 从 `other` 提升为独立 `image_gif`，并把面向用户的选项明确
+  为“基础元数据／全量元数据”。两种范围都解析有规范化落点的文件；
+  仅全量元数据写入 `raw_payloads`。
+- ffprobe 成功不等于读到了照片意义上的传统 EXIF。profile v5 不再因为
+  静态照片可被表示为单帧视频流，就默认保存重复或带合成时长的结果。
 
-## 四、Raw Payload 与规范化元数据
+## 四、元数据范围
 
-Raw Payload 是**后端原始 JSON 的保留开关**，不是元数据提取总开关：
+完整扫描的元数据范围决定是否保存后端原始 JSON，不是元数据提取总开关：
 
-- 默认保留。后端 JSON canonicalize 后以 zlib level 6 压缩，`payload_sha256` 是未压缩 canonical JSON 的 SHA-256。
-- `--no-raw-payload` 仍执行生成规范化表所需的 ExifTool、ffprobe 或
-  压缩包解析器，只是不写 `raw_payloads`；`other` 不为 Raw 单独调用
-  ExifTool，非音视频也不为 Raw 单独探测 ffprobe。
-- 关闭后无法重新解释历史后端字段，也无法用原始载荷判断 `metadata_extraction_changed`。
-- Raw Payload 不是隐私开关；规范化列仍可能包含作者、设备、时间或位置等元数据。
+- `--metadata-storage complete` 对应“全量元数据”，为默认值：后端 JSON canonicalize 后以
+  zlib level 6 压缩，`payload_sha256` 是未压缩 canonical JSON 的 SHA-256。
+- `--metadata-storage normalized` 对应“基础元数据”：仍执行生成规范化表
+  所需的 ExifTool、ffprobe 或压缩包解析器，只是不写 `raw_payloads`。
+  视频和音频仍调用 ffprobe；GIF 在基础范围只调用 ExifTool。旧参数
+  `--no-raw-payload` 仅作为隐藏兼容别名保留。
+- 基础元数据范围下，`.jfif`、`.doc` 和 GIF 仍有规范化落点；真正未知且没有
+  规范化表的 `other` 才标为 `not_applicable`。
+- 基础元数据无法重新解释历史后端字段，也无法用原始载荷判断 `metadata_extraction_changed`。
+- 元数据范围不是隐私开关；规范化列仍可能包含作者、设备、时间或位置等元数据。
 - “全部字段”仅指**当前 profile 返回的 JSON 字段全部保留**，不代表外部工具未返回的字段也被采集。
 - `payload_zlib` 和 `payload_sha256` 保留完整原始载荷；Diff 只有在 ExifTool
   摘要不同且工具版本相同时，才按需解压候选载荷，并在比较副本中排除
@@ -149,18 +160,18 @@ Quick 与 Full 使用相同核心 schema。Quick 不生成内容哈希、专用�
 
 哈希 `valid` 的充要条件是：摘要非空、`bytes_read == size_bytes`，并且读取前后 size／mtime 一致。
 
-## 七、Full／Quick 与封存
+## 七、完整扫描／快速扫描与封存
 
 ### 7.1 默认能力
 
-Full 默认：
+完整扫描（Full）默认：
 
 - `hash=full`；
-- 保留 Raw Payload；
+- 元数据范围为全量元数据（`complete`）；
 - 采集 File ID；
 - 独立抽验 1%，至少 100 个本次 computed 条目。
 
-Quick：
+快速扫描（Quick）：
 
 - 不读取内容；
 - 不运行外部工具；
@@ -168,7 +179,37 @@ Quick：
 - 不提取元数据或 Raw Payload；
 - 默认采集 File ID。
 
-### 7.2 运行态与封存
+### 7.2 扫描稳定性
+
+Full 不是文件系统原子快照，而是用多个时间点的观测尽量识别扫描期间的
+源文件变化：
+
+1. 枚举时登记每个已发现文件的 size、mtime、File ID 和观测时间；
+2. 主 SHA-256 在读前、读后分别 stat，并核对枚举 size、实际读取字节数、
+   读前后 size 和 mtime；不一致即 `unstable`；
+3. 每个文件完成元数据解析后，再把当前 size／mtime 与枚举值比较；
+4. 元数据阶段结束后，对枚举时已登记的本地所有文件再做一次
+   size／mtime 复扫；变化或消失会同时把哈希与元数据状态标为
+   `unstable`；
+5. 主哈希完成后，从本次由 Python 实际计算且状态有效的条目中按比例抽样，
+   由 PowerShell `Get-FileHash` 独立重算；默认 1%，至少 100 个，候选不足
+   时全验。它不是主 SHA-256 的覆盖比例；
+6. 哈希读取没有固定超时，30 秒无进度只记录 stall，恢复读取后继续；
+   哈希错误率超过 20% 时告警，超过 50% 时中止并保留 partial。
+
+当前边界必须明确：
+
+- 末次复扫只检查枚举时已经登记的路径，不会重新枚举目录。因此扫描开始后
+  新增的文件不会进入本次快照；已登记文件随后消失则能够检出；
+- 基于 stat 的检查不能可靠发现“内容改变后又恢复原 size 和 mtime”的情况。
+  Full 哈希能证明读取时的内容，但不能把整个源目录冻结在同一时刻；
+- DAISY 当前不创建 VSS 或其他文件系统快照，不应把一次长时间扫描解释为
+  原子时间点映像；
+- DAISY 不提供按 mtime 静默跳过近期文件的“静置窗口”。建立权威基线前
+  应先停止对源目录写入；扫描中发生的已登记文件变化会明确记为
+  `unstable`，而不是用缺失哈希换取表面上的 Full。
+
+### 7.3 运行态与封存
 
 Full 运行态包含：
 
@@ -196,16 +237,16 @@ Full 运行态包含：
 
 失败或中断时保留 partial 和事件，供诊断或续传。
 
-### 7.3 文件名
+### 7.4 文件名
 
 ```text
 根标签_类型_[偏差标记_]日期_时间.微秒_runid8[_Abnormal]_XXXXXXXX.sqlite
 ```
 
 - `XXXXXXXX` 是最终数据库完整 SHA-256 的最高 32 bit，不是完整摘要。
-- Full 无标记基线＝full hash＋Raw Payload＋File ID。
-- 偏差标记固定顺序：`No-Hash`、`Hash-Inc`、`No-Raw`、`No-FID`。
-- Quick 已蕴含无哈希和无 Raw Payload，只在关闭 File ID 时增加 `No-FID`。
+- Full 无标记基线＝full hash＋全量元数据＋File ID。
+- 偏差标记固定顺序：`No-Hash`、`Hash-Inc`、`Basic-Metadata`、`No-FID`。
+- Quick 已蕴含无哈希和无元数据原文，只在关闭 File ID 时增加 `No-FID`。
 - 多 root 合并时用 `+` 连接安全化后的 label。
 - 文件名使用本地时间；库内 UTC 时间和 UUID 才是权威身份。
 - 任何哈希／元数据 error、unstable、枚举失败或异常来源复用都会增加 `_Abnormal`。
@@ -251,9 +292,15 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 - 数据库不是封存完成状态；
 - SQLite integrity check 失败；
 - 文件名已有高 32 bit 指纹，但与当前字节复算不符；
-- 两侧 `schema_version` 或 `path_key_rule` 不兼容。
+- 任一侧 `schema_version` 不在 v1.4 声明的只读范围 `{1, 2}`，或
+  `path_key_rule` 不兼容。
 
 唯一可降级项是**文件名缺少指纹**。`--force` 允许继续，但结果必须标记为异常。当前版本不读取旧 sidecar、散置 `.sha256` 或旧 `SHA8-` 命名；旧快照需对原档案重新登记。
+
+v1.4 reader 可只读接纳 `schema_version` 1 和 2。schema 1↔2 Diff 仅使用
+两版共同定义的稳定字段，结果库会分别登记两侧 schema；这项向后读取能力
+不表示 v1.3.x reader 获得了读取 schema 2 的前向兼容保证。v1.4 只续传
+本版本、schema 2、profile 6 的 partial，旧 partial 明确拒绝。
 
 `22 check-hash` 和 `23 check-format` 都必须用 `--root` 指定当前档案根目录，
 不回退到快照保存的旧绝对路径。单根快照可直接传一个文件夹路径；多根快照
@@ -271,8 +318,12 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 - 默认检查全部可校验文件，GUI 可选择按比例抽样；
 - ZIP／OOXML 可读取成员并校验 CRC；
 - PDF 使用头、尾和 `startxref` 结构检查；
-- 媒体使用 ExifTool validate，视频／音频叠加 ffprobe；
+- 媒体使用 ExifTool validate，视频／音频／GIF 叠加 ffprobe；
 - 其他格式返回 unsupported，由哈希层而不是结构层提供变化保护。
+
+报告只列出本次实际出现的状态计数；`unsupported=0` 等零值不作为占位项
+显示。`unsupported` 状态本身仍用于区分“校验器无法判断”和
+`valid`／`invalid`，不能因某一个测试库为 0 而删除。
 
 格式校验不是逐帧解码。媒体“容器结构正常但码流内部损坏”可能漏检；外部工具版本变化也可能改变警告口径。
 
@@ -314,13 +365,16 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 
 ## 十一、版本、性能与已知限制
 
-- `SCANNER_VERSION=1.3.4`；`schema_version=1`。
+- `SCANNER_VERSION=1.4.0`；新产物 `schema_version=2`；
+  `min_reader_version=1.4.0`。
 - v1.3.0 新增 `snapshot_manifest` 和 `run_events`，属于 additive DDL 扩展，因此 schema 版本仍为 1。
 - v1.3.0 对旧封装不兼容，是已明确记录的版本号例外，不能由次版本号推断兼容。
 - v1.3.1 整理 GitHub 发布结构、依赖安装说明和代码内历史命名，并加入 GUI 项目自检入口；不改变数据库 schema 或七项业务任务的运行语义。
 - v1.3.2 排除 `FileAccessDate` 对 Diff 元数据判断的干扰，加入运行时生成的截断媒体回归，移除未接入正式路径的 `block_hashes` 表和 `hash_coverage=partial` 值，并把依赖安装改为逐项说明、逐项确认；正式读写语义不变，`schema_version` 仍为 1。
 - v1.3.3 修复已安装 PowerShell 不在进程 `PATH` 时的误判，增加 Windows 常规位置回退、坏候选跳过、完整登记手动路径覆盖，并让正式环境检测实际验证 `Get-FileHash`；同时新增 additive `video_gps_points`、ISO 6709 文件级视频位置规范化和 `GPS_inventory_video.csv`，元数据 profile 升至 2。`schema_version` 仍为 1。
-- v1.3.4 统一 GUI 侧栏与主标题，修正日志区、滚动条、底部控件、状态徽标和滚轮误改下拉值，并使用带正负极的莫比乌斯品牌图形；后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`。两项当前文件校验必须显式指定当前 root。Diff 在同版 ExifTool Raw Payload 复核中排除 `SourceFile`、`Directory` 和 `FileAccessDate` 等提取环境字段，避免盘符或根目录迁移造成元数据假阳性；内嵌元数据的真实变化仍照常检出。Raw 开启时 ExifTool 扩展到每个非占位普通文件，并保留每次 ffprobe 成功返回的 Raw；元数据 profile 升至 3。`schema_version` 仍为 1。
+- v1.3.4 统一 GUI 侧栏与主标题，修正日志区、滚动条、底部控件、状态徽标和滚轮误改下拉值；页面与系统窗口统一使用带正负极的平滑单色莫比乌斯品牌图形；“独立哈希抽验比例”移入高级设置并补充用途说明；删除会静默跳过近期文件的静置窗口参数。后处理任务固定为 `21 diff`、`22 check-hash`、`23 check-format`、`31 export-report`。两项当前文件校验必须显式指定当前 root。Diff 在同版 ExifTool 原文复核中排除 `SourceFile`、`Directory` 和 `FileAccessDate` 等提取环境字段，避免盘符或根目录迁移造成元数据假阳性；内嵌元数据的真实变化仍照常检出。`schema_version` 仍为 1。
+- v1.4.0 把完整扫描明确分为基础元数据和全量元数据；全量范围为本地所有文件保存 ExifTool 原文，并为视频、音频和 GIF 保存 ffprobe 原文；`.jfif`、`.doc` 和 GIF 获得明确规范化分类，GIF 使用 `image_gif`；元数据 profile 升至 6。格式校验新增 GIF 的 ExifTool＋ffprobe 双检和旧 DOC OLE 结构测试。新快照与 Diff 使用 `schema_version=2`，并分别记录跨 schema Diff 的两侧版本。
+- “v1.4 不前向兼容”特指 v1.3.x 及更早阅读器不保证正确解释 v1.4 产物。v1.4 阅读器可只读接纳 schema 1 和 2，并允许在稳定字段上执行 schema 1↔2 Diff；这属于向后读取能力，不改变旧工具读取新产物不受支持的边界。
 - `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
   元数据 profile 和 GPS 表；改动前同版本但仍为旧 profile 的 partial
   会被明确拒绝。既有封存快照不迁移、不回写。
@@ -328,6 +382,22 @@ PowerShell 按「手动路径 → `PATH` → Windows 常规安装位置」发现
 - Full 哈希针对机械盘采用顺序读取，不在同一介质并行争抢。
 - 正式环境检测和 GUI 不执行介质性能跑分。
 - 非 Canon RAW 和更多厂商格式仍需要补充真实样本；“代码路径存在”不等于“所有变体已验证”。
+
+### 11.1 GUI 安装与缓存边界
+
+- 无 Python 时，`Script\Script_DAISY_Install_Python.ps1` 只在用户确认后
+  通过固定包 ID 安装 Python 3.14，不安装其他工具。
+- Python 已可运行时，「10 环境检测」会同时报告已发现工具的本机版本和
+  全部缺失项。ExifTool、ffprobe、7-Zip 缺失时，GUI 可在用户再次确认后
+  通过固定 WinGet 白名单逐项安装；PowerShell 不由 GUI 安装。
+- 安装队列完成后 GUI 刷新当前进程 PATH 并重新检测。七项业务任务本身没有
+  下载或安装逻辑。
+- “清理缓存”只清除项目内白名单缓存目录
+  `__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`，
+  独立 `.pyc`／`.pyo` 文件，以及当前窗口的工具路径缓存；日志逐项列出
+  实际删除对象。
+- 清理不会跟随目录链接，也不会进入 `.git`、虚拟环境、`node_modules`
+  或 `Output`。快照、Diff、报告、日志和 partial 均不属于缓存，不会删除。
 
 可重复执行的回归测试位于 [`Script\Test`](../Script/Test/)；GUI 的“10 环境检测”
 页可启动同一套测试，但它不属于第八项业务任务。

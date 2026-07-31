@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_11_Full_Scan：完整登记——扫描档案生成不可变快照库（树＋元数据＋哈希）。
+r"""Script_DAISY_Tool_11_Full_Scan：完整扫描——扫描档案生成不可变快照库（树＋元数据＋哈希）。
 
 六阶段管线：预检→枚举（可重跑对账）→哈希（full/incremental/none，逐文件续传）
 →元数据（双后端，逐文件续传）→复扫＋独立实现抽验→封存。
@@ -88,9 +88,14 @@ def main() -> int:
                     help="增量模式 root 配对改写：旧label=新label，可重复")
     ap.add_argument("--verify-sample-percent", type=float, default=1.0,
                     help="独立实现抽验比例（默认 1%%，至少 100 个）")
-    ap.add_argument("--no-raw-payload", action="store_true")
+    ap.add_argument(
+        "--metadata-storage", choices=["complete", "normalized"],
+        default="complete",
+        help="元数据范围：complete=全量元数据（基础字段＋原始工具输出，"
+             "默认）；normalized=基础元数据（仅规范化常用字段）")
+    ap.add_argument("--no-raw-payload", action="store_true",
+                    help=argparse.SUPPRESS)  # v1.3.4 早期 CLI 兼容别名
     ap.add_argument("--no-file-id", action="store_true")
-    ap.add_argument("--settle-seconds", type=int, default=0)
     ap.add_argument("--allow-abnormal-source", action="store_true",
                     help="允许以异常运行产物为增量复用来源"
                          "（本次产物强制 _Abnormal）")
@@ -101,6 +106,8 @@ def main() -> int:
     ap.add_argument("--powershell-path")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+    if args.no_raw_payload:
+        args.metadata_storage = "normalized"
 
     if not args.resume and not args.root:
         print("需要 --root（或 --resume）", file=sys.stderr)
@@ -115,11 +122,14 @@ def main() -> int:
             config = json.loads(con.execute(
                 "SELECT config_json FROM snapshot_info").fetchone()[0])
             args.hash = config.get("hash", args.hash)
-            args.no_raw_payload = config.get("no_raw_payload",
-                                             args.no_raw_payload)
+            stored_mode = config.get("metadata_storage")
+            if stored_mode not in ("complete", "normalized"):
+                stored_mode = (
+                    "normalized" if config.get("no_raw_payload", False)
+                    else args.metadata_storage
+                )
+            args.metadata_storage = stored_mode
             args.no_file_id = config.get("no_file_id", args.no_file_id)
-            args.settle_seconds = config.get(
-                "settle_seconds", args.settle_seconds)
             args.verify_sample_percent = config.get(
                 "verify_sample_percent", args.verify_sample_percent)
             if not args.previous_snapshot:
@@ -177,9 +187,8 @@ def main() -> int:
                                             if args.previous_snapshot else None),
                       "map_root": args.map_root,
                       "verify_sample_percent": args.verify_sample_percent,
-                      "no_raw_payload": args.no_raw_payload,
+                      "metadata_storage": args.metadata_storage,
                       "no_file_id": args.no_file_id,
-                      "settle_seconds": args.settle_seconds,
                       "allow_abnormal_source": args.allow_abnormal_source,
                       "profile_version": meta.PROFILE_VERSION,
                       "path_key_rule": core.PATH_KEY_RULE}
@@ -191,7 +200,7 @@ def main() -> int:
             os.makedirs(args.output_dir, exist_ok=True)
             profile_tokens = core.snapshot_profile_tokens(
                 "full", hash_mode=args.hash,
-                raw_payload=not args.no_raw_payload,
+                raw_payload=args.metadata_storage == "complete",
                 file_id=not args.no_file_id)
             name = core.snapshot_name(
                 [lb for lb, _ in roots], "Full", profile_tokens)
@@ -259,7 +268,6 @@ def main() -> int:
             test_max_hash = os.environ.get("DAISY_TEST_MAX_HASH_FILES")
             hstats = dbh.process_hash_stage(
                 con, args.hash, previous=prev,
-                settle_seconds=args.settle_seconds,
                 max_files=int(test_max_hash) if test_max_hash else None,
                 on_progress=lambda i, st: prog.update(
                     i, total=st["total"], bytes_done=st["bytes_hashed"],
@@ -275,11 +283,12 @@ def main() -> int:
         prog = core.Progress(4, STAGES_TOTAL, "元数据", args.quiet)
         events.emit("stage_started", stage="metadata")
         mstats = meta.process_metadata_stage(
-            con, tools, no_raw_payload=args.no_raw_payload,
+            con, tools,
+            retain_original_metadata=args.metadata_storage == "complete",
             on_progress=lambda i, st: prog.update(
                 i, total=st["total"], errors=st["error"] + st["timeout"]))
         ff_summary = ""
-        if not args.no_raw_payload:
+        if args.metadata_storage == "complete":
             ff_summary = (
                 f" / ffprobe Raw {mstats['ffprobe_payloads']}"
                 f" / 可选探测不可读 {mstats['ffprobe_optional_unreadable']}"

@@ -1,6 +1,6 @@
 """DAISY 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
 
-实现后端调用、profile v3、规范化映射和元数据汇合状态机。
+实现后端调用、profile v6、规范化映射和元数据汇合状态机。
 ExifTool 仅允许白名单读取参数，任何写语法直接拒绝。
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import Script_DAISY_Lib_01_Core as core
 
-PROFILE_VERSION = 3
+PROFILE_VERSION = 6
 ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
 ET_VIDEO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l"]
 FF_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams",
@@ -653,7 +653,7 @@ def ffprobe_full(ffprobe_path: str, file_path: str,
 
 
 # === 阶段执行（汇合状态机；逐文件断点续传） ===
-_PHOTO_KINDS = {"photo_raw", "photo_jpeg", "photo_working"}
+_PHOTO_KINDS = {"photo_raw", "photo_jpeg", "image_gif", "photo_working"}
 _VIDEO_KINDS = {"video_mp4", "video_crm"}
 _AV_KINDS = _VIDEO_KINDS | {"audio"}      # 音频与视频共用双后端管线
 
@@ -688,14 +688,16 @@ def _record_error(con, entry_id: int, code: str, msg: str):
 
 
 def process_metadata_stage(con: sqlite3.Connection, tools: dict,
-                           no_raw_payload: bool = False,
+                           retain_original_metadata: bool = True,
                            on_progress=None) -> dict:
     et_ver = tools["exiftool"]["version"]
     ff_ver = tools["ffprobe"]["version"]
     zip_ver = "python-zipfile " + ".".join(map(str, __import__("sys").version_info[:3]))
     sz_ver = tools["sevenzip"]["version"]
     roots = dict(con.execute("SELECT root_id, root_path FROM roots").fetchall())
-    if no_raw_payload:
+    if not retain_original_metadata:
+        # 基础元数据仍解析有规范化落点的格式；真正没有规范化表的 other
+        # 才是不适用。
         con.execute("UPDATE entries SET meta_status='not_applicable'"
                     " WHERE meta_status='pending' AND media_kind='other'")
     con.execute("UPDATE entries SET meta_status='skipped'"
@@ -732,7 +734,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     if kind == "photo_working":
                         _insert_row(con, "working_metadata", eid,
                                     working_row(idx, ext), "exiftool", et_ver)
-                    if not no_raw_payload:
+                    if retain_original_metadata:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                 elif kind in _AV_KINDS:
                     doc = None
@@ -782,7 +784,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                             con.execute(f"INSERT INTO audio_streams ({cols}) VALUES"
                                         f" ({', '.join('?' for _ in r2)})",
                                         tuple(r2.values()))
-                    if not no_raw_payload:
+                    if retain_original_metadata:
                         if doc:
                             _insert_payload(con, eid, "exiftool", doc, et_ver)
                         if ff:
@@ -796,7 +798,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     idx = build_tag_index(doc)
                     _insert_row(con, "document_metadata", eid,
                                 document_row(idx, ext), "exiftool", et_ver)
-                    if not no_raw_payload:
+                    if retain_original_metadata:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                 elif kind == "archive":
                     if ext == "zip":
@@ -819,23 +821,24 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         " :extract_version, :header_offset, :modified_raw,"
                         " :attributes, :encrypted)",
                         [{**m, "eid": eid} for m in members])
-                    if not no_raw_payload:
+                    if retain_original_metadata:
                         doc = worker.extract(path, photo_profile=False)
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                 elif kind == "other":
-                    # Raw 开启时对每个非占位普通文件保留 ExifTool 的实际
-                    # 输出；没有规范化表或格式验证器不等于没有可读元数据。
-                    doc = worker.extract(path, photo_profile=False)
-                    _insert_payload(con, eid, "exiftool", doc, et_ver)
+                    # 没有规范化落点不等于 ExifTool 不可读取；全量元数据仍
+                    # 为本地所有文件保存原文。
+                    if retain_original_metadata:
+                        doc = worker.extract(path, photo_profile=False)
+                        _insert_payload(con, eid, "exiftool", doc, et_ver)
             except TimeoutError:
                 status = "timeout"
                 _record_error(con, eid, "exiftool_timeout", path)
             except Exception as exc:
                 status = "error"
                 _record_error(con, eid, type(exc).__name__, exc)
-            # 非音视频的 ffprobe 仅是 Raw 增补探测：返回成功就保留完整
-            # JSON；失败表示该后端不支持或无法读取，不覆盖主解析状态。
-            if not no_raw_payload and kind not in _AV_KINDS:
+            # GIF 的 ffprobe 是 Raw 增补探测，用于保留帧时序等动画证据；
+            # 失败不覆盖 ExifTool 主解析状态。其他非音视频类型不调用 ffprobe。
+            if retain_original_metadata and ext == "gif":
                 try:
                     ff_optional = ffprobe_full(
                         tools["ffprobe"]["path"], path)

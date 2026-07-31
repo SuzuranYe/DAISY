@@ -155,16 +155,16 @@ class TestPartialOwnership(_Tree):
         with self.assertRaises(core.PreflightError):
             core.acquire_scan_lock(partial, takeover=True)
         # 死 owner：默认拒绝（提示接管），takeover=True 可接管
-        dead = subprocess.run([sys.executable, "-B", "-c", "import os;"
-                               "print(os.getpid())"], capture_output=True,
-                              text=True, timeout=60)
-        dead_pid = int(dead.stdout.strip())
+        # 不用刚退出的子进程 PID：Windows 可在断言前快速复用 PID，
+        # 会把测试环境中的新进程误当成原 owner，造成非产品回归的偶发失败。
+        dead_pid = 2147483647
         with open(lp, "w", encoding="utf-8", newline="\n") as f:
             json.dump({"run_uuid": "r", "host": "h", "pid": dead_pid,
                        "acquired_at_utc": "t"}, f)
-        with self.assertRaises(core.PreflightError):
-            core.acquire_scan_lock(partial, takeover=False)
-        core.acquire_scan_lock(partial, takeover=True)       # 接管成功
+        with patch.object(core, "_pid_alive", return_value=False):
+            with self.assertRaises(core.PreflightError):
+                core.acquire_scan_lock(partial, takeover=False)
+            core.acquire_scan_lock(partial, takeover=True)   # 接管成功
         core.release_scan_lock(partial)
 
 
