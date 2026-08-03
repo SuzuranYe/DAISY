@@ -156,21 +156,38 @@ def validate_media(path: str, kind: str, worker, ffprobe: str | None) \
         try:
             r = subprocess.run(
                 [ffprobe, "-v", "error", "-print_format", "json",
-                 "-show_streams", path],
+                 "-show_format", "-show_streams", path],
                 capture_output=True, timeout=600)
         except subprocess.TimeoutExpired:
             bad.append("ffprobe: 超时")
             return "invalid", "；".join(bad)
+        document = {}
         streams = []
         try:
-            streams = json.loads(r.stdout.decode("utf-8", "replace")
-                                 ).get("streams", [])
+            document = json.loads(r.stdout.decode("utf-8", "replace"))
+            streams = document.get("streams", [])
         except ValueError:
             pass
         if r.returncode != 0 or not streams:
             err = r.stderr.decode("utf-8", "replace").strip()[-200:]
             bad.append(f"ffprobe: rc={r.returncode}, streams={len(streams)}"
                        + (f"，{err}" if err else ""))
+        elif kind == "audio" and os.path.getsize(path) <= 44:
+            audio_streams = [
+                stream for stream in streams
+                if stream.get("codec_type") == "audio"
+            ]
+            format_duration = meta.first_float(
+                (document.get("format", {}) or {}).get("duration"))
+            stream_durations = [
+                meta.first_float(stream.get("duration"))
+                for stream in audio_streams
+            ]
+            if (not audio_streams
+                    or not (format_duration and format_duration > 0)
+                    and not any(value and value > 0
+                                for value in stream_durations)):
+                bad.append("ffprobe: 音频容器只有头部且没有可确认的音频样本")
     return ("invalid", "；".join(bad)) if bad else ("valid", None)
 
 
@@ -212,12 +229,10 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
             f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
     try:
-        uuid_, status, schema_version = con.execute(
-            "SELECT snapshot_uuid, scan_status, schema_version"
+        core.require_sealed_snapshot(con)
+        uuid_, = con.execute(
+            "SELECT snapshot_uuid"
             " FROM snapshot_info").fetchone()
-        core.require_readable_schema_version(schema_version)
-        if status != "complete":
-            raise core.PreflightError(f"快照未封存（scan_status={status}）")
         roots = {}
         root_rows = list(con.execute(
             "SELECT root_id, root_label, root_path FROM roots"))
@@ -336,10 +351,10 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
 
     rdir = os.path.abspath(report_dir or "Output/Reports")   # 可删报告统一进 Output\Reports\
     os.makedirs(rdir, exist_ok=True)
-    # 报告名遵循 根文件夹名_类型_日期；被核验快照的身份在报告内容中；
-    # 结论非 ok（发现 invalid/missing）时报告名带 _Abnormal 后缀
-    base = os.path.join(rdir, core.snapshot_name(labels, "Check_Format")
-                        + ("" if ok else "_Abnormal"))
+    # 报告名遵循 根文件夹名_类型_日期；问题状态只写入报告内容。
+    report_stem = core.snapshot_working_name(
+        core.snapshot_name(labels, "Check_Format"))
+    base = os.path.join(rdir, report_stem)
     files = []
     with open(base + ".json", "w", encoding="utf-8", newline="\n") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

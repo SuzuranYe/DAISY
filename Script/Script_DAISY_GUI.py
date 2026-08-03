@@ -909,13 +909,6 @@ TASKS = (
                 active_when=_FULL_INCREMENTAL,
             ),
             FieldSpec(
-                "allow_abnormal_source", "允许异常快照作为增量来源",
-                "--allow-abnormal-source", "bool",
-                help="降级选项；本次产物会强制标记为 _Abnormal。",
-                section="增量复用", advanced=True,
-                active_when=_FULL_INCREMENTAL,
-            ),
-            FieldSpec(
                 "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
@@ -1138,7 +1131,7 @@ TASKS = (
             ),
             FieldSpec(
                 "force", "文件名指纹缺失时降级继续", "--force", "bool",
-                help="降级结果会标记为 _Abnormal；指纹不符仍会拒绝。",
+                help="降级结果会生成同目录 Issues.md；指纹不符仍会拒绝。",
                 section="故障恢复", advanced=True,
             ),
         ),
@@ -2999,9 +2992,6 @@ class DaisyApp:
             warnings.append("全量哈希核对会读取所有有基准哈希的文件。")
         if "force" in active_keys and values.get("force"):
             warnings.append("已启用文件名指纹缺失时的降级准入。")
-        if ("allow_abnormal_source" in active_keys
-                and values.get("allow_abnormal_source")):
-            warnings.append("已允许异常快照作为增量复用来源。")
         if not warnings:
             return True
         return messagebox.askyesno(

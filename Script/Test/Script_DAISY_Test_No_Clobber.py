@@ -183,22 +183,32 @@ class TestSuffixCollisions(_Tree):
                 core.finalize_snapshot(con2, partial2, hash_coverage="none")
         self.assertEqual(core.sha256_file(final1), sha1)
 
-    def test_abnormal_vs_abnormal_no_clobber(self):
+    def test_issue_report_vs_issue_report_no_clobber(self):
         partial1, con1 = self.make_partial("M")
+        con1.execute("UPDATE entries SET meta_status='error'"
+                     " WHERE rel_path='a.bin'")
+        con1.commit()
         forced_digest = "b" * 64
         with patch.object(core, "sha256_file", return_value=forced_digest):
             final1 = core.finalize_snapshot(
-                con1, partial1, hash_coverage="none", force_abnormal=True)
-        self.assertTrue(final1.endswith(
-            "_Abnormal_BBBBBBBB.sqlite"))
+                con1, partial1, hash_coverage="none")
+        self.assertTrue(final1.endswith("_BBBBBBBB.sqlite"))
+        issue1 = core.artifact_issue_report_path(final1)
+        self.assertTrue(os.path.isfile(issue1))
+        with open(issue1, encoding="utf-8") as report:
+            self.assertIn("DAISY 问题报告", report.read())
         sha1 = core.sha256_file(final1)
+        report_sha1 = core.sha256_file(issue1)
         partial2, con2 = self.make_partial("M")
+        con2.execute("UPDATE entries SET meta_status='error'"
+                     " WHERE rel_path='a.bin'")
+        con2.commit()
         with patch.object(core, "sha256_file", return_value=forced_digest):
             with self.assertRaises(core.PreflightError):
                 core.finalize_snapshot(
-                    con2, partial2, hash_coverage="none",
-                    force_abnormal=True)
+                    con2, partial2, hash_coverage="none")
         self.assertEqual(core.sha256_file(final1), sha1)
+        self.assertEqual(core.sha256_file(issue1), report_sha1)
 
 
 class TestMissingFilenameFingerprint(_Tree):

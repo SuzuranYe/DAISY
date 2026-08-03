@@ -43,12 +43,10 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
             f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
     try:
-        uuid_, coverage, status, schema_version = con.execute(
-            "SELECT snapshot_uuid, hash_coverage, scan_status, schema_version"
+        core.require_sealed_snapshot(con)
+        uuid_, coverage = con.execute(
+            "SELECT snapshot_uuid, hash_coverage"
             " FROM snapshot_info").fetchone()
-        core.require_readable_schema_version(schema_version)
-        if status != "complete":
-            raise core.PreflightError(f"快照未封存（scan_status={status}）")
         roots = {}
         root_rows = list(con.execute(
             "SELECT root_id, root_label, root_path FROM roots"))
@@ -185,12 +183,41 @@ def main() -> int:
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
     else:                               # 可删报告统一进 Output\Reports\（与快照分离）
         os.makedirs("Output/Reports", exist_ok=True)
+        report_stem = core.snapshot_working_name(
+            core.snapshot_name(rep["root_labels"], "Check_Hash"))
         report_path = os.path.abspath(os.path.join(
-            "Output/Reports",
-            core.snapshot_name(rep["root_labels"], "Check_Hash")
-            + ("" if rep["ok"] else "_Abnormal") + ".json"))
+            "Output/Reports", report_stem + ".json"))
     with open(report_path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(rep, f, ensure_ascii=False, indent=2)
+    issue_report = None
+    if not rep["ok"]:
+        issue_report = os.path.splitext(report_path)[0] + "_Issues.md"
+        categories = (
+            ("缺失", rep["stat_missing"]),
+            ("stat 变化", rep["stat_changed"]),
+            ("哈希不一致", rep["hash_mismatched"]),
+            ("哈希工具错误", rep["hash_tool_error"]),
+        )
+        lines = [
+            "# DAISY 哈希校验问题报告", "",
+            f"- 快照：`{rep['snapshot']}`",
+            f"- 快照 UUID：`{rep['snapshot_uuid']}`",
+            f"- 核对时间：`{rep['checked_at_utc']}`",
+            f"- 模式：`{rep['mode']}`", "",
+            "## 汇总", "",
+            "| 项目 | 数量 |", "| --- | --- |",
+        ]
+        lines.extend(f"| {name} | {len(rows)} |" for name, rows in categories)
+        for name, rows in categories:
+            if not rows:
+                continue
+            lines.extend(["", f"## {name}", ""])
+            for row in rows[:100]:
+                lines.append(f"- `{core.markdown_cell(row.get('path'))}`")
+            if len(rows) > 100:
+                lines.append(f"- …仅列出前 100／{len(rows)} 条，完整详情见 JSON。")
+        with open(issue_report, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
 
     print(f"快照：{rep['snapshot']}（coverage={rep['hash_coverage']}）")
     print(f"stat 核对：{rep['stat_checked']:,} 条 | 缺失 {len(rep['stat_missing'])}"
@@ -199,6 +226,8 @@ def main() -> int:
           f"{rep['hash_eligible']:,} 条 | 不一致 {len(rep['hash_mismatched'])}"
           f" | 工具错误 {len(rep['hash_tool_error'])}")
     print(f"报告：{report_path}")
+    if issue_report:
+        print(f"问题报告：{issue_report}")
     if rep["ok"]:
         print("结论：当前磁盘与基准快照一致（在本次核对口径内）")
         return 0

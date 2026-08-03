@@ -198,7 +198,7 @@ class TestGuiArguments(unittest.TestCase):
             "full_scan": {
                 "--root", "--output-dir", "--hash", "--previous-snapshot",
                 "--map-root", "--verify-sample-percent", "--metadata-storage",
-                "--no-file-id", "--allow-abnormal-source", "--resume",
+                "--no-file-id", "--resume",
                 "--exiftool-path",
                 "--ffprobe-path", "--sevenzip-path", "--powershell-path",
             },
@@ -546,17 +546,17 @@ class TestGuiArguments(unittest.TestCase):
             spec = f.read()
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
-        self.assertIn("元数据 profile v6", spec)
+        self.assertIn("元数据 profile v7", spec)
         self.assertIn("视频、音频和 GIF", spec)
-        self.assertIn("schema_version=2", spec)
-        self.assertIn("不前向兼容", spec)
+        self.assertIn("schema_version=3", spec)
+        self.assertIn("不读取旧结构", spec)
         self.assertIn("不提供按 mtime 静默跳过", spec)
         evolution_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Version_Evolution.md")
         with open(evolution_path, "r", encoding="utf-8") as f:
             evolution = f.read()
         self.assertIn("Kit_AL v1.0.2", evolution)
-        self.assertIn("DAISY v1.4.0", evolution)
+        self.assertIn("DAISY v1.4.1", evolution)
         self.assertIn("设计过渡点", evolution)
         for dated_version in (
                 "## 2026-07-21～22 — Kit_AL v1.0.3",
@@ -628,6 +628,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             entry.COMMANDS["export-report"][0],
             "Script_DAISY_Tool_31_Export_Report")
+        self.assertNotIn("migrate-naming", entry.COMMANDS)
 
     def test_validation_tasks_require_current_root(self):
         for task_key in ("check_hash", "check_format"):
@@ -665,10 +666,10 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.4.0")
-        self.assertEqual(core.SCHEMA_VERSION, 2)
-        self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({1, 2}))
-        self.assertEqual(core.MIN_READER_VERSION, "1.4.0")
+        self.assertEqual(core.SCANNER_VERSION, "1.4.1")
+        self.assertEqual(core.SCHEMA_VERSION, 3)
+        self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
+        self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
         self.assertEqual(
             core.PROJECT_FULL_NAME,
             "Database for Archive Integrity by Suzuran Ye",
@@ -997,7 +998,7 @@ class TestMediaKind(unittest.TestCase):
         "psd": "photo_working", "psb": "photo_working", "tif": "photo_working",
         "tiff": "photo_working", "png": "photo_working",
         "mp4": "video_mp4", "MOV": "video_mp4", "lrf": "video_mp4",
-        "crm": "video_crm",
+        "crm": "video_crm", "aac": "audio",
         "zip": "archive", "7z": "archive", "rar": "archive",
         "tar": "archive", "gz": "archive", "bz2": "archive", "xz": "archive",
         "pdf": "document", "doc": "document", "docx": "document",
@@ -1024,6 +1025,7 @@ class TestDdl(unittest.TestCase):
         }
         self.assertNotIn("block_hashes", tables)
         self.assertIn("video_gps_points", tables)
+        self.assertIn("metadata_diagnostics", tables)
         with self.assertRaises(sqlite3.IntegrityError):
             con.execute(
                 "INSERT INTO snapshot_info"
@@ -1069,10 +1071,9 @@ class TestDdl(unittest.TestCase):
                         "source_snapshot_uuid,size_bytes,status,tool,tool_version)"
                         " VALUES (1,'ab','reused','u0',1,'valid','t','1')")
 
-    def test_v14_reader_schema_boundary(self):
-        self.assertEqual(core.require_readable_schema_version(1), 1)
-        self.assertEqual(core.require_readable_schema_version(2), 2)
-        for unsupported in (0, 3, 99):
+    def test_v141_reader_schema_boundary(self):
+        self.assertEqual(core.require_readable_schema_version(3), 3)
+        for unsupported in (0, 1, 2, 4, 99):
             with self.assertRaises(core.PreflightError):
                 core.require_readable_schema_version(unsupported)
 
@@ -1229,18 +1230,27 @@ class TestFinalize(_SnapshotFixture):
         self.assertTrue(core.filename_sha256_high32_matches(final))
         self.assertEqual(os.listdir(self.out_dir), [os.path.basename(final)])
         con2 = sqlite3.connect(final)
-        status, cov = con2.execute(
-            "SELECT scan_status, hash_coverage FROM snapshot_info").fetchone()
-        self.assertEqual((status, cov), ("complete", "none"))
+        status = con2.execute(
+            "SELECT scan_status,database_integrity,has_file_issues,"
+            " has_unstable_entries,has_enumeration_gaps,hash_coverage"
+            " FROM snapshot_info").fetchone()
+        self.assertEqual(status, ("complete", "ok", 0, 0, 0, "none"))
         manifest = json.loads(con2.execute(
             "SELECT manifest_json FROM snapshot_manifest").fetchone()[0])
-        self.assertEqual(manifest["schema_version"], 2)
-        self.assertEqual(manifest["data_contract"], "daisy-snapshot-v2")
-        self.assertEqual(manifest["min_reader_version"], "1.4.0")
+        self.assertEqual(manifest["schema_version"], 3)
+        self.assertEqual(manifest["data_contract"], "daisy-snapshot-v3")
+        self.assertEqual(manifest["min_reader_version"], "1.4.1")
+        self.assertEqual(manifest["status"], {
+            "database_integrity": "ok",
+            "scan_status": "complete",
+            "has_file_issues": False,
+            "has_unstable_entries": False,
+            "has_enumeration_gaps": False,
+        })
         config = json.loads(con2.execute(
             "SELECT config_json FROM snapshot_info").fetchone()[0])
-        self.assertEqual(config["data_contract"], "daisy-snapshot-v2")
-        self.assertEqual(config["min_reader_version"], "1.4.0")
+        self.assertEqual(config["data_contract"], "daisy-snapshot-v3")
+        self.assertEqual(config["min_reader_version"], "1.4.1")
         self.assertEqual(manifest["integrity"]["retained_bits"], 32)
         self.assertFalse(manifest["integrity"]["full_digest_retained"])
         self.assertNotIn("snapshot_sha256", manifest)
@@ -1248,6 +1258,34 @@ class TestFinalize(_SnapshotFixture):
             "SELECT event FROM run_events ORDER BY event_seq DESC LIMIT 1"
         ).fetchone()[0], "snapshot_sealed")
         con2.close()
+
+    def test_file_issue_only_adds_report_and_keeps_database_healthy(self):
+        core.enumerate_and_reconcile(self.con)
+        self.con.execute("UPDATE entries SET meta_status='skipped',"
+                         " hash_status='skipped'")
+        self.con.execute("UPDATE entries SET meta_status='error'"
+                         " WHERE rel_path='a.CR3'")
+        self.con.commit()
+        final = core.finalize_snapshot(
+            self.con, self.partial, hash_coverage="none")
+        issue = core.artifact_issue_report_path(final)
+        self.assertTrue(os.path.isfile(final))
+        self.assertTrue(os.path.isfile(issue))
+        con = sqlite3.connect(final)
+        state = con.execute(
+            "SELECT database_integrity,scan_status,has_file_issues,"
+            " has_unstable_entries,has_enumeration_gaps FROM snapshot_info"
+        ).fetchone()
+        counts = json.loads(con.execute(
+            "SELECT counts_json FROM snapshot_info").fetchone()[0])
+        con.close()
+        self.assertEqual(state, ("ok", "complete", 1, 0, 0))
+        self.assertNotIn("abnormal", counts)
+        self.assertEqual(counts["has_file_issues"], True)
+        with open(issue, encoding="utf-8") as handle:
+            report = handle.read()
+        self.assertIn("数据库完整性正常", report)
+        self.assertIn("源文件或扫描证据问题", report)
 
     def test_finalize_rejects_pending(self):
         core.enumerate_and_reconcile(self.con)   # 状态仍为 pending
@@ -1303,12 +1341,20 @@ class TestValueParsers(unittest.TestCase):
     def test_first_float(self):
         self.assertEqual(meta.first_float("105.0 mm"), 105.0)
         self.assertEqual(meta.first_float("4"), 4.0)
+        self.assertAlmostEqual(meta.first_float("-2/3 EV"), -2 / 3)
+        self.assertAlmostEqual(meta.first_float("+4/3"), 4 / 3)
+        self.assertIsNone(meta.first_float("1/0"))
         self.assertIsNone(meta.first_float("n/a"))
 
     def test_first_int(self):
         self.assertEqual(meta.first_int("16"), 16)
         self.assertEqual(meta.first_int("48000 Hz"), 48000)
         self.assertIsNone(meta.first_int(None))
+
+    def test_positive_int_pair(self):
+        self.assertEqual(meta.first_positive_int_pair("8192 6144"),
+                         (8192, 6144))
+        self.assertIsNone(meta.first_positive_int_pair("0 0"))
 
     def test_gps_dms_to_decimal(self):
         v = meta.gps_decimal("27 deg 16' 43.09\" N")
@@ -1360,7 +1406,18 @@ class TestValueParsers(unittest.TestCase):
         self.assertEqual(
             meta.capture_utc("2025:06:24 18:07:52", 480),
             "2025-06-24T10:07:52Z")
+        self.assertEqual(
+            meta.capture_utc("2025:02:21 12:20:39.34+08:00", 480),
+            "2025-02-21T04:20:39.34Z")
         self.assertIsNone(meta.capture_utc("2025:06:24 18:07:52", None))
+
+    def test_explicit_iso_utc_preserves_fraction(self):
+        self.assertEqual(
+            meta.normalize_explicit_utc("2025-02-09T13:19:59.000000Z"),
+            "2025-02-09T13:19:59.000000Z")
+        self.assertEqual(
+            meta.normalize_explicit_utc("2025-02-09T22:19:58.56+09:00"),
+            "2025-02-09T13:19:58.56Z")
 
     def test_trailing_offset_in_value(self):
         self.assertEqual(meta.offset_minutes_from_value(
@@ -1392,6 +1449,25 @@ class TestExifToolWorker(unittest.TestCase):
         self.assertIsNone(worker._proc)
         self.assertTrue(second.stdin.closed)
         self.assertTrue(second.stdout.closed)
+
+
+class TestExifToolTimeoutPolicy(unittest.TestCase):
+    def test_timeout_scales_by_ceil_nine_gib_steps(self):
+        step = 9 * 1024 ** 3
+        self.assertEqual(meta.exiftool_timeout_for_size(0), 90)
+        self.assertEqual(meta.exiftool_timeout_for_size(step - 1), 90)
+        self.assertEqual(meta.exiftool_timeout_for_size(step), 90)
+        self.assertEqual(meta.exiftool_timeout_for_size(step + 1), 180)
+        self.assertEqual(meta.exiftool_timeout_for_size(2 * step), 180)
+        self.assertEqual(meta.exiftool_timeout_for_size(2 * step + 1), 270)
+        self.assertEqual(meta.exiftool_timeout_for_size(41_792_298_800), 450)
+        self.assertEqual(meta.exiftool_timeout_for_size(62_431_687_520), 630)
+
+    def test_policy_is_manifest_serializable_and_validated(self):
+        policy = meta.exiftool_timeout_policy()
+        self.assertEqual(json.loads(json.dumps(policy)), policy)
+        with self.assertRaises(ValueError):
+            meta.exiftool_timeout_for_size(1, {"minimum_seconds": 90})
 
 
 class TestArchiveBackend(unittest.TestCase):
@@ -1519,7 +1595,7 @@ class TestRawBackendCoverage(unittest.TestCase):
             type(self).extracted = []
 
         def extract(self, file_path, photo_profile=False, timeout=None):
-            type(self).extracted.append((file_path, photo_profile))
+            type(self).extracted.append((file_path, photo_profile, timeout))
             return {
                 "SourceFile": file_path,
                 "File:Main:FileType": {
@@ -1571,7 +1647,7 @@ class TestRawBackendCoverage(unittest.TestCase):
                         meta, "ffprobe_full",
                         side_effect=self._gif_ffprobe) as ffprobe_mock:
                 stats = meta.process_metadata_stage(con, tools)
-            self.assertEqual(meta.PROFILE_VERSION, 6)
+            self.assertEqual(meta.PROFILE_VERSION, 7)
             self.assertEqual(stats["done"], 6)
             self.assertEqual(stats["ffprobe_payloads"], 1)
             self.assertEqual(stats["ffprobe_optional_unreadable"], 0)
@@ -1605,6 +1681,8 @@ class TestRawBackendCoverage(unittest.TestCase):
                  for x in self._ExifWorker.extracted],
                 ["legacy.doc", "motion.gif", "opaque.bin", "pack.zip",
                  "photo.jfif", "still.cr3"])
+            self.assertTrue(all(
+                x[2] == 90 for x in self._ExifWorker.extracted))
             self.assertEqual(
                 con.execute("SELECT COUNT(*) FROM archive_members").fetchone(),
                 (1,))
@@ -1696,6 +1774,170 @@ class TestPhotoMapping(unittest.TestCase):
         self.assertAlmostEqual(row["gps_latitude"], 27.27863611, places=6)
         self.assertAlmostEqual(row["gps_longitude"], 111.7435861, places=5)
 
+    def test_numeric_exposure_and_canon_as_shot_white_balance(self):
+        d = {
+            "ExifIFD:Main:Copy1:ExposureCompensation": {
+                "val": "-2/3", "num": -0.6666666667},
+            "Canon:Main:ExposureCompensation": {
+                "val": "-2/3", "num": -0.666666666666667},
+            "ExifIFD:Main:Copy1:WhiteBalance": {
+                "val": "Manual", "num": 1},
+            "Canon:Main:WhiteBalance": {"val": "Daylight", "num": 1},
+            "Canon:Main:ColorTemperature": {"val": 4000},
+            "Track4:Doc2:ColorTempAsShot": {"val": 5214},
+        }
+        idx = meta.build_tag_index(d)
+        self.assertAlmostEqual(
+            meta.tnum(idx, "ExifIFD:ExposureCompensation"),
+            -0.6666666667)
+        row = meta.photo_row(idx, "cr3")
+        self.assertAlmostEqual(row["exposure_compensation"],
+                               -0.6666666667)
+        self.assertEqual(row["white_balance"], "Daylight")
+        self.assertEqual(row["color_temperature"], 5214)
+
+    def test_dng_effective_fields_timezone_and_placeholder_gps(self):
+        d = {
+            "ExifIFD:Main:DateTimeOriginal": "2025:02:01 16:28:03",
+            "XMP-xmp:Main:Copy1:CreateDate": "2025:02:01 16:28:03+09:00",
+            "SubIFD:Main:DefaultCropSize": "3840 2160",
+            "SubIFD:Main:ImageWidth": 4000,
+            "SubIFD:Main:ImageHeight": 2250,
+            "SubIFD:Main:BitsPerSample": 16,
+            "Composite:Main:GPSLatitude": "0 deg 0' 0.00\" N",
+            "Composite:Main:GPSLongitude": "0 deg 0' 0.00\" E",
+            "Composite:Main:GPSAltitude": "0 m Above Sea Level",
+        }
+        row = meta.photo_row(meta.build_tag_index(d), ".DNG")
+        self.assertEqual((row["width"], row["height"]), (3840, 2160))
+        self.assertEqual(row["bit_depth"], 16)
+        self.assertEqual(row["capture_tz_offset_min"], 540)
+        self.assertEqual(row["capture_time_utc"], "2025-02-01T07:28:03Z")
+        self.assertEqual(
+            (row["gps_latitude"], row["gps_longitude"], row["gps_altitude"]),
+            (None, None, None))
+
+    def test_xmp_timezone_requires_matching_wall_time(self):
+        d = {
+            "ExifIFD:Main:DateTimeOriginal": "2025:02:01 16:28:03",
+            "XMP-xmp:Main:CreateDate": "2025:02:01 16:29:03+09:00",
+        }
+        row = meta.photo_row(meta.build_tag_index(d), "dng")
+        self.assertIsNone(row["capture_tz_offset_min"])
+        self.assertIsNone(row["capture_time_utc"])
+
+    def test_subseconds_generic_temperature_and_invalid_values(self):
+        d = {
+            "Composite:Main:SubSecDateTimeOriginal":
+                "2025:02:21 12:20:39.34+08:00",
+            "IFD0:Main:Make": "Canon",
+            "ExifIFD:Main:LensSerialNumber": "0000000000",
+            "ExifIFD:Main:FNumber": 0,
+            "ExifIFD:Main:FocalLength": {"val": "0 mm", "num": 0},
+            "ExifIFD:Main:FocalLengthIn35mmFormat": {
+                "val": "50 mm", "num": 50},
+            "ExifIFD:Main:ExposureCompensation": {"val": "-2/3"},
+            "Canon:Main:ColorTemperature": 4000,
+            "Composite:Main:GPSLatitude": {"val": "0 deg 0' 0.00\" N",
+                                            "num": 0},
+            "Composite:Main:GPSLongitude": {"val": "0 deg 0' 0.00\" E",
+                                             "num": 0},
+            "Composite:Main:GPSAltitude": {"val": "3 m", "num": 3},
+        }
+        diagnostics = []
+        row = meta.photo_row(meta.build_tag_index(d), "cr3", diagnostics)
+        self.assertEqual(row["capture_time_raw"],
+                         "2025:02:21 12:20:39.34+08:00")
+        self.assertEqual(row["capture_time_utc"],
+                         "2025-02-21T04:20:39.34Z")
+        self.assertIsNone(row["exposure_compensation"])
+        self.assertIsNone(row["color_temperature"])
+        self.assertEqual(
+            (row["f_number"], row["focal_length_mm"],
+             row["focal_length_35mm"], row["lens_serial"]),
+            (None, None, None, None))
+        self.assertEqual(
+            (row["gps_latitude"], row["gps_longitude"],
+             row["gps_altitude"]), (None, None, None))
+        self.assertEqual(
+            {item["diagnostic_code"] for item in diagnostics},
+            {"invalid_all_zero_lens_serial", "invalid_nonpositive_f_number",
+             "invalid_nonpositive_focal_length",
+             "invalid_zero_gps_placeholder"})
+
+
+class TestVideoMapping(unittest.TestCase):
+    def test_canon_precise_local_ffprobe_utc_and_scalar_author(self):
+        doc = {
+            "Composite:Main:SubSecDateTimeOriginal":
+                "2025:02:09 22:19:58.56+09:00",
+            "ExifIFD:Main:OffsetTimeOriginal": "+09:00",
+            "IFD0:Main:Make": "Canon",
+            "IFD0:Main:Artist": "SuzuranYe",
+        }
+        ff = {"format": {"format_name": "mov,mp4", "tags": {
+            "creation_time": "2025-02-09T13:19:59.000000Z"}},
+            "streams": []}
+        row = meta.video_row(meta.build_tag_index(doc), ff)
+        self.assertEqual(row["capture_time_raw"],
+                         "2025:02:09 22:19:58.56+09:00")
+        self.assertEqual(row["capture_tz_offset_min"], 540)
+        self.assertEqual(row["capture_time_utc"],
+                         "2025-02-09T13:19:58.56Z")
+        self.assertNotIn("utc=ffprobe:format.tags.creation_time",
+                         row["capture_time_source"])
+        self.assertEqual(row["author"], "SuzuranYe")
+
+    def test_ffprobe_utc_is_fallback_without_explicit_local_offset(self):
+        doc = {
+            "Composite:Main:SubSecDateTimeOriginal":
+                "2025:02:09 22:19:58.56",
+        }
+        ff = {"format": {"tags": {
+            "creation_time": "2025-02-09T13:19:59.000000Z"}}}
+        row = meta.video_row(meta.build_tag_index(doc), ff)
+        self.assertEqual(row["capture_time_raw"],
+                         "2025:02:09 22:19:58.56")
+        self.assertIsNone(row["capture_tz_offset_min"])
+        self.assertEqual(row["capture_time_utc"],
+                         "2025-02-09T13:19:59.000000Z")
+        self.assertIn("utc=ffprobe:format.tags.creation_time",
+                      row["capture_time_source"])
+
+    def test_dji_category_aac_fallback_and_diagnostics(self):
+        doc = {
+            "Microsoft:Main:Category":
+                "pb_file:dvtm_Air3s.proto;model_name:FC9113;pb_version:2;",
+            "ItemList:Main:Encoder": "DJI Air3s",
+            "AAC:Main:SampleRate": 48000,
+            "AAC:Main:ProfileType": "Main",
+            "File:Main:FileType": "AAC",
+            "File:Main:MIMEType": "audio/aac",
+            "Track3:Main:Warning": "embedded data available",
+        }
+        idx = meta.build_tag_index(doc)
+        row = meta.video_row(idx, None)
+        self.assertEqual(
+            (row["camera_make"], row["camera_model"], row["encoder"]),
+            ("DJI", "FC9113", "DJI Air3s"))
+        audio = meta.audio_stream_rows_from_exif(idx)
+        self.assertEqual((audio[0]["codec_name"], audio[0]["sample_rate"]),
+                         ("aac", 48000))
+        self.assertIsNone(audio[0]["profile"])
+        reported = meta.reported_diagnostics(doc)
+        self.assertEqual(
+            (reported[0]["severity"], reported[0]["field_name"]),
+            ("warning", "Track3:Main:Warning"))
+        self.assertEqual(
+            meta.av_validation_diagnostics(
+                "video_mp4", 1241, {"format": {}, "streams": []})[0]
+            ["diagnostic_code"], "media_no_streams")
+        wav = {"format": {"duration": "0.0"}, "streams": [{
+            "codec_type": "audio", "duration": None}]}
+        self.assertEqual(
+            meta.av_validation_diagnostics("audio", 44, wav)[0]
+            ["diagnostic_code"], "audio_no_samples")
+
 
 class TestVideoGpsStage(unittest.TestCase):
     class _ExifWorker:
@@ -1739,7 +1981,11 @@ class TestVideoGpsStage(unittest.TestCase):
             with patch.object(meta, "ExifToolWorker", self._ExifWorker), \
                     patch.object(meta, "ffprobe_full", return_value=ff):
                 stats = meta.process_metadata_stage(con, tools)
-            self.assertEqual(stats["done"], 2)
+            self.assertEqual(stats["error"], 2)
+            self.assertEqual(stats["diagnostic_error"], 2)
+            self.assertEqual(con.execute(
+                "SELECT COUNT(*) FROM metadata_diagnostics"
+                " WHERE diagnostic_code='media_no_streams'").fetchone(), (2,))
             rows = con.execute(
                 "SELECT e.rel_path,g.point_index,g.timestamp_seconds,"
                 " g.gps_latitude,g.gps_longitude,g.gps_altitude,"
@@ -2074,7 +2320,9 @@ class _IncrementalFixture(unittest.TestCase):
         with open(os.path.join(self.arch, rel), "wb") as f:
             f.write(data)
 
-    def _build(self, name, previous_path=None, corrupt_badprev=False) -> str:
+    def _build(self, name, previous_path=None, hash_failure=False,
+               file_issue=False, unstable=False,
+               enumeration_gap=False) -> str:
         partial = os.path.join(self.out, f"Scan_{name}.partial.sqlite")
         con = core.create_partial_snapshot(partial, [("Arch", self.arch)],
                                            config={"phase": "test"})
@@ -2082,7 +2330,7 @@ class _IncrementalFixture(unittest.TestCase):
         prev = dbh.load_previous(previous_path) if previous_path else None
         dbh.process_hash_stage(con, "incremental" if prev else "full",
                                previous=prev)
-        if corrupt_badprev:
+        if hash_failure:
             con.execute("UPDATE hashes SET status='failed', hash_hex=NULL,"
                         " bytes_read=NULL WHERE entry_id=(SELECT entry_id"
                         " FROM entries WHERE rel_path='badprev.bin')")
@@ -2090,6 +2338,16 @@ class _IncrementalFixture(unittest.TestCase):
                         " WHERE rel_path='badprev.bin'")
         con.execute("UPDATE entries SET meta_status='skipped'"
                     " WHERE meta_status='pending'")
+        if file_issue:
+            con.execute("UPDATE entries SET meta_status='error'"
+                        " WHERE rel_path='badprev.bin'")
+        if unstable:
+            con.execute("UPDATE entries SET meta_status='unstable',"
+                        " hash_status='unstable' WHERE rel_path='badprev.bin'")
+        if enumeration_gap:
+            con.execute("UPDATE dirs SET enum_status='access_denied',"
+                        " error_message='test gap' WHERE rel_path='' ")
+            con.execute("UPDATE roots SET enum_status='failed'")
         con.commit()
         return core.finalize_snapshot(
             con, partial, "incremental" if prev else "full")
@@ -2105,10 +2363,22 @@ class _IncrementalFixture(unittest.TestCase):
         con.close()
         return uuid_, rows
 
+    def _copy_and_update(self, source, stem, sql) -> str:
+        plain = os.path.join(self.out, stem + ".sqlite")
+        shutil.copyfile(source, plain)
+        con = sqlite3.connect(plain)
+        con.execute(sql)
+        con.commit()
+        con.close()
+        token = core.sha256_file(plain)[:8].upper()
+        final = os.path.join(self.out, f"{stem}_{token}.sqlite")
+        os.replace(plain, final)
+        return final
+
 
 class TestIncrementalReuse(_IncrementalFixture):
     def test_reuse_recompute_and_provenance(self):
-        final_a = self._build("A", corrupt_badprev=True)
+        final_a = self._build("A")
         uuid_a, rows_a = self._hash_rows(final_a)
         # 树变更：改内容（size 变）；仅 mtime 变（显式 +5s，避开时钟量化）
         self._write("change.bin", b"changed-and-longer")
@@ -2123,11 +2393,8 @@ class TestIncrementalReuse(_IncrementalFixture):
         con.execute("UPDATE entries SET file_index_hex='deadbeef'"
                     " WHERE rel_path='swap.bin'")
         con.commit()
-        # A 含 badprev 错误（_Abnormal），因此默认拒绝复用
-        with self.assertRaises(core.PreflightError):
-            dbh.load_previous(final_a)
-        prev = dbh.load_previous(final_a, allow_abnormal_source=True)
-        self.assertTrue(prev.abnormal_source)
+        prev = dbh.load_previous(final_a)
+        self.assertFalse(prev.has_file_issues)
         self.assertEqual(prev.uuid, uuid_a)
         stats = dbh.process_hash_stage(con, "incremental", previous=prev)
         rows = {r[0]: r[1:] for r in con.execute(
@@ -2141,11 +2408,27 @@ class TestIncrementalReuse(_IncrementalFixture):
         self.assertEqual(basis, "size+mtime+fileid")
         self.assertIsNone(br)
         self.assertEqual(hex_, rows_a["keep.bin"][5])
-        for rel in ("change.bin", "touch.bin", "swap.bin", "badprev.bin"):
+        for rel in ("change.bin", "touch.bin", "swap.bin"):
             self.assertEqual(rows[rel][0], "computed", rel)
-        self.assertEqual(stats["reused"], 1)
+        self.assertEqual(rows["badprev.bin"][0], "reused")
+        self.assertEqual(stats["reused"], 2)
         self.assertEqual(stats["done"], 5)
         con.close()
+
+    def test_file_issues_do_not_block_valid_hash_reuse(self):
+        source = self._build("FileIssue", file_issue=True)
+        prev = dbh.load_previous(source)
+        self.assertTrue(prev.has_file_issues)
+        self.assertIsNotNone(prev.lookup("Arch", core.make_path_key("keep.bin")))
+
+    def test_hash_failure_unstable_and_enumeration_gap_are_blocked(self):
+        for name, kwargs in (
+                ("HashFailure", {"hash_failure": True}),
+                ("Unstable", {"unstable": True}),
+                ("EnumerationGap", {"enumeration_gap": True})):
+            source = self._build(name, **kwargs)
+            with self.subTest(name=name), self.assertRaises(core.PreflightError):
+                dbh.load_previous(source)
 
     def test_multilevel_source_points_to_origin(self):
         final_a = self._build("A")
@@ -2166,6 +2449,32 @@ class TestIncrementalReuse(_IncrementalFixture):
             f.write(b"tamper")
         with self.assertRaises(core.PreflightError):
             dbh.load_previous(final_a)
+
+    def test_admission_rejects_incomplete_noncurrent_and_bad_integrity(self):
+        source = self._build("Admission")
+        incomplete = self._copy_and_update(
+            source, "Incomplete",
+            "UPDATE snapshot_info SET scan_status='running'")
+        noncurrent = self._copy_and_update(
+            source, "Schema2",
+            "UPDATE snapshot_info SET schema_version=2")
+        not_verified = self._copy_and_update(
+            source, "IntegrityPending",
+            "UPDATE snapshot_info SET database_integrity='pending'")
+        for path in (incomplete, noncurrent, not_verified):
+            with self.subTest(path=path), self.assertRaises(core.PreflightError):
+                dbh.load_previous(path)
+
+        corrupt_plain = os.path.join(self.out, "Corrupt.sqlite")
+        shutil.copyfile(source, corrupt_plain)
+        with open(corrupt_plain, "r+b") as handle:
+            handle.seek(0)
+            handle.write(b"not-a-sqlite-database")
+        token = core.sha256_file(corrupt_plain)[:8].upper()
+        corrupt = os.path.join(self.out, f"Corrupt_{token}.sqlite")
+        os.replace(corrupt_plain, corrupt)
+        with self.assertRaises(core.PreflightError):
+            dbh.load_previous(corrupt)
 
 
 class TestSampling(unittest.TestCase):
@@ -2394,6 +2703,27 @@ class TestVerifyHashPatrol(unittest.TestCase):
         with open(report, encoding="utf-8") as handle:
             self.assertTrue(json.load(handle)["ok"])
 
+    def test_cli_problem_adds_clean_named_markdown_report(self):
+        os.remove(os.path.join(self.arch, "q.bin"))
+        report = os.path.join(self._td.name, "hash_report.json")
+        script = os.path.join(
+            _TOOL, "Script_DAISY_Tool_22_Check_Hash.py")
+        result = subprocess.run(
+            [
+                sys.executable, "-B", script,
+                "--snapshot", self.final,
+                "--root", f"Arch={self.arch}",
+                "--full", "--report", report,
+            ],
+            capture_output=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 1)
+        issue_report = os.path.splitext(report)[0] + "_Issues.md"
+        self.assertTrue(os.path.isfile(report))
+        self.assertTrue(os.path.isfile(issue_report))
+        with open(issue_report, encoding="utf-8") as handle:
+            self.assertIn("q.bin", handle.read())
+
 
 import hashlib                                                 # noqa: E402
 import shutil                                                  # noqa: E402
@@ -2473,26 +2803,12 @@ class TestDiffAdmission(_DiffFixture):
         con = sqlite3.connect(plain)
         con.execute(
             "UPDATE snapshot_info SET schema_version=?, scanner_version=?",
-            (schema_version,
-             "1.3.4" if schema_version == 1 else core.SCANNER_VERSION),
-        )
-        config_text, = con.execute(
-            "SELECT config_json FROM snapshot_info").fetchone()
-        config = json.loads(config_text)
-        if schema_version == 1:
-            config.pop("data_contract", None)
-            config.pop("min_reader_version", None)
-        con.execute(
-            "UPDATE snapshot_info SET config_json=?",
-            (json.dumps(config, ensure_ascii=False),),
+            (schema_version, core.SCANNER_VERSION),
         )
         manifest_text, = con.execute(
             "SELECT manifest_json FROM snapshot_manifest").fetchone()
         manifest = json.loads(manifest_text)
         manifest["schema_version"] = schema_version
-        if schema_version == 1:
-            manifest.pop("data_contract", None)
-            manifest.pop("min_reader_version", None)
         con.execute(
             "UPDATE snapshot_manifest SET manifest_json=?",
             (json.dumps(manifest, ensure_ascii=False),),
@@ -2532,28 +2848,17 @@ class TestDiffAdmission(_DiffFixture):
             dbdiff.compare(s1, s3, os.path.join(self.base, "d2.sqlite"),
                            force=True)
 
-    def test_schema_1_to_2_is_readable_but_future_schema_is_rejected(self):
+    def test_only_schema_3_is_readable(self):
         tt.write(self.old_tree, "a.bin", b"same")
         current = self.snap(self.old_tree, "current")
-        legacy = self._copy_with_schema(current, 1, "legacy")
-        out = os.path.join(self.base, "cross.sqlite")
-        dbdiff.compare(legacy, current, out)
-        con = sqlite3.connect(out)
-        info = con.execute(
-            "SELECT schema_version,old_schema_version,new_schema_version"
-            " FROM diff_info").fetchone()
-        statuses = {
-            row[0] for row in con.execute(
-                "SELECT status FROM diff_entries")
-        }
-        con.close()
-        self.assertEqual(info, (2, 1, 2))
-        self.assertEqual(statuses, {"unchanged"})
-
-        future = self._copy_with_schema(current, 99, "future")
-        with self.assertRaises(core.PreflightError):
-            dbdiff.compare(
-                current, future, os.path.join(self.base, "future.sqlite"))
+        for schema in (1, 2, 4, 99):
+            other = self._copy_with_schema(
+                current, schema, f"schema-{schema}")
+            with self.subTest(schema=schema), self.assertRaises(
+                    core.PreflightError):
+                dbdiff.compare(
+                    current, other,
+                    os.path.join(self.base, f"schema-{schema}.diff.sqlite"))
 
 
 class TestDiffGolden(_DiffFixture):
@@ -3118,21 +3423,6 @@ class TestExportSnapshot(_DiffFixture):
         self.assertEqual(row["gps_latitude"], "27.25")
         self.assertEqual(row["raw_value"], "+27.25+111.75+8.5/")
 
-    def test_snapshot_export_legacy_schema_skips_gps_page(self):
-        tt.write(self.old_tree, "a.bin", b"old-schema")
-
-        def emulate_legacy(con):
-            con.execute("DROP TABLE video_gps_points")
-            con.execute("UPDATE snapshot_info SET schema_version=1")
-
-        snap = self.snap(
-            self.old_tree, "legacy", pre_finalize=emulate_legacy)
-        res = Export.export_snapshot(
-            snap, os.path.join(self.base, "Exports"))
-        self.assertNotIn("GPS_inventory_video.csv", res["files"])
-        self.assertFalse(os.path.exists(
-            os.path.join(res["folder"], "GPS_inventory_video.csv")))
-
     def test_snapshot_export_archive_pages(self):
         import zipfile as _zf
         import zlib as _z
@@ -3340,6 +3630,29 @@ class TestValidators(unittest.TestCase):
             Validate.validate_media(
                 "motion.gif", "image_gif", Worker(), None)
 
+    def test_header_only_wav_is_invalid(self):
+        class Worker:
+            @staticmethod
+            def execute(_args):
+                return b""
+
+        with tempfile.TemporaryDirectory() as td:
+            wav = os.path.join(td, "empty.wav")
+            with open(wav, "wb") as stream:
+                stream.write(b"RIFF" + b"\x00" * 40)
+            probe = subprocess.CompletedProcess(
+                [], 0,
+                stdout=(b'{"format":{},"streams":['
+                        b'{"codec_type":"audio"}]}'),
+                stderr=b"",
+            )
+            with patch.object(
+                    Validate.subprocess, "run", return_value=probe):
+                status, detail = Validate.validate_media(
+                    wav, "audio", Worker(), "ffprobe")
+        self.assertEqual(status, "invalid")
+        self.assertIn("没有可确认的音频样本", detail)
+
     def test_sevenzip_timeout_is_reported_not_raised(self):
         with patch.object(
                 Validate.subprocess, "run",
@@ -3411,11 +3724,7 @@ class TestValidateSnapshot(_DiffFixture):
         tt.write(self.old_tree, "generated_truncated.png", png[:-12])
         tt.write(self.old_tree, "note.txt", b"plain")
         tt.write(self.old_tree, "gone.bin", b"will-vanish")
-        snap = self.snap(
-            self.old_tree, "val", hash_mode="none",
-            pre_finalize=lambda con: con.execute(
-                "UPDATE snapshot_info SET schema_version=1"),
-        )
+        snap = self.snap(self.old_tree, "val", hash_mode="none")
         os.remove(os.path.join(self.old_tree, "gone.bin"))
         rep = Validate.validate_snapshot(snap, {"T": self.old_tree},
                                          report_dir=self.base)
@@ -3434,9 +3743,9 @@ class TestValidateSnapshot(_DiffFixture):
             self.assertTrue(any(f.endswith(suffix) for f in rep["files"]),
                             suffix)
         self.assertRegex(                        # 报告名遵循当前命名体系；
-            os.path.basename(rep["files"][0]),   # 结论非 ok → 强制 _Abnormal
+            os.path.basename(rep["files"][0]),   # 问题状态只在报告内容中
             r"^T_Check_Format_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
-            r"\.\d{6}_[0-9a-f]{8}_Abnormal\.json$")
+            r"\.\d{6}_[0-9a-f]{8}\.json$")
 
 
 class TestFilenameSha256High32(unittest.TestCase):
@@ -3474,20 +3783,28 @@ class TestFilenameSha256High32(unittest.TestCase):
 
 
 class TestSnapshotNaming(unittest.TestCase):
-    def test_format_root_kind_datetime_unique_suffix(self):
+    def test_final_format_stops_at_seconds(self):
         n = core.snapshot_name(["Archive2024"], "Full")
         self.assertRegex(
             n, r"^Archive2024_Full_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
-               r"\.\d{6}_[0-9a-f]{8}$")
+               r"$")
 
     def test_multi_root_join_and_sanitize(self):
         n = core.snapshot_name(["A:B", "C|D"], "Quick")
         self.assertTrue(n.startswith("A_B+C_D_Quick_"), n)
 
-    def test_same_second_names_differ(self):
-        # 同秒重复取名必须不同（微秒＋runid 双保险）
-        names = {core.snapshot_name(["X"], "Quick") for _ in range(8)}
-        self.assertEqual(len(names), 8)
+    def test_same_second_final_stem_stable_working_names_unique(self):
+        with patch.object(core.time, "strftime",
+                          return_value="2026-08-03_12-34-56"):
+            stems = {core.snapshot_name(["X"], "Quick") for _ in range(8)}
+        self.assertEqual(stems, {"X_Quick_2026-08-03_12-34-56"})
+        stem = next(iter(stems))
+        working = {core.snapshot_working_name(stem) for _ in range(8)}
+        self.assertEqual(len(working), 8)
+        for name in working:
+            self.assertRegex(
+                name,
+                r"^X_Quick_2026-08-03_12-34-56\.\d{6}_[0-9a-f]{8}$")
 
     def test_deviation_only_profile_tokens(self):
         self.assertEqual(core.snapshot_profile_tokens("full"), [])
@@ -3537,8 +3854,8 @@ class TestQuickScan(unittest.TestCase):
         self.assertRegex(
             snaps[0],
             r"^Q_Quick_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
-            r"\.\d{6}_[0-9a-f]{8}_[0-9A-F]{8}\.sqlite$",
-            "命名须包含类型、唯一运行标识与 SHA-256 高32bit大写指纹")
+            r"_[0-9A-F]{8}\.sqlite$",
+            "封存命名须精确到秒并包含 SHA-256 高32bit大写指纹")
         return os.path.join(self.out, snaps[0])
 
     def test_quick_scan_end_to_end(self):
@@ -3581,6 +3898,9 @@ class TestQuickScan(unittest.TestCase):
             manifest["integrity"]["bit_selection"], "most_significant_32")
         self.assertEqual(manifest["integrity"]["hex_case"], "upper")
         self.assertFalse(manifest["integrity"]["full_digest_retained"])
+        self.assertEqual(manifest["filename_layout_version"], 2)
+        self.assertNotRegex(manifest["snapshot_stem"],
+                            r"\.\d{6}_[0-9a-f]{8}$")
         events = con.execute(
             "SELECT event FROM run_events ORDER BY event_seq").fetchall()
         self.assertGreater(len(events), 1)
@@ -3616,11 +3936,35 @@ class TestQuickScan(unittest.TestCase):
         self.assertRegex(
             dbs[0],
             r"^测试库_Diff_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
-            r"\.\d{6}_[0-9a-f]{8}_[0-9A-F]{8}\.sqlite$")
+            r"_[0-9A-F]{8}\.sqlite$")
         self.assertEqual(names, dbs)
         final = os.path.join(diffs, dbs[0])
         self.assertEqual(
             core.filename_sha256_high32(final), core.sha256_file(final)[:8].upper())
+
+    def test_forced_diff_adds_same_folder_issue_report(self):
+        s1 = tt.build_snapshot(self.arch, self.out, "f1", label="测试库")
+        s2 = tt.build_snapshot(self.arch, self.out, "f2", label="测试库")
+        token = core.filename_sha256_high32(s2)
+        legacy = s2[:-len(f"_{token}.sqlite")] + ".sqlite"
+        os.rename(s2, legacy)
+        diffs = os.path.join(self._td.name, "ForcedDiffs")
+        script = os.path.join(_TOOL, "Script_DAISY_Tool_21_Diff.py")
+        result = subprocess.run(
+            [sys.executable, "-B", script, "--old", s1, "--new", legacy,
+             "--output-dir", diffs, "--force"],
+            capture_output=True, timeout=120,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr.decode("utf-8", "replace"))
+        names = sorted(os.listdir(diffs))
+        db, = [name for name in names if name.endswith(".sqlite")]
+        issue, = [name for name in names if name.endswith("_Issues.md")]
+        self.assertEqual(
+            issue, os.path.splitext(db)[0] + "_Issues.md")
+        with open(os.path.join(diffs, issue), encoding="utf-8") as handle:
+            self.assertIn("降级准入", handle.read())
 
 
 if __name__ == "__main__":

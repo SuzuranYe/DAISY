@@ -20,12 +20,13 @@ import uuid
 PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
-SCANNER_VERSION = "1.4.0"      # 包版本
-SCHEMA_VERSION = 2
-READABLE_SCHEMA_VERSIONS = frozenset({1, SCHEMA_VERSION})
-MIN_READER_VERSION = "1.4.0"
-DATA_CONTRACT = "daisy-snapshot-v2"
+SCANNER_VERSION = "1.4.1"      # 包版本
+SCHEMA_VERSION = 3
+READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
+MIN_READER_VERSION = "1.4.1"
+DATA_CONTRACT = "daisy-snapshot-v3"
 PATH_KEY_RULE = 1
+FILENAME_LAYOUT_VERSION = 2
 
 # 支持格式映射；配置可扩展，新增格式须附样本实测
 EXT_TO_KIND = {
@@ -35,7 +36,7 @@ EXT_TO_KIND = {
     **dict.fromkeys(["tif", "tiff", "psd", "psb", "png"], "photo_working"),
     **dict.fromkeys(["mp4", "mov", "lrf"], "video_mp4"),
     "crm": "video_crm",
-    **dict.fromkeys(["wav", "mp3"], "audio"),
+    **dict.fromkeys(["wav", "mp3", "aac"], "audio"),
     **dict.fromkeys(["zip", "7z", "rar", "tar", "gz", "bz2", "xz"], "archive"),
     **dict.fromkeys(["pdf", "doc", "docx", "xlsx", "pptx"], "document"),
 }
@@ -55,6 +56,49 @@ def require_readable_schema_version(
         raise PreflightError(
             f"{artifact} schema_version={schema_version} 非本工具可读范围"
             f"（{supported}）")
+    return schema_version
+
+
+def require_sqlite_integrity(
+    con: sqlite3.Connection, artifact: str = "数据库",
+) -> None:
+    """验证 SQLite 结构与外键；任何失败都统一为预检错误。"""
+    try:
+        row = con.execute("PRAGMA quick_check").fetchone()
+        if row is None or row[0] != "ok":
+            detail = None if row is None else row[0]
+            raise PreflightError(f"{artifact} SQLite 完整性检查失败：{detail}")
+        fk_error = con.execute("PRAGMA foreign_key_check").fetchone()
+        if fk_error is not None:
+            raise PreflightError(
+                f"{artifact} SQLite 外键检查失败：{tuple(fk_error)}")
+    except sqlite3.Error as exc:
+        raise PreflightError(f"{artifact} SQLite 无法读取：{exc}") from exc
+
+
+def require_sealed_snapshot(
+    con: sqlite3.Connection, artifact: str = "快照",
+) -> int:
+    """只接纳 v1.4.1 当前结构、完整封存且数据库完整的快照。"""
+    try:
+        row = con.execute(
+            "SELECT schema_version,scan_status,database_integrity"
+            " FROM snapshot_info WHERE id=1").fetchone()
+    except sqlite3.Error as exc:
+        raise PreflightError(
+            f"{artifact} 不是 v1.4.1 快照结构：{exc}") from exc
+    if row is None:
+        raise PreflightError(f"{artifact} 缺少 snapshot_info")
+    schema_version, scan_status, database_integrity = row
+    require_readable_schema_version(schema_version, artifact)
+    if scan_status != "complete":
+        raise PreflightError(
+            f"{artifact} 扫描未完整结束（scan_status={scan_status}）")
+    if database_integrity != "ok":
+        raise PreflightError(
+            f"{artifact} 未声明 database_integrity=ok"
+            f"（当前为 {database_integrity}）")
+    require_sqlite_integrity(con, artifact)
     return schema_version
 
 
@@ -139,17 +183,32 @@ def snapshot_profile_tokens(kind: str, hash_mode: str = "full",
 
 def snapshot_name(labels: list[str], kind: str,
                   profile_tokens: list[str] | tuple[str, ...] = ()) -> str:
-    """快照文件基名：根文件夹名_类型_年-月-日_时-分-秒.微秒_运行id。
+    """最终产物短基名：根标签_类型_[偏差标记_]日期_时-分-秒。
+
     多 root 以 + 连接；文件名时间戳用本地时间，权威时间在库内 UTC。
-    微秒＋8 位随机 run id 用于降低碰撞概率；防覆盖的正式保障是独占预留
-    与原子 no-replace 发布。"""
+    最终发布时还会追加数据库 SHA-256 高 32 bit；问题状态只保存在库内，
+    并在必要时生成同目录 Issues.md，不进入数据库文件名。"""
     safe = "+".join(labels)
     for ch in '<>:"/\\|?*':
         safe = safe.replace(ch, "_")
     stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    micro = time.time_ns() // 1000 % 1_000_000
     identity = "_".join([safe, kind, *profile_tokens])
-    return f"{identity}_{stamp}.{micro:06d}_{uuid.uuid4().hex[:8]}"
+    return f"{identity}_{stamp}"
+
+
+def snapshot_working_name(snapshot_stem: str) -> str:
+    """给运行态 partial／报告生成唯一内部基名；不会保留到封存快照名。"""
+    if not snapshot_stem or os.path.basename(snapshot_stem) != snapshot_stem:
+        raise PreflightError(f"snapshot_stem 必须是不含路径的非空基名：{snapshot_stem!r}")
+    micro = time.time_ns() // 1000 % 1_000_000
+    return f"{snapshot_stem}.{micro:06d}_{uuid.uuid4().hex[:8]}"
+
+
+def resolve_snapshot_publish_stem(partial_path: str, snapshot_stem: str) -> str:
+    """把库内记录的最终基名安全解析到 partial 所在目录。"""
+    if not snapshot_stem or os.path.basename(snapshot_stem) != snapshot_stem:
+        raise PreflightError(f"snapshot_stem 必须是不含路径的非空基名：{snapshot_stem!r}")
+    return os.path.join(os.path.dirname(os.path.abspath(partial_path)), snapshot_stem)
 
 
 def parse_root_spec(spec: str) -> tuple[str, str]:
@@ -254,6 +313,11 @@ CREATE TABLE snapshot_info (
     schema_version         INTEGER NOT NULL,
     path_key_rule          INTEGER NOT NULL,
     scan_status            TEXT    NOT NULL CHECK (scan_status IN ('running','complete','interrupted')),
+    database_integrity     TEXT    NOT NULL DEFAULT 'pending'
+                           CHECK (database_integrity IN ('pending','ok','failed')),
+    has_file_issues        INTEGER NOT NULL DEFAULT 0 CHECK (has_file_issues IN (0,1)),
+    has_unstable_entries   INTEGER NOT NULL DEFAULT 0 CHECK (has_unstable_entries IN (0,1)),
+    has_enumeration_gaps   INTEGER NOT NULL DEFAULT 0 CHECK (has_enumeration_gaps IN (0,1)),
     hash_coverage          TEXT    NOT NULL CHECK (hash_coverage IN ('none','incremental','full')),
     started_at_utc         TEXT    NOT NULL,
     finished_at_utc        TEXT,
@@ -271,8 +335,7 @@ CREATE TABLE snapshot_info (
     counts_json            TEXT
 );
 
--- v1.4.0 数据契约为 schema_version=2；v1.4 reader 仍可只读解释
--- schema_version=1 的封存快照，但 v1.3.x reader 不保证解释 v1.4 产物。
+-- v1.4.1 状态契约为 schema_version=3，不读取更早结构。
 CREATE TABLE snapshot_manifest (
     id                INTEGER PRIMARY KEY CHECK (id = 1),
     manifest_version  INTEGER NOT NULL,
@@ -546,6 +609,22 @@ CREATE TABLE raw_payloads (
     UNIQUE (entry_id, provider)
 );
 
+CREATE TABLE metadata_diagnostics (
+    diagnostic_pk  INTEGER PRIMARY KEY,
+    entry_id       INTEGER NOT NULL REFERENCES entries(entry_id),
+    provider       TEXT    NOT NULL CHECK (provider <> ''),
+    severity       TEXT    NOT NULL
+                   CHECK (severity IN ('warning','error','validation')),
+    diagnostic_code TEXT   NOT NULL CHECK (diagnostic_code <> ''),
+    field_name     TEXT,
+    message        TEXT    NOT NULL,
+    raw_value      TEXT,
+    observed_at_utc TEXT   NOT NULL
+);
+
+CREATE INDEX idx_metadata_diagnostics_entry
+    ON metadata_diagnostics(entry_id, severity);
+
 CREATE TABLE hashes (
     hash_pk                INTEGER PRIMARY KEY,
     entry_id               INTEGER NOT NULL REFERENCES entries(entry_id),
@@ -747,6 +826,8 @@ def create_partial_snapshot(partial_path: str,
     for _, p in roots:
         validate_root(p)
     config = dict(config)
+    config.setdefault("metadata_storage", "complete")
+    config.setdefault("filename_layout_version", FILENAME_LAYOUT_VERSION)
     config["data_contract"] = DATA_CONTRACT
     config["min_reader_version"] = MIN_READER_VERSION
     tv = tool_versions or {}
@@ -1016,14 +1097,11 @@ def effective_snapshot_profile(
     hash_mode = str(config.get("hash") or hash_coverage)
     metadata_storage = config.get("metadata_storage")
     if metadata_storage not in ("complete", "normalized"):
-        # v1.3.4 早期 partial／快照使用旧布尔键，续传与读取时保持兼容。
-        metadata_storage = (
-            "normalized" if bool(config.get("no_raw_payload", False))
-            else "complete"
-        )
+        raise PreflightError(
+            f"metadata_storage 配置无效：{metadata_storage!r}")
     raw_payload = scan_kind == "full" and metadata_storage == "complete"
     file_id = not bool(config.get("no_file_id", False))
-    return {
+    profile = {
         "scan_kind": scan_kind,
         "hash_mode_requested": hash_mode,
         "hash_coverage_actual": hash_coverage,
@@ -1045,6 +1123,9 @@ def effective_snapshot_profile(
             scan_kind, hash_mode=hash_mode,
             raw_payload=raw_payload, file_id=file_id),
     }
+    if config.get("profile_version") is not None:
+        profile["metadata_profile_version"] = config["profile_version"]
+    return profile
 
 
 def _read_run_events(path: str | None) -> list[dict]:
@@ -1111,11 +1192,14 @@ def _embed_snapshot_evidence(
     labels = [
         row[0] for row in con.execute(
             "SELECT root_label FROM roots ORDER BY root_id")]
+    filename_layout_version = config.get(
+        "filename_layout_version", FILENAME_LAYOUT_VERSION)
     document = dict(manifest or {})
     document.update({
         "manifest_version": 1,
         "snapshot_stem": snapshot_stem,
         "snapshot_filename_pattern": filename_pattern,
+        "filename_layout_version": filename_layout_version,
         "snapshot_uuid": snapshot_uuid,
         "schema_version": schema_version,
         "data_contract": config.get("data_contract", DATA_CONTRACT),
@@ -1138,11 +1222,21 @@ def _embed_snapshot_evidence(
         "config": config,
         "effective_profile": effective_snapshot_profile(con, hash_coverage),
         "counts": counts,
+        "status": {
+            "database_integrity": counts["database_integrity"],
+            "scan_status": counts["scan_status"],
+            "has_file_issues": counts["has_file_issues"],
+            "has_unstable_entries": counts["has_unstable_entries"],
+            "has_enumeration_gaps": counts["has_enumeration_gaps"],
+        },
         "events": {
             "storage": "run_events",
             "count": len(records) + 1,
         },
     })
+    if config.get("profile_version") is not None:
+        document["normalized_metadata_profile_version"] = \
+            config["profile_version"]
     # 数据库不能在自身内部保存最终字节哈希；文件名只保留 SHA-256 高 32 bit。
     document.pop("snapshot_sha256", None)
     document.pop("external_sha256", None)
@@ -1156,14 +1250,11 @@ def _embed_snapshot_evidence(
 
 
 def finalize_snapshot(con: sqlite3.Connection, partial_path: str,
-                      hash_coverage: str,
-                      force_abnormal: bool = False, *,
+                      hash_coverage: str, *,
+                      publish_stem_path: str | None = None,
                       manifest: dict | None = None,
                       event_log_path: str | None = None) -> str:
-    """封存：残留检查→counts→嵌入证据→integrity→checkpoint→关闭→高 32 bit 指纹命名发布。
-
-    force_abnormal：本次运行自身干净但证据来源异常（如 --allow-abnormal-source
-    复用事故快照）时，由调用方强制 _Abnormal，避免异常来源无声传递。"""
+    """封存：残留检查→状态→嵌入证据→integrity→关闭→指纹命名发布。"""
     if hash_coverage not in ("none", "incremental", "full"):
         raise PreflightError(
             "hash_coverage 必须是 none、incremental 或 full")
@@ -1174,6 +1265,81 @@ def finalize_snapshot(con: sqlite3.Connection, partial_path: str,
         " OR hash_status IN ('pending','processing')").fetchone()
     if residue:
         raise PreflightError(f"封存被拒：存在 {residue} 个 pending/processing 残留条目")
+    counts = collect_snapshot_counts(con)
+    has_issues = snapshot_issue_report_required(counts)
+    working_stem_path = partial_path[:-len(".partial.sqlite")]
+    publish_stem_path = os.path.abspath(
+        publish_stem_path or working_stem_path)
+    partial_dir = os.path.normcase(
+        os.path.dirname(os.path.abspath(partial_path)))
+    if (os.path.normcase(os.path.dirname(publish_stem_path)) != partial_dir
+            or not os.path.basename(publish_stem_path)):
+        raise PreflightError(
+            "publish_stem_path 必须位于 partial 同一目录且不能包含子目录")
+    final_stem_path = publish_stem_path
+    finished_at_utc = now_utc_iso()
+    con.execute(
+        "UPDATE snapshot_info SET scan_status='complete',"
+        " database_integrity='ok',has_file_issues=?,"
+        " has_unstable_entries=?,has_enumeration_gaps=?,"
+        " finished_at_utc=?,hash_coverage=?,counts_json=?",
+        (int(counts["has_file_issues"]),
+         int(counts["has_unstable_entries"]),
+         int(counts["has_enumeration_gaps"]),
+         finished_at_utc, hash_coverage,
+         json.dumps(counts, ensure_ascii=False)))
+    _embed_snapshot_evidence(
+        con, final_stem_path, hash_coverage, counts, finished_at_utc,
+        event_log_path, manifest)
+    con.commit()
+    ok, = con.execute("PRAGMA integrity_check").fetchone()
+    if ok != "ok":
+        raise PreflightError(f"SQLite 完整性检查失败：{ok}")
+    fk_error = con.execute("PRAGMA foreign_key_check").fetchone()
+    if fk_error is not None:
+        raise PreflightError(f"SQLite 外键检查失败：{tuple(fk_error)}")
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    # 封存件切回 DELETE journal 模式，避免后续读取在不可变快照旁生成
+    # -shm/-wal 辅助文件
+    con.execute("PRAGMA journal_mode=DELETE")
+    con.close()
+    # 文件关闭后字节才最终稳定；把 SHA-256 前 8 个十六进制字符大写后置。
+    digest = sha256_file(partial_path)
+    final_path = final_stem_path + f"_{digest[:8].upper()}.sqlite"
+    issue_markdown = (render_snapshot_issue_report(
+        partial_path, os.path.basename(final_path)) if has_issues else None)
+    publish_sqlite_artifact(partial_path, final_path, issue_markdown)
+    release_scan_lock(partial_path)
+    return final_path
+
+
+def _table_exists(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def ensure_metadata_diagnostics_table(con: sqlite3.Connection) -> None:
+    """确保当前扫描库存在元数据诊断表。"""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS metadata_diagnostics ("
+        " diagnostic_pk INTEGER PRIMARY KEY,"
+        " entry_id INTEGER NOT NULL REFERENCES entries(entry_id),"
+        " provider TEXT NOT NULL CHECK (provider <> ''),"
+        " severity TEXT NOT NULL"
+        "  CHECK (severity IN ('warning','error','validation')),"
+        " diagnostic_code TEXT NOT NULL CHECK (diagnostic_code <> ''),"
+        " field_name TEXT, message TEXT NOT NULL, raw_value TEXT,"
+        " observed_at_utc TEXT NOT NULL)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_metadata_diagnostics_entry"
+        " ON metadata_diagnostics(entry_id, severity)"
+    )
+
+
+def collect_snapshot_counts(con: sqlite3.Connection) -> dict:
+    """生成封存计数和彼此独立的 v1.4.1 状态。"""
     counts = {
         "dirs": con.execute("SELECT COUNT(*) FROM dirs").fetchone()[0],
         "entries": con.execute("SELECT COUNT(*) FROM entries").fetchone()[0],
@@ -1189,51 +1355,284 @@ def finalize_snapshot(con: sqlite3.Connection, partial_path: str,
             "SELECT COUNT(*) FROM dirs WHERE enum_status NOT IN ('ok')").fetchone()[0],
         "roots_failed": con.execute(
             "SELECT COUNT(*) FROM roots WHERE enum_status='failed'").fetchone()[0],
+        "error_records": con.execute(
+            "SELECT COUNT(*) FROM errors").fetchone()[0],
     }
-    # 非正常运行标记：counts 含任一异常即产物名加
-    # _Abnormal 后缀——健康快照与事故快照在文件夹里必须一眼可辨
-    abnormal = bool(
-        counts["dir_errors"] or counts["roots_failed"]
-        or any(counts["hash_status"].get(k) for k in ("error", "unstable"))
-        or any(counts["meta_status"].get(k)
-               for k in ("error", "timeout", "unstable")))
-    if force_abnormal:
-        counts["abnormal_source_reuse"] = 1
-        abnormal = True
-    counts["abnormal"] = 1 if abnormal else 0
-    final_stem_path = (
-        partial_path[:-len(".partial.sqlite")]
-        + ("_Abnormal" if abnormal else ""))
-    finished_at_utc = now_utc_iso()
-    con.execute("UPDATE snapshot_info SET scan_status='complete', finished_at_utc=?,"
-                " hash_coverage=?, counts_json=?",
-                (finished_at_utc, hash_coverage,
-                 json.dumps(counts, ensure_ascii=False)))
-    _embed_snapshot_evidence(
-        con, final_stem_path, hash_coverage, counts, finished_at_utc,
-        event_log_path, manifest)
-    con.commit()
-    ok, = con.execute("PRAGMA integrity_check").fetchone()
-    if ok != "ok":
-        raise PreflightError(f"SQLite 完整性检查失败：{ok}")
-    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    # 封存件切回 DELETE journal 模式，避免后续读取在不可变快照旁生成
-    # -shm/-wal 辅助文件
-    con.execute("PRAGMA journal_mode=DELETE")
-    con.close()
-    # 文件关闭后字节才最终稳定；把 SHA-256 前 8 个十六进制字符大写后置。
-    digest = sha256_file(partial_path)
-    final_path = final_stem_path + f"_{digest[:8].upper()}.sqlite"
-    # 原子 no-replace 发布：Windows 的 os.rename 目标存在即
-    # FileExistsError（MoveFileExW 无 REPLACE 位），旧快照逐字节不动
+    if _table_exists(con, "metadata_diagnostics"):
+        counts["metadata_diagnostics"] = dict(con.execute(
+            "SELECT severity, COUNT(*) FROM metadata_diagnostics"
+            " GROUP BY severity"))
+    meta_status = counts["meta_status"]
+    hash_status = counts["hash_status"]
+    counts["database_integrity"] = "ok"
+    counts["scan_status"] = "complete"
+    counts["has_file_issues"] = bool(
+        meta_status.get("error") or meta_status.get("timeout"))
+    counts["has_unstable_entries"] = bool(
+        meta_status.get("unstable") or hash_status.get("unstable"))
+    counts["has_enumeration_gaps"] = bool(
+        counts["dir_errors"] or counts["roots_failed"])
+    return counts
+
+
+def snapshot_issue_report_required(counts: dict) -> bool:
+    """源文件／扫描证据有问题时生成报告；不代表 SQLite 损坏。"""
+    return bool(
+        counts.get("has_file_issues")
+        or counts.get("has_unstable_entries")
+        or counts.get("has_enumeration_gaps")
+        or (counts.get("hash_status") or {}).get("error"))
+
+
+ISSUE_REPORT_SUFFIX = "_Issues.md"
+ISSUE_REPORT_ROW_LIMIT = 500
+
+
+def artifact_issue_report_path(artifact_path: str) -> str:
+    """返回 SQLite 产物同目录的问题报告路径。"""
+    stem, extension = os.path.splitext(os.path.abspath(artifact_path))
+    if extension.casefold() != ".sqlite":
+        raise PreflightError(f"问题报告只支持 SQLite 产物：{artifact_path}")
+    return stem + ISSUE_REPORT_SUFFIX
+
+
+def markdown_cell(value, max_chars: int = 500) -> str:
+    """把数据库文本安全压平为 Markdown 表格单元格。"""
+    if value is None:
+        return ""
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\n", "<br>").replace("|", "\\|")
+    if len(text) > max_chars:
+        text = text[:max_chars - 1] + "…"
+    return text
+
+
+def _write_text_exclusive(path: str, content: str) -> None:
+    """以 UTF-8、LF、no-clobber 方式创建文本文件。"""
+    fd = None
+    created = False
     try:
-        os.rename(partial_path, final_path)
-    except FileExistsError:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        created = True
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
+            handle.write(content.replace("\r\n", "\n").replace("\r", "\n"))
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        if created:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+
+
+def publish_sqlite_artifact(working_path: str, final_path: str,
+                            issue_markdown: str | None = None) -> str | None:
+    """原子 no-replace 发布 SQLite，并可同时创建同目录 Issues.md。
+
+    两个最终目标中的任一个已存在都会拒绝发布。报告先以 O_EXCL 创建；若
+    SQLite 原子改名失败，只清理由本次调用新建的报告，工作数据库仍保留。
+    """
+    working_path = os.path.abspath(working_path)
+    final_path = os.path.abspath(final_path)
+    if os.path.exists(final_path):
         raise PreflightError(
-            f"发布冲突：目标已存在，旧快照保持不动：{final_path}\n"
-            f"  本次运行结果保留于：{partial_path}")
-    release_scan_lock(partial_path)
-    return final_path
+            f"发布冲突：目标已存在，旧产物保持不动：{final_path}\n"
+            f"  本次运行结果保留于：{working_path}")
+    issue_path = (artifact_issue_report_path(final_path)
+                  if issue_markdown is not None else None)
+    report_created = False
+    if issue_path:
+        try:
+            _write_text_exclusive(issue_path, issue_markdown)
+            report_created = True
+        except FileExistsError as exc:
+            raise PreflightError(
+                f"发布冲突：问题报告已存在，旧产物保持不动：{issue_path}\n"
+                f"  本次运行结果保留于：{working_path}") from exc
+        except OSError as exc:
+            raise PreflightError(
+                f"问题报告无法创建：{issue_path}：{exc}\n"
+                f"  本次运行结果保留于：{working_path}") from exc
+    try:
+        # Windows 的 os.rename 目标存在即 FileExistsError；不使用覆盖语义。
+        os.rename(working_path, final_path)
+    except OSError as exc:
+        if report_created:
+            try:
+                os.remove(issue_path)
+            except OSError:
+                pass
+        raise PreflightError(
+            f"发布失败，目标保持不动：{final_path}：{exc}\n"
+            f"  本次运行结果保留于：{working_path}") from exc
+    return issue_path
+
+
+def _append_markdown_table(lines: list[str], headers: tuple[str, ...],
+                           rows: list[tuple]) -> None:
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join("---" for _ in headers) + " |")
+    for row in rows:
+        lines.append("| " + " | ".join(markdown_cell(v) for v in row) + " |")
+
+
+def render_snapshot_issue_report(snapshot_path: str,
+                                 artifact_filename: str | None = None,
+                                 row_limit: int = ISSUE_REPORT_ROW_LIMIT) -> str:
+    """从封存前 SQLite 生成可读问题摘要，不修改数据库。"""
+    path = os.path.abspath(snapshot_path)
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        info = con.execute(
+            "SELECT snapshot_uuid,scanner_version,scan_status,"
+            " database_integrity,has_file_issues,has_unstable_entries,"
+            " has_enumeration_gaps,counts_json"
+            " FROM snapshot_info WHERE id=1").fetchone()
+        if info is None:
+            raise PreflightError("无法生成问题报告：snapshot_info 缺失")
+        counts = json.loads(info["counts_json"] or "{}")
+        meta = counts.get("meta_status") or {}
+        hashes = counts.get("hash_status") or {}
+        diagnostics = counts.get("metadata_diagnostics") or {}
+        summary_rows = [
+            ("数据库完整性", info["database_integrity"]),
+            ("扫描状态", info["scan_status"]),
+            ("存在源文件问题", info["has_file_issues"]),
+            ("存在 unstable 条目", info["has_unstable_entries"]),
+            ("存在枚举缺口", info["has_enumeration_gaps"]),
+            ("失败根目录", counts.get("roots_failed", 0)),
+            ("目录枚举问题", counts.get("dir_errors", 0)),
+            ("元数据 error", meta.get("error", 0)),
+            ("元数据 timeout", meta.get("timeout", 0)),
+            ("元数据 unstable", meta.get("unstable", 0)),
+            ("哈希 error", hashes.get("error", 0)),
+            ("哈希 unstable", hashes.get("unstable", 0)),
+            ("错误记录", counts.get("error_records", 0)),
+            ("元数据 warning", diagnostics.get("warning", 0)),
+            ("元数据 validation", diagnostics.get("validation", 0)),
+        ]
+        error_total, = con.execute("SELECT COUNT(*) FROM errors").fetchone()
+        error_rows = [tuple(row) for row in con.execute(
+            "SELECT x.stage,x.error_code,"
+            " COALESCE(er.root_label,dr.root_label,''),"
+            " COALESCE(e.rel_path,d.rel_path,''),x.message"
+            " FROM errors x"
+            " LEFT JOIN entries e ON e.entry_id=x.entry_id"
+            " LEFT JOIN roots er ON er.root_id=e.root_id"
+            " LEFT JOIN dirs d ON d.dir_id=x.dir_id"
+            " LEFT JOIN roots dr ON dr.root_id=d.root_id"
+            " ORDER BY x.error_pk LIMIT ?", (row_limit,))]
+        status_total, = con.execute(
+            "SELECT COUNT(*) FROM entries WHERE"
+            " meta_status IN ('error','timeout','unstable')"
+            " OR hash_status IN ('error','unstable')").fetchone()
+        status_rows = [tuple(row) for row in con.execute(
+            "SELECT r.root_label,e.rel_path,e.meta_status,e.hash_status"
+            " FROM entries e JOIN roots r ON r.root_id=e.root_id"
+            " WHERE e.meta_status IN ('error','timeout','unstable')"
+            " OR e.hash_status IN ('error','unstable')"
+            " ORDER BY r.root_label,e.path_key LIMIT ?", (row_limit,))]
+        dir_total, = con.execute(
+            "SELECT COUNT(*) FROM dirs WHERE enum_status<>'ok'").fetchone()
+        dir_rows = [tuple(row) for row in con.execute(
+            "SELECT r.root_label,d.rel_path,d.enum_status,d.error_message"
+            " FROM dirs d JOIN roots r ON r.root_id=d.root_id"
+            " WHERE d.enum_status<>'ok'"
+            " ORDER BY r.root_label,d.path_key LIMIT ?", (row_limit,))]
+        root_rows = [tuple(row) for row in con.execute(
+            "SELECT root_label,enum_status FROM roots WHERE enum_status='failed'"
+            " ORDER BY root_label")]
+        diagnostic_group_rows = []
+        evidence_gap_rows = []
+        evidence_gap_total = 0
+        if _table_exists(con, "metadata_diagnostics"):
+            diagnostic_group_rows = [tuple(row) for row in con.execute(
+                "SELECT severity,diagnostic_code,COALESCE(field_name,''),COUNT(*)"
+                " FROM metadata_diagnostics"
+                " GROUP BY severity,diagnostic_code,field_name"
+                " ORDER BY severity,diagnostic_code,field_name")]
+            evidence_gap_total, = con.execute(
+                "SELECT COUNT(*) FROM metadata_diagnostics WHERE"
+                " severity='validation' AND diagnostic_code LIKE"
+                " 'historical_%_payload_unavailable'").fetchone()
+            evidence_gap_rows = [tuple(row) for row in con.execute(
+                "SELECT r.root_label,e.rel_path,d.diagnostic_code,d.message"
+                " FROM metadata_diagnostics d"
+                " JOIN entries e ON e.entry_id=d.entry_id"
+                " JOIN roots r ON r.root_id=e.root_id"
+                " WHERE d.severity='validation' AND d.diagnostic_code LIKE"
+                " 'historical_%_payload_unavailable'"
+                " ORDER BY r.root_label,e.path_key,d.diagnostic_code LIMIT ?",
+                (row_limit,))]
+    except (json.JSONDecodeError, sqlite3.Error) as exc:
+        raise PreflightError(f"无法生成问题报告：{exc}") from exc
+    finally:
+        con.close()
+
+    lines = [
+        "# DAISY 问题报告",
+        "",
+        f"- 数据库：`{artifact_filename or os.path.basename(path)}`",
+        f"- 快照 UUID：`{info['snapshot_uuid']}`",
+        f"- 原扫描器版本：`{info['scanner_version']}`",
+        f"- 报告生成器版本：`{SCANNER_VERSION}`",
+        f"- 报告生成时间：`{now_utc_iso()}`",
+        "- 结论：SQLite 数据库完整性正常且扫描已完整封存；本报告描述的是源文件或扫描证据问题，不表示数据库损坏。",
+        "- 命名：问题状态不写入数据库文件名。",
+        "",
+        "## 汇总",
+        "",
+    ]
+    _append_markdown_table(lines, ("项目", "数量"), summary_rows)
+    if diagnostic_group_rows:
+        lines.extend(["", "## 元数据诊断分类", ""])
+        _append_markdown_table(
+            lines, ("等级", "诊断码", "字段", "数量"),
+            diagnostic_group_rows)
+    if evidence_gap_rows:
+        lines.extend(["", "## 历史证据缺口", ""])
+        _append_markdown_table(
+            lines, ("根标签", "相对路径", "诊断码", "信息"),
+            evidence_gap_rows)
+        if evidence_gap_total > len(evidence_gap_rows):
+            lines.append(
+                f"\n仅列出前 {len(evidence_gap_rows)}／{evidence_gap_total} 条。")
+    if root_rows:
+        lines.extend(["", "## 失败根目录", ""])
+        _append_markdown_table(lines, ("根标签", "状态"), root_rows)
+    if dir_rows:
+        lines.extend(["", "## 目录枚举问题", ""])
+        _append_markdown_table(
+            lines, ("根标签", "相对路径", "状态", "信息"), dir_rows)
+        if dir_total > len(dir_rows):
+            lines.append(f"\n仅列出前 {len(dir_rows)}／{dir_total} 条。")
+    if status_rows:
+        lines.extend(["", "## 问题条目状态", ""])
+        _append_markdown_table(
+            lines, ("根标签", "相对路径", "元数据状态", "哈希状态"),
+            status_rows)
+        if status_total > len(status_rows):
+            lines.append(f"\n仅列出前 {len(status_rows)}／{status_total} 条。")
+    if error_rows:
+        lines.extend(["", "## 错误明细", ""])
+        _append_markdown_table(
+            lines, ("阶段", "错误码", "根标签", "相对路径", "信息"),
+            error_rows)
+        if error_total > len(error_rows):
+            lines.append(f"\n仅列出前 {len(error_rows)}／{error_total} 条。")
+    lines.extend([
+        "",
+        "## 说明",
+        "",
+        "`warning` 与 `validation` 会在汇总中保留，但它们本身不会让扫描判为失败。",
+        "如需完整逐表结果，请从该 SQLite 使用 `export-report` 导出。",
+        "",
+    ])
+    return "\n".join(lines)
 
 
 import subprocess

@@ -2,7 +2,7 @@
 
 **Database for Archive Integrity by Suzuran Ye**
 
-版本：**v1.4.0**
+版本：**v1.4.1**
 
 许可证：**MIT**
 
@@ -166,16 +166,35 @@ Full 没有“静置窗口”或按 mtime 静默跳过近期文件的选项。�
   也无法判定 `metadata_extraction_changed`；
 - 两种模式都不是隐私开关，规范化字段仍可能包含位置、作者、设备或序列号。
 
-### v1.4 兼容边界
+### v1.4.1 数据结构边界
 
-v1.4.0 写出的快照和 Diff 使用 `schema_version=2`，最低阅读器版本为
-`v1.4.0`。**v1.4 不提供旧版阅读器读取新产物的前向兼容保证**：
-不得假定 `v1.3.x`、Kit_AL 或更早工具能正确分析、核验或导出 v1.4 产物。
+v1.4.1 写出的快照和 Diff 使用 `schema_version=3`，最低阅读器版本为
+`v1.4.1`。程序只读取当前结构，不读取 schema 1／2，不续传旧版 partial，
+也不提供迁移命令。v1.4.0 及更早数据库如需获得 v1.4.1 的规范化结果，必须
+对原档案重新扫描。
 
-这里的“不前向兼容”特指“旧工具读取新产物”。v1.4 工具仍可只读接纳
-`schema_version=1` 的既有封存快照，用于核验、导出或与 v1.4 快照进行
-Diff；跨 schema Diff 会分别记录两侧 schema。旧版 partial 不能由 v1.4
-续传，既有封存快照不会被迁移或回写。
+### v1.4.1 短名称与 ExifTool 超时
+
+最终快照和 Diff 文件名精确到秒，不再保留微秒与随机运行 ID；运行态
+`.partial.sqlite` 仍使用内部微秒和随机 ID 防止冲突。最终格式为：
+
+```text
+根标签_类型_[偏差标记_]日期_时间_XXXXXXXX.sqlite
+```
+
+快照状态拆分为 `database_integrity`、`scan_status`、`has_file_issues`、
+`has_unstable_entries` 和 `has_enumeration_gaps`。损坏、空白或无法解析的源文件
+只令 `has_file_issues=1`，数据库仍可完整封存，并在同目录额外生成同基名的
+`_Issues.md`；状态不进入数据库文件名。warning／validation 单独保留，默认
+不生成问题报告。
+
+增量扫描只复用满足当前 schema 的完整封存库。文件名指纹不符、SQLite 损坏、
+扫描未完成、目录枚举缺口、哈希失败或 unstable 条目会拒绝作为增量来源；
+单纯的 `has_file_issues=1` 不阻止其他有效哈希复用，新扫描仍会重新读取元数据。
+
+ExifTool 的单文件超时按登记体积计算：不超过 `9 GiB` 为 90 秒，此后每个
+`9 GiB` 阶梯增加 90 秒，即 `max(90, ceil(size_bytes / 9 GiB) × 90)`。
+策略及实际超时会进入快照配置和错误证据；ffprobe 超时仍为 60 秒。
 
 ### 视频 GPS
 
@@ -186,13 +205,12 @@ Payload 中保留原值。经纬度会规范化为数值并校验范围；海拔
 容器级 `location` 表示文件级静态位置，因此 `timestamp_seconds` 为
 `NULL`。表结构允许同一视频保存多个点，也预留了点时间，但当前版本尚不
 提取逐帧或连续 GPS 轨迹。Quick 不读取文件内容，所以该表保持为空。
-`export-report` 会生成 `GPS_inventory_video.csv`。旧 profile 的既有
-快照不会被回写，导出时也不会凭空生成这一页。
+`export-report` 会生成 `GPS_inventory_video.csv`。
 
 由于规范化 profile 和 additive 表已变化，中断的 `.partial.sqlite`
 必须同时匹配当前 DAISY 的版本、schema、profile 和 GPS 表后才允许续传。
-旧版本或不是当前 profile v6 的 partial 会被明确拒绝，以免同一快照混用
-两套解析语义。封存快照不受此限制。
+旧版本或不是当前 profile v7 的 partial 会被明确拒绝，以免同一快照混用
+两套解析语义；旧封存快照也不读取。
 
 ### 数据库文件名指纹
 

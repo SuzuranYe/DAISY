@@ -126,14 +126,11 @@ def _check_and_open(path: str, force: bool) -> tuple[sqlite3.Connection, int]:
         raise core.PreflightError(
             f"文件名缺少 SHA-256 高32bit 指纹（--force 可越过）：{path}")
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    ok, = con.execute("PRAGMA integrity_check").fetchone()
-    if ok != "ok":
+    try:
+        core.require_sealed_snapshot(con, f"快照 {path}")
+    except Exception:
         con.close()
-        raise core.PreflightError(f"SQLite 完整性检查失败：{path}")
-    status, = con.execute("SELECT scan_status FROM snapshot_info").fetchone()
-    if status != "complete":
-        con.close()
-        raise core.PreflightError(f"快照未封存（scan_status={status}）：{path}")
+        raise
     return con, forced
 
 

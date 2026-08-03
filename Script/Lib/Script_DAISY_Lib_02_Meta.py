@@ -1,6 +1,6 @@
 """DAISY 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
 
-实现后端调用、profile v6、规范化映射和元数据汇合状态机。
+实现后端调用、profile v7、规范化映射和元数据汇合状态机。
 ExifTool 仅允许白名单读取参数，任何写语法直接拒绝。
 """
 from __future__ import annotations
@@ -20,16 +20,46 @@ from dataclasses import dataclass
 
 import Script_DAISY_Lib_01_Core as core
 
-PROFILE_VERSION = 6
+PROFILE_VERSION = 7
 ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
 ET_VIDEO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l"]
 FF_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams",
            "-show_chapters", "-show_programs", "-show_stream_groups", "-show_data"]
-ET_TIMEOUT_S = 60
+ET_TIMEOUT_S = 90
+ET_TIMEOUT_STEP_BYTES = 9 * 1024 ** 3
+ET_TIMEOUT_STEP_SECONDS = 90
 FF_TIMEOUT_S = 60
 ET_RESTART_EVERY = 5000
 
 _BANNED_ET = core.EXIFTOOL_BANNED_ARGS   # 与 Lib_01 共享只读参数黑名单
+
+
+def exiftool_timeout_policy() -> dict:
+    return {
+        "minimum_seconds": ET_TIMEOUT_S,
+        "size_step_bytes": ET_TIMEOUT_STEP_BYTES,
+        "seconds_per_step": ET_TIMEOUT_STEP_SECONDS,
+        "rounding": "ceiling",
+    }
+
+
+def exiftool_timeout_for_size(size_bytes: int | None,
+                              policy: dict | None = None) -> int:
+    """不足或等于 9 GiB 为 90 秒，此后每跨一个 9 GiB 阶梯增加 90 秒。"""
+    selected = dict(exiftool_timeout_policy() if policy is None else policy)
+    try:
+        minimum = int(selected["minimum_seconds"])
+        step_bytes = int(selected["size_step_bytes"])
+        step_seconds = int(selected["seconds_per_step"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("ExifTool timeout policy 字段无效") from exc
+    if minimum <= 0 or step_bytes <= 0 or step_seconds <= 0:
+        raise ValueError("ExifTool timeout policy 必须全部为正数")
+    if selected.get("rounding") != "ceiling":
+        raise ValueError("ExifTool timeout policy 只支持 ceiling")
+    size = max(0, int(size_bytes or 0))
+    steps = max(1, (size + step_bytes - 1) // step_bytes)
+    return max(minimum, steps * step_seconds)
 
 
 def guard_exiftool_args(args: list[str]) -> None:
@@ -50,7 +80,7 @@ def _score(mid_parts: list[str]) -> int:
 
 
 def build_tag_index(doc: dict) -> dict:
-    """(family1_lower, tag_lower) → 值；Main/无 doc 组优先于 DocN/CopyN。附 tag-only 索引。"""
+    """(family1_lower, tag_lower) → 显示值／数值；Main 优先。附 tag-only 索引。"""
     idx: dict = {}
     for key, raw in doc.items():
         if key == "SourceFile":
@@ -58,10 +88,11 @@ def build_tag_index(doc: dict) -> dict:
         parts = key.split(":")
         fam, tag = parts[0].lower(), parts[-1].lower()
         val = raw.get("val") if isinstance(raw, dict) and "val" in raw else raw
+        num = raw.get("num") if isinstance(raw, dict) else None
         score = _score(parts[1:-1])
         for k in ((fam, tag), ("*", tag)):
             if k not in idx or score < idx[k][0]:
-                idx[k] = (score, val)
+                idx[k] = (score, val, num)
     return idx
 
 
@@ -87,6 +118,48 @@ def tchain_src(idx: dict, specs: list[str]):
     return None, None
 
 
+def tnum(idx: dict, spec: str) -> float | None:
+    """优先返回 ExifTool 的机器数值 num，缺失时解析显示值。"""
+    fam, _, tag = spec.partition(":")
+    hit = idx.get((fam.lower(), tag.lower()))
+    if not hit:
+        return None
+    num = hit[2] if len(hit) > 2 else None
+    return first_float(num if num not in (None, "", "n/a") else hit[1])
+
+
+def tnum_chain(idx: dict, specs: list[str]) -> float | None:
+    for spec in specs:
+        value = tnum(idx, spec)
+        if value is not None:
+            return value
+    return None
+
+
+def _native_number(hit) -> float | None:
+    """只接受 ExifTool num 或原生数值 val，不解析展示字符串。"""
+    if not hit:
+        return None
+    num = hit[2] if len(hit) > 2 else None
+    if num not in (None, "", "n/a"):
+        return first_float(num)
+    value = hit[1]
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def tnum_native(idx: dict, spec: str) -> float | None:
+    fam, _, tag = spec.partition(":")
+    return _native_number(idx.get((fam.lower(), tag.lower())))
+
+
+def tnum_native_chain(idx: dict, specs: list[str]) -> float | None:
+    for spec in specs:
+        value = tnum_native(idx, spec)
+        if value is not None:
+            return value
+    return None
+
+
 def tany(idx: dict, tag: str):
     hit = idx.get(("*", tag.lower()))
     return hit[1] if hit else None
@@ -100,6 +173,10 @@ def tany_chain(idx: dict, tags: list[str]):
     return None
 
 
+def tany_native_number(idx: dict, tag: str) -> float | None:
+    return _native_number(idx.get(("*", tag.lower())))
+
+
 def as_json_text(value) -> str | None:
     if value is None:
         return None
@@ -108,8 +185,19 @@ def as_json_text(value) -> str | None:
     return json.dumps([value], ensure_ascii=False)
 
 
+def scalar_or_json_text(value) -> str | None:
+    """标量保持标量文本；真实数组／对象才保存 JSON。"""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 # === 数值解析 ===
-_FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_NUMBER_TOKEN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+_FLOAT_RE = re.compile(_NUMBER_TOKEN)
+_RATIO_RE = re.compile(rf"({_NUMBER_TOKEN})\s*/\s*({_NUMBER_TOKEN})")
 
 
 def first_float(v) -> float | None:
@@ -117,13 +205,30 @@ def first_float(v) -> float | None:
         return None
     if isinstance(v, (int, float)):
         return float(v)
-    m = _FLOAT_RE.search(str(v))
-    return float(m.group()) if m else None
+    text = str(v)
+    first = _FLOAT_RE.search(text)
+    ratio = _RATIO_RE.search(text)
+    if ratio and first and ratio.start() == first.start():
+        denominator = float(ratio.group(2))
+        return (float(ratio.group(1)) / denominator
+                if denominator != 0 else None)
+    return float(first.group()) if first else None
 
 
 def first_int(v) -> int | None:
     f = first_float(v)
     return int(f) if f is not None else None
+
+
+def first_positive_int_pair(v) -> tuple[int, int] | None:
+    """读取首两个正数，供 DNG DefaultCropSize 等二元尺寸字段使用。"""
+    if v is None:
+        return None
+    values = _FLOAT_RE.findall(str(v))
+    if len(values) < 2:
+        return None
+    pair = int(float(values[0])), int(float(values[1]))
+    return pair if pair[0] > 0 and pair[1] > 0 else None
 
 
 def gps_decimal(v) -> float | None:
@@ -182,19 +287,73 @@ def offset_minutes_from_value(v) -> int | None:
     return offset_minutes(m.group(1)) if m else None
 
 
+_CAPTURE_TIME_RE = re.compile(
+    r"(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})"
+    r"(?P<fraction>\.\d+)?")
+
+_ISO_TIME_RE = re.compile(
+    r"(?P<date>\d{4}-\d{2}-\d{2})[T ]"
+    r"(?P<clock>\d{2}:\d{2}:\d{2})(?P<fraction>\.\d+)?"
+    r"(?P<zone>Z|[+-]\d{2}:\d{2})\Z", re.IGNORECASE)
+
+
+def matching_datetime_offset(raw, candidates: list) -> int | None:
+    """仅在候选与拍摄时间的本地钟面完全一致时借用其显式时区。"""
+    base = _CAPTURE_TIME_RE.search(str(raw)) if raw is not None else None
+    if not base:
+        return None
+    for candidate in candidates:
+        other = (_CAPTURE_TIME_RE.search(str(candidate))
+                 if candidate is not None else None)
+        if other and other.groups()[:6] == base.groups()[:6]:
+            offset = offset_minutes_from_value(candidate)
+            if offset is not None:
+                return offset
+    return None
+
+
 def capture_utc(raw, offset_min: int | None) -> str | None:
     """拍摄时间原文＋显式偏移 → UTC；无偏移不推断（原则）。"""
     if raw is None or offset_min is None:
         return None
-    m = re.match(r"(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})", str(raw))
+    m = _CAPTURE_TIME_RE.match(str(raw))
     if not m:
         return None
     import calendar
-    y, mo, d, h, mi, s = (int(x) for x in m.groups())
+    y, mo, d, h, mi, s = (int(x) for x in m.groups()[:6])
     epoch = calendar.timegm((y, mo, d, h, mi, s, 0, 0, 0)) - offset_min * 60
     t = time.gmtime(epoch)
+    fraction = m.group("fraction") or ""
     return (f"{t.tm_year:04d}-{t.tm_mon:02d}-{t.tm_mday:02d}"
-            f"T{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}Z")
+            f"T{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}{fraction}Z")
+
+
+def normalize_explicit_utc(raw) -> str | None:
+    """规范化带 Z／显式偏移的 ISO 时间，并保留原有小数秒位数。"""
+    if raw is None:
+        return None
+    m = _ISO_TIME_RE.fullmatch(str(raw).strip())
+    if not m:
+        return None
+    date = m.group("date")
+    clock = m.group("clock")
+    fraction = m.group("fraction") or ""
+    zone = m.group("zone").upper()
+    if zone == "Z":
+        return f"{date}T{clock}{fraction}Z"
+    colon_raw = f"{date.replace('-', ':')} {clock}{fraction}"
+    return capture_utc(colon_raw, offset_minutes(zone))
+
+
+def ffprobe_creation_time(ff: dict) -> tuple[str | None, str | None, object]:
+    tags = ((ff.get("format", {}) or {}).get("tags", {}) or {}) if ff else {}
+    if not isinstance(tags, dict):
+        return None, None, None
+    for key, value in tags.items():
+        if str(key).casefold() == "creation_time":
+            return (normalize_explicit_utc(value),
+                    f"ffprobe:format.tags.{key}", value)
+    return None, None, None
 
 
 # === raw payload ===
@@ -331,53 +490,188 @@ _CAMERA_CHAINS = {
 }
 
 
-def _capture_fields(idx, time_chain, tz_chain=None):
+def diagnostic(provider: str, severity: str, code: str, message,
+               field_name: str | None = None, raw_value=None) -> dict:
+    if isinstance(raw_value, (dict, list)):
+        raw_text = json.dumps(raw_value, ensure_ascii=False, sort_keys=True)
+    elif raw_value is None:
+        raw_text = None
+    else:
+        raw_text = str(raw_value)
+    return {
+        "provider": provider,
+        "severity": severity,
+        "diagnostic_code": code,
+        "field_name": field_name,
+        "message": str(message),
+        "raw_value": raw_text,
+    }
+
+
+def reported_diagnostics(doc: dict | None) -> list[dict]:
+    """提取 ExifTool JSON 中任意 family 的 Warning／Error 标签。"""
+    rows = []
+    for key, raw in (doc or {}).items():
+        tag = str(key).split(":")[-1].casefold()
+        if tag not in ("warning", "error"):
+            continue
+        value = raw.get("val") if isinstance(raw, dict) and "val" in raw else raw
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            rows.append(diagnostic(
+                "exiftool", tag, f"exiftool_reported_{tag}",
+                item if item not in (None, "") else tag,
+                str(key), raw))
+    return rows
+
+
+def _add_validation(rows: list[dict] | None, code: str, field: str,
+                    raw_value, message: str) -> None:
+    if rows is not None:
+        rows.append(diagnostic(
+            "normalizer", "validation", code, message, field, raw_value))
+
+
+def _is_all_zero_identifier(value) -> bool:
+    return bool(value is not None
+                and re.fullmatch(r"0+", str(value).strip()))
+
+
+def _capture_fields(idx, time_chain, tz_chain=None, tz_value_chain=None):
     raw, src = tchain_src(idx, time_chain)
     tz = None
+    tz_src = None
     if tz_chain:
-        tz = offset_minutes(tchain(idx, tz_chain))
+        tz_value, explicit_src = tchain_src(idx, tz_chain)
+        tz = offset_minutes(tz_value)
+        if tz is not None:
+            tz_src = explicit_src
     if tz is None:
         tz = offset_minutes_from_value(raw)
+        if tz is not None:
+            tz_src = "embedded"
+    if tz is None and tz_value_chain:
+        for spec in tz_value_chain:
+            tz = matching_datetime_offset(raw, [tval(idx, spec)])
+            if tz is not None:
+                tz_src = spec
+                break
+    source = src
+    if source and tz_src:
+        source = f"{source}|offset={tz_src}"
     return {"capture_time_raw": str(raw) if raw is not None else None,
-            "capture_time_source": src,
+            "capture_time_source": source,
             "capture_tz_offset_min": tz,
             "capture_time_utc": capture_utc(raw, tz)}
 
 
-def photo_row(idx: dict) -> dict:
+def photo_row(idx: dict, ext: str | None = None,
+              diagnostics: list[dict] | None = None) -> dict:
     row = _capture_fields(
-        idx, ["ExifIFD:DateTimeOriginal", "ExifIFD:CreateDate", "IFD0:ModifyDate"],
+        idx, ["Composite:SubSecDateTimeOriginal",
+              "ExifIFD:DateTimeOriginal", "ExifIFD:CreateDate",
+              "IFD0:ModifyDate"],
         ["ExifIFD:OffsetTimeOriginal", "ExifIFD:OffsetTimeDigitized",
-         "ExifIFD:OffsetTime"])
+         "ExifIFD:OffsetTime"],
+        ["XMP-exif:DateTimeOriginal", "XMP-xmp:CreateDate"])
     for col, chain in _CAMERA_CHAINS.items():
         v = tchain(idx, chain)
         row[col] = str(v) if v is not None else None
-    row["width"] = first_int(tchain(idx, ["ExifIFD:ExifImageWidth", "File:ImageWidth"]))
-    row["height"] = first_int(tchain(idx, ["ExifIFD:ExifImageHeight", "File:ImageHeight"]))
+    if _is_all_zero_identifier(row["lens_serial"]):
+        _add_validation(
+            diagnostics, "invalid_all_zero_lens_serial", "lens_serial",
+            row["lens_serial"], "全零镜头序列号已转为 NULL")
+        row["lens_serial"] = None
+    is_dng = str(ext or "").casefold().lstrip(".") == "dng"
+    crop_size = (first_positive_int_pair(
+        tval(idx, "SubIFD:DefaultCropSize")) if is_dng else None)
+    if crop_size:
+        row["width"], row["height"] = crop_size
+    else:
+        width_chain = ["ExifIFD:ExifImageWidth", "File:ImageWidth"]
+        height_chain = ["ExifIFD:ExifImageHeight", "File:ImageHeight"]
+        if is_dng:
+            width_chain.insert(0, "SubIFD:ImageWidth")
+            height_chain.insert(0, "SubIFD:ImageHeight")
+        row["width"] = first_int(tchain(idx, width_chain))
+        row["height"] = first_int(tchain(idx, height_chain))
     v = tval(idx, "IFD0:Orientation")
     row["orientation"] = str(v) if v is not None else None
     row["iso"] = first_int(tval(idx, "ExifIFD:ISO"))
-    row["f_number"] = first_float(tval(idx, "ExifIFD:FNumber"))
+    f_number_raw = tval(idx, "ExifIFD:FNumber")
+    row["f_number"] = tnum(idx, "ExifIFD:FNumber")
+    if row["f_number"] is not None and row["f_number"] <= 0:
+        _add_validation(
+            diagnostics, "invalid_nonpositive_f_number", "f_number",
+            f_number_raw, "非正数光圈值已转为 NULL")
+        row["f_number"] = None
     v = tval(idx, "ExifIFD:ExposureTime")
     row["exposure_time"] = str(v) if v is not None else None
-    row["exposure_compensation"] = first_float(tval(idx, "ExifIFD:ExposureCompensation"))
-    row["focal_length_mm"] = first_float(tval(idx, "ExifIFD:FocalLength"))
-    row["focal_length_35mm"] = first_float(tchain(
-        idx, ["ExifIFD:FocalLengthIn35mmFormat", "Composite:FocalLength35efl"]))
-    v = tval(idx, "ExifIFD:WhiteBalance")
+    row["exposure_compensation"] = tnum_native_chain(
+        idx, ["ExifIFD:ExposureCompensation", "Canon:ExposureCompensation"])
+    focal_raw = tval(idx, "ExifIFD:FocalLength")
+    row["focal_length_mm"] = tnum(idx, "ExifIFD:FocalLength")
+    focal_35_raw = tchain(
+        idx, ["ExifIFD:FocalLengthIn35mmFormat",
+              "Composite:FocalLength35efl"])
+    row["focal_length_35mm"] = tnum_chain(
+        idx, ["ExifIFD:FocalLengthIn35mmFormat",
+              "Composite:FocalLength35efl"])
+    if row["focal_length_mm"] is not None and row["focal_length_mm"] <= 0:
+        _add_validation(
+            diagnostics, "invalid_nonpositive_focal_length",
+            "focal_length_mm", focal_raw,
+            "非正数实际焦距及其 35mm 换算值已转为 NULL")
+        row["focal_length_mm"] = None
+        row["focal_length_35mm"] = None
+    elif (row["focal_length_35mm"] is not None
+          and row["focal_length_35mm"] <= 0):
+        _add_validation(
+            diagnostics, "invalid_nonpositive_focal_length_35mm",
+            "focal_length_35mm", focal_35_raw,
+            "非正数 35mm 换算焦距已转为 NULL")
+        row["focal_length_35mm"] = None
+    canon_wb = tval(idx, "Canon:WhiteBalance")
+    generic_wb = tval(idx, "ExifIFD:WhiteBalance")
+    is_canon = str(row.get("camera_make") or "").casefold().startswith("canon")
+    v = canon_wb if canon_wb not in (None, "", "n/a") else (
+        None if is_canon else generic_wb)
     row["white_balance"] = str(v) if v is not None else None
-    row["color_temperature"] = first_int(tval(idx, "Canon:ColorTemperature"))
+    as_shot_temp = tany_native_number(idx, "ColorTempAsShot")
+    row["color_temperature"] = (
+        int(as_shot_temp) if as_shot_temp is not None else None)
     v = tval(idx, "ExifIFD:ColorSpace")
     row["color_space"] = str(v) if v is not None else None
     v = tval(idx, "ICC_Profile:ProfileDescription")
     row["icc_profile"] = str(v) if v is not None else None
     v = tchain(idx, ["IFD0:Software", "XMP-xmp:CreatorTool"])
     row["software"] = str(v) if v is not None else None
-    row["bit_depth"] = first_int(tchain(idx, ["ExifIFD:BitsPerSample",
-                                              "File:BitsPerSample"]))
-    row["gps_latitude"] = gps_decimal(tval(idx, "Composite:GPSLatitude"))
-    row["gps_longitude"] = gps_decimal(tval(idx, "Composite:GPSLongitude"))
-    row["gps_altitude"] = first_float(tval(idx, "Composite:GPSAltitude"))
+    bit_depth_chain = ["ExifIFD:BitsPerSample", "File:BitsPerSample"]
+    if is_dng:
+        bit_depth_chain.insert(0, "SubIFD:BitsPerSample")
+    row["bit_depth"] = first_int(tchain(idx, bit_depth_chain))
+    latitude_raw = tval(idx, "Composite:GPSLatitude")
+    longitude_raw = tval(idx, "Composite:GPSLongitude")
+    altitude_raw = tval(idx, "Composite:GPSAltitude")
+    latitude = tnum_native(idx, "Composite:GPSLatitude")
+    longitude = tnum_native(idx, "Composite:GPSLongitude")
+    altitude = tnum_native(idx, "Composite:GPSAltitude")
+    if latitude is None:
+        latitude = gps_decimal(latitude_raw)
+    if longitude is None:
+        longitude = gps_decimal(longitude_raw)
+    if altitude is None:
+        altitude = first_float(altitude_raw)
+    if latitude == 0.0 and longitude == 0.0:
+        _add_validation(
+            diagnostics, "invalid_zero_gps_placeholder", "gps_latitude",
+            {"latitude": latitude_raw, "longitude": longitude_raw,
+             "altitude": altitude_raw},
+            "零经纬度占位坐标已整体转为 NULL")
+        latitude = longitude = altitude = None
+    row["gps_latitude"] = latitude
+    row["gps_longitude"] = longitude
+    row["gps_altitude"] = altitude
     return row
 
 
@@ -413,7 +707,15 @@ def document_row(idx: dict, ext: str) -> dict:
             "is_encrypted": 1 if tany(idx, "Encryption") is not None else 0}
 
 
-def video_row(idx: dict, ff: dict) -> dict:
+def _dji_model_from_category(value) -> str | None:
+    match = re.search(
+        r"(?:^|;)\s*model_name\s*:\s*([^;]+)", str(value or ""),
+        re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def video_row(idx: dict, ff: dict | None,
+              diagnostics: list[dict] | None = None) -> dict:
     fmt = ff.get("format", {}) if ff else {}
     ftags = fmt.get("tags", {}) or {}
     vstreams = [s for s in (ff.get("streams", []) if ff else [])
@@ -424,20 +726,59 @@ def video_row(idx: dict, ff: dict) -> dict:
         st = s.get("tags", {}) or {}
         timecode = timecode or st.get("timecode")
         encoder = encoder or st.get("encoder")
-    row = _capture_fields(idx, ["QuickTime:CreateDate", "Keys:CreationDate",
-                                "XMP-xmp:CreateDate"])
+    row = _capture_fields(
+        idx, ["Composite:SubSecDateTimeOriginal", "QuickTime:CreateDate",
+              "Keys:CreationDate", "XMP-xmp:CreateDate"],
+        ["ExifIFD:OffsetTimeOriginal", "ExifIFD:OffsetTimeDigitized",
+         "ExifIFD:OffsetTime"])
+    ff_utc, ff_utc_src, ff_utc_raw = ffprobe_creation_time(ff or {})
+    if ff_utc:
+        if row["capture_time_raw"] is None:
+            row["capture_time_raw"] = str(ff_utc_raw)
+            row["capture_tz_offset_min"] = 0
+            row["capture_time_source"] = ff_utc_src
+            row["capture_time_utc"] = ff_utc
+        elif row["capture_time_utc"] is None:
+            row["capture_time_source"] = (
+                f"{row['capture_time_source']}|utc={ff_utc_src}")
+            row["capture_time_utc"] = ff_utc
     for col, chain in _CAMERA_CHAINS.items():
         v = tchain(idx, chain)
         row[col] = str(v) if v is not None else None
+    if _is_all_zero_identifier(row["lens_serial"]):
+        _add_validation(
+            diagnostics, "invalid_all_zero_lens_serial", "lens_serial",
+            row["lens_serial"], "全零镜头序列号已转为 NULL")
+        row["lens_serial"] = None
+    category = tval(idx, "Microsoft:Category")
+    dji_model = _dji_model_from_category(category)
+    dji_evidence = (dji_model is not None
+                    or any(k[0] != "*" and "dji" in k[0]
+                           for k in idx))
+    if dji_evidence:
+        row["camera_make"] = row["camera_make"] or "DJI"
+        row["camera_model"] = row["camera_model"] or dji_model
+    exif_encoder = tval(idx, "ItemList:Encoder")
+    encoder = encoder or exif_encoder
+    canon_wb = tval(idx, "Canon:WhiteBalance")
+    generic_wb = tval(idx, "ExifIFD:WhiteBalance")
+    is_canon = str(row.get("camera_make") or "").casefold().startswith("canon")
+    white_balance = (canon_wb if canon_wb not in (None, "", "n/a")
+                     else (None if is_canon else generic_wb))
+    container = fmt.get("format_name")
+    if not container:
+        file_type = tval(idx, "File:FileType")
+        container = str(file_type).casefold() if file_type else None
     row.update({
-        "container_format": fmt.get("format_name"),
-        "duration_seconds": first_float(fmt.get("duration")),
+        "container_format": container,
+        "duration_seconds": (first_float(fmt.get("duration"))
+                             or first_float(tany(idx, "Duration"))),
         "bit_rate": first_int(fmt.get("bit_rate")),
         "stream_count": first_int(fmt.get("nb_streams")),
         "timecode": timecode,
         "iso": first_int(tchain(idx, ["ExifIFD:ISO", "Canon:AutoISO"])),
-        "white_balance": (lambda v: str(v) if v is not None else None)(
-            tchain(idx, ["Canon:WhiteBalance", "ExifIFD:WhiteBalance"])),
+        "white_balance": (str(white_balance)
+                          if white_balance is not None else None),
         "shutter": (lambda v: str(v) if v is not None else None)(
             tchain(idx, ["ExifIFD:ExposureTime", "Canon:ExposureTime"])),
         "gamma": (lambda v: str(v) if v is not None else None)(
@@ -448,19 +789,71 @@ def video_row(idx: dict, ff: dict) -> dict:
         # 作者/来源尽量获取。优先 ffprobe 容器 tags
         # （按格式正确处理编码——RIFF INFO 无标准编码，ExifTool 默认按
         # Latin-1 解、UTF-8 标签会乱码，实测确认），ExifTool 任意组兜底
-        "title": as_json_text(ftags.get("title")
-                              or tany_chain(idx, ["Title"])),
-        "author": as_json_text(ftags.get("artist") or ftags.get("author")
-                               or tany_chain(idx, ["Artist", "Author",
-                                                   "Creator", "AlbumArtist",
-                                                   "Composer"])),
-        "album": as_json_text(ftags.get("album")
-                              or tany_chain(idx, ["Album"])),
-        "copyright": as_json_text(ftags.get("copyright")
-                                  or tany_chain(idx, ["Copyright",
-                                                      "CopyrightNotice"])),
+        "title": scalar_or_json_text(ftags.get("title")
+                                      or tany_chain(idx, ["Title"])),
+        "author": scalar_or_json_text(
+            ftags.get("artist") or ftags.get("author")
+            or tany_chain(idx, ["Artist", "Author", "Creator",
+                                "AlbumArtist", "Composer"])),
+        "album": scalar_or_json_text(ftags.get("album")
+                                      or tany_chain(idx, ["Album"])),
+        "copyright": scalar_or_json_text(
+            ftags.get("copyright")
+            or tany_chain(idx, ["Copyright", "CopyrightNotice"])),
     })
     return row
+
+
+def audio_stream_rows_from_exif(idx: dict) -> list[dict]:
+    """ffprobe 无有效流时，从 ExifTool 结果恢复 AAC 基础音频流。"""
+    mime = tval(idx, "File:MIMEType")
+    file_type = tval(idx, "File:FileType")
+    sample_rate = first_int(tval(idx, "AAC:SampleRate"))
+    if not (sample_rate or str(mime or "").casefold().startswith("audio/")
+            or str(file_type or "").casefold() == "aac"):
+        return []
+    channels = first_int(tval(idx, "AAC:Channels"))
+    if channels is not None and channels <= 0:
+        channels = None
+    return [{
+        "stream_index": 0,
+        "codec_name": str(file_type or "aac").casefold(),
+        # ExifTool 的 AAC ProfileType 与 ffprobe codec profile 在真实样本中
+        # 可能冲突（Main vs LC），没有 ffprobe 证据时不冒充同一语义。
+        "profile": None,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "channel_layout": None,
+        "bit_rate": None,
+        "duration_seconds": first_float(tany(idx, "Duration")),
+    }]
+
+
+def av_validation_diagnostics(kind: str, size_bytes: int,
+                              ff: dict | None) -> list[dict]:
+    """识别可成功返回 JSON、但实际没有有效媒体内容的文件。"""
+    if ff is None:
+        return []
+    streams = ff.get("streams", []) or []
+    if not streams:
+        return [diagnostic(
+            "ffprobe", "error", "media_no_streams",
+            "ffprobe 未发现任何媒体流", "streams", streams)]
+    if kind == "audio":
+        audio = [s for s in streams if s.get("codec_type") == "audio"]
+        if not audio:
+            return [diagnostic(
+                "ffprobe", "error", "audio_stream_missing",
+                "音频文件中未发现音频流", "streams", streams)]
+        format_duration = first_float((ff.get("format", {}) or {}).get("duration"))
+        durations = [first_float(s.get("duration")) for s in audio]
+        if (size_bytes <= 44 and not (format_duration and format_duration > 0)
+                and not any(v and v > 0 for v in durations)):
+            return [diagnostic(
+                "ffprobe", "error", "audio_no_samples",
+                "音频容器只有头部且没有可确认的音频样本",
+                "size_bytes", size_bytes)]
+    return []
 
 
 def stream_rows(ff: dict) -> tuple[list[dict], list[dict]]:
@@ -687,9 +1080,36 @@ def _record_error(con, entry_id: int, code: str, msg: str):
                 (entry_id, code, str(msg)[:500], core.now_utc_iso()))
 
 
+def _persist_diagnostics(con, entry_id: int, rows: list[dict]) -> dict:
+    counts = {"warning": 0, "error": 0, "validation": 0}
+    observed = core.now_utc_iso()
+    for row in rows:
+        con.execute(
+            "INSERT INTO metadata_diagnostics"
+            " (entry_id,provider,severity,diagnostic_code,field_name,"
+            " message,raw_value,observed_at_utc) VALUES (?,?,?,?,?,?,?,?)",
+            (entry_id, row["provider"], row["severity"],
+             row["diagnostic_code"], row.get("field_name"),
+             str(row["message"])[:1000], row.get("raw_value"), observed))
+        severity = row["severity"]
+        counts[severity] = counts.get(severity, 0) + 1
+        if severity == "error":
+            _record_error(
+                con, entry_id, row["diagnostic_code"], row["message"])
+    return counts
+
+
+def _merge_diagnostic_stats(stats: dict, counts: dict) -> None:
+    for severity, value in counts.items():
+        key = f"diagnostic_{severity}"
+        stats[key] = stats.get(key, 0) + value
+
+
 def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                            retain_original_metadata: bool = True,
+                           timeout_policy: dict | None = None,
                            on_progress=None) -> dict:
+    core.ensure_metadata_diagnostics_table(con)
     et_ver = tools["exiftool"]["version"]
     ff_ver = tools["ffprobe"]["version"]
     zip_ver = "python-zipfile " + ".".join(map(str, __import__("sys").version_info[:3]))
@@ -707,44 +1127,67 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         "SELECT entry_id, root_id, rel_path, extension, media_kind, size_bytes,"
         " modified_at_utc FROM entries WHERE meta_status='pending'"
         " ORDER BY entry_id").fetchall()
+    selected_timeout_policy = dict(
+        exiftool_timeout_policy() if timeout_policy is None else timeout_policy)
+    exiftool_timeout_for_size(0, selected_timeout_policy)  # 启动前验证策略
     stats = {
         "total": len(todo), "done": 0, "error": 0, "timeout": 0,
         "unstable": 0, "ffprobe_payloads": 0,
         "ffprobe_optional_unreadable": 0,
         "ffprobe_optional_timeouts": 0,
+        "diagnostic_warning": 0, "diagnostic_error": 0,
+        "diagnostic_validation": 0,
+        "exiftool_timeout_policy": selected_timeout_policy,
     }
     worker = ExifToolWorker(tools["exiftool"]["path"])
     try:
         for i, (eid, rid, rel, ext, kind, size0, mtime0) in enumerate(todo, 1):
             path = os.path.join(roots[rid], rel)
             ext_path = core.to_extended_path(path)
+            et_timeout = exiftool_timeout_for_size(
+                size0, selected_timeout_policy)
             status = "done"
             try:
                 for tbl in ("photo_metadata", "video_metadata", "working_metadata",
                             "document_metadata", "archive_metadata",
                             "archive_members",
                             "video_gps_points", "video_streams",
-                            "audio_streams", "raw_payloads"):
+                            "audio_streams", "raw_payloads",
+                            "metadata_diagnostics"):
                     con.execute(f"DELETE FROM {tbl} WHERE entry_id=?", (eid,))
+                con.execute(
+                    "DELETE FROM errors WHERE entry_id=? AND stage='metadata'",
+                    (eid,))
                 if kind in _PHOTO_KINDS:
-                    doc = worker.extract(path, photo_profile=True)
+                    doc = worker.extract(
+                        path, photo_profile=True, timeout=et_timeout)
                     idx = build_tag_index(doc)
-                    _insert_row(con, "photo_metadata", eid, photo_row(idx),
+                    diagnostics = reported_diagnostics(doc)
+                    normalized = photo_row(idx, ext, diagnostics)
+                    _insert_row(con, "photo_metadata", eid, normalized,
                                 "exiftool", et_ver)
                     if kind == "photo_working":
                         _insert_row(con, "working_metadata", eid,
                                     working_row(idx, ext), "exiftool", et_ver)
                     if retain_original_metadata:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
+                    diagnostic_counts = _persist_diagnostics(
+                        con, eid, diagnostics)
+                    _merge_diagnostic_stats(stats, diagnostic_counts)
+                    if diagnostic_counts["error"]:
+                        status = "error"
                 elif kind in _AV_KINDS:
                     doc = None
                     ff = None
                     errors = []
                     try:
-                        doc = worker.extract(path, photo_profile=False)
+                        doc = worker.extract(
+                            path, photo_profile=False, timeout=et_timeout)
                     except TimeoutError:
                         status = "timeout"
-                        _record_error(con, eid, "exiftool_timeout", path)
+                        _record_error(
+                            con, eid, "exiftool_timeout",
+                            f"{path}（timeout={et_timeout}s；size_bytes={size0}）")
                     except Exception as exc:
                         errors.append(("exiftool_error", exc))
                     try:
@@ -756,10 +1199,18 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         errors.append(("ffprobe_error", exc))
                     idx = build_tag_index(doc) if doc else {}
                     if doc or ff:
-                        _insert_row(con, "video_metadata", eid, video_row(idx, ff),
+                        diagnostics = reported_diagnostics(doc)
+                        diagnostics.extend(
+                            av_validation_diagnostics(kind, size0, ff))
+                        vids, auds = stream_rows(ff or {})
+                        if kind == "audio" and not auds:
+                            auds = audio_stream_rows_from_exif(idx)
+                        normalized = video_row(idx, ff, diagnostics)
+                        if normalized["stream_count"] is None and (vids or auds):
+                            normalized["stream_count"] = len(vids) + len(auds)
+                        _insert_row(con, "video_metadata", eid, normalized,
                                     "exiftool+ffprobe",
                                     f"exiftool {et_ver}; ffprobe {ff_ver}")
-                        vids, auds = stream_rows(ff or {})
                         gps_points = (video_gps_rows(ff or {})
                                       if kind in _VIDEO_KINDS else [])
                         for r in gps_points:
@@ -777,6 +1228,11 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                             con.execute(f"INSERT INTO video_streams ({cols}) VALUES"
                                         f" ({', '.join('?' for _ in r2)})",
                                         tuple(r2.values()))
+                        diagnostic_counts = _persist_diagnostics(
+                            con, eid, diagnostics)
+                        _merge_diagnostic_stats(stats, diagnostic_counts)
+                        if diagnostic_counts["error"] and status == "done":
+                            status = "error"
                         for r in auds:
                             r2 = dict(r)
                             r2["entry_id"] = eid
@@ -794,12 +1250,18 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         status = "error" if status == "done" else status
                         _record_error(con, eid, code, exc)
                 elif kind == "document":
-                    doc = worker.extract(path, photo_profile=False)
+                    doc = worker.extract(
+                        path, photo_profile=False, timeout=et_timeout)
                     idx = build_tag_index(doc)
                     _insert_row(con, "document_metadata", eid,
                                 document_row(idx, ext), "exiftool", et_ver)
                     if retain_original_metadata:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
+                    diagnostic_counts = _persist_diagnostics(
+                        con, eid, reported_diagnostics(doc))
+                    _merge_diagnostic_stats(stats, diagnostic_counts)
+                    if diagnostic_counts["error"]:
+                        status = "error"
                 elif kind == "archive":
                     if ext == "zip":
                         s = zip_summary(ext_path)
@@ -822,17 +1284,31 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         " :attributes, :encrypted)",
                         [{**m, "eid": eid} for m in members])
                     if retain_original_metadata:
-                        doc = worker.extract(path, photo_profile=False)
+                        doc = worker.extract(
+                            path, photo_profile=False, timeout=et_timeout)
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
+                        diagnostic_counts = _persist_diagnostics(
+                            con, eid, reported_diagnostics(doc))
+                        _merge_diagnostic_stats(stats, diagnostic_counts)
+                        if diagnostic_counts["error"]:
+                            status = "error"
                 elif kind == "other":
                     # 没有规范化落点不等于 ExifTool 不可读取；全量元数据仍
                     # 为本地所有文件保存原文。
                     if retain_original_metadata:
-                        doc = worker.extract(path, photo_profile=False)
+                        doc = worker.extract(
+                            path, photo_profile=False, timeout=et_timeout)
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
+                        diagnostic_counts = _persist_diagnostics(
+                            con, eid, reported_diagnostics(doc))
+                        _merge_diagnostic_stats(stats, diagnostic_counts)
+                        if diagnostic_counts["error"]:
+                            status = "error"
             except TimeoutError:
                 status = "timeout"
-                _record_error(con, eid, "exiftool_timeout", path)
+                _record_error(
+                    con, eid, "exiftool_timeout",
+                    f"{path}（timeout={et_timeout}s；size_bytes={size0}）")
             except Exception as exc:
                 status = "error"
                 _record_error(con, eid, type(exc).__name__, exc)

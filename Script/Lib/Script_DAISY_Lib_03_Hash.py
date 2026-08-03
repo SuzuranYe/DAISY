@@ -139,10 +139,10 @@ class StallWatchdog:
 # === 增量复用与计算溯源 ===
 class PreviousSnapshot:
     def __init__(self, path: str, uuid_: str, index: dict,
-                 abnormal_source: bool = False):
+                 has_file_issues: bool = False):
         self.path = path
         self.uuid = uuid_
-        self.abnormal_source = abnormal_source   # 来源快照是否异常
+        self.has_file_issues = has_file_issues
         self._index = index      # (当前 label, path_key) -> rec | "ambiguous"
 
     def lookup(self, label: str, path_key: str):
@@ -150,15 +150,13 @@ class PreviousSnapshot:
         return None if rec == "ambiguous" else rec
 
 
-def load_previous(prev_path: str, map_root: dict | None = None,
-                  allow_abnormal_source: bool = False) -> PreviousSnapshot:
-    """只读打开上一快照：文件名 SHA-256 高32bit 指纹＋封存/schema/path_key_rule 准入，
-    载入 status='valid' 哈希索引。map_root={旧 label: 新 label}。
+def load_previous(prev_path: str,
+                  map_root: dict | None = None) -> PreviousSnapshot:
+    """验证 v1.4.1 来源并载入 status='valid' 的哈希索引。
 
-    来源快照 abnormal（或 counts 含错误/unstable/枚举失败）时默认拒绝复用，
-    避免事故快照的证据无声传递到新登记册；
-    allow_abnormal_source=True 显式越过，调用方必须让本次产物强制 _Abnormal。
-    逐条目门槛与此独立：索引只收 status='valid' 行，unstable/error 永不复用。"""
+    SQLite 损坏、扫描未完成、枚举缺口、哈希失败或 unstable 一律拒绝。
+    单纯存在损坏／空白／无法解析的源文件不妨碍其他有效哈希复用；新扫描会
+    重新读取元数据，并按当前结果生成自己的 Issues.md。"""
     if not os.path.isfile(prev_path):
         raise core.PreflightError(f"上一快照不存在：{prev_path}")
     recorded = core.filename_sha256_high32(prev_path)
@@ -168,33 +166,49 @@ def load_previous(prev_path: str, map_root: dict | None = None,
     if recorded != actual:
         raise core.PreflightError(
             f"上一快照文件名高32bit指纹不符：记录 {recorded}，实际 {actual}")
-    con = sqlite3.connect(f"file:{prev_path}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{prev_path}?mode=ro&immutable=1", uri=True)
     try:
-        uuid_, schema_v, pk_rule, status, counts_json = con.execute(
-            "SELECT snapshot_uuid, schema_version, path_key_rule, scan_status,"
-            " counts_json FROM snapshot_info").fetchone()
-        if status != "complete":
-            raise core.PreflightError(f"上一快照未封存（scan_status={status}）")
-        if (schema_v not in core.READABLE_SCHEMA_VERSIONS
-                or pk_rule != core.PATH_KEY_RULE):
+        core.require_sealed_snapshot(con, "上一快照")
+        (uuid_, schema_v, pk_rule, has_file_issues, has_unstable_entries,
+         has_enumeration_gaps) = con.execute(
+            "SELECT snapshot_uuid,schema_version,path_key_rule,"
+            " has_file_issues,has_unstable_entries,"
+            " has_enumeration_gaps FROM snapshot_info").fetchone()
+        if pk_rule != core.PATH_KEY_RULE:
             raise core.PreflightError(
                 f"上一快照 schema_version/path_key_rule 不符：{schema_v}/{pk_rule}"
                 f"（可读 schema {sorted(core.READABLE_SCHEMA_VERSIONS)}；"
                 f"当前 path_key_rule {core.PATH_KEY_RULE}）")
-        counts = json.loads(counts_json) if counts_json else {}
-        # 旧版快照无 abnormal 键：按封存时的同一公式从 counts 现算
-        abnormal_src = bool(counts.get("abnormal")) or bool(
-            counts.get("dir_errors") or counts.get("roots_failed")
-            or any(counts.get("hash_status", {}).get(k)
-                   for k in ("error", "unstable"))
-            or any(counts.get("meta_status", {}).get(k)
-                   for k in ("error", "timeout", "unstable")))
-        if abnormal_src and not allow_abnormal_source:
+        actual_file_issues, = con.execute(
+            "SELECT EXISTS(SELECT 1 FROM entries WHERE"
+            " meta_status IN ('error','timeout'))").fetchone()
+        actual_unstable, = con.execute(
+            "SELECT EXISTS(SELECT 1 FROM entries WHERE"
+            " meta_status='unstable' OR hash_status='unstable')").fetchone()
+        actual_gaps, = con.execute(
+            "SELECT EXISTS(SELECT 1 FROM dirs WHERE enum_status<>'ok')"
+            " OR EXISTS(SELECT 1 FROM roots WHERE enum_status='failed')"
+        ).fetchone()
+        hash_failures, = con.execute(
+            "SELECT COUNT(*) FROM entries WHERE hash_status='error'").fetchone()
+        expected = (bool(actual_file_issues), bool(actual_unstable),
+                    bool(actual_gaps))
+        recorded_status = (bool(has_file_issues), bool(has_unstable_entries),
+                           bool(has_enumeration_gaps))
+        if recorded_status != expected:
             raise core.PreflightError(
-                f"上一快照为异常运行产物（abnormal/含错误或 unstable），"
-                f"默认拒绝作为增量复用来源：{prev_path}\n"
-                f"  确需复用：加 --allow-abnormal-source（本次产物将强制"
-                f" _Abnormal），或改用 --hash full 全量重算")
+                "上一快照状态字段与明细不一致："
+                f"记录={recorded_status}，实际={expected}")
+        blockers = []
+        if has_enumeration_gaps:
+            blockers.append("存在目录枚举缺口")
+        if hash_failures:
+            blockers.append(f"存在 {hash_failures} 个哈希失败条目")
+        if has_unstable_entries:
+            blockers.append("存在 unstable 条目")
+        if blockers:
+            raise core.PreflightError(
+                "上一快照禁止作为增量来源：" + "；".join(blockers))
         mapping = map_root or {}
         index: dict = {}
         for (label, path_key, size, mtime, placeholder, vs, fih, hex_,
@@ -218,8 +232,12 @@ def load_previous(prev_path: str, map_root: dict | None = None,
                           "volume_serial": vs, "file_index_hex": fih,
                           "hash_hex": hex_, "source": src,
                           "tool": tool, "tool_version": tool_v}
-        return PreviousSnapshot(prev_path, uuid_, index,
-                                abnormal_source=abnormal_src)
+        return PreviousSnapshot(
+            prev_path, uuid_, index,
+            has_file_issues=bool(has_file_issues))
+    except sqlite3.Error as exc:
+        raise core.PreflightError(
+            f"上一快照 SQLite 结构不可读：{exc}") from exc
     finally:
         con.close()
 

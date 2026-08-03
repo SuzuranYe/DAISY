@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 
 _TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +20,83 @@ _LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_04_Diff as dbdiff
+
+
+def _status_count(counts: dict, status: str) -> int:
+    return sum((counts.get("status_evidence") or {}).get(status, {}).values())
+
+
+def _has_diff_issues(result: dict) -> bool:
+    """只把降级准入、unstable、unknown 或枚举失败视为问题。"""
+    return bool(
+        result.get("forced") or result.get("subtrees")
+        or _status_count(result["counts"], "unstable")
+        or _status_count(result["counts"], "unknown"))
+
+
+def _append_table(lines: list[str], headers: tuple[str, ...], rows: list[tuple]):
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join("---" for _ in headers) + " |")
+    for row in rows:
+        lines.append("| " + " | ".join(core.markdown_cell(v) for v in row) + " |")
+
+
+def _render_diff_issue_report(db_path: str, artifact_filename: str,
+                              result: dict, row_limit: int = 500) -> str:
+    counts = result["counts"]
+    con = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
+    try:
+        problem_total, = con.execute(
+            "SELECT COUNT(*) FROM diff_entries"
+            " WHERE status IN ('unstable','unknown')").fetchone()
+        problem_rows = con.execute(
+            "SELECT status,evidence,COALESCE(new_root_label,old_root_label,''),"
+            " COALESCE(new_rel_path,old_rel_path,''),reason"
+            " FROM diff_entries WHERE status IN ('unstable','unknown')"
+            " ORDER BY status,path_key LIMIT ?", (row_limit,)).fetchall()
+    finally:
+        con.close()
+    summary_rows = [
+        ("降级准入", 1 if result.get("forced") else 0),
+        ("unstable 条目", _status_count(counts, "unstable")),
+        ("unknown 条目", _status_count(counts, "unknown")),
+        ("旧侧枚举失败子树", counts.get("subtrees", {}).get("old", 0)),
+        ("新侧枚举失败子树", counts.get("subtrees", {}).get("new", 0)),
+    ]
+    lines = [
+        "# DAISY Diff 问题报告",
+        "",
+        f"- 数据库：`{artifact_filename}`",
+        f"- 报告生成时间：`{core.now_utc_iso()}`",
+        f"- 哈希覆盖：旧=`{result['coverage'][0]}`，新=`{result['coverage'][1]}`",
+        "- 结论：本次 Diff 存在降级证据或无法可靠判定的条目。",
+        "- 命名：问题状态不写入数据库文件名。",
+        "",
+        "## 汇总",
+        "",
+    ]
+    _append_table(lines, ("项目", "数量"), summary_rows)
+    if result.get("subtrees"):
+        lines.extend(["", "## 枚举失败子树", ""])
+        _append_table(lines, ("侧", "根标签", "相对路径", "状态", "受影响估计"), [
+            (row["side"], row["root_label"], row["rel_path"] or "<root>",
+             row["enum_status"], row["affected_estimate"])
+            for row in result["subtrees"]
+        ])
+    if problem_rows:
+        lines.extend(["", "## 问题条目", ""])
+        _append_table(lines, ("状态", "证据", "根标签", "相对路径", "原因"),
+                      problem_rows)
+        if problem_total > len(problem_rows):
+            lines.append(f"\n仅列出前 {len(problem_rows)}／{problem_total} 条。")
+    lines.extend([
+        "",
+        "## 说明",
+        "",
+        "完整结果仍以 Diff SQLite 内的 `diff_entries` 与 `diff_subtrees` 为准。",
+        "",
+    ])
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -50,7 +128,6 @@ def main() -> int:
         return 2
     # Diff 库名带根文件夹名：取新侧快照的 root label（配对目标侧）
     try:
-        import sqlite3
         _c = sqlite3.connect(f"file:{os.path.abspath(args.new)}?mode=ro",
                              uri=True)
         labels = [r[0] for r in _c.execute(
@@ -59,7 +136,10 @@ def main() -> int:
     except sqlite3.Error:
         labels = []                    # 不可读时回退；准入校验会给出正式报错
     name = core.snapshot_name(labels or ["Unknown"], "Diff")
-    out = os.path.abspath(os.path.join(args.output_dir, name + ".sqlite"))
+    publish_stem = os.path.abspath(os.path.join(args.output_dir, name))
+    working_name = core.snapshot_working_name(name)
+    out = os.path.abspath(os.path.join(
+        args.output_dir, working_name + ".partial.sqlite"))
     try:
         res = dbdiff.compare(os.path.abspath(args.old),
                              os.path.abspath(args.new), out,
@@ -68,27 +148,22 @@ def main() -> int:
         print(f"对比失败：{exc}", file=sys.stderr)
         return 2
 
-    if res["forced"]:                # 降级准入（文件名指纹缺失被越过）→ 后缀标记
-        flagged = out[:-len(".sqlite")] + "_Abnormal.sqlite"
-        try:
-            os.rename(out, flagged)  # 目标存在即失败，绝不覆盖
-        except FileExistsError:
-            print(f"发布冲突：{flagged} 已存在，本次结果保留于 {out}",
-                  file=sys.stderr)
-            return 1
-        out = flagged
     # Diff 数据库同样把 SHA-256 前 8 个十六进制字符大写后置。
     digest = core.sha256_file(out)
-    hashed = out[:-len(".sqlite")] + f"_{digest[:8].upper()}.sqlite"
+    hashed = publish_stem + f"_{digest[:8].upper()}.sqlite"
+    issue_markdown = (_render_diff_issue_report(
+        out, os.path.basename(hashed), res) if _has_diff_issues(res) else None)
     try:
-        os.rename(out, hashed)
-    except FileExistsError:
-        print(f"发布冲突：{hashed} 已存在，本次结果保留于 {out}",
-              file=sys.stderr)
+        issue_report = core.publish_sqlite_artifact(
+            out, hashed, issue_markdown)
+    except core.PreflightError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
     out = hashed
     counts = res["counts"]
     print(f"Diff 数据库：{out}")
+    if issue_report:
+        print(f"问题报告：{issue_report}")
     print(f"hash_coverage：旧={res['coverage'][0]} 新={res['coverage'][1]}"
           + ("｜forced=1（不完整输入）" if res["forced"] else ""))
     print("状态 × evidence：")

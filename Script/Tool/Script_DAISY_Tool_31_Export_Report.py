@@ -7,7 +7,7 @@ r"""Script_DAISY_Tool_31_Export_Report：全量报表导出。
   Stream_inventory_video/audio.csv         —— ffmpeg 组
   Hash_inventory.csv                       —— 哈希组
   Archive_inventory.csv / _members.csv     —— 压缩包组
-  Summary.csv / Errors.csv                 —— 簿记
+  Summary.csv / Errors.csv / Metadata_diagnostics.csv —— 簿记与诊断
   （raw_payloads 为 zlib BLOB，不入 CSV——用 SQL 直接查询快照库）
 
 Diff 数据库导出：
@@ -63,6 +63,7 @@ _ENTRY_PAGES = [
     ("Hash_inventory.csv", "hashes"),
     ("Archive_inventory.csv", "archive_metadata"),
     ("Archive_inventory_members.csv", "archive_members"),
+    ("Metadata_diagnostics.csv", "metadata_diagnostics"),
 ]
 
 
@@ -85,13 +86,7 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
     files = []
     try:
-        schema_version, status = con.execute(
-            "SELECT schema_version, scan_status FROM snapshot_info"
-        ).fetchone()
-        core.require_readable_schema_version(schema_version)
-        if status != "complete":
-            raise core.PreflightError(
-                f"快照未封存（scan_status={status}）")
+        core.require_sealed_snapshot(con)
         # 人读路径一律拼接为「label\rel_path」完整逻辑路径
         files.append(_dump_query(
             con, folder, "Tree.csv",
@@ -106,15 +101,7 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
             " r.root_label, d.* FROM dirs d"
             " JOIN roots r ON r.root_id = d.root_id"
             " ORDER BY r.root_label, d.rel_path"))
-        available_tables = {
-            row[0] for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")
-        }
         for name, tbl in _ENTRY_PAGES:
-            # profile v1 及更早的 schema_version=1 快照没有此 additive 表；
-            # 旧快照仍可导出，只是不生成对应页。
-            if tbl == "video_gps_points" and tbl not in available_tables:
-                continue
             order = "r.root_label, e.rel_path"
             if tbl == "video_gps_points":
                 order += ", t.timestamp_seconds, t.point_index"
@@ -180,6 +167,7 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
     con = sqlite3.connect(f"file:{diff_path}?mode=ro", uri=True)
     files = []
     try:
+        core.require_sqlite_integrity(con, "Diff 数据库")
         schema_version, = con.execute(
             "SELECT schema_version FROM diff_info").fetchone()
         core.require_readable_schema_version(

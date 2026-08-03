@@ -60,7 +60,8 @@ def main() -> int:
 
     config = {"phase": "quick", "quick": True, "hash": "none",
               "no_file_id": args.no_file_id,
-              "path_key_rule": core.PATH_KEY_RULE}
+              "path_key_rule": core.PATH_KEY_RULE,
+              "filename_layout_version": core.FILENAME_LAYOUT_VERSION}
     try:
         # 根文件夹名_Quick_日期时间：与 11 的 _Full_ 在文件名上可辨
         profile_tokens = core.snapshot_profile_tokens(
@@ -68,8 +69,12 @@ def main() -> int:
             file_id=not args.no_file_id)
         name = core.snapshot_name(
             [lb for lb, _ in roots], "Quick", profile_tokens)
+        config["snapshot_stem"] = name
+        publish_stem_path = os.path.abspath(
+            os.path.join(args.output_dir, name))
+        working_name = core.snapshot_working_name(name)
         partial = os.path.abspath(os.path.join(
-            args.output_dir, name + ".partial.sqlite"))
+            args.output_dir, working_name + ".partial.sqlite"))
         con = core.create_partial_snapshot(partial, roots, config,
                                            tool_versions={})
     except core.PreflightError as exc:
@@ -124,6 +129,7 @@ def main() -> int:
         }
         final = core.finalize_snapshot(
             con, partial, hash_coverage="none",
+            publish_stem_path=publish_stem_path,
             manifest=manifest, event_log_path=base + ".events.jsonl")
         prog.finish(os.path.basename(final))
         events.close()
@@ -135,11 +141,10 @@ def main() -> int:
         print(f"\n快照：{final}"
               "\nSHA-256 高 32 bit：已大写后置于文件名"
               "\nmanifest 与事件日志：已内置于 SQLite")
-        token = core.filename_sha256_high32(final)
-        if token and os.path.basename(final).endswith(
-                f"_Abnormal_{token}.sqlite"):
-            print("!! 本次运行含异常（枚举失败/unstable），产物已带"
-                  " _Abnormal 后缀——请查看快照 counts 与事件日志",
+        issue_report = core.artifact_issue_report_path(final)
+        if os.path.isfile(issue_report):
+            print("!! SQLite 数据库已完整封存；另发现扫描证据问题"
+                  f"（枚举失败/unstable），问题报告：{issue_report}",
                   file=sys.stderr)
         return 0
 

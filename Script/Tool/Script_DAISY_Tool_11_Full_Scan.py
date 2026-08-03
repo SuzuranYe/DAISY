@@ -93,12 +93,7 @@ def main() -> int:
         default="complete",
         help="元数据范围：complete=全量元数据（基础字段＋原始工具输出，"
              "默认）；normalized=基础元数据（仅规范化常用字段）")
-    ap.add_argument("--no-raw-payload", action="store_true",
-                    help=argparse.SUPPRESS)  # v1.3.4 早期 CLI 兼容别名
     ap.add_argument("--no-file-id", action="store_true")
-    ap.add_argument("--allow-abnormal-source", action="store_true",
-                    help="允许以异常运行产物为增量复用来源"
-                         "（本次产物强制 _Abnormal）")
     ap.add_argument("--resume")
     ap.add_argument("--exiftool-path")
     ap.add_argument("--ffprobe-path")
@@ -106,9 +101,6 @@ def main() -> int:
     ap.add_argument("--powershell-path")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
-    if args.no_raw_payload:
-        args.metadata_storage = "normalized"
-
     if not args.resume and not args.root:
         print("需要 --root（或 --resume）", file=sys.stderr)
         return 2
@@ -121,13 +113,16 @@ def main() -> int:
             # 续传沿用 partial 内记录的原配置（partial 的参数即其身份）
             config = json.loads(con.execute(
                 "SELECT config_json FROM snapshot_info").fetchone()[0])
+            if config.get("filename_layout_version") != core.FILENAME_LAYOUT_VERSION:
+                raise core.PreflightError(
+                    "partial 缺少当前 filename_layout_version，禁止续传")
+            publish_stem_path = core.resolve_snapshot_publish_stem(
+                partial, config.get("snapshot_stem"))
             args.hash = config.get("hash", args.hash)
             stored_mode = config.get("metadata_storage")
             if stored_mode not in ("complete", "normalized"):
-                stored_mode = (
-                    "normalized" if config.get("no_raw_payload", False)
-                    else args.metadata_storage
-                )
+                raise core.PreflightError(
+                    f"partial metadata_storage 无效：{stored_mode!r}")
             args.metadata_storage = stored_mode
             args.no_file_id = config.get("no_file_id", args.no_file_id)
             args.verify_sample_percent = config.get(
@@ -136,8 +131,6 @@ def main() -> int:
                 args.previous_snapshot = config.get("previous_snapshot")
             if not args.map_root:
                 args.map_root = config.get("map_root", [])
-            args.allow_abnormal_source = config.get(
-                "allow_abnormal_source", args.allow_abnormal_source)
             if not args.quiet:
                 print(f"续传沿用原配置：hash={args.hash}", flush=True)
     except core.PreflightError as exc:
@@ -189,9 +182,10 @@ def main() -> int:
                       "verify_sample_percent": args.verify_sample_percent,
                       "metadata_storage": args.metadata_storage,
                       "no_file_id": args.no_file_id,
-                      "allow_abnormal_source": args.allow_abnormal_source,
                       "profile_version": meta.PROFILE_VERSION,
-                      "path_key_rule": core.PATH_KEY_RULE}
+                      "path_key_rule": core.PATH_KEY_RULE,
+                      "filename_layout_version": core.FILENAME_LAYOUT_VERSION,
+                      "exiftool_timeout_policy": meta.exiftool_timeout_policy()}
             roots = []
             for spec in args.root:
                 label, path = core.parse_root_spec(spec)
@@ -204,8 +198,13 @@ def main() -> int:
                 file_id=not args.no_file_id)
             name = core.snapshot_name(
                 [lb for lb, _ in roots], "Full", profile_tokens)
+            config["snapshot_stem"] = name
+            publish_stem_path = os.path.abspath(
+                os.path.join(args.output_dir, name))
+            working_name = core.snapshot_working_name(name)
             partial = os.path.abspath(
-                os.path.join(args.output_dir, name + ".partial.sqlite"))
+                os.path.join(args.output_dir,
+                             working_name + ".partial.sqlite"))
             con = core.create_partial_snapshot(partial, roots, config, tool_versions)
             resumed = False
     except core.PreflightError as exc:
@@ -219,7 +218,6 @@ def main() -> int:
                 config=config)
 
     test_max = os.environ.get("DAISY_TEST_MAX_FILES")   # 内部测试钩子：模拟中断
-    abnormal_source_reuse = False      # 异常来源复用须传递 _Abnormal
     try:
         # [2/6] 枚举（可重跑对账）
         prog = core.Progress(2, STAGES_TOTAL, "枚举", args.quiet)
@@ -253,18 +251,13 @@ def main() -> int:
             prev = None
             if args.hash == "incremental":
                 prev = dbh.load_previous(
-                    os.path.abspath(args.previous_snapshot), map_root,
-                    allow_abnormal_source=args.allow_abnormal_source)
+                    os.path.abspath(args.previous_snapshot), map_root)
                 con.execute("UPDATE snapshot_info SET previous_snapshot_uuid=?",
                             (prev.uuid,))
                 con.commit()
                 events.emit("previous_snapshot_loaded", uuid=prev.uuid,
                             path=os.path.basename(args.previous_snapshot),
-                            abnormal_source=prev.abnormal_source)
-                if prev.abnormal_source and not args.quiet:
-                    print("!! 复用来源为异常运行产物（--allow-abnormal-source）"
-                          "——本次产物将强制 _Abnormal", file=sys.stderr)
-                abnormal_source_reuse = prev.abnormal_source
+                            has_file_issues=prev.has_file_issues)
             test_max_hash = os.environ.get("DAISY_TEST_MAX_HASH_FILES")
             hstats = dbh.process_hash_stage(
                 con, args.hash, previous=prev,
@@ -285,6 +278,7 @@ def main() -> int:
         mstats = meta.process_metadata_stage(
             con, tools,
             retain_original_metadata=args.metadata_storage == "complete",
+            timeout_policy=config.get("exiftool_timeout_policy"),
             on_progress=lambda i, st: prog.update(
                 i, total=st["total"], errors=st["error"] + st["timeout"]))
         ff_summary = ""
@@ -331,7 +325,7 @@ def main() -> int:
         }
         final = core.finalize_snapshot(
             con, partial, hash_coverage=args.hash,
-            force_abnormal=abnormal_source_reuse,
+            publish_stem_path=publish_stem_path,
             manifest=manifest, event_log_path=base + ".events.jsonl")
         prog.finish(os.path.basename(final))
         events.close()
@@ -343,11 +337,10 @@ def main() -> int:
         print(f"\n快照：{final}"
               "\nSHA-256 高 32 bit：已大写后置于文件名"
               "\nmanifest 与事件日志：已内置于 SQLite")
-        token = core.filename_sha256_high32(final)
-        if token and os.path.basename(final).endswith(
-                f"_Abnormal_{token}.sqlite"):
-            print("!! 本次运行含异常（错误/unstable/枚举失败），产物已带"
-                  " _Abnormal 后缀——请查看快照 counts 与事件日志",
+        issue_report = core.artifact_issue_report_path(final)
+        if os.path.isfile(issue_report):
+            print("!! SQLite 数据库已完整封存；另发现源文件或扫描证据问题"
+                  f"（错误/unstable/枚举失败），问题报告：{issue_report}",
                   file=sys.stderr)
         return 0
 
