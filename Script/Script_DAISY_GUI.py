@@ -1025,6 +1025,9 @@ _TASK_TOOLBAR_BUTTON_WIDTH = 12
 _TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
 _TASK_TOOLBAR_STYLE_PREFIX = "Env"
 _TASK_TOOLBAR_LABEL_COLOUR = _GREEN_DEEP
+_COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
+_COLLAPSED_SETTINGS_HEADER_PADX = 14
+_COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
 
 
 def _lines(value: object) -> list[str]:
@@ -2151,11 +2154,16 @@ class DaisyApp:
         self.task_card.grid(row=0, column=0, sticky="nsew")
 
         title_row = tk.Frame(self.task_card, bg=_SURFACE)
+        self.settings_title_row = title_row
         title_row.pack(fill="x", padx=22, pady=(14, 10))
+        self.settings_title_expanded_font = (
+            "Microsoft YaHei UI",
+            14 if self.compact_layout else 16,
+            "bold",
+        )
         self.title_label = tk.Label(
             title_row, bg=_SURFACE, fg=_TEXT,
-            font=("Microsoft YaHei UI",
-                  14 if self.compact_layout else 16, "bold"), anchor="w",
+            font=self.settings_title_expanded_font, anchor="w",
         )
         self.title_label.pack(side="left")
         self.settings_toggle_button = ttk.Button(
@@ -2601,6 +2609,15 @@ class DaisyApp:
             self.settings_body.pack_forget()
         if not self.mini_mode:
             self.content.grid_rowconfigure(0, weight=1 if expanded else 0)
+        self.title_label.configure(font=(
+            self.settings_title_expanded_font
+            if expanded else _COLLAPSED_PANEL_TITLE_FONT
+        ))
+        self.settings_title_row.pack_configure(
+            padx=(22 if expanded else _COLLAPSED_SETTINGS_HEADER_PADX),
+            pady=((14, 10) if expanded
+                  else _COLLAPSED_SETTINGS_HEADER_PADY),
+        )
         self.settings_toggle_button.configure(
             text="收起设置" if expanded else "展开设置")
         if hasattr(self, "settings_visible_var"):

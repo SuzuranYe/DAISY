@@ -985,6 +985,76 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.task_toolbar_toggle_button.text, "收起模块")
         self.assertTrue(app.task_toolbar_visible_var.value)
 
+    def test_collapsed_settings_header_matches_panel_title_scale(self):
+        class BodyProbe:
+            def __init__(self):
+                self.manager = "pack"
+
+            def winfo_manager(self):
+                return self.manager
+
+            def pack(self, **_options):
+                self.manager = "pack"
+
+            def pack_forget(self):
+                self.manager = ""
+
+        class WidgetProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        class RowProbe:
+            def __init__(self):
+                self.options = {}
+
+            def pack_configure(self, **options):
+                self.options.update(options)
+
+        class ContentProbe:
+            def __init__(self):
+                self.weight = None
+
+            def grid_rowconfigure(self, _row, *, weight):
+                self.weight = weight
+
+        app = object.__new__(gui.DaisyApp)
+        app.settings_body = BodyProbe()
+        app.title_label = WidgetProbe()
+        app.settings_title_row = RowProbe()
+        app.settings_toggle_button = WidgetProbe()
+        app.content = ContentProbe()
+        app.settings_title_expanded_font = (
+            "Microsoft YaHei UI", 16, "bold")
+        app.mini_mode = False
+
+        app._set_settings_expanded(False)
+        self.assertEqual(
+            app.title_label.options["font"],
+            gui._COLLAPSED_PANEL_TITLE_FONT,
+        )
+        self.assertEqual(
+            app.settings_title_row.options,
+            {
+                "padx": gui._COLLAPSED_SETTINGS_HEADER_PADX,
+                "pady": gui._COLLAPSED_SETTINGS_HEADER_PADY,
+            },
+        )
+        self.assertEqual(app.content.weight, 0)
+
+        app._set_settings_expanded(True)
+        self.assertEqual(
+            app.title_label.options["font"],
+            app.settings_title_expanded_font,
+        )
+        self.assertEqual(
+            app.settings_title_row.options,
+            {"padx": 22, "pady": (14, 10)},
+        )
+        self.assertEqual(app.content.weight, 1)
+
     def test_top_task_toolbar_keeps_fixed_theme_rows(self):
         class WidgetProbe:
             def __init__(self):
