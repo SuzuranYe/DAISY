@@ -693,7 +693,9 @@ class TestGuiArguments(unittest.TestCase):
             stop = style.configurations[name]
             self.assertEqual(stop["background"], gui._AMBER_SOFT)
             self.assertEqual(stop["foreground"], gui._AMBER_DEEP)
-            self.assertEqual(stop["bordercolor"], gui._AMBER_DARK)
+            self.assertEqual(stop["borderwidth"], 0)
+            self.assertEqual(stop["bordercolor"], gui._AMBER_SOFT)
+            self.assertEqual(stop["relief"], "flat")
             self.assertEqual(
                 style.mappings[name]["background"],
                 [("active", gui._AMBER)],
@@ -856,7 +858,7 @@ class TestGuiArguments(unittest.TestCase):
             call.args[0] == "确认退出" for call in confirm.call_args_list
         ))
 
-    def test_active_close_uses_only_running_task_warning(self):
+    def test_active_close_requires_second_confirmation(self):
         class RootProbe:
             def __init__(self):
                 self.destroy_calls = 0
@@ -873,11 +875,23 @@ class TestGuiArguments(unittest.TestCase):
         app._set_stop_state = lambda _state: None
 
         with patch.object(
-                gui.messagebox, "askyesno", return_value=True) as confirm:
+                gui.messagebox, "askyesno", side_effect=(True, False)) \
+                as declined:
             app._on_close()
+        self.assertEqual(app.root.destroy_calls, 0)
+        self.assertEqual(
+            [call.args[0] for call in declined.call_args_list],
+            ["确认退出", "再次确认退出"],
+        )
 
-        confirm.assert_called_once()
-        self.assertEqual(confirm.call_args.args[0], "任务仍在运行")
+        with patch.object(
+                gui.messagebox, "askyesno", side_effect=(True, True)) \
+                as confirmed:
+            app._on_close()
+        self.assertEqual(
+            [call.args[0] for call in confirmed.call_args_list],
+            ["确认退出", "再次确认退出"],
+        )
         self.assertEqual(app.root.destroy_calls, 1)
 
     def test_top_task_navigation_entries_lock_together(self):

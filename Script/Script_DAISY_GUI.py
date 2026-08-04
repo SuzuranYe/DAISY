@@ -1809,8 +1809,9 @@ class DaisyApp:
             "Stop.TButton", background=_AMBER_SOFT,
             foreground=_AMBER_DEEP,
             padding=(15, 8), font=("Microsoft YaHei UI", 10, "bold"),
-            borderwidth=1, bordercolor=_AMBER_DARK,
-            lightcolor=_AMBER_DARK, darkcolor=_AMBER_DARK,
+            borderwidth=0, bordercolor=_AMBER_SOFT,
+            lightcolor=_AMBER_SOFT, darkcolor=_AMBER_SOFT,
+            relief="flat",
         )
         style.map(
             "Stop.TButton", background=[("active", _AMBER)])
@@ -1900,8 +1901,9 @@ class DaisyApp:
             "MiniStop.TButton", background=_AMBER_SOFT,
             foreground=_AMBER_DEEP,
             padding=(9, 4), font=("Microsoft YaHei UI", 8, "bold"),
-            borderwidth=1, bordercolor=_AMBER_DARK,
-            lightcolor=_AMBER_DARK, darkcolor=_AMBER_DARK,
+            borderwidth=0, bordercolor=_AMBER_SOFT,
+            lightcolor=_AMBER_SOFT, darkcolor=_AMBER_SOFT,
+            relief="flat",
         )
         style.map(
             "MiniStop.TButton", background=[("active", _AMBER)])
@@ -4242,42 +4244,45 @@ class DaisyApp:
 
     def _on_close(self) -> None:
         process = self.process
-        active = process is not None or bool(self.run_jobs)
+        active = (
+            process is not None
+            or bool(self.run_jobs)
+            or bool(getattr(self, "worker_starting", False))
+        )
+        if not messagebox.askyesno(
+            "确认退出",
+            "确定关闭 DAISY 吗？",
+            icon="question", parent=self.root,
+        ):
+            return
         if not active:
-            if not messagebox.askyesno(
-                "确认退出",
-                "确定关闭 DAISY 吗？",
-                icon="question", parent=self.root,
-            ):
-                return
             self.root.destroy()
             return
 
-        if active:
-            detail = "关闭界面会停止当前任务，并可能留下未完成产物。确定关闭吗？"
-            if len(self.run_jobs) > 1:
-                detail = (
-                    "关闭界面会停止当前目录，并取消队列中尚未启动的目录；"
-                    "也可能留下未完成产物。确定关闭吗？"
-                )
-            if not messagebox.askyesno(
-                "任务仍在运行", detail,
-                icon="warning", parent=self.root,
-            ):
-                return
-            self.stop_requested = True
-            self._set_stop_state("disabled")
-            if process is not None:
-                self.close_after_stop = True
-                self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
-                threading.Thread(
-                    target=self._terminate_process, args=(process,), daemon=True,
-                ).start()
-                return
-            if self.worker_starting:
-                self.close_after_stop = True
-                self._set_status("正在取消启动，随后关闭窗口…", _WARNING)
-                return
+        detail = "关闭界面会停止当前任务，并可能留下未完成产物。确定继续吗？"
+        if len(self.run_jobs) > 1:
+            detail = (
+                "关闭界面会停止当前目录，并取消队列中尚未启动的目录；"
+                "也可能留下未完成产物。确定继续吗？"
+            )
+        if not messagebox.askyesno(
+            "再次确认退出", detail,
+            icon="warning", parent=self.root,
+        ):
+            return
+        self.stop_requested = True
+        self._set_stop_state("disabled")
+        if process is not None:
+            self.close_after_stop = True
+            self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
+            threading.Thread(
+                target=self._terminate_process, args=(process,), daemon=True,
+            ).start()
+            return
+        if self.worker_starting:
+            self.close_after_stop = True
+            self._set_status("正在取消启动，随后关闭窗口…", _WARNING)
+            return
         self.root.destroy()
 
 
