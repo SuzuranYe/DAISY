@@ -976,18 +976,19 @@ TASKS = (
 TASK_BY_KEY = {task.key: task for task in TASKS}
 _SIDEBAR_SECTIONS = (
     (
-        "环境", _GREEN, _GREEN_DEEP,
+        "环境", _GREEN,
         ("env_check", _PROJECT_SELF_TEST_KEY, "quick_scan"),
     ),
     (
-        "数据库", _AMBER, _AMBER_DEEP,
+        "数据库", _AMBER,
         ("full_scan", "diff", "check_hash", "check_format", "export_report"),
     ),
-    ("硬盘", _RED, "white", ()),
+    ("硬盘", _RED, ()),
 )
+_SIDEBAR_SECTIONS_EXPANDED_BY_DEFAULT = True
 _SIDEBAR_TASK_ORDER = tuple(
     task_key
-    for _label, _background, _foreground, task_keys in _SIDEBAR_SECTIONS
+    for _label, _line_colour, task_keys in _SIDEBAR_SECTIONS
     for task_key in task_keys
 )
 
@@ -1632,7 +1633,8 @@ class DaisyApp:
         self.mini_mode = False
         self.sidebar_collapsed = False
         self.sidebar_section_expanded = {
-            label: True for label, _background, _foreground, _tasks
+            label: _SIDEBAR_SECTIONS_EXPANDED_BY_DEFAULT
+            for label, _line_colour, _tasks
             in _SIDEBAR_SECTIONS
         }
         self.sidebar_section_bodies: dict[str, tk.Frame] = {}
@@ -1982,22 +1984,30 @@ class DaisyApp:
         )
 
         for section_index, (
-                section_label, section_background, section_foreground,
+                section_label, section_colour,
                 task_keys) in enumerate(_SIDEBAR_SECTIONS):
             section = tk.Frame(sidebar, bg=_SIDEBAR)
             section.pack(fill="x")
-            section_header = tk.Frame(section, bg=section_background)
-            section_header.pack(
+            section_divider = tk.Frame(
+                section, bg=section_colour, height=3,
+            )
+            section_divider.pack(
                 fill="x", padx=12,
                 pady=((10 if section_index else 12), 3),
+            )
+            section_divider.pack_propagate(False)
+            section_header = tk.Frame(section, bg=_SIDEBAR)
+            section_header.pack(
+                fill="x", padx=12,
+                pady=(0, 3),
             )
             category = tk.Button(
                 section_header, text=section_label,
                 command=lambda label=section_label:
                 self._toggle_sidebar_section(label),
-                bg=section_background, fg=section_foreground,
-                activebackground=section_background,
-                activeforeground=section_foreground,
+                bg=_SIDEBAR, fg=_SIDEBAR_TEXT,
+                activebackground=_SIDEBAR_HOVER,
+                activeforeground=_SIDEBAR_TEXT,
                 font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
                 relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
             )
@@ -2006,9 +2016,9 @@ class DaisyApp:
                 section_header, text="▼",
                 command=lambda label=section_label:
                 self._toggle_sidebar_section(label),
-                bg=section_background, fg=section_foreground,
-                activebackground=section_background,
-                activeforeground=section_foreground,
+                bg=_SIDEBAR, fg=_SIDEBAR_TEXT,
+                activebackground=_SIDEBAR_HOVER,
+                activeforeground=_SIDEBAR_TEXT,
                 font=("Segoe UI Symbol", 9, "bold"),
                 relief="flat", bd=0, width=3, cursor="hand2",
             )

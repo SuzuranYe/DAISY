@@ -537,27 +537,28 @@ class TestGuiArguments(unittest.TestCase):
                 "check_format", "check_hash", "diff", "export_report"):
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
-    def test_sidebar_sections_use_strip_colours_and_database_grouping(self):
+    def test_sidebar_sections_use_divider_colours_and_database_grouping(self):
         self.assertEqual(
-            [section[:3] for section in gui._SIDEBAR_SECTIONS],
+            [(section[0], section[1]) for section in gui._SIDEBAR_SECTIONS],
             [
-                ("环境", gui._GREEN, gui._GREEN_DEEP),
-                ("数据库", gui._AMBER, gui._AMBER_DEEP),
-                ("硬盘", gui._RED, "white"),
+                ("环境", gui._GREEN),
+                ("数据库", gui._AMBER),
+                ("硬盘", gui._RED),
             ],
         )
+        self.assertTrue(gui._SIDEBAR_SECTIONS_EXPANDED_BY_DEFAULT)
         self.assertEqual(
             gui._SIDEBAR_SELECTION,
             (gui._GREEN_DARK, gui._GREEN_DEEP),
         )
-        self.assertNotIn("full_scan", gui._SIDEBAR_SECTIONS[0][3])
-        self.assertEqual(gui._SIDEBAR_SECTIONS[1][3][:2],
+        self.assertNotIn("full_scan", gui._SIDEBAR_SECTIONS[0][2])
+        self.assertEqual(gui._SIDEBAR_SECTIONS[1][2][:2],
                          ("full_scan", "diff"))
-        self.assertEqual(gui._SIDEBAR_SECTIONS[-1][3], ())
+        self.assertEqual(gui._SIDEBAR_SECTIONS[-1][2], ())
         self.assertEqual(
             tuple(
                 task_key
-                for _label, _background, _foreground, task_keys
+                for _label, _line_colour, task_keys
                 in gui._SIDEBAR_SECTIONS
                 for task_key in task_keys
             ),
@@ -592,7 +593,10 @@ class TestGuiArguments(unittest.TestCase):
 
         app = object.__new__(gui.DaisyApp)
         labels = tuple(section[0] for section in gui._SIDEBAR_SECTIONS)
-        app.sidebar_section_expanded = {label: True for label in labels}
+        app.sidebar_section_expanded = {
+            label: gui._SIDEBAR_SECTIONS_EXPANDED_BY_DEFAULT
+            for label in labels
+        }
         app.sidebar_section_bodies = {
             label: BodyProbe() for label in labels
         }
