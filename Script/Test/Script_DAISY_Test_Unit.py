@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -450,9 +451,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
 
-    def test_action_buttons_wrap_without_reordering_primary_actions(self):
-        widths = (118, 118, 118, 181, 124, 130)
-        rows = gui.action_button_row_indexes(widths, 760)
+    def test_utility_buttons_wrap_without_reordering(self):
+        widths = (118, 118, 118, 181)
+        rows = gui.action_button_row_indexes(widths, 380)
         self.assertEqual(
             tuple(index for row in rows for index in row),
             tuple(range(len(widths))),
@@ -460,8 +461,7 @@ class TestGuiArguments(unittest.TestCase):
         for row in rows:
             occupied = sum(widths[index] for index in row)
             occupied += 8 * max(0, len(row) - 1)
-            self.assertLessEqual(occupied, 760)
-        self.assertEqual(rows[-1][-2:], (4, 5))
+            self.assertLessEqual(occupied, 380)
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
 
     def test_full_hash_independent_sample_is_explained_and_advanced(self):
@@ -537,86 +537,152 @@ class TestGuiArguments(unittest.TestCase):
                 "check_format", "check_hash", "diff", "export_report"):
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
-    def test_sidebar_sections_use_divider_colours_and_database_grouping(self):
+    def test_top_task_menus_use_theme_grouping(self):
         self.assertEqual(
-            [(section[0], section[1]) for section in gui._SIDEBAR_SECTIONS],
-            [
-                ("环境", gui._GREEN),
-                ("数据库", gui._AMBER),
-                ("硬盘", gui._RED),
-            ],
+            [section[0] for section in gui._TASK_MENU_SECTIONS],
+            ["环境", "数据库", "硬盘"],
         )
-        self.assertTrue(gui._SIDEBAR_SECTIONS_EXPANDED_BY_DEFAULT)
-        self.assertEqual(
-            gui._SIDEBAR_SELECTION,
-            (gui._GREEN_DARK, gui._GREEN_DEEP),
-        )
-        self.assertNotIn("full_scan", gui._SIDEBAR_SECTIONS[0][2])
-        self.assertEqual(gui._SIDEBAR_SECTIONS[1][2][:2],
+        self.assertNotIn("full_scan", gui._TASK_MENU_SECTIONS[0][1])
+        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][:2],
                          ("full_scan", "diff"))
-        self.assertEqual(gui._SIDEBAR_SECTIONS[-1][2], ())
+        self.assertEqual(gui._TASK_MENU_SECTIONS[-1][1], ())
         self.assertEqual(
             tuple(
                 task_key
-                for _label, _line_colour, task_keys
-                in gui._SIDEBAR_SECTIONS
+                for _label, task_keys in gui._TASK_MENU_SECTIONS
                 for task_key in task_keys
             ),
-            gui._SIDEBAR_TASK_ORDER,
+            gui._TASK_MENU_ORDER,
         )
-        analysis_index = gui._SIDEBAR_TASK_ORDER.index("diff")
+        analysis_index = gui._TASK_MENU_ORDER.index("diff")
         self.assertEqual(
-            gui._SIDEBAR_TASK_ORDER[analysis_index:analysis_index + 3],
+            gui._TASK_MENU_ORDER[analysis_index:analysis_index + 3],
             ("diff", "check_hash", "check_format"),
         )
 
-    def test_sidebar_sections_expand_independently(self):
-        class BodyProbe:
-            def __init__(self):
-                self.manager = "pack"
+    def test_standard_menu_builds_three_top_theme_dropdowns(self):
+        class VariableProbe:
+            def __init__(self, value=None, **_options):
+                self.value = value
 
-            def winfo_manager(self):
-                return self.manager
+            def get(self):
+                return self.value
 
-            def pack(self, **_options):
-                self.manager = "pack"
+            def set(self, value):
+                self.value = value
 
-            def pack_forget(self):
-                self.manager = ""
+        class MenuProbe:
+            def __init__(self, parent, **_options):
+                self.parent = parent
+                self.entries = []
 
-        class ButtonProbe:
-            def __init__(self):
-                self.text = ""
+            def _add(self, kind, options):
+                self.entries.append({"kind": kind, **options})
 
+            def add_command(self, **options):
+                self._add("command", options)
+
+            def add_cascade(self, **options):
+                self._add("cascade", options)
+
+            def add_checkbutton(self, **options):
+                self._add("checkbutton", options)
+
+            def add_radiobutton(self, **options):
+                self._add("radiobutton", options)
+
+            def add_separator(self):
+                self._add("separator", {})
+
+            def index(self, specifier):
+                self.assert_end(specifier)
+                return len(self.entries) - 1 if self.entries else None
+
+            @staticmethod
+            def assert_end(specifier):
+                if specifier != "end":
+                    raise AssertionError(specifier)
+
+        class RootProbe:
             def configure(self, **options):
-                self.text = options["text"]
+                self.options = options
 
         app = object.__new__(gui.DaisyApp)
-        labels = tuple(section[0] for section in gui._SIDEBAR_SECTIONS)
-        app.sidebar_section_expanded = {
-            label: gui._SIDEBAR_SECTIONS_EXPANDED_BY_DEFAULT
-            for label in labels
-        }
-        app.sidebar_section_bodies = {
-            label: BodyProbe() for label in labels
-        }
-        app.sidebar_section_toggle_buttons = {
-            label: ButtonProbe() for label in labels
-        }
-        target = labels[1]
-        app._set_sidebar_section_expanded(target, False)
-        self.assertFalse(app.sidebar_section_expanded[target])
-        self.assertEqual(app.sidebar_section_bodies[target].manager, "")
+        app.root = RootProbe()
+        app.task = gui.TASKS[0]
+        app.task_menu_entries = {}
+        with (
+            patch.object(gui.tk, "Menu", MenuProbe),
+            patch.object(gui.tk, "StringVar", VariableProbe),
+            patch.object(gui.tk, "BooleanVar", VariableProbe),
+        ):
+            app._build_menu()
+        top_labels = [
+            entry["label"] for entry in app.app_menu.entries
+            if entry["kind"] == "cascade"
+        ]
         self.assertEqual(
-            app.sidebar_section_toggle_buttons[target].text, "▶")
-        for label in (labels[0], labels[2]):
-            self.assertTrue(app.sidebar_section_expanded[label])
-            self.assertEqual(
-                app.sidebar_section_bodies[label].manager, "pack")
-        app._toggle_sidebar_section(target)
-        self.assertTrue(app.sidebar_section_expanded[target])
+            top_labels,
+            ["文件", "环境", "数据库", "硬盘", "视图", "帮助"],
+        )
         self.assertEqual(
-            app.sidebar_section_toggle_buttons[target].text, "▼")
+            [entry["label"] for entry in app.task_menus["环境"].entries],
+            [gui.TASK_BY_KEY[key].nav
+             for key in gui._TASK_MENU_SECTIONS[0][1]],
+        )
+        self.assertEqual(
+            app.task_menus["硬盘"].entries[0]["state"], "disabled")
+
+    def test_top_task_menu_entries_lock_together(self):
+        class MenuProbe:
+            def __init__(self):
+                self.states = {}
+
+            def entryconfigure(self, index, **options):
+                self.states[index] = options["state"]
+
+        app = object.__new__(gui.DaisyApp)
+        environment_menu = MenuProbe()
+        database_menu = MenuProbe()
+        app.task_menu_entries = {
+            "env_check": (environment_menu, 0),
+            "full_scan": (database_menu, 2),
+        }
+        app._set_task_menu_state("disabled")
+        self.assertEqual(environment_menu.states, {0: "disabled"})
+        self.assertEqual(database_menu.states, {2: "disabled"})
+        app._set_task_menu_state("normal")
+        self.assertEqual(environment_menu.states, {0: "normal"})
+        self.assertEqual(database_menu.states, {2: "normal"})
+
+    def test_queue_progress_is_persistent_for_single_and_multiple_jobs(self):
+        class WidgetProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        app = object.__new__(gui.DaisyApp)
+        app.queue_progress_bar = WidgetProbe()
+        app.queue_detail_label = WidgetProbe()
+        app.queue_percent_label = WidgetProbe()
+        app.run_jobs = [types.SimpleNamespace(label="项目 A")]
+        app._prepare_queue_progress()
+        self.assertEqual(
+            app.queue_detail_label.options["text"],
+            "0/1 · 单项任务已准备",
+        )
+        app.run_job_index = 0
+        app._update_queue_progress(0.5)
+        self.assertEqual(app.queue_progress_bar.options["value"], 50.0)
+        self.assertEqual(
+            app.queue_detail_label.options["text"], "1/1 · 项目 A")
+        self.assertEqual(app.queue_percent_label.options["text"], "50%")
+        app.run_jobs = [object(), object(), object()]
+        app._prepare_queue_progress()
+        self.assertEqual(
+            app.queue_detail_label.options["text"], "0/3 · 队列已准备")
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
@@ -628,14 +694,14 @@ class TestGuiArguments(unittest.TestCase):
             gui._DANGER,
         )
 
-    def test_task_titles_match_sidebar_names(self):
+    def test_task_titles_match_menu_names(self):
         for task in gui.TASKS:
-            sidebar_name = task.nav.split(maxsplit=1)[1]
-            self.assertEqual(task.title, sidebar_name)
+            menu_name = task.nav.split(maxsplit=1)[1]
+            self.assertEqual(task.title, menu_name)
 
-    def test_final_task_numbering_and_sidebar_order(self):
+    def test_final_task_numbering_and_menu_order(self):
         self.assertEqual(
-            [gui.TASK_BY_KEY[key].nav for key in gui._SIDEBAR_TASK_ORDER],
+            [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
                 "ENV-00  环境监测",
                 "ENV-01  项目自检",
