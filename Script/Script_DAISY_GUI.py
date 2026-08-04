@@ -118,9 +118,9 @@ _DANGER_BORDER = "#c99f98"
 
 _TASK_ACCENTS = {
     "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
-    _PROJECT_SELF_TEST_KEY: (_GREEN_DARK, _GREEN_DEEP, _GREEN),
-    "full_scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
-    "quick_scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    _PROJECT_SELF_TEST_KEY: (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "full_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "quick_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
     "check_format": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
     "check_hash": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
     "diff": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
@@ -551,8 +551,8 @@ TASKS = (
     TaskSpec(
         "env_check",
         "env-check",
-        "ENV-00  环境监测",
-        "环境监测",
+        "ENV-01  环境检测",
+        "环境检测",
         "检查 ExifTool、ffprobe、7-Zip 与 PowerShell 的发现、版本和只读"
         "冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能测试，也不"
         "保存全局设置。",
@@ -590,18 +590,19 @@ TASKS = (
     TaskSpec(
         _PROJECT_SELF_TEST_KEY,
         "",
-        "ENV-01  项目自检",
-        "项目自检",
-        "运行 Script\\Test 中的全部自动化测试，验证 DAISY 自身代码、"
-        "数据库约束与关键工作流。测试夹具只写入系统临时目录，不使用"
-        "表单中的档案目录，也不生成正式快照。",
-        "维护检查 · 临时夹具 · 不读取私人档案",
+        "DB-91  数据库自检",
+        "数据库自检",
+        "运行 Script\\Test 中的全部自动化测试，重点验证 SQLite schema、"
+        "数据库约束、快照、Diff 与关键工作流，同时覆盖 GUI 参数映射。"
+        "测试夹具只写入系统临时目录，不使用表单中的档案目录，也不生成"
+        "正式快照。",
+        "数据库测试 · 临时夹具 · 不读取私人档案",
         (),
     ),
     TaskSpec(
         "full_scan",
         "full-scan",
-        "ENV-11  完整扫描",
+        "DB-11  完整扫描",
         "完整扫描",
         "登记文件树、元数据与哈希，默认完整 SHA-256；生成可续传、封存后"
         "不可变的单文件 SQLite 快照。适合首次建账和周期性完整复核。",
@@ -739,7 +740,7 @@ TASKS = (
     TaskSpec(
         "quick_scan",
         "quick-scan",
-        "ENV-12  快速扫描",
+        "DB-12  快速扫描",
         "快速扫描",
         "只登记文件树、大小、时间与文件标识，不读取文件内容，也不依赖外部"
         "工具。适合接盘后快速确认目录结构。",
@@ -972,19 +973,41 @@ TASK_BY_KEY = {task.key: task for task in TASKS}
 _TASK_MENU_SECTIONS = (
     (
         "环境",
-        ("env_check", _PROJECT_SELF_TEST_KEY, "quick_scan"),
+        ("env_check",),
     ),
     (
         "数据库",
-        ("full_scan", "diff", "check_hash", "check_format", "export_report"),
+        (
+            "full_scan", "quick_scan", "diff",
+            "check_hash", "check_format", "export_report",
+            _PROJECT_SELF_TEST_KEY,
+        ),
     ),
     ("硬盘", ()),
 )
+_TASK_MENU_SECTION_COLOURS = {
+    "环境": ("Env", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
+    "数据库": ("Database", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
+    "硬盘": ("Storage", _RED, _RED_DEEP, _RED_SOFT),
+}
+_TASK_MENU_SEPARATOR_AFTER = frozenset((
+    "env_check", "quick_scan", "diff", "check_format", "export_report",
+))
+_TASK_TOOLBAR_SEPARATOR_AFTER = frozenset((
+    "env_check", "quick_scan", "diff", "check_format",
+    "export_report",
+))
 _TASK_MENU_ORDER = tuple(
     task_key
     for _label, task_keys in _TASK_MENU_SECTIONS
     for task_key in task_keys
 )
+_TASK_MENU_SECTION_BY_KEY = {
+    task_key: section_label
+    for section_label, task_keys in _TASK_MENU_SECTIONS
+    for task_key in task_keys
+}
+_TASK_TOOLBAR_STORAGE_KEY = "__storage_placeholder__"
 
 
 def _lines(value: object) -> list[str]:
@@ -1488,7 +1511,7 @@ def _console_python() -> str:
 
 
 def project_self_test_missing_files() -> list[str]:
-    """返回项目自检缺少的正式测试文件名，不读取任何档案目录。"""
+    """返回数据库自检缺少的正式测试文件名，不读取任何档案目录。"""
     return [
         name for name in _PROJECT_TEST_FILES
         if not os.path.isfile(os.path.join(_TEST_DIR, name))
@@ -1496,7 +1519,7 @@ def project_self_test_missing_files() -> list[str]:
 
 
 def project_self_test_command(python_executable: str | None = None) -> list[str]:
-    """返回 GUI 项目自检实际使用的 unittest discovery 命令。"""
+    """返回 GUI 数据库自检实际使用的 unittest discovery 命令。"""
     return [
         python_executable or _console_python(),
         "-B", "-m", "unittest", "discover",
@@ -1618,6 +1641,7 @@ class DaisyApp:
         self.saved_values: dict[str, dict[str, object]] = {}
         self.advanced_visible: dict[str, bool] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
+        self.task_toolbar_buttons: dict[str, ttk.Button] = {}
         self.detected_tools: dict[str, dict[str, object]] = {}
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
@@ -1625,6 +1649,7 @@ class DaisyApp:
         self.current_stage_index = 0
         self.current_stage_total = 0
         self.mini_mode = False
+        self.task_toolbar_expanded = True
         self.settings_expanded = True
         self.progress_expanded = True
         self.log_expanded = True
@@ -1765,6 +1790,45 @@ class DaisyApp:
         )
         style.map(
             "Mini.TButton", background=[("active", _CONTROL_HOVER)])
+        for _section_label, (
+                style_prefix, accent_colour, deep_colour,
+                soft_colour) in _TASK_MENU_SECTION_COLOURS.items():
+            style.configure(
+                f"{style_prefix}.TopTask.TButton",
+                background=_SURFACE, foreground=_TEXT,
+                padding=(9, 5), font=("Microsoft YaHei UI", 9),
+                borderwidth=1, bordercolor=_BORDER,
+                lightcolor=_BORDER, darkcolor=_BORDER,
+            )
+            style.map(
+                f"{style_prefix}.TopTask.TButton",
+                background=[
+                    ("disabled", _CONTROL),
+                    ("pressed", soft_colour),
+                    ("active", soft_colour),
+                ],
+                foreground=[("disabled", _MUTED)],
+            )
+            style.configure(
+                f"{style_prefix}.TopTaskSelected.TButton",
+                background=deep_colour, foreground="white",
+                padding=(9, 5),
+                font=("Microsoft YaHei UI", 9, "bold"),
+                borderwidth=1, bordercolor=deep_colour,
+                lightcolor=deep_colour, darkcolor=deep_colour,
+            )
+            style.map(
+                f"{style_prefix}.TopTaskSelected.TButton",
+                background=[
+                    ("disabled", deep_colour),
+                    ("pressed", deep_colour),
+                    ("active", accent_colour),
+                ],
+                foreground=[
+                    ("disabled", "white"),
+                    ("active", "white"),
+                ],
+            )
         style.configure(
             "MiniStop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
             padding=(9, 4), font=("Microsoft YaHei UI", 8, "bold"),
@@ -1820,9 +1884,21 @@ class DaisyApp:
 
     def _build_menu(self) -> None:
         """建立不带自定义快捷键的标准应用菜单。"""
-        menu = tk.Menu(self.root, tearoff=False)
+        base_menu_options = {
+            "tearoff": False,
+            "background": _SURFACE,
+            "foreground": _TEXT,
+            "activebackground": _GREEN_SOFT,
+            "activeforeground": _GREEN_DEEP,
+            "disabledforeground": _MUTED,
+            "activeborderwidth": 0,
+            "borderwidth": 1,
+            "relief": "flat",
+            "font": ("Microsoft YaHei UI", 9),
+        }
+        menu = tk.Menu(self.root, **base_menu_options)
 
-        file_menu = tk.Menu(menu, tearoff=False)
+        file_menu = tk.Menu(menu, **base_menu_options)
         file_menu.add_command(
             label="打开项目目录", command=self._open_project_directory)
         file_menu.add_command(
@@ -1834,7 +1910,17 @@ class DaisyApp:
         self.task_menu_var = tk.StringVar(value=self.task.key)
         self.task_menus: dict[str, tk.Menu] = {}
         for section_label, task_keys in _TASK_MENU_SECTIONS:
-            task_menu = tk.Menu(menu, tearoff=False)
+            (_style_prefix, accent_colour, deep_colour,
+             _soft_colour) = _TASK_MENU_SECTION_COLOURS[section_label]
+            task_menu = tk.Menu(
+                menu,
+                **{
+                    **base_menu_options,
+                    "activebackground": accent_colour,
+                    "activeforeground": "white",
+                    "selectcolor": deep_colour,
+                },
+            )
             self.task_menus[section_label] = task_menu
             for task_key in task_keys:
                 task = TASK_BY_KEY[task_key]
@@ -1843,11 +1929,16 @@ class DaisyApp:
                     variable=self.task_menu_var,
                     value=task_key,
                     command=lambda key=task_key: self._select_task(key),
+                    indicatoron=True,
+                    selectcolor=deep_colour,
                 )
                 entry_index = task_menu.index("end")
                 if entry_index is not None:
                     self.task_menu_entries[task_key] = (
                         task_menu, int(entry_index))
+                if (task_key in _TASK_MENU_SEPARATOR_AFTER
+                        and task_key != task_keys[-1]):
+                    task_menu.add_separator()
             if not task_keys:
                 task_menu.add_command(
                     label="STG- 功能将在后续版本提供",
@@ -1855,11 +1946,19 @@ class DaisyApp:
                 )
             menu.add_cascade(label=section_label, menu=task_menu)
 
+        self.task_toolbar_visible_var = tk.BooleanVar(value=True)
         self.settings_visible_var = tk.BooleanVar(value=True)
         self.progress_visible_var = tk.BooleanVar(value=True)
         self.log_visible_var = tk.BooleanVar(value=True)
         self.command_preview_visible_var = tk.BooleanVar(value=False)
-        view_menu = tk.Menu(menu, tearoff=False)
+        view_menu = tk.Menu(menu, **base_menu_options)
+        view_menu.add_checkbutton(
+            label="显示顶部任务菜单",
+            variable=self.task_toolbar_visible_var,
+            command=lambda: self._set_task_toolbar_expanded(
+                self.task_toolbar_visible_var.get()),
+        )
+        view_menu.add_separator()
         view_menu.add_checkbutton(
             label="显示任务设置", variable=self.settings_visible_var,
             command=lambda: self._set_settings_expanded(
@@ -1882,7 +1981,7 @@ class DaisyApp:
         )
         menu.add_cascade(label="视图", menu=view_menu)
 
-        help_menu = tk.Menu(menu, tearoff=False)
+        help_menu = tk.Menu(menu, **base_menu_options)
         help_menu.add_command(label="关于 DAISY", command=self._show_about)
         help_menu.add_command(
             label="打开 GitHub 主页", command=self._open_github)
@@ -1909,6 +2008,76 @@ class DaisyApp:
             ],
         )
 
+    def _build_task_toolbar(self) -> None:
+        """建立可折叠、可换行的顶部任务按钮菜单。"""
+        panel = tk.Frame(
+            self.root, bg=_SURFACE,
+            highlightbackground=_BORDER, highlightthickness=1,
+        )
+        self.task_toolbar_panel = panel
+        panel.pack(fill="x", side="top")
+
+        header = tk.Frame(panel, bg=_SURFACE)
+        header.pack(fill="x", padx=12, pady=(6, 4))
+        tk.Label(
+            header, text="任务菜单", bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            header, text="顶部按钮与下拉菜单同步",
+            bg=_SURFACE, fg=_MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side="left", padx=(10, 0))
+        self.task_toolbar_toggle_button = ttk.Button(
+            header, text="收起菜单", style="Mini.TButton",
+            command=self._toggle_task_toolbar,
+        )
+        self.task_toolbar_toggle_button.pack(side="right")
+        attach_tooltip(
+            self.task_toolbar_toggle_button,
+            "展开或收起顶部任务按钮；当前页面和已填写内容保持不变。",
+        )
+
+        body = tk.Frame(panel, bg=_SURFACE)
+        self.task_toolbar_body = body
+        body.pack(fill="x", padx=12, pady=(0, 8))
+        self.task_toolbar_item_keys = (
+            *_TASK_MENU_ORDER, _TASK_TOOLBAR_STORAGE_KEY,
+        )
+        self.task_toolbar_separators: dict[str, tk.Frame] = {}
+        for task_key in _TASK_MENU_ORDER:
+            task = TASK_BY_KEY[task_key]
+            section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
+            style_prefix = _TASK_MENU_SECTION_COLOURS[section_label][0]
+            button = ttk.Button(
+                body, text=task.nav,
+                style=f"{style_prefix}.TopTask.TButton",
+                command=lambda key=task_key: self._select_task(key),
+            )
+            self.task_toolbar_buttons[task_key] = button
+            attach_tooltip(
+                button,
+                f"切换到“{task.title}”页面；运行时任务菜单会暂时锁定。",
+            )
+        storage_button = ttk.Button(
+            body, text="STG-  暂未开放",
+            style="Storage.TopTask.TButton", state="disabled",
+        )
+        self.task_toolbar_buttons[_TASK_TOOLBAR_STORAGE_KEY] = storage_button
+        attach_tooltip(
+            storage_button,
+            "硬盘信息模块将在后续版本提供，本版本不创建空任务页。",
+        )
+        for task_key in _TASK_TOOLBAR_SEPARATOR_AFTER:
+            colour = (
+                _GREEN if task_key == "env_check" else _AMBER
+            )
+            self.task_toolbar_separators[task_key] = tk.Frame(
+                body, bg=colour, width=2,
+            )
+        body.bind("<Configure>", self._layout_task_toolbar)
+        self.root.after_idle(self._layout_task_toolbar)
+
     def _build_shell(self) -> None:
         content_pad = 12 if self.compact_layout else 18
         self.content_pad = content_pad
@@ -1920,6 +2089,8 @@ class DaisyApp:
         for colour in (_GREEN, _AMBER, _RED):
             tk.Frame(colour_strip, bg=colour).pack(
                 side="left", fill="both", expand=True)
+
+        self._build_task_toolbar()
 
         body = tk.Frame(self.root, bg=_BG)
         self.body = body
@@ -2225,17 +2396,22 @@ class DaisyApp:
             utility_action_area, text="清理缓存", style="Secondary.TButton",
             command=self._clear_tool_cache, state="disabled",
         )
-        self.install_tools_button = ttk.Button(
-            utility_action_area, text="下载并安装缺失工具",
-            style="Secondary.TButton",
-            command=self._install_missing_tools,
-        )
-        self.install_tools_visible = False
+        self.install_tool_buttons: dict[str, ttk.Button] = {}
+        for tool_name, (display_name, _package_id) in (
+                _INSTALLABLE_TOOL_PACKAGES.items()):
+            button = ttk.Button(
+                utility_action_area,
+                text=f"下载并安装 {display_name}",
+                style="Secondary.TButton",
+                command=lambda name=tool_name:
+                self._install_missing_tool(name),
+            )
+            self.install_tool_buttons[tool_name] = button
         self.utility_buttons = (
             self.open_output_button,
             self.clear_log_button,
             self.clear_cache_button,
-            self.install_tools_button,
+            *self.install_tool_buttons.values(),
         )
 
         tk.Frame(action_button_area, bg=_BORDER, height=1).pack(
@@ -2264,12 +2440,75 @@ class DaisyApp:
              "清空当前窗口的运行日志。"),
             (self.open_output_button,
              "在资源管理器中打开当前任务对应的结果目录。"),
-            (self.install_tools_button,
-             "经确认后用 WinGet 安装环境监测发现的缺失工具。"),
         ):
             attach_tooltip(button, tooltip)
+        for tool_name, button in self.install_tool_buttons.items():
+            display_name = _INSTALLABLE_TOOL_PACKAGES[tool_name][0]
+            attach_tooltip(
+                button,
+                f"仅通过 WinGet 下载并安装 {display_name}；不会连带安装"
+                "其它缺失工具。",
+            )
         action_button_area.bind("<Configure>", self._layout_action_buttons)
         self.root.after_idle(self._layout_action_buttons)
+
+    def _layout_task_toolbar(
+        self, event: tk.Event | None = None,
+    ) -> None:
+        """按顶部可用宽度换行，并只在同一行内显示分组竖线。"""
+        for button in self.task_toolbar_buttons.values():
+            button.grid_forget()
+        for separator in self.task_toolbar_separators.values():
+            separator.grid_forget()
+        width = (
+            int(event.width) if event is not None
+            else self.task_toolbar_body.winfo_width()
+        )
+        if width <= 1:
+            width = max(240, self.root.winfo_width() - 24)
+        item_widths = tuple(
+            self.task_toolbar_buttons[key].winfo_reqwidth()
+            + (18 if key in _TASK_TOOLBAR_SEPARATOR_AFTER else 0)
+            for key in self.task_toolbar_item_keys
+        )
+        rows = action_button_row_indexes(
+            item_widths, max(240, width), gap=6)
+        for row_index, indexes in enumerate(rows):
+            column = 0
+            for item_position, item_index in enumerate(indexes):
+                task_key = self.task_toolbar_item_keys[item_index]
+                self.task_toolbar_buttons[task_key].grid(
+                    row=row_index, column=column, sticky="w",
+                    padx=(0, 6), pady=(4 if row_index else 0, 0),
+                )
+                column += 1
+                if (task_key in self.task_toolbar_separators
+                        and item_position < len(indexes) - 1):
+                    self.task_toolbar_separators[task_key].grid(
+                        row=row_index, column=column, sticky="ns",
+                        padx=(2, 8), pady=(
+                            7 if row_index else 3,
+                            3,
+                        ),
+                    )
+                    column += 1
+
+    def _set_task_toolbar_expanded(self, expanded: bool) -> None:
+        self.task_toolbar_expanded = expanded
+        if expanded:
+            if not self.task_toolbar_body.winfo_manager():
+                self.task_toolbar_body.pack(
+                    fill="x", padx=12, pady=(0, 8))
+                self.root.after_idle(self._layout_task_toolbar)
+        else:
+            self.task_toolbar_body.pack_forget()
+        self.task_toolbar_toggle_button.configure(
+            text="收起菜单" if expanded else "展开菜单")
+        if hasattr(self, "task_toolbar_visible_var"):
+            self.task_toolbar_visible_var.set(expanded)
+
+    def _toggle_task_toolbar(self) -> None:
+        self._set_task_toolbar_expanded(not self.task_toolbar_expanded)
 
     def _normal_minimum_size(self) -> tuple[int, int]:
         width, height = self.normal_min_size
@@ -2291,8 +2530,12 @@ class DaisyApp:
             self.clear_log_button,
             self.clear_cache_button,
         ]
-        if self.install_tools_visible:
-            visible_utilities.append(self.install_tools_button)
+        if self.task.key == "env_check":
+            visible_utilities.extend(
+                self.install_tool_buttons[name]
+                for name in self.missing_installable_tools
+                if name in self.install_tool_buttons
+            )
 
         width = (
             int(event.width) if event is not None
@@ -2413,6 +2656,7 @@ class DaisyApp:
             self.root.update_idletasks()
 
         self.colour_strip.pack_forget()
+        self.task_toolbar_panel.pack_forget()
         self._mini_progress_was_expanded = self.progress_expanded
         self._set_progress_expanded(True)
         self.task_card.grid_remove()
@@ -2453,6 +2697,8 @@ class DaisyApp:
         self.content.pack_configure(
             padx=self.content_pad, pady=self.content_pad)
         self.colour_strip.pack(fill="x", side="top", before=self.body)
+        self.task_toolbar_panel.pack(
+            fill="x", side="top", before=self.body)
         self.mini_mode = False
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
@@ -2477,10 +2723,43 @@ class DaisyApp:
         if self.values:
             self.saved_values[self.task.key] = self._collect_values()
 
-    def _set_task_menu_state(self, state: str) -> None:
-        """运行期间统一锁定或恢复顶部任务菜单。"""
+    def _refresh_task_navigation_selection(self) -> None:
+        """同步下拉菜单与按钮菜单的当前任务高亮。"""
+        for task_key, (task_menu, entry_index) in (
+                self.task_menu_entries.items()):
+            section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
+            (_style_prefix, accent_colour, deep_colour,
+             soft_colour) = _TASK_MENU_SECTION_COLOURS[section_label]
+            selected = task_key == self.task.key
+            task_menu.entryconfigure(
+                entry_index,
+                background=soft_colour if selected else _SURFACE,
+                foreground=deep_colour if selected else _TEXT,
+                activebackground=accent_colour,
+                activeforeground="white",
+                font=(
+                    ("Microsoft YaHei UI", 9, "bold")
+                    if selected else ("Microsoft YaHei UI", 9)
+                ),
+            )
+        for task_key, button in self.task_toolbar_buttons.items():
+            if task_key == _TASK_TOOLBAR_STORAGE_KEY:
+                continue
+            section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
+            style_prefix = _TASK_MENU_SECTION_COLOURS[section_label][0]
+            selected_suffix = (
+                "Selected" if task_key == self.task.key else ""
+            )
+            button.configure(
+                style=f"{style_prefix}.TopTask{selected_suffix}.TButton")
+
+    def _set_task_navigation_state(self, state: str) -> None:
+        """运行期间统一锁定或恢复两套顶部任务入口。"""
         for task_menu, entry_index in self.task_menu_entries.values():
             task_menu.entryconfigure(entry_index, state=state)
+        for task_key, button in self.task_toolbar_buttons.items():
+            if task_key != _TASK_TOOLBAR_STORAGE_KEY:
+                button.configure(state=state)
 
     def _select_task(self, task_key: str, save_current: bool = True) -> None:
         if save_current:
@@ -2488,6 +2767,7 @@ class DaisyApp:
         self.task = TASK_BY_KEY[task_key]
         if hasattr(self, "task_menu_var"):
             self.task_menu_var.set(task_key)
+        self._refresh_task_navigation_selection()
         self._apply_task_accent(task_key)
         self.title_label.configure(text=self.task.title)
         self.desc_label.configure(text=self.task.description)
@@ -2497,13 +2777,13 @@ class DaisyApp:
         if task_key == _PROJECT_SELF_TEST_KEY:
             missing_tests = project_self_test_missing_files()
             self.run_button.configure(
-                text=("项目自检不可用" if missing_tests
-                      else "运行项目自检"),
+                text=("数据库自检不可用" if missing_tests
+                      else "运行数据库自检"),
                 state="disabled" if missing_tests or active else "normal",
             )
         elif task_key == "env_check":
             self.run_button.configure(
-                text="开始环境监测",
+                text="开始环境检测",
                 state="disabled" if active else "normal",
             )
         else:
@@ -2543,15 +2823,15 @@ class DaisyApp:
 
         if self.task.key == _PROJECT_SELF_TEST_KEY:
             info = tk.Frame(
-                self.form_inner, bg=_GREEN_SOFT,
-                highlightbackground=_GREEN, highlightthickness=1,
+                self.form_inner, bg=_AMBER_SOFT,
+                highlightbackground=_AMBER, highlightthickness=1,
             )
             info.grid(
                 row=0, column=0, columnspan=2, sticky="ew",
                 padx=form_pad, pady=(18, 8),
             )
             tk.Label(
-                info, text="无需设置", bg=_GREEN_SOFT, fg=_GREEN_DEEP,
+                info, text="无需设置", bg=_AMBER_SOFT, fg=_AMBER_DEEP,
                 font=("Microsoft YaHei UI", 10, "bold"), anchor="w",
             ).pack(fill="x", padx=14, pady=(11, 3))
             info_text = tk.Label(
@@ -2560,7 +2840,7 @@ class DaisyApp:
                     "将运行 Script\\Test 中的全部 unittest。测试夹具只写入"
                     "系统临时目录，不读取表单档案，也不生成正式快照。"
                 ),
-                bg=_GREEN_SOFT, fg=_TEXT,
+                bg=_AMBER_SOFT, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9), anchor="w",
                 justify="left", wraplength=720,
             )
@@ -2862,7 +3142,7 @@ class DaisyApp:
         if self.task.key == _PROJECT_SELF_TEST_KEY:
             self.root.clipboard_clear()
             self.root.clipboard_append(project_self_test_preview())
-            self._set_status("项目自检命令已复制到剪贴板。")
+            self._set_status("数据库自检命令已复制到剪贴板。")
             return
         effective, _sources = self._effective_values()
         previews = preview_commands(self.task.key, effective)
@@ -3001,21 +3281,19 @@ class DaisyApp:
         self._refresh_environment_actions()
 
     def _refresh_environment_actions(self) -> None:
-        self.install_tools_visible = (
-            self.task.key == "env_check"
-            and bool(self.missing_installable_tools)
+        action_state = (
+            "normal"
+            if self.process is None
+            and not self.worker_starting
+            and not self.run_jobs
+            else "disabled"
         )
-        if self.install_tools_visible:
-            count = len(self.missing_installable_tools)
-            self.install_tools_button.configure(
-                text=f"下载并安装缺失工具（{count}）",
-                state=(
-                    "normal"
-                    if self.process is None
-                    and not self.worker_starting
-                    and not self.run_jobs
-                    else "disabled"
-                ),
+        missing = set(self.missing_installable_tools)
+        for tool_name, button in self.install_tool_buttons.items():
+            display_name = _INSTALLABLE_TOOL_PACKAGES[tool_name][0]
+            button.configure(
+                text=f"下载并安装 {display_name}",
+                state=action_state if tool_name in missing else "disabled",
             )
         self.root.after_idle(self._layout_action_buttons)
 
@@ -3176,7 +3454,7 @@ class DaisyApp:
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         title = (
-            "项目自检" if self_test else
+            "数据库自检" if self_test else
             "安装缺失工具" if installing else
             self.task.title
         )
@@ -3285,7 +3563,7 @@ class DaisyApp:
             style, colour, detail = (
                 "Success", _SUCCESS,
                 (
-                    f"项目自检通过 · 总用时 {_format_duration(elapsed)}"
+                    f"数据库自检通过 · 总用时 {_format_duration(elapsed)}"
                     if self_test else
                     f"安装命令完成 · 用时 {_format_duration(elapsed)}"
                     if installing else
@@ -3365,13 +3643,14 @@ class DaisyApp:
         self.run_results = []
         self.run_queue_started = time.monotonic()
         self.run_button.configure(state="disabled")
-        self.install_tools_button.configure(state="disabled")
+        for button in self.install_tool_buttons.values():
+            button.configure(state="disabled")
         self._set_stop_state("disabled")
         self._prepare_queue_progress()
         self._refresh_mini_action()
-        self._set_task_menu_state("disabled")
+        self._set_task_navigation_state("disabled")
         if task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("正在启动项目自检…")
+            self._set_status("正在启动数据库自检…")
         else:
             self._set_status(
                 f"队列已准备：{len(jobs)} 项。" if len(jobs) > 1
@@ -3385,36 +3664,36 @@ class DaisyApp:
         missing = project_self_test_missing_files()
         if missing:
             messagebox.showerror(
-                "项目自检不可用",
+                "数据库自检不可用",
                 "缺少正式测试文件：\n"
                 + "\n".join("• " + name for name in missing),
                 parent=self.root,
             )
             return
         confirmed = messagebox.askyesno(
-            "运行项目自检",
+            "运行数据库自检",
             f"将运行 Script\\Test 中的全部 unittest；当前版本 {_version()}。"
             "\n\n"
             "测试不会使用 GUI 表单中的档案目录；夹具在系统临时目录中"
             "创建并清理。部分集成测试会调用 ExifTool、ffprobe 与 7-Zip，"
-            "建议先完成 ENV-00 环境监测。\n\n确定继续吗？",
+            "建议先完成 ENV-01 环境检测。\n\n确定继续吗？",
             icon="question", parent=self.root,
         )
         if not confirmed:
             return
         self._begin_run_jobs(
-            _PROJECT_SELF_TEST_KEY, [RunJob("项目自检", {})])
+            _PROJECT_SELF_TEST_KEY, [RunJob("数据库自检", {})])
 
-    def _install_missing_tools(self) -> None:
+    def _install_missing_tool(self, tool_name: str) -> None:
+        """仅安装环境检测页明确选择的一项白名单工具。"""
         if self.process is not None or self.run_jobs or self.worker_starting:
             return
-        tool_names = tuple(
-            name for name in self.missing_installable_tools
-            if name in _INSTALLABLE_TOOL_PACKAGES)
-        if not tool_names:
+        if (tool_name not in _INSTALLABLE_TOOL_PACKAGES
+                or tool_name not in self.missing_installable_tools):
             messagebox.showinfo(
                 "没有可安装项",
-                "请先运行环境监测；当前没有监测到可由 GUI 安装的缺失工具。",
+                "请先运行环境检测；当前没有检测到该工具缺失，或该工具"
+                "不在 GUI 安装白名单中。",
                 parent=self.root,
             )
             return
@@ -3427,30 +3706,23 @@ class DaisyApp:
                 parent=self.root,
             )
             return
-        package_lines = [
-            f"• {_INSTALLABLE_TOOL_PACKAGES[name][0]}"
-            f"（{_INSTALLABLE_TOOL_PACKAGES[name][1]}）"
-            for name in tool_names
-        ]
+        display_name, package_id = _INSTALLABLE_TOOL_PACKAGES[tool_name]
         confirmed = messagebox.askyesno(
-            "下载并安装缺失工具",
-            "将通过 WinGet 的 winget 源逐项下载并安装：\n"
-            + "\n".join(package_lines)
-            + "\n\n此操作会修改本机软件安装状态，并接受对应的"
+            f"下载并安装 {display_name}",
+            f"将只通过 WinGet 的 winget 源下载并安装：\n"
+            f"• {display_name}（{package_id}）"
+            "\n\n此操作会修改本机软件安装状态，并接受对应的"
             "源协议与软件包协议。安装输出会显示在运行日志中；"
             "完成后 DAISY 将自动重新检测环境。\n\n确定继续吗？",
             icon="question", parent=self.root,
         )
         if not confirmed:
             return
-        jobs = [
-            RunJob(
-                _INSTALLABLE_TOOL_PACKAGES[name][0],
-                {"tool_name": name, "winget_path": winget},
-            )
-            for name in tool_names
-        ]
-        self._begin_run_jobs(_DEPENDENCY_INSTALL_KEY, jobs)
+        job = RunJob(
+            display_name,
+            {"tool_name": tool_name, "winget_path": winget},
+        )
+        self._begin_run_jobs(_DEPENDENCY_INSTALL_KEY, [job])
 
     def _run(self) -> None:
         if self.process is not None or self.run_jobs:
@@ -3505,7 +3777,7 @@ class DaisyApp:
                 f"队列 {next_index + 1}/{total} · 正在启动 {job.label}…"
             )
         elif task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("项目自检运行中…")
+            self._set_status("数据库自检运行中…")
         elif task_key == _DEPENDENCY_INSTALL_KEY:
             self._set_status(
                 f"正在下载并安装 {job.label}…")
@@ -3673,7 +3945,7 @@ class DaisyApp:
             if returncode is None:
                 self._set_status(
                     (
-                        "项目自检未能启动。" if self_test else
+                        "数据库自检未能启动。" if self_test else
                         "安装命令未能启动。" if installing else
                         "任务未能启动。"
                     ),
@@ -3682,7 +3954,7 @@ class DaisyApp:
             elif self.stop_requested:
                 self._set_status(
                     (
-                        "项目自检已停止；请检查日志。"
+                        "数据库自检已停止；请检查日志。"
                         if self_test else
                         "安装已停止；请检查日志与本机软件状态。"
                         if installing else
@@ -3693,7 +3965,7 @@ class DaisyApp:
             elif returncode == 0:
                 self._set_status(
                     (
-                        "项目自检通过。" if self_test else
+                        "数据库自检通过。" if self_test else
                         "安装命令完成。" if installing else
                         "任务完成。"
                     ),
@@ -3704,7 +3976,7 @@ class DaisyApp:
             else:
                 self._set_status(
                     (
-                        "项目自检失败；请查看日志。"
+                        "数据库自检失败；请查看日志。"
                         if self_test else
                         "安装失败；请查看日志。"
                         if installing else
@@ -3746,7 +4018,7 @@ class DaisyApp:
                 else "normal"
             ))
         self._set_stop_state("disabled")
-        self._set_task_menu_state("normal")
+        self._set_task_navigation_state("normal")
         self.process_task_key = None
         self.stop_requested = False
         self.run_jobs = []
@@ -3796,7 +4068,7 @@ class DaisyApp:
         item = (
             f"队列 {self.run_job_index + 1}/{total}「{job.label}」"
             if total > 1 and job else
-            ("项目自检" if self_test else "任务"))
+            ("数据库自检" if self_test else "任务"))
         if returncode is None:
             if total > 1:
                 self._append_log(f"\n{item}未能启动。\n", "error")
@@ -3832,7 +4104,7 @@ class DaisyApp:
             return
         if self.process_task_key == _PROJECT_SELF_TEST_KEY:
             prompt = (
-                "这会中断当前项目自检；测试夹具仍会由测试清理流程处理。"
+                "这会中断当前数据库自检；测试夹具仍会由测试清理流程处理。"
                 "\n\n确定停止吗？"
             )
         elif self.process_task_key == _DEPENDENCY_INSTALL_KEY:

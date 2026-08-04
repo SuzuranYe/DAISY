@@ -33,28 +33,20 @@ class TestGuiArguments(unittest.TestCase):
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
         self.assertEqual(
-            gui.TASK_BY_KEY["env_check"].nav, "ENV-00  环境监测")
+            gui.TASK_BY_KEY["env_check"].nav, "ENV-01  环境检测")
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "ENV-01  项目自检",
+            "DB-91  数据库自检",
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
-        self.assertEqual(
+        self.assertNotEqual(
             gui._NAV_COLOURS["env_check"],
             gui._NAV_COLOURS["full_scan"],
         )
-        self.assertEqual(
-            gui._NAV_COLOURS["full_scan"],
-            gui._NAV_COLOURS["quick_scan"],
-        )
-        self.assertNotEqual(
-            gui._NAV_COLOURS["quick_scan"],
-            gui._NAV_COLOURS["check_format"],
-        )
-        for task_key in ("check_hash", "diff", "export_report"):
+        for task_key in gui._TASK_MENU_SECTIONS[1][1]:
             self.assertEqual(
-                gui._NAV_COLOURS["check_format"],
+                gui._NAV_COLOURS["full_scan"],
                 gui._NAV_COLOURS[task_key],
             )
         self.assertEqual(
@@ -380,7 +372,7 @@ class TestGuiArguments(unittest.TestCase):
         with self.assertRaises(ValueError):
             gui.dependency_install_command("arbitrary")
 
-    def test_gui_dependency_install_requires_confirmation_and_builds_queue(
+    def test_gui_dependency_install_targets_only_selected_missing_tool(
             self):
         app = object.__new__(gui.DaisyApp)
         app.process = None
@@ -397,13 +389,13 @@ class TestGuiArguments(unittest.TestCase):
                 return_value=r"C:\WindowsApps\winget.exe"), \
                 patch.object(
                     gui.messagebox, "askyesno", return_value=True):
-            app._install_missing_tools()
+            app._install_missing_tool("ffprobe")
 
         self.assertEqual(started[0][0], gui._DEPENDENCY_INSTALL_KEY)
         jobs = started[0][1]
         self.assertEqual(
             [job.values["tool_name"] for job in jobs],
-            ["exiftool", "ffprobe"],
+            ["ffprobe"],
         )
         self.assertTrue(all(
             job.values["winget_path"] == r"C:\WindowsApps\winget.exe"
@@ -415,8 +407,52 @@ class TestGuiArguments(unittest.TestCase):
                 return_value=r"C:\WindowsApps\winget.exe"), \
                 patch.object(
                     gui.messagebox, "askyesno", return_value=False):
-            app._install_missing_tools()
+            app._install_missing_tool("exiftool")
         self.assertEqual(started, [])
+
+    def test_environment_install_buttons_are_independent(self):
+        class ButtonProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        class RootProbe:
+            @staticmethod
+            def after_idle(_callback):
+                pass
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.missing_installable_tools = ("ffprobe", "sevenzip")
+        app.install_tool_buttons = {
+            name: ButtonProbe()
+            for name in gui._INSTALLABLE_TOOL_PACKAGES
+        }
+
+        app._refresh_environment_actions()
+
+        self.assertEqual(
+            app.install_tool_buttons["exiftool"].options["state"],
+            "disabled",
+        )
+        for name in ("ffprobe", "sevenzip"):
+            button = app.install_tool_buttons[name]
+            display = gui._INSTALLABLE_TOOL_PACKAGES[name][0]
+            self.assertEqual(button.options["state"], "normal")
+            self.assertEqual(
+                button.options["text"], f"下载并安装 {display}")
+
+        app.process = object()
+        app._refresh_environment_actions()
+        self.assertTrue(all(
+            button.options["state"] == "disabled"
+            for button in app.install_tool_buttons.values()
+        ))
 
     def test_environment_summary_displays_local_versions(self):
         cache = {
@@ -529,12 +565,8 @@ class TestGuiArguments(unittest.TestCase):
     def test_task_accent_colours_follow_workflow_group(self):
         green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
         amber = (gui._AMBER_DARK, gui._AMBER_DEEP, gui._AMBER)
-        for task_key in (
-                "env_check", gui._PROJECT_SELF_TEST_KEY,
-                "full_scan", "quick_scan"):
-            self.assertEqual(gui.task_accent_colours(task_key), green)
-        for task_key in (
-                "check_format", "check_hash", "diff", "export_report"):
+        self.assertEqual(gui.task_accent_colours("env_check"), green)
+        for task_key in gui._TASK_MENU_SECTIONS[1][1]:
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
     def test_top_task_menus_use_theme_grouping(self):
@@ -543,8 +575,14 @@ class TestGuiArguments(unittest.TestCase):
             ["环境", "数据库", "硬盘"],
         )
         self.assertNotIn("full_scan", gui._TASK_MENU_SECTIONS[0][1])
-        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][:2],
-                         ("full_scan", "diff"))
+        self.assertNotIn("quick_scan", gui._TASK_MENU_SECTIONS[0][1])
+        self.assertEqual(gui._TASK_MENU_SECTIONS[0][1], ("env_check",))
+        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][:3],
+                         ("full_scan", "quick_scan", "diff"))
+        self.assertEqual(
+            gui._TASK_MENU_SECTIONS[1][1][-1],
+            gui._PROJECT_SELF_TEST_KEY,
+        )
         self.assertEqual(gui._TASK_MENU_SECTIONS[-1][1], ())
         self.assertEqual(
             tuple(
@@ -574,6 +612,7 @@ class TestGuiArguments(unittest.TestCase):
         class MenuProbe:
             def __init__(self, parent, **_options):
                 self.parent = parent
+                self.options = _options
                 self.entries = []
 
             def _add(self, kind, options):
@@ -626,20 +665,41 @@ class TestGuiArguments(unittest.TestCase):
             ["文件", "环境", "数据库", "硬盘", "视图", "帮助"],
         )
         self.assertEqual(
-            [entry["label"] for entry in app.task_menus["环境"].entries],
+            [
+                entry["label"]
+                for entry in app.task_menus["环境"].entries
+                if entry["kind"] == "radiobutton"
+            ],
             [gui.TASK_BY_KEY[key].nav
              for key in gui._TASK_MENU_SECTIONS[0][1]],
         )
         self.assertEqual(
+            sum(entry["kind"] == "separator"
+                for entry in app.task_menus["数据库"].entries),
+            4,
+        )
+        self.assertEqual(
+            app.task_menus["数据库"].options["activebackground"],
+            gui._AMBER,
+        )
+        self.assertEqual(
             app.task_menus["硬盘"].entries[0]["state"], "disabled")
 
-    def test_top_task_menu_entries_lock_together(self):
+    def test_top_task_navigation_entries_lock_together(self):
         class MenuProbe:
             def __init__(self):
                 self.states = {}
 
             def entryconfigure(self, index, **options):
                 self.states[index] = options["state"]
+
+        class ButtonProbe:
+            def __init__(self):
+                self.states = []
+
+            def configure(self, **options):
+                if "state" in options:
+                    self.states.append(options["state"])
 
         app = object.__new__(gui.DaisyApp)
         environment_menu = MenuProbe()
@@ -648,12 +708,166 @@ class TestGuiArguments(unittest.TestCase):
             "env_check": (environment_menu, 0),
             "full_scan": (database_menu, 2),
         }
-        app._set_task_menu_state("disabled")
+        environment_button = ButtonProbe()
+        database_button = ButtonProbe()
+        storage_button = ButtonProbe()
+        app.task_toolbar_buttons = {
+            "env_check": environment_button,
+            "full_scan": database_button,
+            gui._TASK_TOOLBAR_STORAGE_KEY: storage_button,
+        }
+        app._set_task_navigation_state("disabled")
         self.assertEqual(environment_menu.states, {0: "disabled"})
         self.assertEqual(database_menu.states, {2: "disabled"})
-        app._set_task_menu_state("normal")
+        self.assertEqual(environment_button.states, ["disabled"])
+        self.assertEqual(database_button.states, ["disabled"])
+        self.assertEqual(storage_button.states, [])
+        app._set_task_navigation_state("normal")
         self.assertEqual(environment_menu.states, {0: "normal"})
         self.assertEqual(database_menu.states, {2: "normal"})
+        self.assertEqual(environment_button.states[-1], "normal")
+        self.assertEqual(database_button.states[-1], "normal")
+
+    def test_top_task_navigation_selection_uses_theme_highlight(self):
+        class MenuProbe:
+            def __init__(self):
+                self.options = {}
+
+            def entryconfigure(self, index, **options):
+                self.options[index] = options
+
+        class ButtonProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        app = object.__new__(gui.DaisyApp)
+        app.task = gui.TASK_BY_KEY["full_scan"]
+        environment_menu = MenuProbe()
+        database_menu = MenuProbe()
+        app.task_menu_entries = {
+            "env_check": (environment_menu, 0),
+            "full_scan": (database_menu, 1),
+        }
+        environment_button = ButtonProbe()
+        database_button = ButtonProbe()
+        app.task_toolbar_buttons = {
+            "env_check": environment_button,
+            "full_scan": database_button,
+            gui._TASK_TOOLBAR_STORAGE_KEY: ButtonProbe(),
+        }
+        app._refresh_task_navigation_selection()
+        self.assertEqual(
+            environment_menu.options[0]["background"], gui._SURFACE)
+        self.assertEqual(
+            database_menu.options[1]["background"], gui._AMBER_SOFT)
+        self.assertEqual(
+            database_menu.options[1]["foreground"], gui._AMBER_DEEP)
+        self.assertEqual(
+            environment_button.options["style"], "Env.TopTask.TButton")
+        self.assertEqual(
+            database_button.options["style"],
+            "Database.TopTaskSelected.TButton",
+        )
+
+    def test_top_task_toolbar_collapses_without_changing_selection(self):
+        class BodyProbe:
+            def __init__(self):
+                self.manager = "pack"
+
+            def winfo_manager(self):
+                return self.manager
+
+            def pack(self, **_options):
+                self.manager = "pack"
+
+            def pack_forget(self):
+                self.manager = ""
+
+        class ValueProbe:
+            def set(self, value):
+                self.value = value
+
+        class ButtonProbe:
+            def configure(self, **options):
+                self.text = options["text"]
+
+        class RootProbe:
+            def after_idle(self, _callback):
+                pass
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.task_toolbar_expanded = True
+        app.task_toolbar_body = BodyProbe()
+        app.task_toolbar_toggle_button = ButtonProbe()
+        app.task_toolbar_visible_var = ValueProbe()
+        app._set_task_toolbar_expanded(False)
+        self.assertEqual(app.task_toolbar_body.manager, "")
+        self.assertEqual(app.task_toolbar_toggle_button.text, "展开菜单")
+        self.assertFalse(app.task_toolbar_visible_var.value)
+        app._set_task_toolbar_expanded(True)
+        self.assertEqual(app.task_toolbar_body.manager, "pack")
+        self.assertEqual(app.task_toolbar_toggle_button.text, "收起菜单")
+        self.assertTrue(app.task_toolbar_visible_var.value)
+
+    def test_top_task_toolbar_wraps_without_overlapping_buttons(self):
+        class WidgetProbe:
+            def __init__(self, width=2):
+                self.width = width
+                self.placement = None
+
+            def winfo_reqwidth(self):
+                return self.width
+
+            def grid_forget(self):
+                self.placement = None
+
+            def grid(self, **options):
+                self.placement = (options["row"], options["column"])
+
+        class BodyProbe:
+            @staticmethod
+            def winfo_width():
+                return 1
+
+        class RootProbe:
+            @staticmethod
+            def winfo_width():
+                return 760
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.task_toolbar_body = BodyProbe()
+        app.task_toolbar_item_keys = (
+            *gui._TASK_MENU_ORDER, gui._TASK_TOOLBAR_STORAGE_KEY,
+        )
+        widths = (118, 112, 126, 118, 145, 156, 151, 108, 112)
+        app.task_toolbar_buttons = {
+            key: WidgetProbe(width)
+            for key, width in zip(
+                app.task_toolbar_item_keys, widths, strict=True)
+        }
+        app.task_toolbar_separators = {
+            key: WidgetProbe()
+            for key in gui._TASK_TOOLBAR_SEPARATOR_AFTER
+        }
+        row_counts = []
+        for available in (1600, 1000, 760, 520):
+            app._layout_task_toolbar(
+                types.SimpleNamespace(width=available))
+            placements = [
+                button.placement
+                for button in app.task_toolbar_buttons.values()
+            ]
+            self.assertNotIn(None, placements)
+            self.assertEqual(len(placements), len(set(placements)))
+            row_counts.append(len({row for row, _column in placements}))
+        self.assertEqual(row_counts[0], 1)
+        self.assertGreater(row_counts[-1], row_counts[0])
+        self.assertEqual(row_counts, sorted(row_counts))
 
     def test_queue_progress_is_persistent_for_single_and_multiple_jobs(self):
         class WidgetProbe:
@@ -686,7 +900,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
-            gui.status_badge_background("full_scan"), gui._GREEN_DARK)
+            gui.status_badge_background("full_scan"), gui._AMBER_DARK)
         self.assertEqual(
             gui.status_badge_background("diff"), gui._AMBER_DARK)
         self.assertEqual(
@@ -703,14 +917,14 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
-                "ENV-00  环境监测",
-                "ENV-01  项目自检",
-                "ENV-12  快速扫描",
-                "ENV-11  完整扫描",
+                "ENV-01  环境检测",
+                "DB-11  完整扫描",
+                "DB-12  快速扫描",
                 "DB-21  快照变更分析",
                 "DB-31  内容一致性核验",
                 "DB-32  文件结构核验",
                 "DB-41  导出报告",
+                "DB-91  数据库自检",
             ],
         )
         self.assertEqual(
