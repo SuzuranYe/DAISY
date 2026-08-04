@@ -689,6 +689,15 @@ class TestGuiArguments(unittest.TestCase):
             primary["background"], gui._UNIFIED_ACTION_BACKGROUND)
         self.assertEqual(
             primary["foreground"], gui._UNIFIED_ACTION_FOREGROUND)
+        for name in ("Stop.TButton", "MiniStop.TButton"):
+            stop = style.configurations[name]
+            self.assertEqual(stop["background"], gui._AMBER_SOFT)
+            self.assertEqual(stop["foreground"], gui._AMBER_DEEP)
+            self.assertEqual(stop["bordercolor"], gui._AMBER_DARK)
+            self.assertEqual(
+                style.mappings[name]["background"],
+                [("active", gui._AMBER)],
+            )
 
     def test_toolbar_selection_clears_button_focus(self):
         class RootProbe:
@@ -1219,6 +1228,39 @@ class TestGuiArguments(unittest.TestCase):
             gui.status_badge_background("diff", gui._DANGER),
             gui._DANGER,
         )
+
+    def test_result_directory_offer_requires_completed_business_task(self):
+        for returncodes in ([0], [1], [0, 1]):
+            self.assertTrue(gui.should_offer_result_directory(
+                returncodes, stopped=False, maintenance=False))
+        for returncodes, stopped, maintenance in (
+                ([], False, False),
+                ([None], False, False),
+                ([2], False, False),
+                ([0], True, False),
+                ([0], False, True)):
+            self.assertFalse(gui.should_offer_result_directory(
+                returncodes, stopped=stopped, maintenance=maintenance))
+
+    def test_completed_task_can_open_existing_result_directory(self):
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        path = r"C:\Result"
+        with (
+            patch.object(gui.os.path, "isdir", return_value=True),
+            patch.object(gui.messagebox, "askyesno", return_value=True) as ask,
+            patch.object(gui.os, "startfile") as start,
+        ):
+            app._offer_open_result_directory(path)
+        ask.assert_called_once()
+        start.assert_called_once_with(path)
+
+        with (
+            patch.object(gui.os.path, "isdir", return_value=False),
+            patch.object(gui.messagebox, "askyesno") as missing_ask,
+        ):
+            app._offer_open_result_directory(path)
+        missing_ask.assert_not_called()
 
     def test_task_titles_match_menu_names(self):
         for task in gui.TASKS:

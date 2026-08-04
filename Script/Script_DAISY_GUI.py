@@ -148,6 +148,21 @@ def status_badge_background(
     )
 
 
+def should_offer_result_directory(
+    returncodes: list[int | None] | tuple[int | None, ...],
+    *,
+    stopped: bool,
+    maintenance: bool,
+) -> bool:
+    """仅为已完成且可能生成正式结果的任务提供目录入口。"""
+    return (
+        bool(returncodes)
+        and not stopped
+        and not maintenance
+        and all(code in (0, 1) for code in returncodes)
+    )
+
+
 def parse_gui_stream(
     buffer: str, text: str, *, final: bool = False,
 ) -> tuple[str, list[tuple[str, object]]]:
@@ -1791,13 +1806,14 @@ class DaisyApp:
             foreground=[("disabled", "#f5f8f6")],
         )
         style.configure(
-            "Stop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
+            "Stop.TButton", background=_AMBER_SOFT,
+            foreground=_AMBER_DEEP,
             padding=(15, 8), font=("Microsoft YaHei UI", 10, "bold"),
-            borderwidth=1, bordercolor=_DANGER_BORDER,
-            lightcolor=_DANGER_BORDER, darkcolor=_DANGER_BORDER,
+            borderwidth=1, bordercolor=_AMBER_DARK,
+            lightcolor=_AMBER_DARK, darkcolor=_AMBER_DARK,
         )
         style.map(
-            "Stop.TButton", background=[("active", _DANGER_HOVER)])
+            "Stop.TButton", background=[("active", _AMBER)])
         style.configure(
             "Secondary.TButton", background=_CONTROL, foreground=_TEXT,
             padding=(12, 8), font=("Microsoft YaHei UI", 10),
@@ -1881,13 +1897,14 @@ class DaisyApp:
                 top_task_layout,
             )
         style.configure(
-            "MiniStop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
+            "MiniStop.TButton", background=_AMBER_SOFT,
+            foreground=_AMBER_DEEP,
             padding=(9, 4), font=("Microsoft YaHei UI", 8, "bold"),
-            borderwidth=1, bordercolor=_DANGER_BORDER,
-            lightcolor=_DANGER_BORDER, darkcolor=_DANGER_BORDER,
+            borderwidth=1, bordercolor=_AMBER_DARK,
+            lightcolor=_AMBER_DARK, darkcolor=_AMBER_DARK,
         )
         style.map(
-            "MiniStop.TButton", background=[("active", _DANGER_HOVER)])
+            "MiniStop.TButton", background=[("active", _AMBER)])
         style.configure(
             "Daisy.Vertical.TScrollbar",
             background=_LOG_HEADER, troughcolor=_CONTROL,
@@ -3249,6 +3266,21 @@ class DaisyApp:
             messagebox.showerror(
                 "无法打开目录", str(exc), parent=self.root)
 
+    def _offer_open_result_directory(self, path: str) -> None:
+        """任务完成后询问是否打开本次结果目录。"""
+        if not os.path.isdir(path):
+            return
+        if not messagebox.askyesno(
+                "任务已完成",
+                f"是否打开结果文件夹？\n\n{path}",
+                icon="question", parent=self.root):
+            return
+        try:
+            os.startfile(path)
+        except OSError as exc:
+            messagebox.showerror(
+                "无法打开结果文件夹", str(exc), parent=self.root)
+
     def _clear_log(self) -> None:
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
@@ -3980,6 +4012,14 @@ class DaisyApp:
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         stopped = self.stop_requested
+        offer_result_directory = should_offer_result_directory(
+            self.run_results,
+            stopped=stopped,
+            maintenance=self_test or installing,
+        )
+        result_directory = (
+            self._output_path() if offer_result_directory else ""
+        )
         if total <= 1:
             if returncode is None:
                 self._set_status(
@@ -4080,6 +4120,10 @@ class DaisyApp:
                 "meta",
             )
             self.root.after(250, self._run)
+        elif result_directory:
+            self.root.after_idle(
+                lambda path=result_directory:
+                self._offer_open_result_directory(path))
 
 
     def _finish_ui(
