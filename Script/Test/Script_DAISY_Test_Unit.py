@@ -500,6 +500,23 @@ class TestGuiArguments(unittest.TestCase):
             self.assertLessEqual(occupied, 380)
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
 
+    def test_top_task_buttons_flow_from_left(self):
+        widths = (136, 130, 144, 136, 163, 174, 169, 126, 130)
+        layouts = {
+            available: gui.flow_button_row_indexes(
+                widths, available, gap=6)
+            for available in (1000, 760, 650, 520)
+        }
+        for rows in layouts.values():
+            self.assertEqual(
+                tuple(index for row in rows for index in row),
+                tuple(range(len(widths))),
+            )
+        self.assertEqual(layouts[1000][0], (0, 1, 2, 3, 4, 5))
+        self.assertEqual(layouts[760][0], (0, 1, 2, 3, 4))
+        self.assertEqual(layouts[650][0], (0, 1, 2, 3))
+        self.assertEqual(layouts[520][0], (0, 1, 2))
+
     def test_full_hash_independent_sample_is_explained_and_advanced(self):
         fields = {
             spec.key: spec for spec in gui.TASK_BY_KEY["full_scan"].fields
@@ -685,6 +702,56 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.task_menus["硬盘"].entries[0]["state"], "disabled")
 
+    def test_idle_close_requires_confirmation(self):
+        class RootProbe:
+            def __init__(self):
+                self.destroy_calls = 0
+
+            def destroy(self):
+                self.destroy_calls += 1
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.process = None
+        app.run_jobs = []
+
+        with patch.object(
+                gui.messagebox, "askyesno", side_effect=(False, True)) \
+                as confirm:
+            app._on_close()
+            self.assertEqual(app.root.destroy_calls, 0)
+            app._on_close()
+
+        self.assertEqual(app.root.destroy_calls, 1)
+        self.assertEqual(confirm.call_count, 2)
+        self.assertTrue(all(
+            call.args[0] == "确认退出" for call in confirm.call_args_list
+        ))
+
+    def test_active_close_uses_only_running_task_warning(self):
+        class RootProbe:
+            def __init__(self):
+                self.destroy_calls = 0
+
+            def destroy(self):
+                self.destroy_calls += 1
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.process = None
+        app.run_jobs = [object()]
+        app.worker_starting = False
+        app.stop_requested = False
+        app._set_stop_state = lambda _state: None
+
+        with patch.object(
+                gui.messagebox, "askyesno", return_value=True) as confirm:
+            app._on_close()
+
+        confirm.assert_called_once()
+        self.assertEqual(confirm.call_args.args[0], "任务仍在运行")
+        self.assertEqual(app.root.destroy_calls, 1)
+
     def test_top_task_navigation_entries_lock_together(self):
         class MenuProbe:
             def __init__(self):
@@ -818,15 +885,19 @@ class TestGuiArguments(unittest.TestCase):
             def __init__(self, width=2):
                 self.width = width
                 self.placement = None
+                self.grid_calls = 0
+                self.forget_calls = 0
 
             def winfo_reqwidth(self):
                 return self.width
 
             def grid_forget(self):
                 self.placement = None
+                self.forget_calls += 1
 
             def grid(self, **options):
                 self.placement = (options["row"], options["column"])
+                self.grid_calls += 1
 
         class BodyProbe:
             @staticmethod
@@ -854,6 +925,7 @@ class TestGuiArguments(unittest.TestCase):
             key: WidgetProbe()
             for key in gui._TASK_TOOLBAR_SEPARATOR_AFTER
         }
+        app._task_toolbar_layout_signature = None
         row_counts = []
         for available in (1600, 1000, 760, 520):
             app._layout_task_toolbar(
@@ -868,6 +940,25 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(row_counts[0], 1)
         self.assertGreater(row_counts[-1], row_counts[0])
         self.assertEqual(row_counts, sorted(row_counts))
+        grid_calls = sum(
+            button.grid_calls
+            for button in app.task_toolbar_buttons.values()
+        )
+        forget_calls = sum(
+            button.forget_calls
+            for button in app.task_toolbar_buttons.values()
+        )
+        app._layout_task_toolbar(types.SimpleNamespace(width=520))
+        self.assertEqual(
+            sum(button.grid_calls
+                for button in app.task_toolbar_buttons.values()),
+            grid_calls,
+        )
+        self.assertEqual(
+            sum(button.forget_calls
+                for button in app.task_toolbar_buttons.values()),
+            forget_calls,
+        )
 
     def test_queue_progress_is_persistent_for_single_and_multiple_jobs(self):
         class WidgetProbe:

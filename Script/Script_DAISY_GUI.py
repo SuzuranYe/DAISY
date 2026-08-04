@@ -1574,6 +1574,29 @@ def action_button_row_indexes(
     )
 
 
+def flow_button_row_indexes(
+    widths: tuple[int, ...], available: int, gap: int = 8,
+) -> tuple[tuple[int, ...], ...]:
+    """从左向右自然换行，避免横向缩放时按钮逆向跳动。"""
+    if available <= 0 or gap < 0 or any(width <= 0 for width in widths):
+        raise ValueError("按钮宽度、可用宽度与间距必须为正数")
+    rows: list[tuple[int, ...]] = []
+    current: list[int] = []
+    current_width = 0
+    for index, width in enumerate(widths):
+        needed = width + (gap if current else 0)
+        if current and current_width + needed > available:
+            rows.append(tuple(current))
+            current = []
+            current_width = 0
+            needed = width
+        current.append(index)
+        current_width += needed
+    if current:
+        rows.append(tuple(current))
+    return tuple(rows)
+
+
 def _version() -> str:
     return "v" + core.SCANNER_VERSION
 
@@ -1642,6 +1665,9 @@ class DaisyApp:
         self.advanced_visible: dict[str, bool] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
+        self._task_toolbar_layout_signature: (
+            tuple[tuple[int, ...], ...] | None
+        ) = None
         self.detected_tools: dict[str, dict[str, object]] = {}
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
@@ -2456,10 +2482,6 @@ class DaisyApp:
         self, event: tk.Event | None = None,
     ) -> None:
         """按顶部可用宽度换行，并只在同一行内显示分组竖线。"""
-        for button in self.task_toolbar_buttons.values():
-            button.grid_forget()
-        for separator in self.task_toolbar_separators.values():
-            separator.grid_forget()
         width = (
             int(event.width) if event is not None
             else self.task_toolbar_body.winfo_width()
@@ -2471,8 +2493,16 @@ class DaisyApp:
             + (18 if key in _TASK_TOOLBAR_SEPARATOR_AFTER else 0)
             for key in self.task_toolbar_item_keys
         )
-        rows = action_button_row_indexes(
+        rows = flow_button_row_indexes(
             item_widths, max(240, width), gap=6)
+        if rows == getattr(
+                self, "_task_toolbar_layout_signature", None):
+            return
+        self._task_toolbar_layout_signature = rows
+        for button in self.task_toolbar_buttons.values():
+            button.grid_forget()
+        for separator in self.task_toolbar_separators.values():
+            separator.grid_forget()
         for row_index, indexes in enumerate(rows):
             column = 0
             for item_position, item_index in enumerate(indexes):
@@ -4160,6 +4190,16 @@ class DaisyApp:
     def _on_close(self) -> None:
         process = self.process
         active = process is not None or bool(self.run_jobs)
+        if not active:
+            if not messagebox.askyesno(
+                "确认退出",
+                "确定关闭 DAISY 吗？",
+                icon="question", parent=self.root,
+            ):
+                return
+            self.root.destroy()
+            return
+
         if active:
             detail = "关闭界面会停止当前任务，并可能留下未完成产物。确定关闭吗？"
             if len(self.run_jobs) > 1:
