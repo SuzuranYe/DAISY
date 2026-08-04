@@ -1,8 +1,9 @@
-# DAISY v1.4.2 技术规格
+# DAISY v1.5.0 技术规格
 
 - 状态：**现行规范**。
-- 对应版本：**v1.4.2**。
-- 本文定义快照、哈希、元数据、格式校验和 Diff 的现行语义。
+- 对应版本：**v1.5.0**。
+- 本文定义快照、哈希、元数据、格式校验、Diff 和 STG 接入边界的现行语义；
+  存储归档细节见[存储设备信息登记规格](Spec_DAISY_Storage.md)。
 - 安装、启动与常用工作流见项目根目录的 [README](../README.md)。
 - 从 `Kit_AL v1.0.2` 到当前版本的阶段变化见
   [版本演化规格](Spec_DAISY_Version_Evolution.md)。
@@ -19,17 +20,20 @@
 | 哈希、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_03_Hash.py` |
 | CLI 参数及默认值 | 对应 `Script\Tool\Script_DAISY_Tool_*.py` 的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
+| STG 物理盘只读登记与 ZIP 协议 | `Spec\Spec_DAISY_Storage.md` 及 `Script\Lib\Script_DAISY_SMART_Lib_*.py` |
 
 ## 二、系统不变量
 
 1. **源档案只读**：DAISY 不创建、修改、重命名或删除源目录中的任何项目。
 2. **快照封存后不可变**：后续核验、Diff 和导出只读输入数据库；新分析产生新文件。
 3. **无有效内容哈希时不得推断内容相同**：大小和时间相同只能证明 stat 未变，不能替代内容证据。
-4. **业务运行纯本地**：七项业务任务没有网络、遥测、上传或在线查询；云占位文件不会被触发下载。只有用户明确确认后，Python 引导脚本或 GUI 缺失工具安装流程才会通过 WinGet 联网。
+4. **业务运行纯本地**：所有数据库与存储业务任务均没有网络、遥测、上传或在线查询；云占位文件不会被触发下载。只有用户明确确认后，Python 引导脚本或 GUI 缺失工具安装流程才会通过 WinGet 联网。
 5. **路径可迁移**：身份以 root label 和相对路径表示，不依赖盘符；当次 `root_path` 仅作定位与审计。
 6. **时间可审计**：自产时间使用 UTC ISO 8601 `Z`；本地时间只用于显示和文件名。
 7. **文本统一**：正式文本输出使用 UTF-8（无 BOM）和 LF。
 8. **失败如实保留**：单文件失败通常记录到 `errors`，不会伪装为成功；高错误率才触发告警或熔断。
+9. **物理盘只读**：STG 不修改磁盘、分区、卷、文件系统、BitLocker 或 SMART
+   设置，也不启动 SMART 自检；只读查询仍可能唤醒休眠硬盘。
 
 ### 2.1 内容读取边界
 
@@ -413,9 +417,30 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
 
 移动、复制和硬链接使用全快照 SHA-256 多重集进行分组；无哈希时才可能退回 File ID 启发式。
 
-## 十一、版本、性能与已知限制
+## 十一、STG 存储设备信息登记
 
-- `SCANNER_VERSION=1.4.2`；新产物 `schema_version=3`；
+- `STG-11`／`storage-list` 联合 Windows 存储 cmdlet 和
+  `smartctl --scan-open --json=c` 列出物理盘；盘符只用于人类识别，不作为
+  权威身份。GUI 每次重新列盘会清除旧选择，`STG-12` 只允许从当次清单中选择
+  同时具有 Windows 记录和 smartctl 关联的目标。
+- `STG-12`／`storage-collect` 按 `DiskNumber` 重新取得详细 Windows 清单并
+  核对容量、UniqueId 和序列号，再以固定只读模板
+  `smartctl -x --json=ov -d <扫描类型> <扫描设备>` 采集单盘证据。
+- `STG-21`／`storage-verify` 只读取既有 ZIP，核验文件名 SHA-256 高 32 bit、
+  固定成员集合、Manifest、时间对、成员字节数和 ZIP CRC；不访问真实硬盘。
+- 默认输出为 `Output\Storage`。每块物理盘生成独立 PROFILE ZIP，可选在 ZIP
+  外生成简化 TXT；目标存在即失败，不覆盖既有文件。
+- STG ZIP 使用独立 `archive_schema_version=3`。它不导入 `sqlite3`，也不创建、
+  查询或修改快照／Diff 数据库；和 SQLite `schema_version=3` 仅数字相同。
+- smartctl 由 `ENV-01` 发现、验证与缓存，缺失时可在用户逐项确认后通过固定
+  `smartmontools.smartmontools` WinGet 包安装。PowerShell 仍不由 GUI 安装。
+- 归档可能包含序列号、卷标、卷 GUID、挂载路径、PNP Device ID、计算机名和
+  BitLocker 状态；不得未经检查公开分享。完整协议见
+  [存储设备信息登记规格](Spec_DAISY_Storage.md)。
+
+## 十二、版本、性能与已知限制
+
+- `SCANNER_VERSION=1.5.0`；新数据库产物 `schema_version=3`；
   `min_reader_version=1.4.1`；当前实现只读取 schema 3。
 - v1.3.0 新增 `snapshot_manifest` 和 `run_events`，属于 additive DDL 扩展，因此 schema 版本仍为 1。
 - v1.3.0 对旧封装不兼容，是已明确记录的版本号例外，不能由次版本号推断兼容。
@@ -459,22 +484,28 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
   存在时，GUI 询问是否立即打开；停止、硬失败、自检和依赖安装不询问。所有哈希抽样比例字段
   统一归入高级设置。
   schema、元数据 profile、CLI 参数与业务任务语义不变。
+- v1.5.0 把独立硬盘信息登记工具并入 STG 功能域，新增物理硬盘清单、单盘只读
+  登记与存储归档核验，并把 smartctl 纳入统一环境检测和按项安装。STG 只生成
+  独立 ZIP／可选 TXT，不接入 SQLite。数据库实现除 `SCANNER_VERSION` 更新为
+  `1.5.0` 外保持不变：DDL、字段、约束、`schema_version=3`、元数据 profile 7、
+  `min_reader_version=1.4.1` 及所有数据库任务语义均不变。
 - `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
-  元数据 profile 和 GPS 表；旧 partial 与旧封存快照均明确拒绝。
+  元数据 profile 和 GPS 表；跨版本 partial 明确拒绝。已完成的 schema 3 封存
+  快照仍可按现有准入规则只读使用。
 - Diff 当前把两侧条目载入内存，内存占用随条目数增长。
 - Full 哈希针对机械盘采用顺序读取，不在同一介质并行争抢。
 - 正式环境检测和 GUI 不执行介质性能跑分。
 - 非 Canon RAW 和更多厂商格式仍需要补充真实样本；“代码路径存在”不等于“所有变体已验证”。
 
-### 11.1 GUI 安装与缓存边界
+### 12.1 GUI 安装与缓存边界
 
 - 无 Python 时，`Script\Script_DAISY_Install_Python.ps1` 只在用户确认后
   通过固定包 ID 安装 Python 3.14，不安装其他工具。
 - Python 已可运行时，「ENV-01 环境检测」会同时报告已发现工具的本机版本和
-  全部缺失项。ExifTool、ffprobe、7-Zip 缺失时，GUI 分别显示独立安装按钮，
+  全部缺失项。ExifTool、ffprobe、7-Zip、smartctl 缺失时，GUI 分别显示独立安装按钮，
   并只在用户再次确认后通过固定 WinGet 白名单安装所选工具；PowerShell 不由
   GUI 安装。
-- 安装队列完成后 GUI 刷新当前进程 PATH 并重新检测。七项业务任务本身没有
+- 安装队列完成后 GUI 刷新当前进程 PATH 并重新检测。所有业务任务本身没有
   下载或安装逻辑。
 - “清理缓存”只清除项目内白名单缓存目录
   `__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`，
@@ -485,4 +516,4 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
 
 可重复执行的回归测试位于 [`Script\Test`](../Script/Test/)；GUI 的“DBS-91 数据库自检”
 页可启动同一套测试，重点验证 SQLite schema、数据库约束、快照、Diff 和关键工作流，
-同时保留必要的 GUI 参数映射覆盖；它不属于第八项业务任务。
+同时保留必要的 GUI 参数映射和 STG 只读／归档覆盖；它不属于业务任务。

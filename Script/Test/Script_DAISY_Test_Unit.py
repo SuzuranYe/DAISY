@@ -249,6 +249,90 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(
                 os.path.commonpath((gui._BASE, spec.default)), gui._BASE)
 
+    def test_storage_tasks_build_exact_cli_arguments(self):
+        with tempfile.TemporaryDirectory() as output_dir:
+            collect = gui.build_tool_args(
+                "storage_collect",
+                {
+                    "disk_number": "3",
+                    "output_dir": output_dir,
+                    "summary_txt": True,
+                    "smartctl_path": r"C:\Tools\smartctl.exe",
+                    "powershell_path": r"C:\Windows\powershell.exe",
+                },
+            )
+        self.assertEqual(collect[0], "storage-collect")
+        self.assertEqual(
+            collect[collect.index("--disk-number") + 1], "3")
+        self.assertIn("--summary-txt", collect)
+        self.assertIn("--smartctl-path", collect)
+        self.assertIn("--powershell-path", collect)
+
+        archive_path = os.path.abspath("Fixture_PROFILE_12345678.zip")
+        verify = gui.build_tool_args(
+            "storage_verify", {"archive": archive_path})
+        self.assertEqual(verify, ["storage-verify", archive_path])
+
+    def test_storage_collect_requires_a_nonnegative_integer_disk_number(self):
+        self.assertIn(
+            "请填写“物理硬盘编号”。",
+            gui.validate_values("storage_collect", {"disk_number": ""}),
+        )
+        for invalid in ("-1", "3.0", "disk3"):
+            self.assertIn(
+                "“物理硬盘编号”必须是非负整数。",
+                gui.validate_values(
+                    "storage_collect", {"disk_number": invalid}),
+            )
+        self.assertNotIn(
+            "“物理硬盘编号”必须是非负整数。",
+            gui.validate_values("storage_collect", {"disk_number": "0"}),
+        )
+
+    def test_storage_inventory_populates_only_registrable_disk_choices(self):
+        targets = [
+            {
+                "disk_number": 3,
+                "windows": {
+                    "disk": {
+                        "friendly_name": "Fixture SSD",
+                        "size": 4_000_000_000,
+                    },
+                    "partitions": [{
+                        "volume": {
+                            "drive_letter": "D:",
+                            "file_system_label": "Node",
+                        },
+                    }],
+                },
+                "smart_device": {"name": "/dev/sdd", "device_type": "nvme"},
+            },
+            {
+                "disk_number": 4,
+                "windows": {"disk": {"friendly_name": "No SMART"}},
+                "smart_device": None,
+            },
+        ]
+        choices = gui.storage_target_choices(targets)
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0][1], "3")
+        self.assertIn("PhysicalDrive3", choices[0][0])
+        self.assertIn("D: Node", choices[0][0])
+
+        app = object.__new__(gui.DaisyApp)
+        app.storage_disk_choices = ()
+        app.saved_values = {"storage_collect": {"disk_number": "9"}}
+        app._apply_storage_inventory({"targets": targets})
+        self.assertEqual(app.storage_disk_choices, choices)
+        self.assertNotIn(
+            "disk_number", app.saved_values["storage_collect"])
+        disk_spec = next(
+            spec for spec in gui.TASK_BY_KEY["storage_collect"].fields
+            if spec.key == "disk_number")
+        self.assertEqual(disk_spec.kind, "disk_choice")
+        self.assertEqual(
+            app._field_choices(disk_spec)[0][1], "")
+
         snapshot_args = gui.build_tool_args(
             "export_report",
             {"source_type": "snapshot", "source_path": "A.sqlite"},
@@ -607,6 +691,14 @@ class TestGuiArguments(unittest.TestCase):
             evolution = f.read()
         self.assertIn("Kit_AL v1.0.2", evolution)
         self.assertIn("DAISY v1.4.2", evolution)
+        self.assertIn("DAISY v1.5.0", evolution)
+        self.assertIn("STG-12 硬盘信息登记", evolution)
+        storage_spec_path = os.path.join(
+            gui._BASE, "Spec", "Spec_DAISY_Storage.md")
+        with open(storage_spec_path, "r", encoding="utf-8") as f:
+            storage_spec = f.read()
+        self.assertIn("archive_schema_version=3", storage_spec)
+        self.assertIn("不创建、读取或修改\n数据库", storage_spec)
         self.assertIn("独立队列总进度", evolution)
         self.assertIn("小窗视图", evolution)
         self.assertIn("设计过渡点", evolution)

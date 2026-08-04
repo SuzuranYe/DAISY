@@ -249,6 +249,13 @@ class TestSmartctlCommands(unittest.TestCase):
                 ["smartctl.exe", "-t", "long", "/dev/sdk"], purpose="read"
             )
 
+    def test_smartctl_minimum_version_is_enforced(self):
+        self.assertEqual(smartctl.require_supported_version("7.5"), "7.5")
+        self.assertEqual(smartctl.require_supported_version("7.6 r1234"), "7.6 r1234")
+        for value in ("7.4", "未知版本"):
+            with self.assertRaises(core.DaisySmartError):
+                smartctl.require_supported_version(value)
+
 
 class TestServiceMapping(unittest.TestCase):
     def test_windows_and_smartctl_are_joined_by_disk_number(self):
@@ -350,6 +357,8 @@ class TestArchive(unittest.TestCase):
             expected_names = archive.required_names(match.group("base"))
             verified = archive.verify_archive(result.path)
             self.assertEqual(verified.zip_sha256, result.zip_sha256)
+            self.assertEqual(
+                verified.manifest["application"]["version"], "1.5.0")
             self.assertEqual(
                 verified.manifest["archive_schema_version"],
                 3,

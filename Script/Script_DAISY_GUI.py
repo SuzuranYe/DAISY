@@ -43,6 +43,8 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Unit.py",
     "Script_DAISY_Test_No_Clobber.py",
     "Script_DAISY_Test_Tree.py",
+    "Script_DAISY_Test_Storage_Unit.py",
+    "Script_DAISY_Test_Storage_Read_Only.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
 _MAX_ROOT_DIRECTORIES = 9
@@ -237,6 +239,70 @@ def queue_progress_fraction(
         0.0,
         min(100.0, (completed_number + current_number) / total_number * 100),
     )
+
+
+def storage_target_choices(
+    raw_targets: object,
+) -> tuple[tuple[str, str], ...]:
+    """把 STG-11 事件转换为仅含可登记物理盘的稳定下拉选项。"""
+    if not isinstance(raw_targets, list):
+        return ()
+    choices: list[tuple[int, str, str]] = []
+    seen: set[int] = set()
+    for target in raw_targets:
+        if not isinstance(target, dict):
+            continue
+        disk_number = target.get("disk_number")
+        windows = target.get("windows")
+        smart_device = target.get("smart_device")
+        if (
+            not isinstance(disk_number, int)
+            or isinstance(disk_number, bool)
+            or disk_number < 0
+            or disk_number in seen
+            or not isinstance(windows, dict)
+            or not isinstance(smart_device, dict)
+        ):
+            continue
+        disk = windows.get("disk")
+        if not isinstance(disk, dict):
+            disk = {}
+        model = str(
+            disk.get("friendly_name") or disk.get("model") or "型号未提供"
+        ).strip()
+        explorer_names: list[str] = []
+        partitions = windows.get("partitions")
+        if isinstance(partitions, list):
+            for partition in partitions:
+                if not isinstance(partition, dict):
+                    continue
+                volume = partition.get("volume")
+                if not isinstance(volume, dict):
+                    continue
+                letter = str(volume.get("drive_letter") or "").strip()
+                label = str(volume.get("file_system_label") or "").strip()
+                name = (
+                    f"{letter} {label}" if letter and label else
+                    label or letter
+                )
+                if name and name not in explorer_names:
+                    explorer_names.append(name)
+        size = disk.get("size")
+        size_text = (
+            _format_bytes(size)
+            if isinstance(size, (int, float)) and not isinstance(size, bool)
+            else "容量未提供"
+        )
+        display = " · ".join((
+            f"PhysicalDrive{disk_number}",
+            ("／".join(explorer_names) or "无卷标")[:64],
+            model[:64],
+            size_text,
+        ))
+        choices.append((disk_number, display, str(disk_number)))
+        seen.add(disk_number)
+    choices.sort(key=lambda item: item[0])
+    return tuple((display, value) for _number, display, value in choices)
 
 
 def _format_bytes(value: object) -> str:
@@ -632,8 +698,8 @@ TASKS = (
         "数据库自检",
         "运行 Script\\Test 中的全部自动化测试，重点验证 SQLite schema、"
         "数据库约束、快照、Diff 与关键工作流，同时覆盖 GUI 参数映射。"
-        "测试夹具只写入系统临时目录，不使用表单中的档案目录，也不生成"
-        "正式快照。",
+        "同时验证 STG 归档和硬盘只读边界；测试夹具只写入系统临时目录，"
+        "不使用表单中的档案目录、访问真实硬盘或生成正式产物。",
         "数据库测试 · 临时夹具 · 不读取私人档案",
         (),
     ),
@@ -1040,8 +1106,9 @@ TASKS = (
         (
             FieldSpec(
                 "disk_number", "物理硬盘编号", "--disk-number",
-                required=True,
-                help="填写 STG-11 所列 PhysicalDrive 后面的非负整数。",
+                "disk_choice", required=True,
+                help="先运行 STG-11，再从本次清单中选择目标；重新列盘会清除"
+                "旧选择，避免热插拔后沿用过期编号。",
                 section="采集目标",
             ),
             FieldSpec(
@@ -1323,12 +1390,15 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
         if (values.get("start_mode") == "resume" and resume
                 and not resume.lower().endswith(".partial.sqlite")):
             issues.append("续传文件必须以 .partial.sqlite 结尾。")
+    if task_key == "storage_collect":
+        disk_number = str(values.get("disk_number") or "").strip()
+        if disk_number and not re.fullmatch(r"\d+", disk_number):
+            issues.append("“物理硬盘编号”必须是非负整数。")
 
     numeric_rules = {
         ("full_scan", "verify_percent"): (0.0, 100.0, True, False),
         ("check_format", "sample_percent"): (0.0, 100.0, False, False),
         ("check_hash", "sample_percent"): (0.0, 100.0, False, False),
-        ("storage_collect", "disk_number"): (0.0, None, True, True),
     }
     for (rule_task, key), rule in numeric_rules.items():
         if rule_task != task_key or key not in active_keys:
@@ -1423,7 +1493,7 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
     input_files = {
         "previous_snapshot", "resume", "snapshot", "old", "new",
         "source_path", "exiftool_path", "ffprobe_path", "sevenzip_path",
-        "powershell_path",
+        "powershell_path", "smartctl_path", "archive",
     }
     for key in input_files:
         if key not in active_keys:
@@ -1794,6 +1864,7 @@ class DaisyApp:
         self.detected_tools: dict[str, dict[str, object]] = {}
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
+        self.storage_disk_choices: tuple[tuple[str, str], ...] = ()
         self._work_progress_indeterminate = False
         self.current_stage_index = 0
         self.current_stage_total = 0
@@ -2946,10 +3017,21 @@ class DaisyApp:
                 self._set_status("就绪")
 
     def _choice_display(self, spec: FieldSpec, value: object) -> str:
-        for label, internal in spec.choices:
+        choices = self._field_choices(spec)
+        for label, internal in choices:
             if internal == value:
                 return label
-        return spec.choices[0][0] if spec.choices else str(value or "")
+        return choices[0][0] if choices else str(value or "")
+
+    def _field_choices(
+        self, spec: FieldSpec,
+    ) -> tuple[tuple[str, object], ...]:
+        if spec.kind != "disk_choice":
+            return spec.choices
+        discovered = tuple(getattr(self, "storage_disk_choices", ()))
+        if not discovered:
+            return (("请先运行 STG-11 获取可登记硬盘", ""),)
+        return (("请选择本次清单中的物理硬盘", ""), *discovered)
 
     def _build_form(self, scroll_fraction: float = 0.0) -> None:
         for child in self.form_inner.winfo_children():
@@ -3046,12 +3128,13 @@ class DaisyApp:
                 )
                 widget.grid(row=0, column=0, sticky="w", pady=3)
                 self.values[spec.key] = var
-            elif spec.kind in ("choice", "choice_flag"):
+            elif spec.kind in ("choice", "choice_flag", "disk_choice"):
+                choices = self._field_choices(spec)
                 var = tk.StringVar(
                     value=self._choice_display(spec, current))
                 widget = ttk.Combobox(
                     cell, textvariable=var, state="readonly",
-                    values=[label for label, _value in spec.choices],
+                    values=[label for label, _value in choices],
                 )
                 widget.grid(row=0, column=0, sticky="ew")
                 widget.bind("<<ComboboxSelected>>",
@@ -3258,8 +3341,8 @@ class DaisyApp:
                 result[key] = source.get("1.0", "end-1c")
             else:
                 value: object = source.get()
-                if spec.kind in ("choice", "choice_flag"):
-                    for label, internal in spec.choices:
+                if spec.kind in ("choice", "choice_flag", "disk_choice"):
+                    for label, internal in self._field_choices(spec):
                         if label == value:
                             value = internal
                             break
@@ -3492,6 +3575,14 @@ class DaisyApp:
         self.missing_installable_tools = tuple(installable)
         self._refresh_tool_cache_labels()
 
+    def _apply_storage_inventory(
+        self, payload: dict[str, object],
+    ) -> None:
+        self.storage_disk_choices = storage_target_choices(
+            payload.get("targets"))
+        self.saved_values.setdefault("storage_collect", {}).pop(
+            "disk_number", None)
+
     def _cache_detected_tools(self, payload: dict[str, object]) -> None:
         tools = payload.get("tools")
         if not isinstance(tools, dict):
@@ -3661,6 +3752,9 @@ class DaisyApp:
         if event_name == "tools_detected":
             self._cache_detected_tools(payload)
             return
+        if event_name == "storage_inventory":
+            self._apply_storage_inventory(payload)
+            return
         if event_name == "progress_start":
             stage_idx = max(1, int(payload.get("stage_idx") or 1))
             stage_total = max(stage_idx, int(payload.get("stage_total") or 1))
@@ -3814,6 +3908,10 @@ class DaisyApp:
 
     def _begin_run_jobs(self, task_key: str, jobs: list[RunJob]) -> None:
         """锁定界面并启动同一任务的一项或多项目标。"""
+        if task_key == "storage_list":
+            self.storage_disk_choices = ()
+            self.saved_values.setdefault("storage_collect", {}).pop(
+                "disk_number", None)
         self.process_task_key = task_key
         self.stop_requested = False
         self.run_jobs = jobs
@@ -3853,7 +3951,8 @@ class DaisyApp:
             f"将运行 Script\\Test 中的全部 unittest；当前版本 {_version()}。"
             "\n\n"
             "测试不会使用 GUI 表单中的档案目录；夹具在系统临时目录中"
-            "创建并清理。部分集成测试会调用 ExifTool、ffprobe 与 7-Zip，"
+            "创建并清理，也不会访问真实硬盘。部分集成测试会调用 ExifTool、"
+            "ffprobe 与 7-Zip，"
             "建议先完成 ENV-01 环境检测。\n\n确定继续吗？",
             icon="question", parent=self.root,
         )

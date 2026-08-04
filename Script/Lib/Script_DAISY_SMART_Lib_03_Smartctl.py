@@ -19,6 +19,7 @@ SMARTCTL_CANDIDATES = (
     Path(r"C:\Program Files (x86)\smartmontools\bin\smartctl.exe"),
 )
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+MINIMUM_VERSION = (7, 5)
 
 MUTATING_OR_ACTIVE_OPTIONS = frozenset(
     {
@@ -198,12 +199,22 @@ def version(executable: str | os.PathLike[str]) -> str:
     return match.group(1) if match else (first or "未知版本")
 
 
+def require_supported_version(found: str) -> str:
+    numbers = tuple(int(value) for value in re.findall(r"\d+", found))
+    if numbers[:2] < MINIMUM_VERSION:
+        required = ".".join(map(str, MINIMUM_VERSION))
+        raise core.DaisySmartError(
+            f"smartctl 版本过低或无法识别：{found}（需 ≥ {required}）。")
+    return found
+
+
 def scan(
     explicit: str | os.PathLike[str] | None = None,
     *,
     timeout: int = 90,
 ) -> SmartctlScan:
     executable = find_smartctl(explicit)
+    found_version = require_supported_version(version(executable))
     command = build_scan_command(executable)
     process = _run(command, timeout=timeout)
     payload = _parse_json(process.stdout, process.stderr, "smartctl 扫描")
@@ -246,7 +257,7 @@ def scan(
         devices=tuple(devices),
         warnings=core.unique_nonempty(warnings),
         executable=str(executable),
-        version=version(executable),
+        version=found_version,
         command=tuple(command),
     )
 
@@ -259,6 +270,8 @@ def read_all(
     known_version: str | None = None,
 ) -> core.SmartRead:
     executable = find_smartctl(explicit)
+    found_version = require_supported_version(
+        known_version or version(executable))
     command = build_read_command(executable, device)
     process = _run(command, timeout=timeout)
     payload = _parse_json(process.stdout, process.stderr, "smartctl 读取")
@@ -278,5 +291,5 @@ def read_all(
         stderr=stderr,
         exit_status=exit_status,
         command=tuple(command),
-        smartctl_version=known_version or version(executable),
+        smartctl_version=found_version,
     )

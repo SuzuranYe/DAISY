@@ -68,7 +68,8 @@ def inspect_local_tools(
         })
     try:
         smartctl_path = smartctl.find_smartctl(explicit.get("smartctl"))
-        smartctl_version = smartctl.version(smartctl_path)
+        smartctl_version = smartctl.require_supported_version(
+            smartctl.version(smartctl_path))
         tools["smartctl"] = core.resolved_tool_info(
             "smartctl", str(smartctl_path),
             explicit=bool(explicit.get("smartctl")),

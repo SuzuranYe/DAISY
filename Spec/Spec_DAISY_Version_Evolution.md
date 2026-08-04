@@ -1,6 +1,6 @@
-# DAISY 更新日志（v1.0.2～v1.4.2）
+# DAISY 更新日志（v1.0.2～v1.5.0）
 
-- 当前版本：**DAISY v1.4.2**。
+- 当前版本：**DAISY v1.5.0**。
 - 更新日期：**2026-08-05**。
 - 日期来自现存历史记录和 Git 检查点；`v1.2.0` 只能确认是设计过渡点，不能写成已确认的正式发布。
 - 当前数据和运行语义见[技术规格](Spec_DAISY_Technical.md)。
@@ -169,3 +169,28 @@
 - 删除：移除 GUI 自定义快捷键与任务页右上角的提示徽标。
 - 兼容：沿用 schema 3、元数据 profile 7 和 `min_reader_version=1.4.1`；既有
   跨版本 partial 禁止续传规则不变。
+
+## 2026-08-05 — DAISY v1.5.0（存储设备模块）
+
+- 定位：把独立硬盘信息登记工具作为全新 STG 功能域并入 DAISY，不把存储设备
+  数据塞入现有快照或 Diff 数据库。
+- 新增：`STG-11 物理硬盘清单`／`storage-list`，联合 Windows 存储查询与
+  smartctl 扫描列出物理盘、卷标、型号和设备关联。
+- 新增：`STG-12 硬盘信息登记`／`storage-collect`，按 DiskNumber 重新确认
+  设备身份，只读采集详细 Windows 存储资料与完整 smartctl JSON，生成带
+  SHA-256 高 32 bit 文件名指纹的 PROFILE ZIP，并可选输出外部简化 TXT。
+- 新增：`STG-21 硬盘归档核验`／`storage-verify`，核验 ZIP 文件名指纹、固定
+  三成员清单、Manifest、时间对、成员字节数和 CRC，不访问真实硬盘。
+- 新增：STG ZIP 使用独立 `archive_schema_version=3`，默认输出到
+  `Output\Storage`，执行 no-clobber 发布；访问或命令层缺口会生成明确标为
+  `incomplete` 的诊断归档。
+- 改进：`ENV-01` 新增 smartctl 发现、版本、只读扫描和 Windows 存储查询；
+  smartctl 缺失时可在逐项确认后通过固定 WinGet 包
+  `smartmontools.smartmontools` 安装。
+- 安全：smartctl 命令固定为 `--scan-open --json=c` 和
+  `-x --json=ov -d <type> <device>`；禁止自检、SMART 设置及磁盘／分区／卷／
+  文件系统／BitLocker 修改命令。默认测试只使用合成设备和系统临时目录。
+- 兼容：数据库实现除 `SCANNER_VERSION` 从 `1.4.2` 更新为 `1.5.0` 外无变化；
+  DDL、字段、约束、SQLite `schema_version=3`、元数据 profile 7、
+  `min_reader_version=1.4.1` 以及完整扫描、快速扫描、Diff、核验和导出语义保持
+  不变。STG 的 ZIP schema 与 SQLite schema 彼此独立。

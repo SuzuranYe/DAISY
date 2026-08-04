@@ -2,11 +2,13 @@
 
 **Database for Archive Integrity by Suzuran Ye**
 
-版本：**v1.4.2**
+版本：**v1.5.0**
 
 许可证：**MIT**
 
-DAISY 是面向摄影素材库与个人档案的本地清点、登记、核验和对比工具。每次扫描都会生成独立、自描述、不可回写的 SQLite 快照；扫描源目录保持只读，后续核验、对比和导出也不会修改既有快照。
+DAISY 是面向摄影素材库、个人档案与存储设备的本地清点、登记、核验和对比
+工具。档案扫描生成独立、自描述、不可回写的 SQLite 快照；硬盘信息登记生成
+独立 ZIP，不写入或扩展快照数据库。扫描源目录与被登记硬盘均保持只读。
 
 ## 主要能力
 
@@ -16,6 +18,8 @@ DAISY 是面向摄影素材库与个人档案的本地清点、登记、核验�
 - 独立复算 SHA-256，检查当前磁盘是否仍与快照一致；
 - 对比两份快照，区分内容变化、移动、复制、元数据提取差异和证据不足；
 - 把快照或 Diff 数据库导出为 CSV 和 Markdown 报告；
+- 只读登记单块物理硬盘的 Windows 存储资料与 smartctl 原始证据，并生成可核验
+  ZIP；
 - 使用 Tkinter／ttk 图形界面，不需要安装额外 Python 包；多目录任务单独显示
   队列总进度、当前任务阶段和本阶段工作量，运行时可切换到只保留进度与停止
   控制的小窗视图；任务从顶部主题菜单选择，任务设置、运行进度和运行日志
@@ -32,9 +36,10 @@ DAISY 仅支持 Windows，当前版本在 Python 3.14 上完成验证。
 | ffprobe（随 FFmpeg 安装） | 8 | 环境检测、完整扫描、文件结构核验 |
 | 7-Zip | 24 | 环境检测、完整扫描、文件结构核验 |
 | PowerShell `Get-FileHash` | Windows 内置 | 环境检测、完整扫描、SHA-256 独立复算 |
+| smartctl（smartmontools） | 7.5 | 环境检测、物理硬盘清单、硬盘信息登记 |
 
 Quick 快速扫描除 Python 外不依赖 ExifTool、ffprobe、7-Zip 或 PowerShell。
-ExifTool、FFmpeg 和 7-Zip 由用户通过 WinGet 独立安装，DAISY 不捆绑或
+ExifTool、FFmpeg、7-Zip 和 smartmontools 由用户通过 WinGet 独立安装，DAISY 不捆绑或
 再分发这些程序；它们分别遵循各自的许可证。
 
 DAISY 兼容 Windows PowerShell 5.1 与 PowerShell 7.x。自动发现顺序为：
@@ -53,11 +58,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Script\Script_DAISY_In
 ```
 
 脚本会先说明用途，并且只有明确输入 `y` 后才通过 WinGet 安装或更新
-`Python.Python.3.14`；它不会安装 ExifTool、FFmpeg 或 7-Zip。安装完成后
+`Python.Python.3.14`；它不会安装 ExifTool、FFmpeg、7-Zip 或 smartmontools。安装完成后
 请重新打开 DAISY。
 
 Python 已可用时，进入「ENV-01 环境检测」运行检测。页面会显示本机实际发现的
-版本；若缺少 ExifTool、ffprobe 或 7-Zip，会为每个缺失项分别显示对应的
+版本；若缺少 ExifTool、ffprobe、7-Zip 或 smartctl，会为每个缺失项分别显示对应的
 “下载并安装”按钮。用户点击其中一项并再次确认后，GUI 才会通过 WinGet 的
 固定白名单安装所选工具：
 
@@ -65,6 +70,8 @@ Python 已可用时，进入「ENV-01 环境检测」运行检测。页面会显
 - `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流、校验媒体容器，并在
   全量元数据模式下保留视频、音频和 GIF 的完整 JSON；
 - `7zip.7zip`：读取并测试 7z、RAR、TAR 等归档格式。
+- `smartmontools.smartmontools`：提供 smartctl，用于物理硬盘发现与完整只读
+  SMART 读取。
 
 GUI 不提供任意包名输入，也不会自动安装 PowerShell。所选工具安装结束后会刷新
 当前进程的 PATH 并重新运行环境检测。若新程序仍未被发现，请关闭 DAISY
@@ -80,6 +87,7 @@ winget install --exact --id Python.Python.3.14 --source winget
 winget install --exact --id OliverBetz.ExifTool --source winget
 winget install --exact --id Gyan.FFmpeg --source winget
 winget install --exact --id 7zip.7zip --source winget
+winget install --exact --id smartmontools.smartmontools --source winget
 ```
 
 安装后重新打开 PowerShell，并运行：
@@ -124,11 +132,11 @@ PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%
 
 扫描可能持续数小时；GUI 提供进度、实时日志和停止控制。
 
-## 环境、数据库任务与自检
+## 环境、数据库、存储任务与自检
 
 | 编号 | GUI／CLI | 用途 |
 |---|---|---|
-| ENV-01 | 环境检测／`env-check` | 检查四项外部工具、版本、只读冒烟和 SHA-256 |
+| ENV-01 | 环境检测／`env-check` | 检查五项外部工具、存储查询、只读冒烟和 SHA-256 |
 | DBS-11 | 完整扫描／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
 | DBS-12 | 快速扫描／`quick-scan` | 只登记树、大小、时间和可选 File ID |
 | DBS-21 | 快照变更分析／`diff` | 对两份快照分类并判定证据等级 |
@@ -136,15 +144,34 @@ PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%
 | DBS-32 | 文件结构核验／`check-format` | 检查当前文件结构和可解析性 |
 | DBS-41 | 导出报告／`export-report` | 导出 CSV 和 Markdown |
 | DBS-91 | 数据库自检／GUI 维护入口 | 运行随附 unittest，重点验证数据库与关键工作流；不读取私人档案或生成正式产物 |
+| STG-11 | 物理硬盘清单／`storage-list` | 列出物理盘、卷标、型号及 smartctl 关联 |
+| STG-12 | 硬盘信息登记／`storage-collect` | 只读采集单块物理盘并生成指纹 ZIP |
+| STG-21 | 硬盘归档核验／`storage-verify` | 核验 ZIP 指纹、成员结构、Manifest 与 CRC |
 
 顶部菜单栏按“环境”“数据库”“硬盘”提供三个任务下拉菜单，色带下方另有
 可折叠的任务按钮菜单，两套入口同步当前选中项，不再使用左侧工作台。下拉
 菜单按任务性质加入分隔线、主题色悬停和当前项高亮。`DBS-11 完整扫描` 与
 `DBS-12 快速扫描` 因生成快照数据库而列入数据库菜单，之后依次为 `DBS-21`、
 `DBS-31`、`DBS-32`、`DBS-41` 和维护编号 `DBS-91`。其中 `11/12` 表示快照采集，
-`21` 表示分析，`31/32` 表示核验，`41` 表示输出，`91` 表示维护测试。硬盘菜单为后续
-存储设备模块预留 `STG-` 前缀，
-v1.4.2 只显示未开放提示，不创建空任务页，也不提前加入硬盘业务功能。
+`21` 表示分析，`31/32` 表示核验，`41` 表示输出，`91` 表示维护测试。`STG`
+硬盘行在 v1.5.0 开放 `11` 清单、`12` 登记和 `21` 归档核验。STG 产物是
+`Output\Storage` 下的独立 ZIP；不会写入 DBS 的 SQLite 快照或 Diff 数据库。
+
+推荐先运行 `STG-11`，根据当次清单确认 PhysicalDrive 编号，再进入 `STG-12`。
+热插拔后必须重新列盘，不能长期把某个盘符或编号当作固定硬盘身份。完整 SMART
+读取可能唤醒休眠硬盘，但不会启动 SMART 自检或修改磁盘、分区、卷、文件系统及
+BitLocker 设置。通常建议以管理员权限启动 DAISY；权限不足时程序会保留实际
+错误，并把已生成 ZIP 标为 `incomplete` 诊断归档，不会伪称登记完整。归档核验
+不访问真实硬盘。对应 CLI 示例：
+
+```powershell
+python .\Script\Script_DAISY_MAIN.py storage-list
+python .\Script\Script_DAISY_MAIN.py storage-collect --disk-number 3
+python .\Script\Script_DAISY_MAIN.py storage-verify .\Output\Storage\档案.zip
+```
+
+完整存储协议见
+[存储设备信息登记规格](Spec/Spec_DAISY_Storage.md)。
 
 内容一致性核验和文件结构核验必须指定当前档案根目录。单根快照可直接选择当前文件夹；
 多根快照须为每个根使用 `label=当前路径`，其中 label 必须与快照记录一致。
@@ -234,6 +261,20 @@ GUI 不再注册
 数据格式、元数据 profile、CLI 参数和业务任务语义均未改变；新产物继续使用
 `schema_version=3` 与 `min_reader_version=1.4.1`。
 
+### v1.5.0 存储设备信息登记
+
+v1.5.0 将原独立硬盘工具作为 STG 功能域并入统一 GUI 和 CLI。新增物理硬盘清单、
+单盘信息登记及存储档案核验；`ENV-01` 同时检测 smartctl 和 Windows 存储查询，
+可在用户逐项确认后通过固定 WinGet 包安装 smartmontools。STG 只调用 Windows
+只读查询与固定的 `smartctl --scan-open --json=c`、
+`smartctl -x --json=ov -d <type> <device>`，不执行自检或设置修改。
+
+STG 归档使用独立 ZIP `archive_schema_version=3`，与 SQLite
+`schema_version=3` 只是数字相同，不共享数据模型。数据库代码只把生成器版本改为
+`1.5.0`；DDL、字段、约束、schema 版本、元数据 profile、扫描／Diff／核验／导出
+逻辑均保持 v1.4.2 行为。由于 partial 继续要求精确匹配生成器版本，v1.4.2 的
+未完成 partial 不能由 v1.5.0 续传；既有完整 schema 3 快照仍可只读使用。
+
 增量扫描只复用满足当前 schema 的完整封存库。文件名指纹不符、SQLite 损坏、
 扫描未完成、目录枚举缺口、哈希失败或 unstable 条目会拒绝作为增量来源；
 单纯的 `has_file_issues=1` 不阻止其他有效哈希复用，新扫描仍会重新读取元数据。
@@ -270,6 +311,8 @@ Payload 中保留原值。经纬度会规范化为数值并校验范围；海拔
 快照和报告可能包含档案根路径、文件名、作者、GPS、设备信息、序列号及
 Raw Payload。不要把真实快照、Diff 数据库或未经检查的报告上传到公开仓库、
 Issue 或其他公共位置；需要反馈问题时，应先移除或替换私人路径和元数据。
+STG ZIP 还可能包含卷标、卷 GUID、挂载路径、PNP Device ID、计算机名和
+BitLocker 状态，同样不得未经检查公开分享。
 
 ## 输出
 
@@ -280,6 +323,7 @@ Issue 或其他公共位置；需要反馈问题时，应先移除或替换私�
 | `Output\Snapshots\` | Full／Quick SQLite 快照 |
 | `Output\Diffs\` | Diff SQLite 数据库 |
 | `Output\Reports\` | 环境、格式、哈希和导出报告 |
+| `Output\Storage\` | 单硬盘只读信息 ZIP 与可选简化 TXT |
 
 ## 项目结构
 
@@ -294,7 +338,8 @@ DAISY\
 ├─ Start_DAISY_GUI.pyw
 ├─ Spec\
 │  ├─ Spec_DAISY_Technical.md
-│  └─ Spec_DAISY_Version_Evolution.md
+│  ├─ Spec_DAISY_Version_Evolution.md
+│  └─ Spec_DAISY_Storage.md
 └─ Script\
    ├─ Script_DAISY_Install_Python.ps1
    ├─ Script_DAISY_MAIN.py
@@ -303,7 +348,12 @@ DAISY\
    │  ├─ Script_DAISY_Lib_01_Core.py
    │  ├─ Script_DAISY_Lib_02_Meta.py
    │  ├─ Script_DAISY_Lib_03_Hash.py
-   │  └─ Script_DAISY_Lib_04_Diff.py
+   │  ├─ Script_DAISY_Lib_04_Diff.py
+   │  ├─ Script_DAISY_SMART_Lib_01_Core.py
+   │  ├─ Script_DAISY_SMART_Lib_02_Windows.py
+   │  ├─ Script_DAISY_SMART_Lib_03_Smartctl.py
+   │  ├─ Script_DAISY_SMART_Lib_04_Service.py
+   │  └─ Script_DAISY_SMART_Lib_05_Archive.py
    ├─ Tool\
    │  ├─ Script_DAISY_Tool_10_Env_Check.py
    │  ├─ Script_DAISY_Tool_11_Full_Scan.py
@@ -311,15 +361,21 @@ DAISY\
    │  ├─ Script_DAISY_Tool_21_Diff.py
    │  ├─ Script_DAISY_Tool_22_Check_Hash.py
    │  ├─ Script_DAISY_Tool_23_Check_Format.py
-   │  └─ Script_DAISY_Tool_31_Export_Report.py
+   │  ├─ Script_DAISY_Tool_31_Export_Report.py
+   │  ├─ Script_DAISY_SMART_Tool_11_List_Disks.py
+   │  ├─ Script_DAISY_SMART_Tool_12_Collect.py
+   │  └─ Script_DAISY_SMART_Tool_21_Verify_Archive.py
    └─ Test\
       ├─ Script_DAISY_Test_Tree.py
       ├─ Script_DAISY_Test_Unit.py
-      └─ Script_DAISY_Test_No_Clobber.py
+      ├─ Script_DAISY_Test_No_Clobber.py
+      ├─ Script_DAISY_Test_Storage_Unit.py
+      └─ Script_DAISY_Test_Storage_Read_Only.py
 ```
 
-完整数据模型、不变量、哈希和 Diff 语义见
-[技术规格](Spec/Spec_DAISY_Technical.md)；从 `Kit_AL v1.0.2` 到当前版本的
+完整数据库模型、不变量、哈希和 Diff 语义见
+[技术规格](Spec/Spec_DAISY_Technical.md)，存储归档见
+[存储设备信息登记规格](Spec/Spec_DAISY_Storage.md)；从 `Kit_AL v1.0.2` 到当前版本的
 阶段变化见[版本演化规格](Spec/Spec_DAISY_Version_Evolution.md)。
 
 ## 测试
@@ -333,13 +389,15 @@ python -B -m unittest discover -s .\Script\Test -p "Script_DAISY_Test_*.py" -v
 ```
 
 也可以进入 GUI 的“DBS-91 数据库自检”页点击“开始任务”。它调用同一套
-`unittest`，结果实时写入 GUI 日志，不作为第八项业务任务，也不生成正式产物。
+`unittest`，结果实时写入 GUI 日志，不作为业务任务，也不生成正式产物。
 
-也可以分别运行两个测试套件：
+也可以分别运行数据库与存储测试文件：
 
 ```powershell
 python -B .\Script\Test\Script_DAISY_Test_Unit.py
 python -B .\Script\Test\Script_DAISY_Test_No_Clobber.py
+python -B .\Script\Test\Script_DAISY_Test_Storage_Unit.py
+python -B .\Script\Test\Script_DAISY_Test_Storage_Read_Only.py
 ```
 
 `Script_DAISY_Test_Tree.py` 是 Diff 合成场景生成器，可用以下命令查看场景：
@@ -348,7 +406,8 @@ python -B .\Script\Test\Script_DAISY_Test_No_Clobber.py
 python -B .\Script\Test\Script_DAISY_Test_Tree.py --list
 ```
 
-七项业务任务不导入 `Script\Test\`。测试层可以独立移除而不影响 DAISY
+所有业务任务均不导入 `Script\Test\`。存储测试使用合成设备与系统临时目录，
+默认不会读取真实硬盘。测试层可以独立移除而不影响 DAISY
 业务功能；缺少测试文件时，“DBS-91 数据库自检”页的运行按钮会禁用。
 
 GUI 左下角的“清理缓存”只删除项目目录内可安全重建的 `__pycache__`、
