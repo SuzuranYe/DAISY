@@ -18,7 +18,7 @@ DAISY 是面向摄影素材库与个人档案的本地清点、登记、核验�
 - 把快照或 Diff 数据库导出为 CSV 和 Markdown 报告；
 - 使用 Tkinter／ttk 图形界面，不需要安装额外 Python 包；多目录任务单独显示
   队列总进度、当前任务阶段和本阶段工作量，运行时可切换到只保留进度与停止
-  控制的小窗视图。
+  控制的小窗视图；左侧导航、任务设置、运行进度和运行日志均可主动折叠。
 
 ## 运行环境
 
@@ -27,10 +27,10 @@ DAISY 仅支持 Windows，当前版本在 Python 3.14 上完成验证。
 | 依赖 | 最低版本 | 使用范围 |
 |---|---:|---|
 | Python | 3.14 | GUI 和全部任务 |
-| ExifTool | 13 | 环境检测、完整扫描、格式校验 |
-| ffprobe（随 FFmpeg 安装） | 8 | 环境检测、完整扫描、格式校验 |
-| 7-Zip | 24 | 环境检测、完整扫描、格式校验 |
-| PowerShell `Get-FileHash` | Windows 内置 | 环境检测、完整扫描、SHA-256 独立复算 |
+| ExifTool | 13 | 环境监测、完整扫描、文件结构核验 |
+| ffprobe（随 FFmpeg 安装） | 8 | 环境监测、完整扫描、文件结构核验 |
+| 7-Zip | 24 | 环境监测、完整扫描、文件结构核验 |
+| PowerShell `Get-FileHash` | Windows 内置 | 环境监测、完整扫描、SHA-256 独立复算 |
 
 Quick 快速扫描除 Python 外不依赖 ExifTool、ffprobe、7-Zip 或 PowerShell。
 ExifTool、FFmpeg 和 7-Zip 由用户通过 WinGet 独立安装，DAISY 不捆绑或
@@ -55,17 +55,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Script\Script_DAISY_In
 `Python.Python.3.14`；它不会安装 ExifTool、FFmpeg 或 7-Zip。安装完成后
 请重新打开 DAISY。
 
-Python 已可用时，进入「10 环境检测」运行检测。页面会显示本机实际发现的
+Python 已可用时，进入「ENV-00 环境监测」运行监测。页面会显示本机实际发现的
 版本；若缺少 ExifTool、ffprobe 或 7-Zip，会出现“下载并安装缺失工具”
 按钮。用户再次确认后，GUI 才会通过 WinGet 的固定白名单包逐项安装：
 
-- `OliverBetz.ExifTool`：读取照片／视频元数据并参与格式校验；
+- `OliverBetz.ExifTool`：读取照片／视频元数据并参与文件结构核验；
 - `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流、校验媒体容器，并在
   全量元数据模式下保留视频、音频和 GIF 的完整 JSON；
 - `7zip.7zip`：读取并测试 7z、RAR、TAR 等归档格式。
 
 GUI 不提供任意包名输入，也不会自动安装 PowerShell。安装队列结束后会刷新
-当前进程的 PATH 并重新运行环境检测。若新程序仍未被发现，请关闭 DAISY
+当前进程的 PATH 并重新运行环境监测。若新程序仍未被发现，请关闭 DAISY
 后重新打开。如果系统找不到 `winget`，请先从 Microsoft Store 安装或更新
 “应用安装程序”（App Installer）。
 
@@ -93,7 +93,7 @@ Get-Command powershell.exe,pwsh.exe -ErrorAction SilentlyContinue |
     Select-Object Name,Source
 ```
 
-随后在「10 环境检测」或「11 完整扫描」的高级选项中选择对应的 `.exe`。CLI
+随后在「ENV-00 环境监测」或「ENV-11 完整扫描」的高级选项中选择对应的 `.exe`。CLI
 也可以运行 `env-check --powershell-path "完整路径"`；验证成功后，GUI 会在
 当前窗口中缓存该路径。
 
@@ -109,7 +109,7 @@ python .\Script\Script_DAISY_MAIN.py gui
 python .\Script\Script_DAISY_MAIN.py <子命令> --help
 ```
 
-首次建立正式基准时，在 GUI 中选择“11 完整扫描”并保留默认值：
+首次建立正式基准时，在 GUI 中选择“ENV-11 完整扫描”并保留默认值：
 
 - 完整 SHA-256：开启；
 - 元数据范围：全量元数据；
@@ -122,19 +122,24 @@ PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%
 
 扫描可能持续数小时；GUI 提供进度、实时日志和停止控制。
 
-## 七项任务
+## 七项业务任务与项目自检
 
 | 编号 | GUI／CLI | 用途 |
 |---|---|---|
-| 10 | 环境检测／`env-check` | 检查四项外部工具、版本、只读冒烟和 SHA-256 |
-| 11 | 完整扫描／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
-| 12 | 快速扫描／`quick-scan` | 只登记树、大小、时间和可选 File ID |
-| 21 | 快照对比／`diff` | 对两份快照分类并判定证据等级 |
-| 22 | 哈希校验／`check-hash` | 用独立实现复算 SHA-256 |
-| 23 | 格式校验／`check-format` | 检查当前文件结构和可解析性 |
-| 31 | 导出报告／`export-report` | 导出 CSV 和 Markdown |
+| ENV-00 | 环境监测／`env-check` | 检查四项外部工具、版本、只读冒烟和 SHA-256 |
+| ENV-01 | 项目自检／GUI 维护入口 | 运行随附 unittest；不读取私人档案或生成正式产物 |
+| ENV-11 | 完整扫描／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
+| ENV-12 | 快速扫描／`quick-scan` | 只登记树、大小、时间和可选 File ID |
+| DB-21 | 快照变更分析／`diff` | 对两份快照分类并判定证据等级 |
+| DB-31 | 内容一致性核验／`check-hash` | 用独立实现复算 SHA-256 |
+| DB-32 | 文件结构核验／`check-format` | 检查当前文件结构和可解析性 |
+| DB-41 | 导出报告／`export-report` | 导出 CSV 和 Markdown |
 
-哈希校验和格式校验必须指定当前档案根目录。单根快照可直接选择当前文件夹；
+左侧以减淡的绿、黄、红分别标出“环境”“数据库”“硬盘”三区。`ENV-` 表示
+环境与扫描任务，`DB-` 表示数据库任务；硬盘区为后续存储设备模块预留
+`STG-` 前缀，但 v1.4.2 不创建空任务页，也不提前加入任何硬盘业务功能。
+
+内容一致性核验和文件结构核验必须指定当前档案根目录。单根快照可直接选择当前文件夹；
 多根快照须为每个根使用 `label=当前路径`，其中 label 必须与快照记录一致。
 `--root` 接受文件夹，不接受普通文件；因此盘符或根文件夹名称变化不会依赖
 快照中的旧绝对路径。
@@ -143,7 +148,7 @@ PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%
 
 ### 源文件只读
 
-DAISY 不会在被扫描的档案目录中创建、修改、重命名或删除文件。Full 哈希和格式校验会读取内容，但不会写回源文件。
+DAISY 不会在被扫描的档案目录中创建、修改、重命名或删除文件。完整扫描哈希和文件结构核验会读取内容，但不会写回源文件。
 
 Full 没有“静置窗口”或按 mtime 静默跳过近期文件的选项。建立权威基线前
 应先停止对源目录写入；对已登记文件，扫描会通过哈希读前／读后 stat、
@@ -190,11 +195,17 @@ v1.4.1 写出的快照和 Diff 使用 `schema_version=3`，最低阅读器版本
 `_Issues.md`；状态不进入数据库文件名。warning／validation 单独保留，默认
 不生成问题报告。
 
-### v1.4.2 GUI 显示
+### v1.4.2 UI 优化版本
 
 v1.4.2 只调整 GUI：多项任务的队列总进度固定显示在任务阶段与本阶段进度
 上方；“小窗运行”会收起配置、侧栏、日志和命令预览，只保留进度信息、停止
-与返回控制。按钮悬停会显示用途说明，窗口变窄时优先保留开始与停止按钮。
+与返回控制。设置、进度、日志和左侧导航均可独立折叠，日志固定排列在进度
+下方，不再依赖可被缩窗挤没的分隔窗格。顶部使用一笔向左右展开的铃兰耳朵
+线稿与 DAISY 组合标志，并以 Palatino Linotype Italic 列出全称和版本号；
+标准菜单提供项目目录、结果目录、退出、面板显示、关于信息与 GitHub 主页
+入口，命令预览默认关闭并可由“视图”菜单打开。按钮悬停会显示用途说明，
+底部操作会随可用宽度自动换行。GUI 不再注册自定义快捷键，页面右上角的
+只读／产物提示徽标也已移除。
 数据格式、元数据 profile、CLI 参数和业务任务语义均未改变；新产物继续使用
 `schema_version=3` 与 `min_reader_version=1.4.1`。
 
@@ -296,7 +307,7 @@ DAISY\
 python -B -m unittest discover -s .\Script\Test -p "Script_DAISY_Test_*.py" -v
 ```
 
-也可以在 GUI 的“10 环境检测”页点击“运行项目自检”。它调用同一套
+也可以进入 GUI 的“ENV-01 项目自检”页点击“运行项目自检”。它调用同一套
 `unittest`，结果实时写入 GUI 日志，不作为第八项业务任务，也不生成正式产物。
 
 也可以分别运行两个测试套件：
@@ -313,7 +324,7 @@ python -B .\Script\Test\Script_DAISY_Test_Tree.py --list
 ```
 
 七项业务任务不导入 `Script\Test\`。测试层可以独立移除而不影响 DAISY
-业务功能；缺少测试文件时，GUI 的“运行项目自检”按钮会禁用。
+业务功能；缺少测试文件时，“ENV-01 项目自检”页的运行按钮会禁用。
 
 GUI 左下角的“清理缓存”只删除项目目录内可安全重建的 `__pycache__`、
 `.pytest_cache`、`.mypy_cache`、`.ruff_cache` 和独立 `.pyc`／`.pyo`
@@ -323,7 +334,7 @@ GUI 左下角的“清理缓存”只删除项目目录内可安全重建的 `__
 
 ## 问题反馈
 
-反馈问题前请先运行“10 环境检测”和项目自检，并说明 Windows、Python 和
+反馈问题前请先运行“ENV-00 环境监测”和“ENV-01 项目自检”，并说明 Windows、Python 和
 外部工具版本。可以提供经过脱敏的错误文本和最小复现步骤，但不要附带真实
 快照数据库、私人媒体或未经检查的 Raw Payload。
 

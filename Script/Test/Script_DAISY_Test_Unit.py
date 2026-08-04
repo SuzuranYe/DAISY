@@ -33,7 +33,14 @@ import Script_DAISY_MAIN as entry
 class TestGuiArguments(unittest.TestCase):
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
-        self.assertEqual(gui.TASK_BY_KEY["env_check"].nav, "10  环境检测")
+        self.assertEqual(
+            gui.TASK_BY_KEY["env_check"].nav, "ENV-00  环境监测")
+        self.assertEqual(
+            gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
+            "ENV-01  项目自检",
+        )
+        self.assertEqual(
+            gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
         self.assertEqual(
             gui._NAV_COLOURS["env_check"],
             gui._NAV_COLOURS["full_scan"],
@@ -445,9 +452,23 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
 
-    def test_mobius_icon_png_is_smooth_and_single_colour(self):
+    def test_action_buttons_wrap_without_reordering_primary_actions(self):
+        widths = (118, 118, 118, 181, 124, 130)
+        rows = gui.action_button_row_indexes(widths, 760)
+        self.assertEqual(
+            tuple(index for row in rows for index in row),
+            tuple(range(len(widths))),
+        )
+        for row in rows:
+            occupied = sum(widths[index] for index in row)
+            occupied += 8 * max(0, len(row) - 1)
+            self.assertLessEqual(occupied, 760)
+        self.assertEqual(rows[-1][-2:], (4, 5))
+        self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
+
+    def test_suzuran_ear_icon_png_is_smooth_and_single_colour(self):
         size = 64
-        png = gui.mobius_icon_png(size)
+        png = gui.suzuran_ear_icon_png(size)
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
         position = 8
         chunks = []
@@ -475,7 +496,7 @@ class TestGuiArguments(unittest.TestCase):
                 if alpha:
                     colours.add((r, g, b))
         expected = tuple(
-            int(gui._GREEN_DEEP[index:index + 2], 16)
+            int(gui._TEXT[index:index + 2], 16)
             for index in (1, 3, 5)
         )
         self.assertEqual(colours, {expected})
@@ -483,23 +504,35 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn(255, alphas)
         self.assertTrue(any(0 < alpha < 255 for alpha in alphas))
 
-    def test_canvas_mobius_logo_uses_one_foreground_colour(self):
+    def test_canvas_suzuran_ear_logo_uses_smooth_sampled_paths(self):
         class CanvasProbe:
             def __init__(self):
                 self.lines = []
+                self.texts = []
 
             def create_line(self, *points, **options):
                 self.lines.append((points, options))
 
+            def create_text(self, *position, **options):
+                self.texts.append((position, options))
+
         probe = CanvasProbe()
         with patch.object(gui.tk, "Canvas", return_value=probe):
-            self.assertIs(gui.build_mobius_logo(object()), probe)
+            self.assertIs(gui.build_suzuran_ear_logo(object()), probe)
         foreground = {
             options["fill"]
             for _points, options in probe.lines
-            if "mobius_cut" not in options["tags"]
         }
-        self.assertEqual(foreground, {gui._GREEN_DEEP})
+        self.assertEqual(foreground, {gui._TEXT})
+        ears = [
+            (points, options) for points, options in probe.lines
+            if "suzuran_ears" in options["tags"]
+        ]
+        self.assertEqual(len(ears), 1)
+        for points, options in ears:
+            self.assertGreaterEqual(len(points), 128)
+            self.assertFalse(options["smooth"])
+        self.assertEqual(probe.texts[0][1]["text"], "DAISY")
 
     def test_full_hash_independent_sample_is_explained_and_advanced(self):
         fields = {
@@ -516,12 +549,6 @@ class TestGuiArguments(unittest.TestCase):
             "full_scan", {"roots": r"E:\Archive"})
         index = args.index("--verify-sample-percent")
         self.assertEqual(args[index + 1], "1.0")
-
-    def test_initial_log_sash_position_preserves_log_height(self):
-        self.assertEqual(
-            gui.initial_log_sash_position(604, 230, 180), 369)
-        self.assertEqual(
-            gui.initial_log_sash_position(250, 150, 150), 150)
 
     def test_form_mousewheel_scrolls_and_stops_widget_defaults(self):
         class CanvasProbe:
@@ -572,19 +599,33 @@ class TestGuiArguments(unittest.TestCase):
     def test_task_accent_colours_follow_workflow_group(self):
         green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
         amber = (gui._AMBER_DARK, gui._AMBER_DEEP, gui._AMBER)
-        for task_key in ("env_check", "full_scan", "quick_scan"):
+        for task_key in (
+                "env_check", gui._PROJECT_SELF_TEST_KEY,
+                "full_scan", "quick_scan"):
             self.assertEqual(gui.task_accent_colours(task_key), green)
         for task_key in (
                 "check_format", "check_hash", "diff", "export_report"):
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
-    def test_analysis_sidebar_group_includes_validation_tasks(self):
+    def test_sidebar_sections_use_muted_tricolour_categories(self):
         self.assertEqual(
-            [gui._SIDEBAR_GROUPS[key][0]
-             for key in gui._SIDEBAR_GROUPS],
-            ["准备", "运行", "分析", "导出"],
+            [section[:3] for section in gui._SIDEBAR_SECTIONS],
+            [
+                ("环境", gui._GREEN_SOFT, gui._GREEN_DEEP),
+                ("数据库", gui._AMBER_SOFT, gui._AMBER_DEEP),
+                ("硬盘", gui._RED_SOFT, gui._RED_DEEP),
+            ],
         )
-        self.assertNotIn("check_hash", gui._SIDEBAR_GROUPS)
+        self.assertEqual(gui._SIDEBAR_SECTIONS[-1][3], ())
+        self.assertEqual(
+            tuple(
+                task_key
+                for _label, _background, _foreground, task_keys
+                in gui._SIDEBAR_SECTIONS
+                for task_key in task_keys
+            ),
+            gui._SIDEBAR_TASK_ORDER,
+        )
         analysis_index = gui._SIDEBAR_TASK_ORDER.index("diff")
         self.assertEqual(
             gui._SIDEBAR_TASK_ORDER[analysis_index:analysis_index + 3],
@@ -610,13 +651,14 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [gui.TASK_BY_KEY[key].nav for key in gui._SIDEBAR_TASK_ORDER],
             [
-                "10  环境检测",
-                "11  完整扫描",
-                "12  快速扫描",
-                "21  快照对比",
-                "22  哈希校验",
-                "23  格式校验",
-                "31  导出报告",
+                "ENV-00  环境监测",
+                "ENV-01  项目自检",
+                "ENV-11  完整扫描",
+                "ENV-12  快速扫描",
+                "DB-21  快照变更分析",
+                "DB-31  内容一致性核验",
+                "DB-32  文件结构核验",
+                "DB-41  导出报告",
             ],
         )
         self.assertEqual(
@@ -678,16 +720,10 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(core.PROJECT_AUTHOR, "Suzuran Ye")
         self.assertEqual(
-            "".join(text for text, _emphasized
-                    in gui._BRAND_NAME_SEGMENTS),
-            core.PROJECT_FULL_NAME,
+            gui._PROJECT_GITHUB_URL,
+            "https://github.com/SuzuranYe/DAISY",
         )
-        initials = "".join(
-            text for text, emphasized in gui._BRAND_NAME_SEGMENTS
-            if emphasized
-        )
-        self.assertEqual(initials, core.PROJECT_NAME)
-        self.assertTrue(initials.isupper())
+        self.assertEqual(gui._ACADEMIC_FONT_FAMILY, "Palatino Linotype")
         title = gui.project_window_title()
         for token in (
                 core.PROJECT_NAME, core.PROJECT_FULL_NAME,
