@@ -1027,6 +1027,7 @@ _TASK_TOOLBAR_STYLE_PREFIX = "Env"
 _TASK_TOOLBAR_LABEL_COLOUR = _GREEN_DEEP
 _UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
 _UNIFIED_ACTION_FOREGROUND = "white"
+_RUN_BUTTON_TEXT = "开始任务"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 _PANEL_HEADER_PADX = 14
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
@@ -2463,7 +2464,8 @@ class DaisyApp:
             command=self._stop, state="disabled",
         )
         self.run_button = ttk.Button(
-            execution_action_area, text="开始任务", style="Primary.TButton",
+            execution_action_area, text=_RUN_BUTTON_TEXT,
+            style="Primary.TButton",
             command=self._run,
         )
         self.execution_buttons = (self.stop_button, self.run_button)
@@ -2820,23 +2822,14 @@ class DaisyApp:
         self._build_form()
         self._refresh_tool_cache_labels()
         active = self._task_is_active()
-        if task_key == _PROJECT_SELF_TEST_KEY:
-            missing_tests = project_self_test_missing_files()
-            self.run_button.configure(
-                text=("数据库自检不可用" if missing_tests
-                      else "运行数据库自检"),
-                state="disabled" if missing_tests or active else "normal",
-            )
-        elif task_key == "env_check":
-            self.run_button.configure(
-                text="开始环境检测",
-                state="disabled" if active else "normal",
-            )
-        else:
-            self.run_button.configure(
-                text="开始任务",
-                state="disabled" if active else "normal",
-            )
+        missing_tests = (
+            project_self_test_missing_files()
+            if task_key == _PROJECT_SELF_TEST_KEY else ()
+        )
+        self.run_button.configure(
+            text=_RUN_BUTTON_TEXT,
+            state="disabled" if missing_tests or active else "normal",
+        )
         self._refresh_environment_actions()
         if self.process is None:
             self._reset_progress(self.task.title)

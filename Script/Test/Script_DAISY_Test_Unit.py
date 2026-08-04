@@ -623,6 +623,9 @@ class TestGuiArguments(unittest.TestCase):
             (gui._RED, gui._RED_DEEP, gui._RED_SOFT),
         )
 
+    def test_run_button_label_is_unified(self):
+        self.assertEqual(gui._RUN_BUTTON_TEXT, "开始任务")
+
     def test_selected_top_task_style_uses_unified_deep_green(self):
         class StyleProbe:
             def __init__(self):
