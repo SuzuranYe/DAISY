@@ -36,7 +36,7 @@ class TestGuiArguments(unittest.TestCase):
             gui.TASK_BY_KEY["env_check"].nav, "ENV-01  环境检测")
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "DB-91  数据库自检",
+            "DBS-91  数据库自检",
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
@@ -487,6 +487,40 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
 
+    def test_normal_minimum_width_follows_full_function_modules(self):
+        class RootProbe:
+            def __init__(self):
+                self.minimum_sizes = []
+                self.idle_updates = 0
+
+            def update_idletasks(self):
+                self.idle_updates += 1
+
+            def minsize(self, width, height):
+                self.minimum_sizes.append((width, height))
+
+        class ToolbarProbe:
+            def __init__(self, width):
+                self.width = width
+
+            def winfo_reqwidth(self):
+                return self.width
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.task_toolbar_panel = ToolbarProbe(936)
+        app.normal_min_size = (760, 680)
+        app.command_preview_expanded = False
+        app.mini_mode = False
+        app._sync_task_toolbar_minimum_width()
+        self.assertEqual(app.normal_min_size, (936, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (936, 680))
+
+        app.task_toolbar_panel.width = 820
+        app._sync_task_toolbar_minimum_width()
+        self.assertEqual(app.normal_min_size, (936, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (936, 680))
+
     def test_utility_buttons_wrap_without_reordering(self):
         widths = (118, 118, 118, 181)
         rows = gui.action_button_row_indexes(widths, 380)
@@ -499,23 +533,6 @@ class TestGuiArguments(unittest.TestCase):
             occupied += 8 * max(0, len(row) - 1)
             self.assertLessEqual(occupied, 380)
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
-
-    def test_top_task_buttons_flow_from_left(self):
-        widths = (136, 130, 144, 136, 163, 174, 169, 126, 130)
-        layouts = {
-            available: gui.flow_button_row_indexes(
-                widths, available, gap=6)
-            for available in (1000, 760, 650, 520)
-        }
-        for rows in layouts.values():
-            self.assertEqual(
-                tuple(index for row in rows for index in row),
-                tuple(range(len(widths))),
-            )
-        self.assertEqual(layouts[1000][0], (0, 1, 2, 3, 4, 5))
-        self.assertEqual(layouts[760][0], (0, 1, 2, 3, 4))
-        self.assertEqual(layouts[650][0], (0, 1, 2, 3))
-        self.assertEqual(layouts[520][0], (0, 1, 2))
 
     def test_full_hash_independent_sample_is_explained_and_advanced(self):
         fields = {
@@ -532,6 +549,22 @@ class TestGuiArguments(unittest.TestCase):
             "full_scan", {"roots": r"E:\Archive"})
         index = args.index("--verify-sample-percent")
         self.assertEqual(args[index + 1], "1.0")
+
+    def test_all_hash_sampling_percentages_are_advanced(self):
+        sampling_fields = {
+            (task.key, spec.key): spec
+            for task in gui.TASKS
+            for spec in task.fields
+            if "哈希" in spec.label and (
+                "抽样" in spec.label or "抽验" in spec.label)
+        }
+        self.assertEqual(
+            set(sampling_fields),
+            {("full_scan", "verify_percent"),
+             ("check_hash", "sample_percent")},
+        )
+        self.assertTrue(all(
+            spec.advanced for spec in sampling_fields.values()))
 
     def test_form_mousewheel_scrolls_and_stops_widget_defaults(self):
         class CanvasProbe:
@@ -580,11 +613,61 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn(change_kind, evolution)
 
     def test_task_accent_colours_follow_workflow_group(self):
-        green = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
-        amber = (gui._AMBER_DARK, gui._AMBER_DEEP, gui._AMBER)
-        self.assertEqual(gui.task_accent_colours("env_check"), green)
+        env = (gui._ENV_DARK, gui._ENV_DEEP, gui._ENV)
+        database = (gui._BLUE_DARK, gui._BLUE_DEEP, gui._BLUE)
+        self.assertEqual(gui.task_accent_colours("env_check"), env)
         for task_key in gui._TASK_MENU_SECTIONS[1][1]:
-            self.assertEqual(gui.task_accent_colours(task_key), amber)
+            self.assertEqual(gui.task_accent_colours(task_key), database)
+        self.assertEqual(
+            gui._TASK_MENU_SECTION_COLOURS["硬盘"][1:],
+            (gui._PURPLE, gui._PURPLE_DEEP, gui._PURPLE_SOFT),
+        )
+
+    def test_selected_top_task_style_stays_light(self):
+        class StyleProbe:
+            def __init__(self):
+                self.configurations = {}
+                self.mappings = {}
+                self.layouts = {}
+
+            @staticmethod
+            def theme_names():
+                return ("clam",)
+
+            @staticmethod
+            def theme_use(_name):
+                pass
+
+            def configure(self, name, **options):
+                self.configurations[name] = options
+
+            def map(self, name, **options):
+                self.mappings[name] = options
+
+            def layout(self, name, layout):
+                self.layouts[name] = layout
+
+        style = StyleProbe()
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        app.task = gui.TASKS[0]
+        with patch.object(gui.ttk, "Style", return_value=style):
+            app._configure_styles()
+
+        for _section, (prefix, _accent, deep, soft) in (
+                gui._TASK_MENU_SECTION_COLOURS.items()):
+            name = f"{prefix}.TopTaskSelected.TButton"
+            configured = style.configurations[name]
+            self.assertEqual(configured["background"], soft)
+            self.assertEqual(configured["foreground"], deep)
+            self.assertEqual(configured["bordercolor"], gui._BORDER)
+            self.assertEqual(configured["font"], ("Microsoft YaHei UI", 9))
+            self.assertTrue(all(
+                colour == soft
+                for _states, colour
+                in style.mappings[name]["background"]
+            ))
+            self.assertNotIn("focus", str(style.layouts[name]).lower())
 
     def test_top_task_menus_use_theme_grouping(self):
         self.assertEqual(
@@ -697,7 +780,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app.task_menus["数据库"].options["activebackground"],
-            gui._AMBER,
+            gui._BLUE,
         )
         self.assertEqual(
             app.task_menus["硬盘"].entries[0]["state"], "disabled")
@@ -829,9 +912,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             environment_menu.options[0]["background"], gui._SURFACE)
         self.assertEqual(
-            database_menu.options[1]["background"], gui._AMBER_SOFT)
+            database_menu.options[1]["background"], gui._BLUE_SOFT)
         self.assertEqual(
-            database_menu.options[1]["foreground"], gui._AMBER_DEEP)
+            database_menu.options[1]["foreground"], gui._BLUE_DEEP)
         self.assertEqual(
             environment_button.options["style"], "Env.TopTask.TButton")
         self.assertEqual(
@@ -873,23 +956,23 @@ class TestGuiArguments(unittest.TestCase):
         app.task_toolbar_visible_var = ValueProbe()
         app._set_task_toolbar_expanded(False)
         self.assertEqual(app.task_toolbar_body.manager, "")
-        self.assertEqual(app.task_toolbar_toggle_button.text, "展开菜单")
+        self.assertEqual(app.task_toolbar_toggle_button.text, "展开模块")
         self.assertFalse(app.task_toolbar_visible_var.value)
         app._set_task_toolbar_expanded(True)
         self.assertEqual(app.task_toolbar_body.manager, "pack")
-        self.assertEqual(app.task_toolbar_toggle_button.text, "收起菜单")
+        self.assertEqual(app.task_toolbar_toggle_button.text, "收起模块")
         self.assertTrue(app.task_toolbar_visible_var.value)
 
-    def test_top_task_toolbar_wraps_without_overlapping_buttons(self):
+    def test_top_task_toolbar_keeps_fixed_theme_rows(self):
         class WidgetProbe:
-            def __init__(self, width=2):
-                self.width = width
+            def __init__(self):
                 self.placement = None
                 self.grid_calls = 0
                 self.forget_calls = 0
+                self.options = {}
 
-            def winfo_reqwidth(self):
-                return self.width
+            def configure(self, **options):
+                self.options.update(options)
 
             def grid_forget(self):
                 self.placement = None
@@ -912,34 +995,52 @@ class TestGuiArguments(unittest.TestCase):
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.task_toolbar_body = BodyProbe()
-        app.task_toolbar_item_keys = (
+        all_keys = (
             *gui._TASK_MENU_ORDER, gui._TASK_TOOLBAR_STORAGE_KEY,
         )
-        widths = (118, 112, 126, 118, 145, 156, 151, 108, 112)
         app.task_toolbar_buttons = {
-            key: WidgetProbe(width)
-            for key, width in zip(
-                app.task_toolbar_item_keys, widths, strict=True)
+            key: WidgetProbe() for key in all_keys
         }
-        app.task_toolbar_separators = {
-            key: WidgetProbe()
-            for key in gui._TASK_TOOLBAR_SEPARATOR_AFTER
+        app.task_toolbar_section_labels = {
+            section_label: WidgetProbe()
+            for section_label, _short_label, _task_keys
+            in gui._TASK_TOOLBAR_ROWS
         }
-        app._task_toolbar_layout_signature = None
-        row_counts = []
-        for available in (1600, 1000, 760, 520):
-            app._layout_task_toolbar(
-                types.SimpleNamespace(width=available))
-            placements = [
-                button.placement
-                for button in app.task_toolbar_buttons.values()
-            ]
-            self.assertNotIn(None, placements)
-            self.assertEqual(len(placements), len(set(placements)))
-            row_counts.append(len({row for row, _column in placements}))
-        self.assertEqual(row_counts[0], 1)
-        self.assertGreater(row_counts[-1], row_counts[0])
-        self.assertEqual(row_counts, sorted(row_counts))
+        app._task_toolbar_layout_ready = False
+        self.assertEqual(
+            tuple(short_label for _section, short_label, _keys
+                  in gui._TASK_TOOLBAR_ROWS),
+            ("ENV", "DBS", "STG"),
+        )
+        self.assertEqual(set(gui._TASK_TOOLBAR_LABELS), set(all_keys))
+        self.assertTrue(all(
+            len(label) == 4
+            for label in gui._TASK_TOOLBAR_LABELS.values()
+        ))
+        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 8)
+        with patch.object(
+                gui.DaisyApp, "_sync_task_toolbar_minimum_width") as sync:
+            for available in (1600, 1000, 760, 520):
+                app._layout_task_toolbar(
+                    types.SimpleNamespace(width=available))
+                placements = {
+                    key: button.placement
+                    for key, button in app.task_toolbar_buttons.items()
+                }
+                self.assertNotIn(None, placements.values())
+                self.assertEqual(
+                    len(placements), len(set(placements.values())))
+                for row_index, (section_label, _short_label, task_keys) in (
+                        enumerate(gui._TASK_TOOLBAR_ROWS)):
+                    self.assertEqual(
+                        app.task_toolbar_section_labels[
+                            section_label].placement,
+                        (row_index, 0),
+                    )
+                    self.assertTrue(all(
+                        placements[key][0] == row_index for key in task_keys
+                    ))
+            sync.assert_called_once_with()
         grid_calls = sum(
             button.grid_calls
             for button in app.task_toolbar_buttons.values()
@@ -991,9 +1092,9 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
-            gui.status_badge_background("full_scan"), gui._AMBER_DARK)
+            gui.status_badge_background("full_scan"), gui._BLUE_DARK)
         self.assertEqual(
-            gui.status_badge_background("diff"), gui._AMBER_DARK)
+            gui.status_badge_background("diff"), gui._BLUE_DARK)
         self.assertEqual(
             gui.status_badge_background("diff", gui._DANGER),
             gui._DANGER,
@@ -1009,13 +1110,13 @@ class TestGuiArguments(unittest.TestCase):
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
                 "ENV-01  环境检测",
-                "DB-11  完整扫描",
-                "DB-12  快速扫描",
-                "DB-21  快照变更分析",
-                "DB-31  内容一致性核验",
-                "DB-32  文件结构核验",
-                "DB-41  导出报告",
-                "DB-91  数据库自检",
+                "DBS-11  完整扫描",
+                "DBS-12  快速扫描",
+                "DBS-21  快照变更分析",
+                "DBS-31  内容一致性核验",
+                "DBS-32  文件结构核验",
+                "DBS-41  导出报告",
+                "DBS-91  数据库自检",
             ],
         )
         self.assertEqual(

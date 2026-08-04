@@ -80,14 +80,25 @@ _CACHE_SCAN_EXCLUDED_DIR_NAMES = frozenset((
     ".git", ".venv", "venv", "node_modules", "output",
 ))
 
-# 《孤星》专项调查取色：米黄色纸面＋薄荷绿、橙黄、深红三种强调色。
-# 三个基准色取自官方素材右上角色条，米白取自设备外壳。
+# 米黄色纸面保留为界面基底；功能分区改用低饱和蓝绿、浅蓝和浅紫。
 _BG = "#e9dfcc"
 _SURFACE = "#f7efe1"
 _GREEN = "#87c1af"
 _GREEN_DARK = "#347a68"
 _GREEN_DEEP = "#245a4e"
 _GREEN_SOFT = "#dce9e1"
+_ENV = "#91bbb4"
+_ENV_DARK = "#5e817b"
+_ENV_DEEP = "#405f5a"
+_ENV_SOFT = "#e2ece9"
+_BLUE = "#9fb8cf"
+_BLUE_DARK = "#607f9b"
+_BLUE_DEEP = "#46627a"
+_BLUE_SOFT = "#e4ebf1"
+_PURPLE = "#b5a9c5"
+_PURPLE_DARK = "#766a88"
+_PURPLE_DEEP = "#594e69"
+_PURPLE_SOFT = "#ece7f1"
 _AMBER = "#eca93b"
 _AMBER_DARK = "#9a6519"
 _AMBER_DEEP = "#70470f"
@@ -96,9 +107,9 @@ _RED = "#9a2d28"
 _RED_DARK = "#7b2925"
 _RED_DEEP = "#5b1f1c"
 _RED_SOFT = "#e8ccc5"
-_ACCENT = _GREEN_DARK
-_ACCENT_DARK = _GREEN_DEEP
-_ACCENT_SOFT = _GREEN_SOFT
+_ACCENT = _ENV_DARK
+_ACCENT_DARK = _ENV_DEEP
+_ACCENT_SOFT = _ENV_SOFT
 _TEXT = "#272820"
 _MUTED = "#66685e"
 _BORDER = "#cfc2aa"
@@ -117,14 +128,14 @@ _DANGER_HOVER = "#ddb9b1"
 _DANGER_BORDER = "#c99f98"
 
 _TASK_ACCENTS = {
-    "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
-    _PROJECT_SELF_TEST_KEY: (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "full_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "quick_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "check_format": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "check_hash": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "diff": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "export_report": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "env_check": (_ENV_DARK, _ENV_DEEP, _ENV),
+    _PROJECT_SELF_TEST_KEY: (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "full_scan": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "quick_scan": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "check_format": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "check_hash": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "diff": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "export_report": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
 }
 _NAV_COLOURS = {
     key: (colours[0], colours[1])
@@ -135,7 +146,7 @@ _NAV_COLOURS = {
 def task_accent_colours(task_key: str) -> tuple[str, str, str]:
     """返回任务组的常态、按下和悬停强调色。"""
     return _TASK_ACCENTS.get(
-        task_key, (_ACCENT, _ACCENT_DARK, _GREEN))
+        task_key, (_ACCENT, _ACCENT_DARK, _ENV))
 
 
 def status_badge_background(
@@ -590,7 +601,7 @@ TASKS = (
     TaskSpec(
         _PROJECT_SELF_TEST_KEY,
         "",
-        "DB-91  数据库自检",
+        "DBS-91  数据库自检",
         "数据库自检",
         "运行 Script\\Test 中的全部自动化测试，重点验证 SQLite schema、"
         "数据库约束、快照、Diff 与关键工作流，同时覆盖 GUI 参数映射。"
@@ -602,7 +613,7 @@ TASKS = (
     TaskSpec(
         "full_scan",
         "full-scan",
-        "DB-11  完整扫描",
+        "DBS-11  完整扫描",
         "完整扫描",
         "登记文件树、元数据与哈希，默认完整 SHA-256；生成可续传、封存后"
         "不可变的单文件 SQLite 快照。适合首次建账和周期性完整复核。",
@@ -740,7 +751,7 @@ TASKS = (
     TaskSpec(
         "quick_scan",
         "quick-scan",
-        "DB-12  快速扫描",
+        "DBS-12  快速扫描",
         "快速扫描",
         "只登记文件树、大小、时间与文件标识，不读取文件内容，也不依赖外部"
         "工具。适合接盘后快速确认目录结构。",
@@ -787,7 +798,7 @@ TASKS = (
     TaskSpec(
         "check_format",
         "check-format",
-        "DB-32  文件结构核验",
+        "DBS-32  文件结构核验",
         "文件结构核验",
         "依据封存快照定位当前文件，调用对应后端检查照片、视频、音频、文档和"
         "压缩包是否可读。",
@@ -852,7 +863,7 @@ TASKS = (
     TaskSpec(
         "check_hash",
         "check-hash",
-        "DB-31  内容一致性核验",
+        "DBS-31  内容一致性核验",
         "内容一致性核验",
         "将封存快照与当前磁盘核对：先检查文件状态，再抽样或全量重新计算"
         " SHA-256。",
@@ -882,7 +893,8 @@ TASKS = (
             FieldSpec(
                 "sample_percent", "哈希抽样比例（%）", "--sample-percent",
                 default="1.0", help="默认抽查 1% 的可哈希文件。",
-                section="巡检范围", active_when=_HASH_SAMPLE,
+                section="巡检范围", advanced=True,
+                active_when=_HASH_SAMPLE,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
@@ -906,7 +918,7 @@ TASKS = (
     TaskSpec(
         "diff",
         "diff",
-        "DB-21  快照变更分析",
+        "DBS-21  快照变更分析",
         "快照变更分析",
         "以旧快照为基准，与新快照进行 11 状态分类和证据等级判定，生成权威"
         " Diff 数据库。",
@@ -941,7 +953,7 @@ TASKS = (
     TaskSpec(
         "export_report",
         "export-report",
-        "DB-41  导出报告",
+        "DBS-41  导出报告",
         "导出报告",
         "从封存快照或 Diff 数据库生成 CSV 与 Markdown 报告。输入数据库保持"
         "只读，报告可随时删除并重新生成。",
@@ -986,16 +998,12 @@ _TASK_MENU_SECTIONS = (
     ("硬盘", ()),
 )
 _TASK_MENU_SECTION_COLOURS = {
-    "环境": ("Env", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
-    "数据库": ("Database", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
-    "硬盘": ("Storage", _RED, _RED_DEEP, _RED_SOFT),
+    "环境": ("Env", _ENV, _ENV_DEEP, _ENV_SOFT),
+    "数据库": ("Database", _BLUE, _BLUE_DEEP, _BLUE_SOFT),
+    "硬盘": ("Storage", _PURPLE, _PURPLE_DEEP, _PURPLE_SOFT),
 }
 _TASK_MENU_SEPARATOR_AFTER = frozenset((
     "env_check", "quick_scan", "diff", "check_format", "export_report",
-))
-_TASK_TOOLBAR_SEPARATOR_AFTER = frozenset((
-    "env_check", "quick_scan", "diff", "check_format",
-    "export_report",
 ))
 _TASK_MENU_ORDER = tuple(
     task_key
@@ -1008,6 +1016,23 @@ _TASK_MENU_SECTION_BY_KEY = {
     for task_key in task_keys
 }
 _TASK_TOOLBAR_STORAGE_KEY = "__storage_placeholder__"
+_TASK_TOOLBAR_ROWS = (
+    ("环境", "ENV", ("env_check",)),
+    ("数据库", "DBS", _TASK_MENU_SECTIONS[1][1]),
+    ("硬盘", "STG", (_TASK_TOOLBAR_STORAGE_KEY,)),
+)
+_TASK_TOOLBAR_LABELS = {
+    "env_check": "环境检测",
+    "full_scan": "完整扫描",
+    "quick_scan": "快速扫描",
+    "diff": "变更分析",
+    "check_hash": "内容核验",
+    "check_format": "结构核验",
+    "export_report": "导出报告",
+    _PROJECT_SELF_TEST_KEY: "系统自检",
+    _TASK_TOOLBAR_STORAGE_KEY: "暂未开放",
+}
+_TASK_TOOLBAR_BUTTON_WIDTH = 8
 
 
 def _lines(value: object) -> list[str]:
@@ -1574,29 +1599,6 @@ def action_button_row_indexes(
     )
 
 
-def flow_button_row_indexes(
-    widths: tuple[int, ...], available: int, gap: int = 8,
-) -> tuple[tuple[int, ...], ...]:
-    """从左向右自然换行，避免横向缩放时按钮逆向跳动。"""
-    if available <= 0 or gap < 0 or any(width <= 0 for width in widths):
-        raise ValueError("按钮宽度、可用宽度与间距必须为正数")
-    rows: list[tuple[int, ...]] = []
-    current: list[int] = []
-    current_width = 0
-    for index, width in enumerate(widths):
-        needed = width + (gap if current else 0)
-        if current and current_width + needed > available:
-            rows.append(tuple(current))
-            current = []
-            current_width = 0
-            needed = width
-        current.append(index)
-        current_width += needed
-    if current:
-        rows.append(tuple(current))
-    return tuple(rows)
-
-
 def _version() -> str:
     return "v" + core.SCANNER_VERSION
 
@@ -1665,9 +1667,7 @@ class DaisyApp:
         self.advanced_visible: dict[str, bool] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
-        self._task_toolbar_layout_signature: (
-            tuple[tuple[int, ...], ...] | None
-        ) = None
+        self._task_toolbar_layout_ready = False
         self.detected_tools: dict[str, dict[str, object]] = {}
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
@@ -1816,6 +1816,22 @@ class DaisyApp:
         )
         style.map(
             "Mini.TButton", background=[("active", _CONTROL_HOVER)])
+        top_task_layout = [(
+            "Button.border",
+            {
+                "sticky": "nswe",
+                "border": "1",
+                "children": [(
+                    "Button.padding",
+                    {
+                        "sticky": "nswe",
+                        "children": [(
+                            "Button.label", {"sticky": "nswe"},
+                        )],
+                    },
+                )],
+            },
+        )]
         for _section_label, (
                 style_prefix, accent_colour, deep_colour,
                 soft_colour) in _TASK_MENU_SECTION_COLOURS.items():
@@ -1837,23 +1853,29 @@ class DaisyApp:
             )
             style.configure(
                 f"{style_prefix}.TopTaskSelected.TButton",
-                background=deep_colour, foreground="white",
+                background=soft_colour, foreground=deep_colour,
                 padding=(9, 5),
-                font=("Microsoft YaHei UI", 9, "bold"),
-                borderwidth=1, bordercolor=deep_colour,
-                lightcolor=deep_colour, darkcolor=deep_colour,
+                font=("Microsoft YaHei UI", 9),
+                borderwidth=1, bordercolor=_BORDER,
+                lightcolor=_BORDER, darkcolor=_BORDER,
             )
             style.map(
                 f"{style_prefix}.TopTaskSelected.TButton",
                 background=[
-                    ("disabled", deep_colour),
-                    ("pressed", deep_colour),
-                    ("active", accent_colour),
+                    ("disabled", soft_colour),
+                    ("pressed", soft_colour),
+                    ("active", soft_colour),
                 ],
                 foreground=[
-                    ("disabled", "white"),
-                    ("active", "white"),
+                    ("disabled", deep_colour),
+                    ("active", deep_colour),
                 ],
+            )
+            style.layout(
+                f"{style_prefix}.TopTask.TButton", top_task_layout)
+            style.layout(
+                f"{style_prefix}.TopTaskSelected.TButton",
+                top_task_layout,
             )
         style.configure(
             "MiniStop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
@@ -1914,8 +1936,8 @@ class DaisyApp:
             "tearoff": False,
             "background": _SURFACE,
             "foreground": _TEXT,
-            "activebackground": _GREEN_SOFT,
-            "activeforeground": _GREEN_DEEP,
+            "activebackground": _ENV_SOFT,
+            "activeforeground": _ENV_DEEP,
             "disabledforeground": _MUTED,
             "activeborderwidth": 0,
             "borderwidth": 1,
@@ -1943,7 +1965,7 @@ class DaisyApp:
                 **{
                     **base_menu_options,
                     "activebackground": accent_colour,
-                    "activeforeground": "white",
+                    "activeforeground": deep_colour,
                     "selectcolor": deep_colour,
                 },
             )
@@ -1979,7 +2001,7 @@ class DaisyApp:
         self.command_preview_visible_var = tk.BooleanVar(value=False)
         view_menu = tk.Menu(menu, **base_menu_options)
         view_menu.add_checkbutton(
-            label="显示顶部任务菜单",
+            label="显示功能模块",
             variable=self.task_toolbar_visible_var,
             command=lambda: self._set_task_toolbar_expanded(
                 self.task_toolbar_visible_var.get()),
@@ -2035,7 +2057,7 @@ class DaisyApp:
         )
 
     def _build_task_toolbar(self) -> None:
-        """建立可折叠、可换行的顶部任务按钮菜单。"""
+        """建立 ENV、DBS、STG 各占一行的可折叠功能模块区。"""
         panel = tk.Frame(
             self.root, bg=_SURFACE,
             highlightbackground=_BORDER, highlightthickness=1,
@@ -2046,62 +2068,57 @@ class DaisyApp:
         header = tk.Frame(panel, bg=_SURFACE)
         header.pack(fill="x", padx=12, pady=(6, 4))
         tk.Label(
-            header, text="任务菜单", bg=_SURFACE, fg=_TEXT,
+            header, text="功能模块", bg=_SURFACE, fg=_TEXT,
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
-        tk.Label(
-            header, text="顶部按钮与下拉菜单同步",
-            bg=_SURFACE, fg=_MUTED,
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side="left", padx=(10, 0))
         self.task_toolbar_toggle_button = ttk.Button(
-            header, text="收起菜单", style="Mini.TButton",
+            header, text="收起模块", style="Mini.TButton",
             command=self._toggle_task_toolbar,
         )
         self.task_toolbar_toggle_button.pack(side="right")
         attach_tooltip(
             self.task_toolbar_toggle_button,
-            "展开或收起顶部任务按钮；当前页面和已填写内容保持不变。",
+            "展开或收起顶部功能模块；当前页面和已填写内容保持不变。",
         )
 
         body = tk.Frame(panel, bg=_SURFACE)
         self.task_toolbar_body = body
         body.pack(fill="x", padx=12, pady=(0, 8))
-        self.task_toolbar_item_keys = (
-            *_TASK_MENU_ORDER, _TASK_TOOLBAR_STORAGE_KEY,
-        )
-        self.task_toolbar_separators: dict[str, tk.Frame] = {}
+        self.task_toolbar_section_labels: dict[str, tk.Label] = {}
+        for section_label, short_label, _task_keys in _TASK_TOOLBAR_ROWS:
+            deep_colour = _TASK_MENU_SECTION_COLOURS[section_label][2]
+            self.task_toolbar_section_labels[section_label] = tk.Label(
+                body, text=short_label, bg=_SURFACE, fg=deep_colour,
+                font=("Microsoft YaHei UI", 9, "bold"),
+                width=4, anchor="w",
+            )
         for task_key in _TASK_MENU_ORDER:
             task = TASK_BY_KEY[task_key]
             section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
             style_prefix = _TASK_MENU_SECTION_COLOURS[section_label][0]
             button = ttk.Button(
-                body, text=task.nav,
+                body, text=_TASK_TOOLBAR_LABELS[task_key],
                 style=f"{style_prefix}.TopTask.TButton",
+                width=_TASK_TOOLBAR_BUTTON_WIDTH,
+                takefocus=False,
                 command=lambda key=task_key: self._select_task(key),
             )
             self.task_toolbar_buttons[task_key] = button
             attach_tooltip(
                 button,
-                f"切换到“{task.title}”页面；运行时任务菜单会暂时锁定。",
+                f"{task.nav}：切换到“{task.title}”页面；运行时功能模块会暂时锁定。",
             )
         storage_button = ttk.Button(
-            body, text="STG-  暂未开放",
+            body, text=_TASK_TOOLBAR_LABELS[_TASK_TOOLBAR_STORAGE_KEY],
             style="Storage.TopTask.TButton", state="disabled",
+            width=_TASK_TOOLBAR_BUTTON_WIDTH,
+            takefocus=False,
         )
         self.task_toolbar_buttons[_TASK_TOOLBAR_STORAGE_KEY] = storage_button
         attach_tooltip(
             storage_button,
             "硬盘信息模块将在后续版本提供，本版本不创建空任务页。",
         )
-        for task_key in _TASK_TOOLBAR_SEPARATOR_AFTER:
-            colour = (
-                _GREEN if task_key == "env_check" else _AMBER
-            )
-            self.task_toolbar_separators[task_key] = tk.Frame(
-                body, bg=colour, width=2,
-            )
-        body.bind("<Configure>", self._layout_task_toolbar)
         self.root.after_idle(self._layout_task_toolbar)
 
     def _build_shell(self) -> None:
@@ -2112,7 +2129,7 @@ class DaisyApp:
         self.colour_strip = colour_strip
         colour_strip.pack(fill="x", side="top")
         colour_strip.pack_propagate(False)
-        for colour in (_GREEN, _AMBER, _RED):
+        for colour in (_ENV, _BLUE, _PURPLE):
             tk.Frame(colour_strip, bg=colour).pack(
                 side="left", fill="both", expand=True)
 
@@ -2479,49 +2496,39 @@ class DaisyApp:
         self.root.after_idle(self._layout_action_buttons)
 
     def _layout_task_toolbar(
-        self, event: tk.Event | None = None,
+        self, _event: tk.Event | None = None,
     ) -> None:
-        """按顶部可用宽度换行，并只在同一行内显示分组竖线。"""
-        width = (
-            int(event.width) if event is not None
-            else self.task_toolbar_body.winfo_width()
-        )
-        if width <= 1:
-            width = max(240, self.root.winfo_width() - 24)
-        item_widths = tuple(
-            self.task_toolbar_buttons[key].winfo_reqwidth()
-            + (18 if key in _TASK_TOOLBAR_SEPARATOR_AFTER else 0)
-            for key in self.task_toolbar_item_keys
-        )
-        rows = flow_button_row_indexes(
-            item_widths, max(240, width), gap=6)
-        if rows == getattr(
-                self, "_task_toolbar_layout_signature", None):
+        """固定三类行与等宽四字功能块，不随窗口宽度重新排布。"""
+        if getattr(self, "_task_toolbar_layout_ready", False):
             return
-        self._task_toolbar_layout_signature = rows
+        for label in self.task_toolbar_section_labels.values():
+            label.grid_forget()
         for button in self.task_toolbar_buttons.values():
             button.grid_forget()
-        for separator in self.task_toolbar_separators.values():
-            separator.grid_forget()
-        for row_index, indexes in enumerate(rows):
-            column = 0
-            for item_position, item_index in enumerate(indexes):
-                task_key = self.task_toolbar_item_keys[item_index]
+        for row_index, (section_label, _short_label, task_keys) in (
+                enumerate(_TASK_TOOLBAR_ROWS)):
+            self.task_toolbar_section_labels[section_label].grid(
+                row=row_index, column=0, sticky="w",
+                padx=(0, 12), pady=(4 if row_index else 0, 0),
+            )
+            column = 1
+            for task_key in task_keys:
                 self.task_toolbar_buttons[task_key].grid(
                     row=row_index, column=column, sticky="w",
                     padx=(0, 6), pady=(4 if row_index else 0, 0),
                 )
                 column += 1
-                if (task_key in self.task_toolbar_separators
-                        and item_position < len(indexes) - 1):
-                    self.task_toolbar_separators[task_key].grid(
-                        row=row_index, column=column, sticky="ns",
-                        padx=(2, 8), pady=(
-                            7 if row_index else 3,
-                            3,
-                        ),
-                    )
-                    column += 1
+        self._task_toolbar_layout_ready = True
+        self._sync_task_toolbar_minimum_width()
+
+    def _sync_task_toolbar_minimum_width(self) -> None:
+        """普通窗口不能缩得比完整功能模块区更窄。"""
+        self.root.update_idletasks()
+        toolbar_width = self.task_toolbar_panel.winfo_reqwidth()
+        base_width, base_height = self.normal_min_size
+        self.normal_min_size = (max(base_width, toolbar_width), base_height)
+        if not self.mini_mode:
+            self.root.minsize(*self._normal_minimum_size())
 
     def _set_task_toolbar_expanded(self, expanded: bool) -> None:
         self.task_toolbar_expanded = expanded
@@ -2533,7 +2540,7 @@ class DaisyApp:
         else:
             self.task_toolbar_body.pack_forget()
         self.task_toolbar_toggle_button.configure(
-            text="收起菜单" if expanded else "展开菜单")
+            text="收起模块" if expanded else "展开模块")
         if hasattr(self, "task_toolbar_visible_var"):
             self.task_toolbar_visible_var.set(expanded)
 
@@ -2766,7 +2773,7 @@ class DaisyApp:
                 background=soft_colour if selected else _SURFACE,
                 foreground=deep_colour if selected else _TEXT,
                 activebackground=accent_colour,
-                activeforeground="white",
+                activeforeground=deep_colour,
                 font=(
                     ("Microsoft YaHei UI", 9, "bold")
                     if selected else ("Microsoft YaHei UI", 9)
