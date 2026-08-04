@@ -556,7 +556,9 @@ class TestGuiArguments(unittest.TestCase):
         with open(evolution_path, "r", encoding="utf-8") as f:
             evolution = f.read()
         self.assertIn("Kit_AL v1.0.2", evolution)
-        self.assertIn("DAISY v1.4.1", evolution)
+        self.assertIn("DAISY v1.4.2", evolution)
+        self.assertIn("独立队列总进度", evolution)
+        self.assertIn("小窗视图", evolution)
         self.assertIn("设计过渡点", evolution)
         for dated_version in (
                 "## 2026-07-21～22 — Kit_AL v1.0.3",
@@ -666,7 +668,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.4.1")
+        self.assertEqual(core.SCANNER_VERSION, "1.4.2")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
@@ -711,6 +713,13 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(gui.progress_fraction(1, 4), 25.0)
         self.assertEqual(gui.progress_fraction(9, 4), 100.0)
         self.assertIsNone(gui.progress_fraction(1, 0))
+        self.assertEqual(gui.queue_progress_fraction(0, 3), 0.0)
+        self.assertAlmostEqual(
+            gui.queue_progress_fraction(0, 3, 0.5), 100 / 6)
+        self.assertAlmostEqual(
+            gui.queue_progress_fraction(1, 3, 1), 200 / 3)
+        self.assertEqual(gui.queue_progress_fraction(5, 3, 1), 100.0)
+        self.assertEqual(gui.queue_progress_fraction("bad", 3), 0.0)
         detail, fraction = gui.progress_detail({
             "done": 2, "total": 4, "bytes_done": 1024,
             "bytes_total": 4096, "elapsed": 5, "eta": 10,

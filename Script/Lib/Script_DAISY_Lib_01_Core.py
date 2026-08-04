@@ -20,7 +20,7 @@ import uuid
 PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
-SCANNER_VERSION = "1.4.1"      # 包版本
+SCANNER_VERSION = "1.4.2"      # 包版本
 SCHEMA_VERSION = 3
 READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 MIN_READER_VERSION = "1.4.1"
@@ -79,14 +79,14 @@ def require_sqlite_integrity(
 def require_sealed_snapshot(
     con: sqlite3.Connection, artifact: str = "快照",
 ) -> int:
-    """只接纳 v1.4.1 当前结构、完整封存且数据库完整的快照。"""
+    """只接纳 schema 3 当前结构、完整封存且数据库完整的快照。"""
     try:
         row = con.execute(
             "SELECT schema_version,scan_status,database_integrity"
             " FROM snapshot_info WHERE id=1").fetchone()
     except sqlite3.Error as exc:
         raise PreflightError(
-            f"{artifact} 不是 v1.4.1 快照结构：{exc}") from exc
+            f"{artifact} 不是 schema 3 快照结构：{exc}") from exc
     if row is None:
         raise PreflightError(f"{artifact} 缺少 snapshot_info")
     schema_version, scan_status, database_integrity = row

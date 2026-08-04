@@ -152,7 +152,7 @@ class PreviousSnapshot:
 
 def load_previous(prev_path: str,
                   map_root: dict | None = None) -> PreviousSnapshot:
-    """验证 v1.4.1 来源并载入 status='valid' 的哈希索引。
+    """验证当前 schema 3 来源并载入 status='valid' 的哈希索引。
 
     SQLite 损坏、扫描未完成、枚举缺口、哈希失败或 unstable 一律拒绝。
     单纯存在损坏／空白／无法解析的源文件不妨碍其他有效哈希复用；新扫描会

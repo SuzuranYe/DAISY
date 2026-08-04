@@ -420,6 +420,24 @@ def progress_fraction(done: object, total: object) -> float | None:
     return max(0.0, min(100.0, done_number / total_number * 100.0))
 
 
+def queue_progress_fraction(
+    completed: object, total: object, current_fraction: object = 0.0,
+) -> float:
+    """返回队列总进度；当前项进度使用 0..1 的比例。"""
+    try:
+        completed_number = max(0.0, float(completed))
+        total_number = float(total)
+        current_number = max(0.0, min(1.0, float(current_fraction)))
+    except (TypeError, ValueError):
+        return 0.0
+    if total_number <= 0:
+        return 0.0
+    return max(
+        0.0,
+        min(100.0, (completed_number + current_number) / total_number * 100),
+    )
+
+
 def _format_bytes(value: object) -> str:
     try:
         number = max(0.0, float(value))
@@ -1460,6 +1478,83 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
             issues.append(f"文件不存在：{raw}")
     return issues
 
+
+class ToolTip:
+    """为按钮提供延迟出现、自动避开屏幕边缘的简短说明。"""
+
+    def __init__(self, widget: tk.Misc, text: str, delay_ms: int = 480) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after_id: str | None = None
+        self._window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is None:
+            return
+        try:
+            self.widget.after_cancel(self._after_id)
+        except tk.TclError:
+            pass
+        self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        try:
+            if self._window is not None or not self.widget.winfo_exists():
+                return
+            pointer_x = self.widget.winfo_pointerx()
+            pointer_y = self.widget.winfo_pointery()
+        except tk.TclError:
+            return
+        window = tk.Toplevel(self.widget)
+        self._window = window
+        window.wm_overrideredirect(True)
+        try:
+            window.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        label = tk.Label(
+            window, text=self.text, bg=_TEXT, fg="white",
+            font=("Microsoft YaHei UI", 9), justify="left",
+            relief="solid", bd=1, padx=9, pady=6, wraplength=360,
+        )
+        label.pack()
+        window.update_idletasks()
+        width = window.winfo_reqwidth()
+        height = window.winfo_reqheight()
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        x = min(pointer_x + 14, max(0, screen_width - width - 8))
+        y = min(pointer_y + 18, max(0, screen_height - height - 8))
+        window.wm_geometry(f"+{x}+{y}")
+
+    def _hide(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        if self._window is None:
+            return
+        try:
+            self._window.destroy()
+        except tk.TclError:
+            pass
+        self._window = None
+
+
+def attach_tooltip(widget: tk.Misc, text: str) -> ToolTip:
+    """附加并保留 Tooltip，避免实例被提前回收。"""
+    tooltip = ToolTip(widget, text)
+    widget._daisy_tooltip = tooltip  # type: ignore[attr-defined]
+    return tooltip
+
+
 class DirectoryListEditor(tk.Frame):
     """最多九项的目录列表；每项可编辑标签并单独移除。"""
 
@@ -1490,6 +1585,10 @@ class DirectoryListEditor(tk.Frame):
             command=self.add_directory,
         )
         self.add_button.grid(row=0, column=0, sticky="w")
+        attach_tooltip(
+            self.add_button,
+            f"选择并加入一个{self.title}；最多可添加 {self.max_items} 项。",
+        )
         self.count_label = tk.Label(
             footer, bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="e",
@@ -1535,10 +1634,12 @@ class DirectoryListEditor(tk.Frame):
             self._variables.append(variable)
             ttk.Entry(row, textvariable=variable).grid(
                 row=0, column=1, sticky="ew")
-            ttk.Button(
+            remove_button = ttk.Button(
                 row, text="×", width=3, style="Remove.TButton",
                 command=lambda i=index: self.remove(i),
-            ).grid(row=0, column=2, padx=(6, 0))
+            )
+            remove_button.grid(row=0, column=2, padx=(6, 0))
+            attach_tooltip(remove_button, f"从队列中移除第 {index + 1} 个目录。")
         self.count_label.configure(
             text=f"已添加 {len(self._items)}/{self.max_items}")
         self.add_button.configure(
@@ -1672,6 +1773,11 @@ class DaisyApp:
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
         self._work_progress_indeterminate = False
+        self.current_stage_index = 0
+        self.current_stage_total = 0
+        self.mini_mode = False
+        self._normal_geometry = ""
+        self._normal_window_state = "normal"
         self.process: subprocess.Popen[bytes] | None = None
         self.process_started = 0.0
         self.process_task_key: str | None = None
@@ -1690,6 +1796,10 @@ class DaisyApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Control-Return>", lambda _e: self._run())
         self.root.bind("<Control-l>", lambda _e: self._clear_log())
+        self.root.bind(
+            "<Escape>",
+            lambda _e: self._leave_mini_mode() if self.mini_mode else None,
+        )
         self.root.after(80, self._poll_events)
 
     def _configure_window(self) -> None:
@@ -1702,7 +1812,8 @@ class DaisyApp:
         y = max(0, (screen_height - height) // 2)
         self.compact_layout = width < 1080 or height < 700
         self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.root.minsize(min(1040, width), min(680, height))
+        self.normal_min_size = (min(1040, width), min(680, height))
+        self.root.minsize(*self.normal_min_size)
         self.root.configure(bg=_BG)
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
 
@@ -1795,6 +1906,22 @@ class DaisyApp:
         style.map(
             "Secondary.TButton", background=[("active", _CONTROL_HOVER)])
         style.configure(
+            "Mini.TButton", background=_CONTROL, foreground=_TEXT,
+            padding=(9, 4), font=("Microsoft YaHei UI", 8),
+            borderwidth=1, bordercolor=_BORDER,
+            lightcolor=_BORDER, darkcolor=_BORDER,
+        )
+        style.map(
+            "Mini.TButton", background=[("active", _CONTROL_HOVER)])
+        style.configure(
+            "MiniStop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
+            padding=(9, 4), font=("Microsoft YaHei UI", 8, "bold"),
+            borderwidth=1, bordercolor=_DANGER_BORDER,
+            lightcolor=_DANGER_BORDER, darkcolor=_DANGER_BORDER,
+        )
+        style.map(
+            "MiniStop.TButton", background=[("active", _DANGER_HOVER)])
+        style.configure(
             "Daisy.Vertical.TScrollbar",
             background=_GREEN_DARK, troughcolor=_CONTROL,
             bordercolor=_BORDER, lightcolor=_GREEN_DARK,
@@ -1822,6 +1949,7 @@ class DaisyApp:
             ],
         )
         for name, colour in (
+                ("Queue", _GREEN_DARK),
                 ("Stage", _AMBER),
                 ("Work", _GREEN),
                 ("Success", _GREEN_DARK),
@@ -1873,9 +2001,11 @@ class DaisyApp:
         header_height = 78 if self.compact_layout else 86
         sidebar_width = 194 if self.compact_layout else 222
         content_pad = 12 if self.compact_layout else 18
+        self.content_pad = content_pad
         nav_pady = 7 if self.compact_layout else 9
         header = tk.Frame(self.root, bg=_SURFACE, height=header_height,
                           highlightbackground=_BORDER, highlightthickness=1)
+        self.header = header
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
 
@@ -1916,6 +2046,7 @@ class DaisyApp:
         ).pack(side="left", anchor="center")
 
         colour_strip = tk.Frame(self.root, bg=_BG, height=4)
+        self.colour_strip = colour_strip
         colour_strip.pack(fill="x", side="top")
         colour_strip.pack_propagate(False)
         for colour in (_GREEN, _AMBER, _RED):
@@ -1923,9 +2054,11 @@ class DaisyApp:
                 side="left", fill="both", expand=True)
 
         body = tk.Frame(self.root, bg=_BG)
+        self.body = body
         body.pack(fill="both", expand=True)
 
         sidebar = tk.Frame(body, bg=_SIDEBAR, width=sidebar_width)
+        self.sidebar = sidebar
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
         tk.Label(
@@ -1956,6 +2089,10 @@ class DaisyApp:
             )
             button.pack(fill="x")
             self.nav_buttons[task.key] = button
+            attach_tooltip(
+                button,
+                f"切换到“{task.title}”页面；任务运行时页面导航会暂时锁定。",
+            )
 
         shortcut_panel = tk.Frame(sidebar, bg=_SIDEBAR)
         shortcut_panel.pack(
@@ -1976,6 +2113,7 @@ class DaisyApp:
             ).grid(row=row, column=1, sticky="w", padx=(8, 0))
 
         content = tk.Frame(body, bg=_BG)
+        self.content = content
         content.pack(
             side="left", fill="both", expand=True,
             padx=content_pad, pady=content_pad,
@@ -2097,57 +2235,114 @@ class DaisyApp:
             content, bg=_SURFACE, highlightbackground=_BORDER,
             highlightthickness=1,
         )
+        self.progress_panel = progress_panel
         progress_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         progress_inner = tk.Frame(progress_panel, bg=_SURFACE)
+        self.progress_inner = progress_inner
         progress_inner.pack(
             fill="x", padx=12 if self.compact_layout else 15,
             pady=8 if self.compact_layout else 10,
         )
         progress_inner.grid_columnconfigure(1, weight=1)
 
+        progress_header = tk.Frame(progress_inner, bg=_SURFACE)
+        progress_header.grid(
+            row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        tk.Label(
+            progress_header, text="运行进度", bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+        ).pack(side="left")
+        self.mini_mode_button = ttk.Button(
+            progress_header, text="小窗运行", style="Mini.TButton",
+            command=self._toggle_mini_mode, state="disabled",
+        )
+        self.mini_mode_button.pack(side="right")
+        attach_tooltip(
+            self.mini_mode_button,
+            "任务运行时收起配置与日志，只保留进度和停止控制；按 Esc 也可返回。",
+        )
+        self.mini_stop_button = ttk.Button(
+            progress_header, text="停止", style="MiniStop.TButton",
+            command=self._stop, state="disabled",
+        )
+        attach_tooltip(
+            self.mini_stop_button,
+            "请求停止当前任务；多项队列中尚未开始的项目也会取消。",
+        )
+
+        self.queue_title_label = tk.Label(
+            progress_inner, text="任务队列", bg=_SURFACE, fg=_GREEN_DEEP,
+            font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
+        )
+        self.queue_title_label.grid(
+            row=1, column=0, sticky="w", padx=(0, 10))
+        self.queue_detail_label = tk.Label(
+            progress_inner, text="等待队列", bg=_SURFACE, fg=_MUTED,
+            font=("Microsoft YaHei UI", 8), anchor="w",
+        )
+        self.queue_detail_label.grid(row=1, column=1, sticky="ew")
+        self.queue_percent_label = tk.Label(
+            progress_inner, text="0%", bg=_SURFACE, fg=_GREEN_DEEP,
+            font=("Segoe UI", 8, "bold"), anchor="e",
+        )
+        self.queue_percent_label.grid(row=1, column=2, sticky="e")
+        self.queue_progress_bar = ttk.Progressbar(
+            progress_inner, mode="determinate", maximum=100, value=0,
+            style="Queue.Horizontal.TProgressbar",
+        )
+        self.queue_progress_bar.grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(4, 7))
+        self.queue_widgets = (
+            self.queue_title_label, self.queue_detail_label,
+            self.queue_percent_label, self.queue_progress_bar,
+        )
+        for widget in self.queue_widgets:
+            widget.grid_remove()
+
         tk.Label(
             progress_inner, text="任务阶段", bg=_SURFACE, fg=_AMBER_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ).grid(row=3, column=0, sticky="w", padx=(0, 10))
         self.progress_stage_label = tk.Label(
             progress_inner, text="等待开始", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.progress_stage_label.grid(row=0, column=1, sticky="ew")
+        self.progress_stage_label.grid(
+            row=3, column=1, columnspan=2, sticky="ew")
         self.progress_stage_bar = ttk.Progressbar(
             progress_inner, mode="determinate", maximum=100, value=0,
             style="Stage.Horizontal.TProgressbar",
         )
         self.progress_stage_bar.grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=(4, 6))
+            row=4, column=0, columnspan=3, sticky="ew", pady=(4, 6))
 
         tk.Label(
             progress_inner, text="本阶段", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-        ).grid(row=2, column=0, sticky="w", padx=(0, 10))
+        ).grid(row=5, column=0, sticky="w", padx=(0, 10))
         self.progress_detail_label = tk.Label(
             progress_inner, text="尚未运行", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.progress_detail_label.grid(row=2, column=1, sticky="ew")
+        self.progress_detail_label.grid(row=5, column=1, sticky="ew")
         self.progress_percent_label = tk.Label(
             progress_inner, text="0%", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Segoe UI", 8, "bold"), anchor="e",
         )
-        self.progress_percent_label.grid(row=2, column=2, sticky="e")
+        self.progress_percent_label.grid(row=5, column=2, sticky="e")
         self.progress_work_bar = ttk.Progressbar(
             progress_inner, mode="determinate", maximum=100, value=0,
             style="Work.Horizontal.TProgressbar",
         )
         self.progress_work_bar.grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(4, 5))
+            row=6, column=0, columnspan=3, sticky="ew", pady=(4, 5))
         self.tool_cache_label = tk.Label(
             progress_inner, text="",
             bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w", justify="left",
         )
         self.tool_cache_label.grid(
-            row=4, column=0, columnspan=3, sticky="ew")
+            row=7, column=0, columnspan=3, sticky="ew")
         self.tool_cache_label.grid_remove()
         progress_inner.bind(
             "<Configure>",
@@ -2156,6 +2351,7 @@ class DaisyApp:
         )
 
         command_panel = tk.Frame(content, bg=_BG)
+        self.command_panel = command_panel
         command_panel.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         tk.Label(
             command_panel, text="命令预览", bg=_BG, fg=_MUTED,
@@ -2168,10 +2364,15 @@ class DaisyApp:
             preview_row, textvariable=self.preview_var, state="readonly",
         )
         preview_entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(
+        self.copy_button = ttk.Button(
             preview_row, text="复制", style="Browse.TButton",
             command=self._copy_command,
-        ).pack(side="left", padx=(8, 0))
+        )
+        self.copy_button.pack(side="left", padx=(8, 0))
+        attach_tooltip(
+            self.copy_button,
+            "把当前页面生成的命令预览复制到剪贴板，不会执行命令。",
+        )
 
         actions = tk.Frame(command_panel, bg=_BG)
         actions.pack(fill="x")
@@ -2187,27 +2388,29 @@ class DaisyApp:
             actions, text="打开结果目录", style="Secondary.TButton",
             command=self._open_output,
         )
-        self.open_output_button.pack(side="right", padx=(8, 0))
         self.clear_log_button = ttk.Button(
             actions, text="清空日志", style="Secondary.TButton",
             command=self._clear_log,
         )
-        self.clear_log_button.pack(side="right", padx=(8, 0))
         self.clear_cache_button = ttk.Button(
             actions, text="清理缓存", style="Secondary.TButton",
             command=self._clear_tool_cache, state="disabled",
         )
-        self.clear_cache_button.pack(side="right", padx=(8, 0))
         self.stop_button = ttk.Button(
             actions, text="停止", style="Stop.TButton",
             command=self._stop, state="disabled",
         )
-        self.stop_button.pack(side="right", padx=(8, 0))
         self.run_button = ttk.Button(
             actions, text="开始任务", style="Primary.TButton",
             command=self._run,
         )
+        # 右侧控件按重要性分配空间：最先 pack 的开始／停止始终贴近右边，
+        # 窗口变窄时优先保留，不再被低优先级工具按钮挤出画面。
         self.run_button.pack(side="right")
+        self.stop_button.pack(side="right", padx=(8, 0))
+        self.clear_cache_button.pack(side="right", padx=(8, 0))
+        self.clear_log_button.pack(side="right", padx=(8, 0))
+        self.open_output_button.pack(side="right", padx=(8, 0))
         self.self_test_button = ttk.Button(
             actions, text="运行项目自检", style="Secondary.TButton",
             command=self._run_self_test,
@@ -2217,6 +2420,114 @@ class DaisyApp:
             style="Secondary.TButton",
             command=self._install_missing_tools,
         )
+        for button, tooltip in (
+            (self.run_button,
+             "校验当前表单后启动任务；快捷键为 Ctrl+Enter。"),
+            (self.stop_button,
+             "请求停止当前任务；多项队列中尚未开始的项目也会取消。"),
+            (self.clear_cache_button,
+             "清除项目内可重建缓存和本窗口工具路径缓存，不触碰正式产物。"),
+            (self.clear_log_button,
+             "清空当前窗口的运行日志；快捷键为 Ctrl+L。"),
+            (self.open_output_button,
+             "在资源管理器中打开当前任务对应的结果目录。"),
+            (self.self_test_button,
+             "运行项目随附的 unittest，自检不会使用表单中的档案目录。"),
+            (self.install_tools_button,
+             "经确认后用 WinGet 安装环境检测发现的缺失工具。"),
+        ):
+            attach_tooltip(button, tooltip)
+        self.root.after_idle(self._position_initial_log_sash)
+
+    def _task_is_active(self) -> bool:
+        return bool(self.process is not None or self.worker_starting
+                    or self.run_jobs)
+
+    def _refresh_mini_action(self) -> None:
+        self.mini_mode_button.configure(
+            text="返回完整界面" if self.mini_mode else "小窗运行",
+            state=(
+                "normal" if self.mini_mode or self._task_is_active()
+                else "disabled"
+            ),
+        )
+
+    def _set_stop_state(self, state: str) -> None:
+        self.stop_button.configure(state=state)
+        self.mini_stop_button.configure(state=state)
+
+    def _toggle_mini_mode(self) -> None:
+        if self.mini_mode:
+            self._leave_mini_mode()
+        elif self._task_is_active():
+            self._enter_mini_mode()
+
+    def _enter_mini_mode(self) -> None:
+        if self.mini_mode or not self._task_is_active():
+            return
+        self.root.update_idletasks()
+        self._normal_geometry = self.root.geometry()
+        self._normal_window_state = self.root.state()
+        current_x = self.root.winfo_rootx()
+        current_y = self.root.winfo_rooty()
+        current_width = self.root.winfo_width()
+        if self._normal_window_state != "normal":
+            self.root.state("normal")
+            self.root.update_idletasks()
+
+        self.header.pack_forget()
+        self.colour_strip.pack_forget()
+        self.sidebar.pack_forget()
+        self.task_card.grid_remove()
+        self.command_panel.grid_remove()
+        self.progress_panel.grid_configure(row=0, pady=0)
+        self.content.grid_rowconfigure(0, weight=0)
+        self.content.pack_configure(padx=10, pady=10)
+        self.tool_cache_label.grid_remove()
+        self.mini_stop_button.pack(side="right", padx=(0, 6))
+        self.mini_mode = True
+        self._refresh_mini_action()
+
+        self.root.update_idletasks()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        width = max(420, min(680, screen_width - 32))
+        requested_height = self.progress_panel.winfo_reqheight() + 20
+        height = max(190, min(300, requested_height))
+        x = max(
+            0,
+            min(screen_width - width, current_x + current_width - width),
+        )
+        y = max(0, min(screen_height - height, current_y))
+        self.root.minsize(min(520, width), height)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.title(f"{core.PROJECT_NAME} {_version()} · 运行进度")
+
+    def _leave_mini_mode(self) -> None:
+        if not self.mini_mode:
+            return
+        self.mini_stop_button.pack_forget()
+        self.progress_panel.grid_configure(row=1, pady=(10, 0))
+        self.task_card.grid()
+        self.command_panel.grid()
+        self.content.grid_rowconfigure(0, weight=1)
+        self.content.pack_configure(
+            padx=self.content_pad, pady=self.content_pad)
+        self.sidebar.pack(
+            side="left", fill="y", before=self.content)
+        self.header.pack(fill="x", side="top", before=self.body)
+        self.colour_strip.pack(fill="x", side="top", before=self.body)
+        self.mini_mode = False
+        self._refresh_mini_action()
+        self._refresh_tool_cache_labels()
+        self.root.title(project_window_title())
+        self.root.minsize(*self.normal_min_size)
+        if self._normal_geometry:
+            self.root.geometry(self._normal_geometry)
+        if self._normal_window_state != "normal":
+            self.root.after_idle(
+                lambda state=self._normal_window_state:
+                self.root.state(state))
         self.root.after_idle(self._position_initial_log_sash)
 
     def _position_initial_log_sash(self) -> None:
@@ -2259,6 +2570,8 @@ class DaisyApp:
                     selected_hover if selected else _SIDEBAR_HOVER),
                 activeforeground="white" if selected else _SIDEBAR_TEXT,
                 fg="white" if selected else _SIDEBAR_TEXT,
+                disabledforeground=(
+                    "white" if selected else _SIDEBAR_TEXT),
             )
         self.title_label.configure(text=self.task.title)
         self.badge_label.configure(text=self.task.badge)
@@ -2388,11 +2701,17 @@ class DaisyApp:
                 widget.bind("<<Modified>>", self._text_changed)
                 self.values[spec.key] = widget
                 if spec.kind == "multimapdir":
-                    ttk.Button(
+                    add_directory_button = ttk.Button(
                         cell, text="添加目录", style="Browse.TButton",
                         command=lambda s=spec, w=widget:
                         self._append_directory(s, w),
-                    ).grid(row=0, column=1, sticky="n", padx=(8, 0))
+                    )
+                    add_directory_button.grid(
+                        row=0, column=1, sticky="n", padx=(8, 0))
+                    attach_tooltip(
+                        add_directory_button,
+                        f"选择一个目录并追加到“{spec.label}”列表。",
+                    )
             else:
                 var = tk.StringVar(value=str(current or ""))
                 var.trace_add("write", lambda *_args: self._update_preview())
@@ -2406,10 +2725,19 @@ class DaisyApp:
                         self._normalize_directory_variable(variable),
                     )
                 if spec.kind in ("dir", "file", "save"):
-                    ttk.Button(
+                    browse_button = ttk.Button(
                         cell, text="浏览", style="Browse.TButton",
                         command=lambda s=spec, v=var: self._browse(s, v),
-                    ).grid(row=0, column=1, padx=(8, 0))
+                    )
+                    browse_button.grid(row=0, column=1, padx=(8, 0))
+                    attach_tooltip(
+                        browse_button,
+                        (
+                            f"选择“{spec.label}”的保存位置。"
+                            if spec.kind == "save" else
+                            f"选择“{spec.label}”。"
+                        ),
+                    )
 
             if spec.help:
                 help_label = ttk.Label(
@@ -2458,6 +2786,10 @@ class DaisyApp:
                 command=self._toggle_advanced,
             )
             self.advanced_button.pack(anchor="center")
+            attach_tooltip(
+                self.advanced_button,
+                "显示或收起低频参数；已经设置的高级值不会因收起而丢失。",
+            )
             row += 1
 
         self.form_inner.grid_rowconfigure(row, minsize=10)
@@ -2685,7 +3017,7 @@ class DaisyApp:
                 summary + "\n" if summary else ""
             ) + f"缺失或不可用：{missing}"
         self.tool_cache_label.configure(text=summary)
-        if summary:
+        if summary and not self.mini_mode:
             self.tool_cache_label.grid()
         else:
             self.tool_cache_label.grid_remove()
@@ -2799,6 +3131,15 @@ class DaisyApp:
 
     def _reset_progress(self, task_title: str) -> None:
         self._stop_work_progress()
+        self.current_stage_index = 0
+        self.current_stage_total = 0
+        self.queue_progress_bar.configure(
+            mode="determinate", maximum=100, value=0,
+            style="Queue.Horizontal.TProgressbar",
+        )
+        self.queue_detail_label.configure(text="等待队列", fg=_MUTED)
+        self.queue_percent_label.configure(text="0%", fg=_GREEN_DEEP)
+        self._set_queue_visible(False)
         self.progress_stage_bar.configure(
             mode="determinate", maximum=100, value=0,
             style="Stage.Horizontal.TProgressbar",
@@ -2822,15 +3163,53 @@ class DaisyApp:
         label = self.run_jobs[self.run_job_index].label
         return f"队列 {self.run_job_index + 1}/{total} · {label} · "
 
-    def _queue_stage_value(self, fraction: float) -> float:
-        fraction = max(0.0, min(1.0, fraction))
-        total = self._queue_total()
-        if len(self.run_jobs) <= 1:
-            return fraction * 100
-        return (self.run_job_index + fraction) / total * 100
+    def _set_queue_visible(self, visible: bool) -> None:
+        for widget in self.queue_widgets:
+            if visible:
+                widget.grid()
+            else:
+                widget.grid_remove()
+
+    def _prepare_queue_progress(self) -> None:
+        total = len(self.run_jobs)
+        self._set_queue_visible(total > 1)
+        self.queue_progress_bar.configure(
+            mode="determinate", maximum=100, value=0,
+            style="Queue.Horizontal.TProgressbar",
+        )
+        self.queue_detail_label.configure(
+            text=f"0/{total} · 队列已准备" if total > 1 else "等待队列",
+            fg=_MUTED,
+        )
+        self.queue_percent_label.configure(text="0%", fg=_GREEN_DEEP)
+
+    def _update_queue_progress(
+        self, current_fraction: float = 0.0, detail: str | None = None,
+    ) -> None:
+        total = len(self.run_jobs)
+        if total <= 1:
+            return
+        completed = max(0, self.run_job_index)
+        value = queue_progress_fraction(
+            completed, total, current_fraction)
+        if detail is None:
+            if 0 <= self.run_job_index < total:
+                label = self._short_progress_text(
+                    self.run_jobs[self.run_job_index].label, 74)
+                detail = f"{self.run_job_index + 1}/{total} · {label}"
+            else:
+                detail = f"0/{total} · 队列已准备"
+        self.queue_progress_bar.configure(
+            mode="determinate", maximum=100, value=value,
+            style="Queue.Horizontal.TProgressbar",
+        )
+        self.queue_detail_label.configure(text=detail, fg=_TEXT)
+        self.queue_percent_label.configure(
+            text=f"{value:.0f}%", fg=_GREEN_DEEP)
 
     def _begin_progress(self) -> None:
-        start_value = self._queue_stage_value(0.0)
+        self.current_stage_index = 0
+        self.current_stage_total = 0
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         title = (
@@ -2839,11 +3218,12 @@ class DaisyApp:
             self.task.title
         )
         self.progress_stage_bar.configure(
-            mode="determinate", maximum=100, value=start_value,
+            mode="determinate", maximum=100, value=0,
             style="Stage.Horizontal.TProgressbar",
         )
+        self._update_queue_progress(0.0)
         self.progress_stage_label.configure(
-            text=f"{self._queue_prefix()}{title} · 正在启动",
+            text=f"{title} · 正在启动",
             fg=_AMBER_DARK,
         )
         self.progress_detail_label.configure(
@@ -2874,14 +3254,18 @@ class DaisyApp:
         if event_name == "progress_start":
             stage_idx = max(1, int(payload.get("stage_idx") or 1))
             stage_total = max(stage_idx, int(payload.get("stage_total") or 1))
+            self.current_stage_index = stage_idx
+            self.current_stage_total = stage_total
             name = self._short_progress_text(payload.get("name") or "处理中")
+            task_fraction = (stage_idx - 1) / stage_total
             self.progress_stage_bar.configure(
                 mode="determinate", maximum=100,
-                value=self._queue_stage_value((stage_idx - 1) / stage_total),
+                value=task_fraction * 100,
                 style="Stage.Horizontal.TProgressbar",
             )
+            self._update_queue_progress(task_fraction)
             self.progress_stage_label.configure(
-                text=f"{self._queue_prefix()}阶段 {stage_idx}/{stage_total} · {name}",
+                text=f"阶段 {stage_idx}/{stage_total} · {name}",
                 fg=_AMBER_DARK,
             )
             self.progress_detail_label.configure(text="正在处理…", fg=_MUTED)
@@ -2896,16 +3280,25 @@ class DaisyApp:
                     self._set_work_indeterminate()
             else:
                 self._set_work_fraction(fraction)
+                if self.current_stage_total:
+                    task_fraction = (
+                        self.current_stage_index - 1 + fraction / 100
+                    ) / self.current_stage_total
+                    self._update_queue_progress(task_fraction)
             return
         if event_name in ("progress_finish", "progress_skip"):
             stage_idx = max(1, int(payload.get("stage_idx") or 1))
             stage_total = max(stage_idx, int(payload.get("stage_total") or 1))
+            self.current_stage_index = stage_idx
+            self.current_stage_total = stage_total
             name = self._short_progress_text(payload.get("name") or "阶段")
+            task_fraction = stage_idx / stage_total
             self.progress_stage_bar.configure(
                 mode="determinate", maximum=100,
-                value=self._queue_stage_value(stage_idx / stage_total),
+                value=task_fraction * 100,
                 style="Stage.Horizontal.TProgressbar",
             )
+            self._update_queue_progress(task_fraction)
             if event_name == "progress_skip":
                 detail = "已跳过：" + str(payload.get("reason") or "当前配置")
             else:
@@ -2914,7 +3307,7 @@ class DaisyApp:
                 if elapsed is not None:
                     detail += f" · 用时 {_format_duration(elapsed)}"
             self.progress_stage_label.configure(
-                text=f"{self._queue_prefix()}阶段 {stage_idx}/{stage_total} · {name}",
+                text=f"阶段 {stage_idx}/{stage_total} · {name}",
                 fg=_AMBER_DARK,
             )
             self.progress_detail_label.configure(
@@ -3011,7 +3404,9 @@ class DaisyApp:
         self.run_button.configure(state="disabled")
         self.self_test_button.configure(state="disabled")
         self.install_tools_button.configure(state="disabled")
-        self.stop_button.configure(state="disabled")
+        self._set_stop_state("disabled")
+        self._prepare_queue_progress()
+        self._refresh_mini_action()
         for button in self.nav_buttons.values():
             button.configure(state="disabled")
         if task_key == _PROJECT_SELF_TEST_KEY:
@@ -3233,13 +3628,14 @@ class DaisyApp:
                     self.process = event[1]
                     self.process_started = event[2]
                     if self.close_after_stop:
-                        self.stop_button.configure(state="disabled")
+                        self._set_stop_state("disabled")
                         self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
                     else:
-                        self.stop_button.configure(state="normal")
+                        self._set_stop_state("normal")
                         self._set_status(
                             f"{self._queue_prefix()}运行中"
                             f"（PID {self.process.pid}）…")
+                    self._refresh_mini_action()
                 elif kind == "output":
                     self._append_log(event[1])
                 elif kind == "gui_event":
@@ -3265,28 +3661,42 @@ class DaisyApp:
         elapsed = time.monotonic() - self.run_queue_started
         value = processed / total * 100
         if self.stop_requested:
-            style, colour, percent = "Warning", _WARNING, "停止"
+            style, colour = "Warning", _WARNING
             detail = (
                 f"队列已停止 · 已处理 {processed}/{total} · "
                 f"用时 {_format_duration(elapsed)}")
         elif failures:
-            style, colour, percent = "Warning", _WARNING, "检查"
+            style, colour = "Warning", _WARNING
             detail = (
                 f"队列完成 · 成功 {successes} · 失败 {failures} · "
                 f"用时 {_format_duration(elapsed)}")
             value = 100
         else:
-            style, colour, percent = "Success", _SUCCESS, "完成"
+            style, colour = "Success", _SUCCESS
             detail = (
                 f"队列完成 · {successes}/{total} 成功 · "
                 f"用时 {_format_duration(elapsed)}")
             value = 100
-        self.progress_stage_bar.configure(
+        self._set_queue_visible(True)
+        self.queue_progress_bar.configure(
             mode="determinate", maximum=100, value=value,
             style=f"{style}.Horizontal.TProgressbar",
         )
-        self._set_work_fraction(value, style=style)
-        self.progress_percent_label.configure(text=percent, fg=colour)
+        self.queue_percent_label.configure(
+            text=f"{value:.0f}%", fg=colour)
+        self.queue_detail_label.configure(text=detail, fg=colour)
+        self.progress_stage_bar.configure(
+            style=f"{style}.Horizontal.TProgressbar")
+        self.progress_work_bar.configure(
+            style=f"{style}.Horizontal.TProgressbar")
+        if not self.stop_requested:
+            self.progress_stage_bar.configure(value=100)
+            self._set_work_fraction(100, style=style)
+        self.progress_percent_label.configure(
+            text="停止" if self.stop_requested else
+            "检查" if failures else "完成",
+            fg=colour,
+        )
         self.progress_stage_label.configure(text=detail, fg=colour)
         self.progress_detail_label.configure(text=detail, fg=colour)
 
@@ -3373,7 +3783,7 @@ class DaisyApp:
                     and not project_self_test_missing_files())
                 else "disabled"
             ))
-        self.stop_button.configure(state="disabled")
+        self._set_stop_state("disabled")
         for button in self.nav_buttons.values():
             button.configure(state="normal")
         self.process_task_key = None
@@ -3383,6 +3793,7 @@ class DaisyApp:
         self.run_results = []
         self.run_queue_started = 0.0
         self.worker_starting = False
+        self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         if self.close_after_stop:
             self.close_after_stop = False
@@ -3408,12 +3819,18 @@ class DaisyApp:
         )
         self.process = None
         self.process_started = 0.0
-        self.stop_button.configure(state="disabled")
+        self._set_stop_state("disabled")
         self.run_results.append(returncode)
         total = max(1, len(self.run_jobs))
         job = (
             self.run_jobs[self.run_job_index]
             if self.run_jobs and self.run_job_index >= 0 else None)
+        if total > 1:
+            self._update_queue_progress(
+                1.0,
+                f"已处理 {len(self.run_results)}/{total} · {job.label}"
+                if job else f"已处理 {len(self.run_results)}/{total}",
+            )
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         item = (
             f"队列 {self.run_job_index + 1}/{total}「{job.label}」"
@@ -3478,7 +3895,7 @@ class DaisyApp:
         ):
             return
         self.stop_requested = True
-        self.stop_button.configure(state="disabled")
+        self._set_stop_state("disabled")
         status = (
             "正在停止当前目录并取消剩余队列…"
             if len(self.run_jobs) > 1 else "正在请求停止…"
@@ -3523,7 +3940,7 @@ class DaisyApp:
             ):
                 return
             self.stop_requested = True
-            self.stop_button.configure(state="disabled")
+            self._set_stop_state("disabled")
             if process is not None:
                 self.close_after_stop = True
                 self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
