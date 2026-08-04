@@ -40,7 +40,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
-        self.assertNotEqual(
+        self.assertEqual(
             gui._NAV_COLOURS["env_check"],
             gui._NAV_COLOURS["full_scan"],
         )
@@ -612,9 +612,9 @@ class TestGuiArguments(unittest.TestCase):
         for change_kind in ("新增：", "修复：", "删除："):
             self.assertIn(change_kind, evolution)
 
-    def test_task_accent_colours_follow_workflow_group(self):
+    def test_task_accent_colours_are_unified_green(self):
         env = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
-        database = (gui._AMBER_DARK, gui._AMBER_DEEP, gui._AMBER)
+        database = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
         self.assertEqual(gui.task_accent_colours("env_check"), env)
         for task_key in gui._TASK_MENU_SECTIONS[1][1]:
             self.assertEqual(gui.task_accent_colours(task_key), database)
@@ -963,12 +963,14 @@ class TestGuiArguments(unittest.TestCase):
         class BodyProbe:
             def __init__(self):
                 self.manager = "pack"
+                self.options = {}
 
             def winfo_manager(self):
                 return self.manager
 
-            def pack(self, **_options):
+            def pack(self, **options):
                 self.manager = "pack"
+                self.options = options
 
             def pack_forget(self):
                 self.manager = ""
@@ -988,6 +990,7 @@ class TestGuiArguments(unittest.TestCase):
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.task_toolbar_expanded = True
+        app.task_toolbar_horizontal_pad = 32
         app.task_toolbar_body = BodyProbe()
         app.task_toolbar_toggle_button = ButtonProbe()
         app.task_toolbar_visible_var = ValueProbe()
@@ -997,6 +1000,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertFalse(app.task_toolbar_visible_var.value)
         app._set_task_toolbar_expanded(True)
         self.assertEqual(app.task_toolbar_body.manager, "pack")
+        self.assertEqual(
+            app.task_toolbar_body.options,
+            {"fill": "x", "padx": 32, "pady": (0, 8)},
+        )
         self.assertEqual(app.task_toolbar_toggle_button.text, "收起模块")
         self.assertTrue(app.task_toolbar_visible_var.value)
 
@@ -1053,7 +1060,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.settings_title_row.options,
             {
-                "padx": gui._COLLAPSED_SETTINGS_HEADER_PADX,
+                "padx": gui._PANEL_HEADER_PADX,
                 "pady": gui._COLLAPSED_SETTINGS_HEADER_PADY,
             },
         )
@@ -1202,9 +1209,9 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
-            gui.status_badge_background("full_scan"), gui._AMBER_DARK)
+            gui.status_badge_background("full_scan"), gui._GREEN_DARK)
         self.assertEqual(
-            gui.status_badge_background("diff"), gui._AMBER_DARK)
+            gui.status_badge_background("diff"), gui._GREEN_DARK)
         self.assertEqual(
             gui.status_badge_background("diff", gui._DANGER),
             gui._DANGER,

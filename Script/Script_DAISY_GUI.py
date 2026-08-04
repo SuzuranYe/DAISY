@@ -118,13 +118,13 @@ _DANGER_BORDER = "#c99f98"
 
 _TASK_ACCENTS = {
     "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
-    _PROJECT_SELF_TEST_KEY: (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "full_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "quick_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "check_format": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "check_hash": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "diff": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
-    "export_report": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    _PROJECT_SELF_TEST_KEY: (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "full_scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "quick_scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "check_format": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "check_hash": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "diff": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "export_report": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
 }
 _NAV_COLOURS = {
     key: (colours[0], colours[1])
@@ -1028,7 +1028,7 @@ _TASK_TOOLBAR_LABEL_COLOUR = _GREEN_DEEP
 _UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
 _UNIFIED_ACTION_FOREGROUND = "white"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
-_COLLAPSED_SETTINGS_HEADER_PADX = 14
+_PANEL_HEADER_PADX = 14
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
 
 
@@ -1452,7 +1452,7 @@ class DirectoryListEditor(tk.Frame):
             row.grid_columnconfigure(1, weight=1)
             tk.Label(
                 row, text=f"{index + 1}", width=2,
-                bg=_AMBER_SOFT, fg=_AMBER_DARK,
+                bg=_GREEN_SOFT, fg=_GREEN_DEEP,
                 font=("Segoe UI", 8, "bold"),
             ).grid(row=0, column=0, sticky="ns", padx=(0, 6))
             variable = tk.StringVar(value=item)
@@ -1732,8 +1732,8 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9),
         )
         style.configure(
-            "Badge.TLabel", foreground=_AMBER_DARK,
-            background=_AMBER_SOFT,
+            "Badge.TLabel", foreground=_GREEN_DEEP,
+            background=_GREEN_SOFT,
             font=("Microsoft YaHei UI", 9, "bold"), padding=(9, 4),
         )
         style.configure(
@@ -2046,7 +2046,12 @@ class DaisyApp:
         panel.pack(fill="x", side="top")
 
         header = tk.Frame(panel, bg=_SURFACE)
-        header.pack(fill="x", padx=12, pady=(6, 4))
+        self.task_toolbar_horizontal_pad = (
+            self.content_pad + _PANEL_HEADER_PADX)
+        header.pack(
+            fill="x", padx=self.task_toolbar_horizontal_pad,
+            pady=(6, 4),
+        )
         tk.Label(
             header, text="功能模块", bg=_SURFACE,
             fg=_TASK_TOOLBAR_LABEL_COLOUR,
@@ -2064,7 +2069,10 @@ class DaisyApp:
 
         body = tk.Frame(panel, bg=_SURFACE)
         self.task_toolbar_body = body
-        body.pack(fill="x", padx=12, pady=(0, 8))
+        body.pack(
+            fill="x", padx=self.task_toolbar_horizontal_pad,
+            pady=(0, 8),
+        )
         self.task_toolbar_section_labels: dict[str, tk.Label] = {}
         for section_label, short_label, _task_keys in _TASK_TOOLBAR_ROWS:
             self.task_toolbar_section_labels[section_label] = tk.Label(
@@ -2161,7 +2169,7 @@ class DaisyApp:
         self.settings_body = tk.Frame(self.task_card, bg=_SURFACE)
         self.settings_body.pack(fill="both", expand=True)
         self.desc_label = tk.Label(
-            self.settings_body, bg=_SURFACE, fg=_MUTED,
+            self.settings_body, bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 9), anchor="w", justify="left",
             wraplength=820,
         )
@@ -2218,7 +2226,7 @@ class DaisyApp:
         progress_inner = tk.Frame(progress_panel, bg=_SURFACE)
         self.progress_inner = progress_inner
         progress_inner.pack(
-            fill="x", padx=12 if self.compact_layout else 15,
+            fill="x", padx=_PANEL_HEADER_PADX,
             pady=8 if self.compact_layout else 10,
         )
 
@@ -2337,7 +2345,8 @@ class DaisyApp:
             log_header, text="收起日志", style="Mini.TButton",
             command=self._toggle_log_panel,
         )
-        self.log_toggle_button.pack(side="right", padx=10, pady=5)
+        self.log_toggle_button.pack(
+            side="right", padx=_PANEL_HEADER_PADX, pady=5)
         attach_tooltip(
             self.log_toggle_button,
             "展开或收起运行日志；已有日志内容不会被清除。",
@@ -2362,7 +2371,7 @@ class DaisyApp:
         self.log.configure(yscrollcommand=log_scroll.set)
         log_scroll.pack(side="right", fill="y")
         self.log.pack(fill="both", expand=True)
-        self.log.tag_configure("meta", foreground=_AMBER_DARK)
+        self.log.tag_configure("meta", foreground=_GREEN_DEEP)
         self.log.tag_configure("success", foreground=_SUCCESS)
         self.log.tag_configure("warning", foreground=_WARNING)
         self.log.tag_configure("error", foreground=_DANGER)
@@ -2521,7 +2530,8 @@ class DaisyApp:
         if expanded:
             if not self.task_toolbar_body.winfo_manager():
                 self.task_toolbar_body.pack(
-                    fill="x", padx=12, pady=(0, 8))
+                    fill="x", padx=self.task_toolbar_horizontal_pad,
+                    pady=(0, 8))
                 self.root.after_idle(self._layout_task_toolbar)
         else:
             self.task_toolbar_body.pack_forget()
@@ -2596,7 +2606,7 @@ class DaisyApp:
             if expanded else _COLLAPSED_PANEL_TITLE_FONT
         ))
         self.settings_title_row.pack_configure(
-            padx=(22 if expanded else _COLLAPSED_SETTINGS_HEADER_PADX),
+            padx=(22 if expanded else _PANEL_HEADER_PADX),
             pady=((14, 10) if expanded
                   else _COLLAPSED_SETTINGS_HEADER_PADY),
         )
@@ -2859,15 +2869,15 @@ class DaisyApp:
 
         if self.task.key == _PROJECT_SELF_TEST_KEY:
             info = tk.Frame(
-                self.form_inner, bg=_AMBER_SOFT,
-                highlightbackground=_AMBER, highlightthickness=1,
+                self.form_inner, bg=_GREEN_SOFT,
+                highlightbackground=_GREEN, highlightthickness=1,
             )
             info.grid(
                 row=0, column=0, columnspan=2, sticky="ew",
                 padx=form_pad, pady=(18, 8),
             )
             tk.Label(
-                info, text="无需设置", bg=_AMBER_SOFT, fg=_AMBER_DEEP,
+                info, text="无需设置", bg=_GREEN_SOFT, fg=_GREEN_DEEP,
                 font=("Microsoft YaHei UI", 10, "bold"), anchor="w",
             ).pack(fill="x", padx=14, pady=(11, 3))
             info_text = tk.Label(
@@ -2876,7 +2886,7 @@ class DaisyApp:
                     "将运行 Script\\Test 中的全部 unittest。测试夹具只写入"
                     "系统临时目录，不读取表单档案，也不生成正式快照。"
                 ),
-                bg=_AMBER_SOFT, fg=_TEXT,
+                bg=_GREEN_SOFT, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9), anchor="w",
                 justify="left", wraplength=720,
             )
@@ -3041,7 +3051,7 @@ class DaisyApp:
                 advanced_row,
                 text=f"高级选项：{advanced_names}",
                 bg=_SURFACE,
-                fg=_AMBER_DARK if configured_advanced else _MUTED,
+                fg=_GREEN_DEEP if configured_advanced else _MUTED,
                 font=("Microsoft YaHei UI", 8), anchor="center",
                 justify="center",
             ).pack(anchor="center", pady=(0, 5))
