@@ -80,25 +80,14 @@ _CACHE_SCAN_EXCLUDED_DIR_NAMES = frozenset((
     ".git", ".venv", "venv", "node_modules", "output",
 ))
 
-# 米黄色纸面保留为界面基底；功能分区改用低饱和蓝绿、浅蓝和浅紫。
+# 《孤星》专项调查取色：米黄色纸面＋薄荷绿、橙黄、深红三种强调色。
+# 三个基准色取自官方素材右上角色条，米白取自设备外壳。
 _BG = "#e9dfcc"
 _SURFACE = "#f7efe1"
 _GREEN = "#87c1af"
 _GREEN_DARK = "#347a68"
 _GREEN_DEEP = "#245a4e"
 _GREEN_SOFT = "#dce9e1"
-_ENV = "#91bbb4"
-_ENV_DARK = "#5e817b"
-_ENV_DEEP = "#405f5a"
-_ENV_SOFT = "#e2ece9"
-_BLUE = "#9fb8cf"
-_BLUE_DARK = "#607f9b"
-_BLUE_DEEP = "#46627a"
-_BLUE_SOFT = "#e4ebf1"
-_PURPLE = "#b5a9c5"
-_PURPLE_DARK = "#766a88"
-_PURPLE_DEEP = "#594e69"
-_PURPLE_SOFT = "#ece7f1"
 _AMBER = "#eca93b"
 _AMBER_DARK = "#9a6519"
 _AMBER_DEEP = "#70470f"
@@ -107,9 +96,9 @@ _RED = "#9a2d28"
 _RED_DARK = "#7b2925"
 _RED_DEEP = "#5b1f1c"
 _RED_SOFT = "#e8ccc5"
-_ACCENT = _ENV_DARK
-_ACCENT_DARK = _ENV_DEEP
-_ACCENT_SOFT = _ENV_SOFT
+_ACCENT = _GREEN_DARK
+_ACCENT_DARK = _GREEN_DEEP
+_ACCENT_SOFT = _GREEN_SOFT
 _TEXT = "#272820"
 _MUTED = "#66685e"
 _BORDER = "#cfc2aa"
@@ -128,14 +117,14 @@ _DANGER_HOVER = "#ddb9b1"
 _DANGER_BORDER = "#c99f98"
 
 _TASK_ACCENTS = {
-    "env_check": (_ENV_DARK, _ENV_DEEP, _ENV),
-    _PROJECT_SELF_TEST_KEY: (_BLUE_DARK, _BLUE_DEEP, _BLUE),
-    "full_scan": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
-    "quick_scan": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
-    "check_format": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
-    "check_hash": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
-    "diff": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
-    "export_report": (_BLUE_DARK, _BLUE_DEEP, _BLUE),
+    "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    _PROJECT_SELF_TEST_KEY: (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "full_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "quick_scan": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "check_format": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "check_hash": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "diff": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
+    "export_report": (_AMBER_DARK, _AMBER_DEEP, _AMBER),
 }
 _NAV_COLOURS = {
     key: (colours[0], colours[1])
@@ -146,7 +135,7 @@ _NAV_COLOURS = {
 def task_accent_colours(task_key: str) -> tuple[str, str, str]:
     """返回任务组的常态、按下和悬停强调色。"""
     return _TASK_ACCENTS.get(
-        task_key, (_ACCENT, _ACCENT_DARK, _ENV))
+        task_key, (_ACCENT, _ACCENT_DARK, _GREEN))
 
 
 def status_badge_background(
@@ -998,9 +987,9 @@ _TASK_MENU_SECTIONS = (
     ("硬盘", ()),
 )
 _TASK_MENU_SECTION_COLOURS = {
-    "环境": ("Env", _ENV, _ENV_DEEP, _ENV_SOFT),
-    "数据库": ("Database", _BLUE, _BLUE_DEEP, _BLUE_SOFT),
-    "硬盘": ("Storage", _PURPLE, _PURPLE_DEEP, _PURPLE_SOFT),
+    "环境": ("Env", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
+    "数据库": ("Database", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
+    "硬盘": ("Storage", _RED, _RED_DEEP, _RED_SOFT),
 }
 _TASK_MENU_SEPARATOR_AFTER = frozenset((
     "env_check", "quick_scan", "diff", "check_format", "export_report",
@@ -1022,17 +1011,20 @@ _TASK_TOOLBAR_ROWS = (
     ("硬盘", "STG", (_TASK_TOOLBAR_STORAGE_KEY,)),
 )
 _TASK_TOOLBAR_LABELS = {
-    "env_check": "环境检测",
-    "full_scan": "完整扫描",
-    "quick_scan": "快速扫描",
-    "diff": "变更分析",
-    "check_hash": "内容核验",
-    "check_format": "结构核验",
-    "export_report": "导出报告",
-    _PROJECT_SELF_TEST_KEY: "系统自检",
-    _TASK_TOOLBAR_STORAGE_KEY: "暂未开放",
+    "env_check": "运行环境检测",
+    "full_scan": "完整档案扫描",
+    "quick_scan": "快速档案扫描",
+    "diff": "快照变更分析",
+    "check_hash": "内容哈希核验",
+    "check_format": "文件结构核验",
+    "export_report": "结果报告导出",
+    _PROJECT_SELF_TEST_KEY: "数据库自校验",
+    _TASK_TOOLBAR_STORAGE_KEY: "硬盘暂未开放",
 }
-_TASK_TOOLBAR_BUTTON_WIDTH = 8
+_TASK_TOOLBAR_BUTTON_WIDTH = 12
+_TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
+_TASK_TOOLBAR_STYLE_PREFIX = "Env"
+_TASK_TOOLBAR_LABEL_COLOUR = _GREEN_DEEP
 
 
 def _lines(value: object) -> list[str]:
@@ -1837,10 +1829,12 @@ class DaisyApp:
                 soft_colour) in _TASK_MENU_SECTION_COLOURS.items():
             style.configure(
                 f"{style_prefix}.TopTask.TButton",
-                background=_SURFACE, foreground=_TEXT,
-                padding=(9, 5), font=("Microsoft YaHei UI", 9),
+                background=_SURFACE, foreground=deep_colour,
+                padding=_TASK_TOOLBAR_BUTTON_PADDING,
+                font=("Microsoft YaHei UI", 9),
                 borderwidth=1, bordercolor=_BORDER,
                 lightcolor=_BORDER, darkcolor=_BORDER,
+                focusthickness=0, focuscolor=_SURFACE,
             )
             style.map(
                 f"{style_prefix}.TopTask.TButton",
@@ -1849,15 +1843,16 @@ class DaisyApp:
                     ("pressed", soft_colour),
                     ("active", soft_colour),
                 ],
-                foreground=[("disabled", _MUTED)],
+                foreground=[("disabled", deep_colour)],
             )
             style.configure(
                 f"{style_prefix}.TopTaskSelected.TButton",
                 background=soft_colour, foreground=deep_colour,
-                padding=(9, 5),
+                padding=_TASK_TOOLBAR_BUTTON_PADDING,
                 font=("Microsoft YaHei UI", 9),
                 borderwidth=1, bordercolor=_BORDER,
                 lightcolor=_BORDER, darkcolor=_BORDER,
+                focusthickness=0, focuscolor=soft_colour,
             )
             style.map(
                 f"{style_prefix}.TopTaskSelected.TButton",
@@ -1936,8 +1931,8 @@ class DaisyApp:
             "tearoff": False,
             "background": _SURFACE,
             "foreground": _TEXT,
-            "activebackground": _ENV_SOFT,
-            "activeforeground": _ENV_DEEP,
+            "activebackground": _GREEN_SOFT,
+            "activeforeground": _GREEN_DEEP,
             "disabledforeground": _MUTED,
             "activeborderwidth": 0,
             "borderwidth": 1,
@@ -2068,7 +2063,8 @@ class DaisyApp:
         header = tk.Frame(panel, bg=_SURFACE)
         header.pack(fill="x", padx=12, pady=(6, 4))
         tk.Label(
-            header, text="功能模块", bg=_SURFACE, fg=_TEXT,
+            header, text="功能模块", bg=_SURFACE,
+            fg=_TASK_TOOLBAR_LABEL_COLOUR,
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
         self.task_toolbar_toggle_button = ttk.Button(
@@ -2086,22 +2082,21 @@ class DaisyApp:
         body.pack(fill="x", padx=12, pady=(0, 8))
         self.task_toolbar_section_labels: dict[str, tk.Label] = {}
         for section_label, short_label, _task_keys in _TASK_TOOLBAR_ROWS:
-            deep_colour = _TASK_MENU_SECTION_COLOURS[section_label][2]
             self.task_toolbar_section_labels[section_label] = tk.Label(
-                body, text=short_label, bg=_SURFACE, fg=deep_colour,
+                body, text=short_label, bg=_SURFACE,
+                fg=_TASK_TOOLBAR_LABEL_COLOUR,
                 font=("Microsoft YaHei UI", 9, "bold"),
                 width=4, anchor="w",
             )
         for task_key in _TASK_MENU_ORDER:
             task = TASK_BY_KEY[task_key]
-            section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
-            style_prefix = _TASK_MENU_SECTION_COLOURS[section_label][0]
             button = ttk.Button(
                 body, text=_TASK_TOOLBAR_LABELS[task_key],
-                style=f"{style_prefix}.TopTask.TButton",
+                style=f"{_TASK_TOOLBAR_STYLE_PREFIX}.TopTask.TButton",
                 width=_TASK_TOOLBAR_BUTTON_WIDTH,
                 takefocus=False,
-                command=lambda key=task_key: self._select_task(key),
+                command=lambda key=task_key:
+                self._select_task_from_toolbar(key),
             )
             self.task_toolbar_buttons[task_key] = button
             attach_tooltip(
@@ -2110,7 +2105,8 @@ class DaisyApp:
             )
         storage_button = ttk.Button(
             body, text=_TASK_TOOLBAR_LABELS[_TASK_TOOLBAR_STORAGE_KEY],
-            style="Storage.TopTask.TButton", state="disabled",
+            style=f"{_TASK_TOOLBAR_STYLE_PREFIX}.TopTask.TButton",
+            state="disabled",
             width=_TASK_TOOLBAR_BUTTON_WIDTH,
             takefocus=False,
         )
@@ -2129,7 +2125,7 @@ class DaisyApp:
         self.colour_strip = colour_strip
         colour_strip.pack(fill="x", side="top")
         colour_strip.pack_propagate(False)
-        for colour in (_ENV, _BLUE, _PURPLE):
+        for colour in (_GREEN, _AMBER, _RED):
             tk.Frame(colour_strip, bg=colour).pack(
                 side="left", fill="both", expand=True)
 
@@ -2498,7 +2494,7 @@ class DaisyApp:
     def _layout_task_toolbar(
         self, _event: tk.Event | None = None,
     ) -> None:
-        """固定三类行与等宽四字功能块，不随窗口宽度重新排布。"""
+        """固定三类行与等宽六字功能块，不随窗口宽度重新排布。"""
         if getattr(self, "_task_toolbar_layout_ready", False):
             return
         for label in self.task_toolbar_section_labels.values():
@@ -2760,6 +2756,11 @@ class DaisyApp:
         if self.values:
             self.saved_values[self.task.key] = self._collect_values()
 
+    def _select_task_from_toolbar(self, task_key: str) -> None:
+        """切换功能模块，并移除按钮焦点框。"""
+        self._select_task(task_key)
+        self.root.focus_set()
+
     def _refresh_task_navigation_selection(self) -> None:
         """同步下拉菜单与按钮菜单的当前任务高亮。"""
         for task_key, (task_menu, entry_index) in (
@@ -2782,13 +2783,12 @@ class DaisyApp:
         for task_key, button in self.task_toolbar_buttons.items():
             if task_key == _TASK_TOOLBAR_STORAGE_KEY:
                 continue
-            section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
-            style_prefix = _TASK_MENU_SECTION_COLOURS[section_label][0]
             selected_suffix = (
                 "Selected" if task_key == self.task.key else ""
             )
             button.configure(
-                style=f"{style_prefix}.TopTask{selected_suffix}.TButton")
+                style=(f"{_TASK_TOOLBAR_STYLE_PREFIX}.TopTask"
+                       f"{selected_suffix}.TButton"))
 
     def _set_task_navigation_state(self, state: str) -> None:
         """运行期间统一锁定或恢复两套顶部任务入口。"""

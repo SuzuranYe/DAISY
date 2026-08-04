@@ -15,7 +15,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT = os.path.dirname(_TEST_DIR)
@@ -613,14 +613,14 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn(change_kind, evolution)
 
     def test_task_accent_colours_follow_workflow_group(self):
-        env = (gui._ENV_DARK, gui._ENV_DEEP, gui._ENV)
-        database = (gui._BLUE_DARK, gui._BLUE_DEEP, gui._BLUE)
+        env = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
+        database = (gui._AMBER_DARK, gui._AMBER_DEEP, gui._AMBER)
         self.assertEqual(gui.task_accent_colours("env_check"), env)
         for task_key in gui._TASK_MENU_SECTIONS[1][1]:
             self.assertEqual(gui.task_accent_colours(task_key), database)
         self.assertEqual(
             gui._TASK_MENU_SECTION_COLOURS["硬盘"][1:],
-            (gui._PURPLE, gui._PURPLE_DEEP, gui._PURPLE_SOFT),
+            (gui._RED, gui._RED_DEEP, gui._RED_SOFT),
         )
 
     def test_selected_top_task_style_stays_light(self):
@@ -661,6 +661,7 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(configured["background"], soft)
             self.assertEqual(configured["foreground"], deep)
             self.assertEqual(configured["bordercolor"], gui._BORDER)
+            self.assertEqual(configured["focusthickness"], 0)
             self.assertEqual(configured["font"], ("Microsoft YaHei UI", 9))
             self.assertTrue(all(
                 colour == soft
@@ -668,6 +669,27 @@ class TestGuiArguments(unittest.TestCase):
                 in style.mappings[name]["background"]
             ))
             self.assertNotIn("focus", str(style.layouts[name]).lower())
+        normal = style.configurations["Env.TopTask.TButton"]
+        self.assertEqual(normal["foreground"], gui._GREEN_DEEP)
+        self.assertEqual(
+            style.mappings["Env.TopTask.TButton"]["foreground"],
+            [("disabled", gui._GREEN_DEEP)],
+        )
+
+    def test_toolbar_selection_clears_button_focus(self):
+        class RootProbe:
+            def __init__(self):
+                self.focus_calls = 0
+
+            def focus_set(self):
+                self.focus_calls += 1
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app._select_task = Mock()
+        app._select_task_from_toolbar("diff")
+        app._select_task.assert_called_once_with("diff")
+        self.assertEqual(app.root.focus_calls, 1)
 
     def test_top_task_menus_use_theme_grouping(self):
         self.assertEqual(
@@ -780,7 +802,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app.task_menus["数据库"].options["activebackground"],
-            gui._BLUE,
+            gui._AMBER,
         )
         self.assertEqual(
             app.task_menus["硬盘"].entries[0]["state"], "disabled")
@@ -912,14 +934,14 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             environment_menu.options[0]["background"], gui._SURFACE)
         self.assertEqual(
-            database_menu.options[1]["background"], gui._BLUE_SOFT)
+            database_menu.options[1]["background"], gui._AMBER_SOFT)
         self.assertEqual(
-            database_menu.options[1]["foreground"], gui._BLUE_DEEP)
+            database_menu.options[1]["foreground"], gui._AMBER_DEEP)
         self.assertEqual(
             environment_button.options["style"], "Env.TopTask.TButton")
         self.assertEqual(
             database_button.options["style"],
-            "Database.TopTaskSelected.TButton",
+            "Env.TopTaskSelected.TButton",
         )
 
     def test_top_task_toolbar_collapses_without_changing_selection(self):
@@ -1014,10 +1036,13 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(set(gui._TASK_TOOLBAR_LABELS), set(all_keys))
         self.assertTrue(all(
-            len(label) == 4
+            len(label) == 6
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
-        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 8)
+        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 12)
+        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (12, 7))
+        self.assertEqual(gui._TASK_TOOLBAR_STYLE_PREFIX, "Env")
+        self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._GREEN_DEEP)
         with patch.object(
                 gui.DaisyApp, "_sync_task_toolbar_minimum_width") as sync:
             for available in (1600, 1000, 760, 520):
@@ -1092,9 +1117,9 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
-            gui.status_badge_background("full_scan"), gui._BLUE_DARK)
+            gui.status_badge_background("full_scan"), gui._AMBER_DARK)
         self.assertEqual(
-            gui.status_badge_background("diff"), gui._BLUE_DARK)
+            gui.status_badge_background("diff"), gui._AMBER_DARK)
         self.assertEqual(
             gui.status_badge_background("diff", gui._DANGER),
             gui._DANGER,
