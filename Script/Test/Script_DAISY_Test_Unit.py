@@ -623,7 +623,7 @@ class TestGuiArguments(unittest.TestCase):
             (gui._RED, gui._RED_DEEP, gui._RED_SOFT),
         )
 
-    def test_selected_top_task_style_stays_light(self):
+    def test_selected_top_task_style_uses_unified_deep_green(self):
         class StyleProbe:
             def __init__(self):
                 self.configurations = {}
@@ -658,13 +658,19 @@ class TestGuiArguments(unittest.TestCase):
                 gui._TASK_MENU_SECTION_COLOURS.items()):
             name = f"{prefix}.TopTaskSelected.TButton"
             configured = style.configurations[name]
-            self.assertEqual(configured["background"], soft)
-            self.assertEqual(configured["foreground"], deep)
+            self.assertEqual(
+                configured["background"],
+                gui._UNIFIED_ACTION_BACKGROUND,
+            )
+            self.assertEqual(
+                configured["foreground"],
+                gui._UNIFIED_ACTION_FOREGROUND,
+            )
             self.assertEqual(configured["bordercolor"], gui._BORDER)
             self.assertEqual(configured["focusthickness"], 0)
             self.assertEqual(configured["font"], ("Microsoft YaHei UI", 9))
             self.assertTrue(all(
-                colour == soft
+                colour == gui._UNIFIED_ACTION_BACKGROUND
                 for _states, colour
                 in style.mappings[name]["background"]
             ))
@@ -675,6 +681,11 @@ class TestGuiArguments(unittest.TestCase):
             style.mappings["Env.TopTask.TButton"]["foreground"],
             [("disabled", gui._GREEN_DEEP)],
         )
+        primary = style.configurations["Primary.TButton"]
+        self.assertEqual(
+            primary["background"], gui._UNIFIED_ACTION_BACKGROUND)
+        self.assertEqual(
+            primary["foreground"], gui._UNIFIED_ACTION_FOREGROUND)
 
     def test_toolbar_selection_clears_button_focus(self):
         class RootProbe:
@@ -802,7 +813,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app.task_menus["数据库"].options["activebackground"],
-            gui._AMBER,
+            gui._UNIFIED_ACTION_BACKGROUND,
         )
         self.assertEqual(
             app.task_menus["硬盘"].entries[0]["state"], "disabled")
@@ -934,9 +945,13 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             environment_menu.options[0]["background"], gui._SURFACE)
         self.assertEqual(
-            database_menu.options[1]["background"], gui._AMBER_SOFT)
+            database_menu.options[1]["background"],
+            gui._UNIFIED_ACTION_BACKGROUND,
+        )
         self.assertEqual(
-            database_menu.options[1]["foreground"], gui._AMBER_DEEP)
+            database_menu.options[1]["foreground"],
+            gui._UNIFIED_ACTION_FOREGROUND,
+        )
         self.assertEqual(
             environment_button.options["style"], "Env.TopTask.TButton")
         self.assertEqual(

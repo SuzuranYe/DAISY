@@ -1025,6 +1025,8 @@ _TASK_TOOLBAR_BUTTON_WIDTH = 12
 _TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
 _TASK_TOOLBAR_STYLE_PREFIX = "Env"
 _TASK_TOOLBAR_LABEL_COLOUR = _GREEN_DEEP
+_UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
+_UNIFIED_ACTION_FOREGROUND = "white"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 _COLLAPSED_SETTINGS_HEADER_PADX = 14
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
@@ -1850,23 +1852,25 @@ class DaisyApp:
             )
             style.configure(
                 f"{style_prefix}.TopTaskSelected.TButton",
-                background=soft_colour, foreground=deep_colour,
+                background=_UNIFIED_ACTION_BACKGROUND,
+                foreground=_UNIFIED_ACTION_FOREGROUND,
                 padding=_TASK_TOOLBAR_BUTTON_PADDING,
                 font=("Microsoft YaHei UI", 9),
                 borderwidth=1, bordercolor=_BORDER,
                 lightcolor=_BORDER, darkcolor=_BORDER,
-                focusthickness=0, focuscolor=soft_colour,
+                focusthickness=0,
+                focuscolor=_UNIFIED_ACTION_BACKGROUND,
             )
             style.map(
                 f"{style_prefix}.TopTaskSelected.TButton",
                 background=[
-                    ("disabled", soft_colour),
-                    ("pressed", soft_colour),
-                    ("active", soft_colour),
+                    ("disabled", _UNIFIED_ACTION_BACKGROUND),
+                    ("pressed", _UNIFIED_ACTION_BACKGROUND),
+                    ("active", _UNIFIED_ACTION_BACKGROUND),
                 ],
                 foreground=[
-                    ("disabled", deep_colour),
-                    ("active", deep_colour),
+                    ("disabled", _UNIFIED_ACTION_FOREGROUND),
+                    ("active", _UNIFIED_ACTION_FOREGROUND),
                 ],
             )
             style.layout(
@@ -1926,16 +1930,14 @@ class DaisyApp:
                 bordercolor=_BORDER,
                 thickness=8,
             )
-        self._apply_task_accent(self.task.key)
-
     def _build_menu(self) -> None:
         """建立不带自定义快捷键的标准应用菜单。"""
         base_menu_options = {
             "tearoff": False,
             "background": _SURFACE,
             "foreground": _TEXT,
-            "activebackground": _GREEN_SOFT,
-            "activeforeground": _GREEN_DEEP,
+            "activebackground": _UNIFIED_ACTION_BACKGROUND,
+            "activeforeground": _UNIFIED_ACTION_FOREGROUND,
             "disabledforeground": _MUTED,
             "activeborderwidth": 0,
             "borderwidth": 1,
@@ -1956,15 +1958,13 @@ class DaisyApp:
         self.task_menu_var = tk.StringVar(value=self.task.key)
         self.task_menus: dict[str, tk.Menu] = {}
         for section_label, task_keys in _TASK_MENU_SECTIONS:
-            (_style_prefix, accent_colour, deep_colour,
-             _soft_colour) = _TASK_MENU_SECTION_COLOURS[section_label]
             task_menu = tk.Menu(
                 menu,
                 **{
                     **base_menu_options,
-                    "activebackground": accent_colour,
-                    "activeforeground": deep_colour,
-                    "selectcolor": deep_colour,
+                    "activebackground": _UNIFIED_ACTION_BACKGROUND,
+                    "activeforeground": _UNIFIED_ACTION_FOREGROUND,
+                    "selectcolor": _UNIFIED_ACTION_BACKGROUND,
                 },
             )
             self.task_menus[section_label] = task_menu
@@ -1976,7 +1976,7 @@ class DaisyApp:
                     value=task_key,
                     command=lambda key=task_key: self._select_task(key),
                     indicatoron=True,
-                    selectcolor=deep_colour,
+                    selectcolor=_UNIFIED_ACTION_BACKGROUND,
                 )
                 entry_index = task_menu.index("end")
                 if entry_index is not None:
@@ -2035,24 +2035,6 @@ class DaisyApp:
 
         self.app_menu = menu
         self.root.configure(menu=menu)
-
-    def _apply_task_accent(self, task_key: str) -> None:
-        colour, pressed_colour, active_colour = task_accent_colours(task_key)
-        self.style.configure(
-            "Primary.TButton",
-            background=colour,
-            bordercolor=pressed_colour,
-            lightcolor=colour,
-            darkcolor=colour,
-        )
-        self.style.map(
-            "Primary.TButton",
-            background=[
-                ("disabled", "#afbeb6"),
-                ("pressed", pressed_colour),
-                ("active", active_colour),
-            ],
-        )
 
     def _build_task_toolbar(self) -> None:
         """建立 ENV、DBS、STG 各占一行的可折叠功能模块区。"""
@@ -2782,16 +2764,17 @@ class DaisyApp:
         """同步下拉菜单与按钮菜单的当前任务高亮。"""
         for task_key, (task_menu, entry_index) in (
                 self.task_menu_entries.items()):
-            section_label = _TASK_MENU_SECTION_BY_KEY[task_key]
-            (_style_prefix, accent_colour, deep_colour,
-             soft_colour) = _TASK_MENU_SECTION_COLOURS[section_label]
             selected = task_key == self.task.key
             task_menu.entryconfigure(
                 entry_index,
-                background=soft_colour if selected else _SURFACE,
-                foreground=deep_colour if selected else _TEXT,
-                activebackground=accent_colour,
-                activeforeground=deep_colour,
+                background=(
+                    _UNIFIED_ACTION_BACKGROUND if selected else _SURFACE
+                ),
+                foreground=(
+                    _UNIFIED_ACTION_FOREGROUND if selected else _TEXT
+                ),
+                activebackground=_UNIFIED_ACTION_BACKGROUND,
+                activeforeground=_UNIFIED_ACTION_FOREGROUND,
                 font=(
                     ("Microsoft YaHei UI", 9, "bold")
                     if selected else ("Microsoft YaHei UI", 9)
@@ -2822,7 +2805,6 @@ class DaisyApp:
         if hasattr(self, "task_menu_var"):
             self.task_menu_var.set(task_key)
         self._refresh_task_navigation_selection()
-        self._apply_task_accent(task_key)
         self.title_label.configure(text=self.task.title)
         self.desc_label.configure(text=self.task.description)
         self._build_form()
