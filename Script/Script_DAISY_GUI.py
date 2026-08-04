@@ -1949,8 +1949,8 @@ class DaisyApp:
             ],
         )
         for name, colour in (
-                ("Queue", _GREEN_DARK),
-                ("Stage", _AMBER),
+                ("Queue", _GREEN_DEEP),
+                ("Stage", _GREEN_DARK),
                 ("Work", _GREEN),
                 ("Success", _GREEN_DARK),
                 ("Warning", _AMBER_DARK),
@@ -2300,7 +2300,7 @@ class DaisyApp:
             widget.grid_remove()
 
         tk.Label(
-            progress_inner, text="任务阶段", bg=_SURFACE, fg=_AMBER_DARK,
+            progress_inner, text="任务阶段", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         ).grid(row=3, column=0, sticky="w", padx=(0, 10))
         self.progress_stage_label = tk.Label(
@@ -3224,7 +3224,7 @@ class DaisyApp:
         self._update_queue_progress(0.0)
         self.progress_stage_label.configure(
             text=f"{title} · 正在启动",
-            fg=_AMBER_DARK,
+            fg=_GREEN_DARK,
         )
         self.progress_detail_label.configure(
             text=(
@@ -3266,7 +3266,7 @@ class DaisyApp:
             self._update_queue_progress(task_fraction)
             self.progress_stage_label.configure(
                 text=f"阶段 {stage_idx}/{stage_total} · {name}",
-                fg=_AMBER_DARK,
+                fg=_GREEN_DARK,
             )
             self.progress_detail_label.configure(text="正在处理…", fg=_MUTED)
             self._set_work_indeterminate()
@@ -3308,7 +3308,7 @@ class DaisyApp:
                     detail += f" · 用时 {_format_duration(elapsed)}"
             self.progress_stage_label.configure(
                 text=f"阶段 {stage_idx}/{stage_total} · {name}",
-                fg=_AMBER_DARK,
+                fg=_GREEN_DARK,
             )
             self.progress_detail_label.configure(
                 text=self._short_progress_text(detail), fg=_TEXT)
