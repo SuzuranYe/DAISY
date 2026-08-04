@@ -5,21 +5,17 @@ Script\Script_DAISY_MAIN.py 的既有子命令完成，避免形成第二套业�
 """
 from __future__ import annotations
 
-import base64
 import codecs
 import json
-import math
 import os
 import queue
 import re
 import signal
 import shutil
-import struct
 import subprocess
 import sys
 import threading
 import time
-import zlib
 from dataclasses import dataclass
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -48,7 +44,6 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Tree.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
-_ACADEMIC_FONT_FAMILY = "Palatino Linotype"
 _MAX_ROOT_DIRECTORIES = 9
 _ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))
 _ROOT_BATCH_SEPARATE = "separate"
@@ -124,6 +119,7 @@ _DANGER = _RED_DARK
 _DANGER_SOFT = _RED_SOFT
 _DANGER_HOVER = "#ddb9b1"
 _DANGER_BORDER = "#c99f98"
+_SIDEBAR_SELECTION = (_GREEN_DARK, _GREEN_DEEP)
 
 _TASK_ACCENTS = {
     "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
@@ -155,200 +151,6 @@ def status_badge_background(
         task_accent_colours(task_key)[0]
         if semantic_colour is None else semantic_colour
     )
-
-
-def _cubic_bezier_points(
-    start: tuple[float, float], control_1: tuple[float, float],
-    control_2: tuple[float, float], end: tuple[float, float],
-    count: int = 65,
-) -> list[tuple[float, float]]:
-    """以高密度坐标采样一段三次 Bézier，避免 Tk 稀疏样条折角。"""
-    if count < 2:
-        raise ValueError("Bézier 采样点数至少为 2")
-    points = []
-    for index in range(count):
-        t = index / (count - 1)
-        inverse = 1.0 - t
-        x = (
-            inverse ** 3 * start[0]
-            + 3 * inverse ** 2 * t * control_1[0]
-            + 3 * inverse * t ** 2 * control_2[0]
-            + t ** 3 * end[0]
-        )
-        y = (
-            inverse ** 3 * start[1]
-            + 3 * inverse ** 2 * t * control_1[1]
-            + 3 * inverse * t ** 2 * control_2[1]
-            + t ** 3 * end[1]
-        )
-        points.append((x, y))
-    return points
-
-
-def _bezier_chain(
-    segments: tuple[
-        tuple[
-            tuple[float, float], tuple[float, float],
-            tuple[float, float], tuple[float, float],
-        ], ...
-    ],
-) -> list[tuple[float, float]]:
-    points: list[tuple[float, float]] = []
-    for segment in segments:
-        sampled = _cubic_bezier_points(*segment)
-        points.extend(sampled if not points else sampled[1:])
-    return points
-
-
-def suzuran_ear_paths() -> tuple[
-    tuple[str, list[tuple[float, float]], str], ...
-]:
-    """返回一笔完成、左右展开的归一化耳廓狐耳线稿。"""
-    ears = _bezier_chain((
-        ((0.180, 0.72), (0.115, 0.66), (0.045, 0.42), (0.035, 0.28)),
-        ((0.035, 0.28), (0.145, 0.28), (0.315, 0.42), (0.420, 0.47)),
-        ((0.420, 0.47), (0.450, 0.49), (0.480, 0.53), (0.500, 0.54)),
-        ((0.500, 0.54), (0.520, 0.53), (0.550, 0.49), (0.580, 0.47)),
-        ((0.580, 0.47), (0.685, 0.42), (0.855, 0.28), (0.965, 0.28)),
-        ((0.965, 0.28), (0.955, 0.42), (0.885, 0.66), (0.820, 0.72)),
-    ))
-    return (("ears", ears, "single"),)
-
-
-def build_suzuran_ear_logo(
-    parent: tk.Misc, compact: bool = False,
-) -> tk.Canvas:
-    """绘制极简耳廓狐耳线稿在上、DAISY 字标在下的标志。"""
-    width, height = ((96, 50) if compact else (112, 58))
-    canvas = tk.Canvas(
-        parent, width=width, height=height, bg=_SURFACE,
-        highlightthickness=0, bd=0,
-    )
-    line_widths = {
-        "single": 3,
-    }
-    for tag, path, role in suzuran_ear_paths():
-        points = [
-            coordinate
-            for x, y in path
-            for coordinate in (x * width, 1 + y * height * 0.78)
-        ]
-        canvas.create_line(
-            *points, smooth=False,
-            fill=_TEXT, width=line_widths[role],
-            capstyle="round", joinstyle="round",
-            tags=("suzuran_ears", role, tag),
-        )
-    canvas.create_text(
-        width / 2, height * 0.71, text="DAISY",
-        fill=_TEXT, font=("Segoe UI", 9 if compact else 10, "bold"),
-        anchor="center", tags=("daisy_wordmark",),
-    )
-    return canvas
-
-
-def _png_chunk(kind: bytes, payload: bytes) -> bytes:
-    """生成一个 PNG chunk。"""
-    checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
-    return (
-        struct.pack(">I", len(payload))
-        + kind + payload + struct.pack(">I", checksum)
-    )
-
-
-def _paint_disc(
-    mask: bytearray, side: int, center_x: float, center_y: float,
-    radius: float, value: int,
-) -> None:
-    """在超采样 alpha mask 上绘制或擦除实心圆。"""
-    x0 = max(0, int(center_x - radius - 1))
-    x1 = min(side - 1, int(center_x + radius + 1))
-    y0 = max(0, int(center_y - radius - 1))
-    y1 = min(side - 1, int(center_y + radius + 1))
-    radius_sq = radius * radius
-    for y in range(y0, y1 + 1):
-        dy_sq = (y + 0.5 - center_y) ** 2
-        for x in range(x0, x1 + 1):
-            if (x + 0.5 - center_x) ** 2 + dy_sq <= radius_sq:
-                mask[y * side + x] = value
-
-
-def _paint_path(
-    mask: bytearray, side: int, points: list[tuple[float, float]],
-    radius: float, value: int,
-) -> None:
-    """用相邻圆覆盖生成平滑、圆头的粗路径。"""
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        distance = math.hypot(x1 - x0, y1 - y0)
-        steps = max(1, math.ceil(distance))
-        for step in range(steps + 1):
-            ratio = step / steps
-            _paint_disc(
-                mask, side,
-                x0 + (x1 - x0) * ratio,
-                y0 + (y1 - y0) * ratio,
-                radius, value,
-            )
-
-
-def suzuran_ear_icon_png(size: int = 64) -> bytes:
-    """生成平滑、透明背景、单色耳廓狐耳窗口 PNG。"""
-    if not 16 <= size <= 256:
-        raise ValueError("窗口图标尺寸必须在 16～256 px 之间")
-    supersample = 4
-    side = size * supersample
-    mask = bytearray(side * side)
-    stroke_radii = {
-        "single": side * 0.018,
-    }
-    for _tag, path, role in suzuran_ear_paths():
-        _paint_path(
-            mask, side,
-            [
-                (x * side, (0.08 + y * 0.84) * side)
-                for x, y in path
-            ],
-            stroke_radii[role], 255,
-        )
-
-    foreground = tuple(
-        int(_TEXT[index:index + 2], 16)
-        for index in (1, 3, 5)
-    )
-    rows = bytearray()
-    area = supersample * supersample
-    for y in range(size):
-        rows.append(0)
-        for x in range(size):
-            alpha_sum = 0
-            for sample_y in range(supersample):
-                offset = (y * supersample + sample_y) * side
-                for sample_x in range(supersample):
-                    alpha_sum += mask[
-                        offset + x * supersample + sample_x]
-            alpha = round(alpha_sum / area)
-            rows.extend((*foreground, alpha))
-
-    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + _png_chunk(b"IHDR", header)
-        + _png_chunk(b"IDAT", zlib.compress(bytes(rows), level=9))
-        + _png_chunk(b"IEND", b"")
-    )
-
-
-def build_suzuran_window_icons(root: tk.Misc) -> tuple[tk.PhotoImage, ...]:
-    """设置标题栏／任务栏图标，并返回需由应用持有的图像引用。"""
-    icons = tuple(
-        tk.PhotoImage(
-            master=root,
-            data=base64.b64encode(suzuran_ear_icon_png(size)).decode("ascii"),
-        )
-        for size in (64, 32, 16)
-    )
-    root.iconphoto(True, *icons)
-    return icons
 
 
 def parse_gui_stream(
@@ -1174,14 +976,14 @@ TASKS = (
 TASK_BY_KEY = {task.key: task for task in TASKS}
 _SIDEBAR_SECTIONS = (
     (
-        "环境", _GREEN_SOFT, _GREEN_DEEP,
-        ("env_check", _PROJECT_SELF_TEST_KEY, "full_scan", "quick_scan"),
+        "环境", _GREEN, _GREEN_DEEP,
+        ("env_check", _PROJECT_SELF_TEST_KEY, "quick_scan"),
     ),
     (
-        "数据库", _AMBER_SOFT, _AMBER_DEEP,
-        ("diff", "check_hash", "check_format", "export_report"),
+        "数据库", _AMBER, _AMBER_DEEP,
+        ("full_scan", "diff", "check_hash", "check_format", "export_report"),
     ),
-    ("硬盘", _RED_SOFT, _RED_DEEP, ()),
+    ("硬盘", _RED, "white", ()),
 )
 _SIDEBAR_TASK_ORDER = tuple(
     task_key
@@ -1763,6 +1565,55 @@ def project_window_title() -> str:
             f"{core.PROJECT_FULL_NAME} - Author: {core.PROJECT_AUTHOR}")
 
 
+def _install_blank_window_icon(root: tk.Misc) -> object | None:
+    """在 Windows 标题栏安装透明 HICON，不影响系统窗口控制。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        create_icon = user32.CreateIcon
+        create_icon.argtypes = (
+            wintypes.HINSTANCE, ctypes.c_int, ctypes.c_int,
+            wintypes.BYTE, wintypes.BYTE,
+            ctypes.POINTER(wintypes.BYTE),
+            ctypes.POINTER(wintypes.BYTE),
+        )
+        create_icon.restype = wintypes.HICON
+        send_message = user32.SendMessageW
+        send_message.argtypes = (
+            wintypes.HWND, wintypes.UINT,
+            wintypes.WPARAM, wintypes.LPARAM,
+        )
+        send_message.restype = ctypes.c_ssize_t
+        get_parent = user32.GetParent
+        get_parent.argtypes = (wintypes.HWND,)
+        get_parent.restype = wintypes.HWND
+        set_class_icon = user32.SetClassLongPtrW
+        set_class_icon.argtypes = (
+            wintypes.HWND, ctypes.c_int, ctypes.c_void_p,
+        )
+        set_class_icon.restype = ctypes.c_void_p
+
+        and_mask = (wintypes.BYTE * 2)(0xFF, 0xFF)
+        xor_mask = (wintypes.BYTE * 2)(0x00, 0x00)
+        icon = create_icon(None, 1, 1, 1, 1, and_mask, xor_mask)
+        if not icon:
+            return None
+        widget_handle = wintypes.HWND(root.winfo_id())
+        window_handle = get_parent(widget_handle) or widget_handle
+        set_class_icon(window_handle, -14, icon)
+        set_class_icon(window_handle, -34, icon)
+        wm_seticon = 0x0080
+        send_message(window_handle, wm_seticon, 0, icon)
+        send_message(window_handle, wm_seticon, 1, icon)
+        return icon
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 class DaisyApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -1780,6 +1631,12 @@ class DaisyApp:
         self.current_stage_total = 0
         self.mini_mode = False
         self.sidebar_collapsed = False
+        self.sidebar_section_expanded = {
+            label: True for label, _background, _foreground, _tasks
+            in _SIDEBAR_SECTIONS
+        }
+        self.sidebar_section_bodies: dict[str, tk.Frame] = {}
+        self.sidebar_section_toggle_buttons: dict[str, tk.Button] = {}
         self.settings_expanded = True
         self.progress_expanded = True
         self.log_expanded = True
@@ -1807,7 +1664,8 @@ class DaisyApp:
 
     def _configure_window(self) -> None:
         self.root.title(project_window_title())
-        self.window_icons = build_suzuran_window_icons(self.root)
+        self.window_icon_handle: object | None = None
+        self.root.after(100, self._apply_blank_window_icon)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         width, height = window_size_for_screen(screen_width, screen_height)
@@ -1819,6 +1677,9 @@ class DaisyApp:
         self.root.minsize(*self.normal_min_size)
         self.root.configure(bg=_BG)
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
+
+    def _apply_blank_window_icon(self) -> None:
+        self.window_icon_handle = _install_blank_window_icon(self.root)
 
     def _configure_styles(self) -> None:
         self.style = ttk.Style(self.root)
@@ -1916,6 +1777,16 @@ class DaisyApp:
         )
         style.map(
             "Mini.TButton", background=[("active", _CONTROL_HOVER)])
+        style.configure(
+            "SidebarToggle.TButton", background=_CONTROL, foreground=_TEXT,
+            padding=(5, 2), font=("Segoe UI Symbol", 14, "bold"),
+            borderwidth=1, bordercolor=_BORDER,
+            lightcolor=_BORDER, darkcolor=_BORDER,
+        )
+        style.map(
+            "SidebarToggle.TButton",
+            background=[("active", _CONTROL_HOVER)],
+        )
         style.configure(
             "MiniStop.TButton", background=_DANGER_SOFT, foreground=_DANGER,
             padding=(9, 4), font=("Microsoft YaHei UI", 8, "bold"),
@@ -2056,54 +1927,10 @@ class DaisyApp:
         )
 
     def _build_shell(self) -> None:
-        header_height = 66 if self.compact_layout else 74
         sidebar_width = 194 if self.compact_layout else 222
         content_pad = 12 if self.compact_layout else 18
         self.content_pad = content_pad
         nav_pady = 7 if self.compact_layout else 9
-        header = tk.Frame(self.root, bg=_SURFACE, height=header_height,
-                          highlightbackground=_BORDER, highlightthickness=1)
-        self.header = header
-        header.pack(fill="x", side="top")
-        header.pack_propagate(False)
-
-        brand_x = 20 if self.compact_layout else 24
-        brand = tk.Frame(header, bg=_SURFACE)
-        brand.pack(side="left", fill="y", padx=(brand_x, 0))
-        logo = build_suzuran_ear_logo(brand, self.compact_layout)
-        logo.pack(side="left", anchor="center")
-        attach_tooltip(
-            logo,
-            "DAISY：Database for Archive Integrity by Suzuran Ye。",
-        )
-        full_name_label = tk.Label(
-            brand, text=core.PROJECT_FULL_NAME,
-            bg=_SURFACE, fg=_TEXT, anchor="w",
-            font=(
-                _ACADEMIC_FONT_FAMILY,
-                11 if self.compact_layout else 13,
-                "italic",
-            ),
-        )
-        full_name_label.pack(
-            side="left", anchor="center",
-            padx=(12 if self.compact_layout else 16, 0),
-        )
-        attach_tooltip(
-            full_name_label,
-            "DAISY 全称；使用 Palatino Linotype Italic 学术衬线字形。",
-        )
-
-        identity = tk.Frame(header, bg=_SURFACE)
-        identity.pack(
-            side="right", fill="y",
-            padx=18 if self.compact_layout else 24,
-            pady=11 if self.compact_layout else 13,
-        )
-        tk.Label(
-            identity, text=_version(), bg=_GREEN_SOFT, fg=_GREEN_DEEP,
-            font=("Segoe UI", 9, "bold"), padx=9, pady=4,
-        ).pack(side="left", anchor="center")
 
         colour_strip = tk.Frame(self.root, bg=_BG, height=4)
         self.colour_strip = colour_strip
@@ -2129,7 +1956,8 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         ).pack(side="left", fill="x", expand=True)
         self.sidebar_toggle_button = ttk.Button(
-            sidebar_header, text="‹", style="Mini.TButton",
+            sidebar_header, text="◀", width=3,
+            style="SidebarToggle.TButton",
             command=self._toggle_sidebar,
         )
         self.sidebar_toggle_button.pack(side="right")
@@ -2142,7 +1970,8 @@ class DaisyApp:
         self.sidebar_rail = sidebar_rail
         sidebar_rail.pack_propagate(False)
         self.sidebar_restore_button = ttk.Button(
-            sidebar_rail, text="›", style="Mini.TButton",
+            sidebar_rail, text="▶", width=2,
+            style="SidebarToggle.TButton",
             command=self._toggle_sidebar,
         )
         self.sidebar_restore_button.pack(
@@ -2155,28 +1984,57 @@ class DaisyApp:
         for section_index, (
                 section_label, section_background, section_foreground,
                 task_keys) in enumerate(_SIDEBAR_SECTIONS):
-            category = tk.Label(
-                sidebar, text=section_label,
-                bg=section_background, fg=section_foreground,
-                font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-                padx=8, pady=3,
-            )
-            category.pack(
+            section = tk.Frame(sidebar, bg=_SIDEBAR)
+            section.pack(fill="x")
+            section_header = tk.Frame(section, bg=section_background)
+            section_header.pack(
                 fill="x", padx=12,
                 pady=((10 if section_index else 12), 3),
             )
+            category = tk.Button(
+                section_header, text=section_label,
+                command=lambda label=section_label:
+                self._toggle_sidebar_section(label),
+                bg=section_background, fg=section_foreground,
+                activebackground=section_background,
+                activeforeground=section_foreground,
+                font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
+                relief="flat", bd=0, padx=8, pady=3, cursor="hand2",
+            )
+            category.pack(side="left", fill="both", expand=True)
+            section_toggle = tk.Button(
+                section_header, text="▼",
+                command=lambda label=section_label:
+                self._toggle_sidebar_section(label),
+                bg=section_background, fg=section_foreground,
+                activebackground=section_background,
+                activeforeground=section_foreground,
+                font=("Segoe UI Symbol", 9, "bold"),
+                relief="flat", bd=0, width=3, cursor="hand2",
+            )
+            section_toggle.pack(side="right", fill="y")
+            section_body = tk.Frame(section, bg=_SIDEBAR)
+            section_body.pack(fill="x")
+            self.sidebar_section_bodies[section_label] = section_body
+            self.sidebar_section_toggle_buttons[section_label] = (
+                section_toggle)
             attach_tooltip(
                 category,
                 (
-                    "预留给后续 STG- 存储设备模块；v1.4.2 不提供空任务页。"
+                    "折叠或展开硬盘区；本版本只预留 STG-，不提供空任务页。"
                     if section_label == "硬盘"
-                    else f"{section_label}任务分类。"
+                    else f"折叠或展开{section_label}任务区。"
                 ),
+            )
+            attach_tooltip(
+                section_toggle,
+                f"折叠或展开{section_label}任务区。",
             )
             for task_key in task_keys:
                 task = TASK_BY_KEY[task_key]
                 button = tk.Button(
-                    sidebar, text=task.nav, command=lambda key=task.key:
+                    section_body, text=task.nav,
+                    command=lambda key=task.key:
                     self._select_task(key),
                     bg=_SIDEBAR, fg=_SIDEBAR_TEXT,
                     activebackground=_SIDEBAR_HOVER,
@@ -2595,6 +2453,26 @@ class DaisyApp:
     def _toggle_sidebar(self) -> None:
         self._set_sidebar_collapsed(not self.sidebar_collapsed)
 
+    def _set_sidebar_section_expanded(
+        self, section_label: str, expanded: bool,
+    ) -> None:
+        """独立展开或折叠一个侧栏任务分区。"""
+        body = self.sidebar_section_bodies[section_label]
+        self.sidebar_section_expanded[section_label] = expanded
+        if expanded:
+            if not body.winfo_manager():
+                body.pack(fill="x")
+        else:
+            body.pack_forget()
+        self.sidebar_section_toggle_buttons[section_label].configure(
+            text="▼" if expanded else "▶")
+
+    def _toggle_sidebar_section(self, section_label: str) -> None:
+        self._set_sidebar_section_expanded(
+            section_label,
+            not self.sidebar_section_expanded[section_label],
+        )
+
     def _set_settings_expanded(self, expanded: bool) -> None:
         self.settings_expanded = expanded
         if expanded:
@@ -2691,7 +2569,6 @@ class DaisyApp:
             self.root.state("normal")
             self.root.update_idletasks()
 
-        self.header.pack_forget()
         self.colour_strip.pack_forget()
         self.sidebar.pack_forget()
         self.sidebar_rail.pack_forget()
@@ -2735,7 +2612,6 @@ class DaisyApp:
         self.content.pack_configure(
             padx=self.content_pad, pady=self.content_pad)
         self._restore_sidebar_container()
-        self.header.pack(fill="x", side="top", before=self.body)
         self.colour_strip.pack(fill="x", side="top", before=self.body)
         self.mini_mode = False
         self._refresh_mini_action()
@@ -2765,8 +2641,7 @@ class DaisyApp:
         if save_current:
             self._save_current_values()
         self.task = TASK_BY_KEY[task_key]
-        selected_colour, selected_hover, _active_colour = (
-            task_accent_colours(task_key))
+        selected_colour, selected_hover = _SIDEBAR_SELECTION
         self._apply_task_accent(task_key)
         for key, button in self.nav_buttons.items():
             selected = key == task_key

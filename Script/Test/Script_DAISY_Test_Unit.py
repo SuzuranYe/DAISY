@@ -10,12 +10,10 @@ import json
 import os
 import re
 import sqlite3
-import struct
 import subprocess
 import sys
 import tempfile
 import unittest
-import zlib
 from unittest.mock import patch
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -466,74 +464,6 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(rows[-1][-2:], (4, 5))
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
 
-    def test_suzuran_ear_icon_png_is_smooth_and_single_colour(self):
-        size = 64
-        png = gui.suzuran_ear_icon_png(size)
-        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-        position = 8
-        chunks = []
-        while position < len(png):
-            length, = struct.unpack(">I", png[position:position + 4])
-            kind = png[position + 4:position + 8]
-            payload = png[position + 8:position + 8 + length]
-            chunks.append((kind, payload))
-            position += 12 + length
-        ihdr = next(payload for kind, payload in chunks if kind == b"IHDR")
-        width, height, depth, colour_type, _c, _f, _i = struct.unpack(
-            ">IIBBBBB", ihdr)
-        self.assertEqual((width, height, depth, colour_type), (64, 64, 8, 6))
-        pixels = zlib.decompress(b"".join(
-            payload for kind, payload in chunks if kind == b"IDAT"))
-        self.assertEqual(len(pixels), size * (1 + size * 4))
-        colours = set()
-        alphas = set()
-        for y in range(size):
-            row = pixels[y * (1 + size * 4):(y + 1) * (1 + size * 4)]
-            self.assertEqual(row[0], 0)
-            for x in range(size):
-                r, g, b, alpha = row[1 + x * 4:1 + (x + 1) * 4]
-                alphas.add(alpha)
-                if alpha:
-                    colours.add((r, g, b))
-        expected = tuple(
-            int(gui._TEXT[index:index + 2], 16)
-            for index in (1, 3, 5)
-        )
-        self.assertEqual(colours, {expected})
-        self.assertIn(0, alphas)
-        self.assertIn(255, alphas)
-        self.assertTrue(any(0 < alpha < 255 for alpha in alphas))
-
-    def test_canvas_suzuran_ear_logo_uses_smooth_sampled_paths(self):
-        class CanvasProbe:
-            def __init__(self):
-                self.lines = []
-                self.texts = []
-
-            def create_line(self, *points, **options):
-                self.lines.append((points, options))
-
-            def create_text(self, *position, **options):
-                self.texts.append((position, options))
-
-        probe = CanvasProbe()
-        with patch.object(gui.tk, "Canvas", return_value=probe):
-            self.assertIs(gui.build_suzuran_ear_logo(object()), probe)
-        foreground = {
-            options["fill"]
-            for _points, options in probe.lines
-        }
-        self.assertEqual(foreground, {gui._TEXT})
-        ears = [
-            (points, options) for points, options in probe.lines
-            if "suzuran_ears" in options["tags"]
-        ]
-        self.assertEqual(len(ears), 1)
-        for points, options in ears:
-            self.assertGreaterEqual(len(points), 128)
-            self.assertFalse(options["smooth"])
-        self.assertEqual(probe.texts[0][1]["text"], "DAISY")
-
     def test_full_hash_independent_sample_is_explained_and_advanced(self):
         fields = {
             spec.key: spec for spec in gui.TASK_BY_KEY["full_scan"].fields
@@ -607,15 +537,22 @@ class TestGuiArguments(unittest.TestCase):
                 "check_format", "check_hash", "diff", "export_report"):
             self.assertEqual(gui.task_accent_colours(task_key), amber)
 
-    def test_sidebar_sections_use_muted_tricolour_categories(self):
+    def test_sidebar_sections_use_strip_colours_and_database_grouping(self):
         self.assertEqual(
             [section[:3] for section in gui._SIDEBAR_SECTIONS],
             [
-                ("环境", gui._GREEN_SOFT, gui._GREEN_DEEP),
-                ("数据库", gui._AMBER_SOFT, gui._AMBER_DEEP),
-                ("硬盘", gui._RED_SOFT, gui._RED_DEEP),
+                ("环境", gui._GREEN, gui._GREEN_DEEP),
+                ("数据库", gui._AMBER, gui._AMBER_DEEP),
+                ("硬盘", gui._RED, "white"),
             ],
         )
+        self.assertEqual(
+            gui._SIDEBAR_SELECTION,
+            (gui._GREEN_DARK, gui._GREEN_DEEP),
+        )
+        self.assertNotIn("full_scan", gui._SIDEBAR_SECTIONS[0][3])
+        self.assertEqual(gui._SIDEBAR_SECTIONS[1][3][:2],
+                         ("full_scan", "diff"))
         self.assertEqual(gui._SIDEBAR_SECTIONS[-1][3], ())
         self.assertEqual(
             tuple(
@@ -631,6 +568,51 @@ class TestGuiArguments(unittest.TestCase):
             gui._SIDEBAR_TASK_ORDER[analysis_index:analysis_index + 3],
             ("diff", "check_hash", "check_format"),
         )
+
+    def test_sidebar_sections_expand_independently(self):
+        class BodyProbe:
+            def __init__(self):
+                self.manager = "pack"
+
+            def winfo_manager(self):
+                return self.manager
+
+            def pack(self, **_options):
+                self.manager = "pack"
+
+            def pack_forget(self):
+                self.manager = ""
+
+        class ButtonProbe:
+            def __init__(self):
+                self.text = ""
+
+            def configure(self, **options):
+                self.text = options["text"]
+
+        app = object.__new__(gui.DaisyApp)
+        labels = tuple(section[0] for section in gui._SIDEBAR_SECTIONS)
+        app.sidebar_section_expanded = {label: True for label in labels}
+        app.sidebar_section_bodies = {
+            label: BodyProbe() for label in labels
+        }
+        app.sidebar_section_toggle_buttons = {
+            label: ButtonProbe() for label in labels
+        }
+        target = labels[1]
+        app._set_sidebar_section_expanded(target, False)
+        self.assertFalse(app.sidebar_section_expanded[target])
+        self.assertEqual(app.sidebar_section_bodies[target].manager, "")
+        self.assertEqual(
+            app.sidebar_section_toggle_buttons[target].text, "▶")
+        for label in (labels[0], labels[2]):
+            self.assertTrue(app.sidebar_section_expanded[label])
+            self.assertEqual(
+                app.sidebar_section_bodies[label].manager, "pack")
+        app._toggle_sidebar_section(target)
+        self.assertTrue(app.sidebar_section_expanded[target])
+        self.assertEqual(
+            app.sidebar_section_toggle_buttons[target].text, "▼")
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
@@ -653,8 +635,8 @@ class TestGuiArguments(unittest.TestCase):
             [
                 "ENV-00  环境监测",
                 "ENV-01  项目自检",
-                "ENV-11  完整扫描",
                 "ENV-12  快速扫描",
+                "ENV-11  完整扫描",
                 "DB-21  快照变更分析",
                 "DB-31  内容一致性核验",
                 "DB-32  文件结构核验",
@@ -723,7 +705,6 @@ class TestGuiArguments(unittest.TestCase):
             gui._PROJECT_GITHUB_URL,
             "https://github.com/SuzuranYe/DAISY",
         )
-        self.assertEqual(gui._ACADEMIC_FONT_FAMILY, "Palatino Linotype")
         title = gui.project_window_title()
         for token in (
                 core.PROJECT_NAME, core.PROJECT_FULL_NAME,
