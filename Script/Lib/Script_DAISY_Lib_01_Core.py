@@ -20,7 +20,7 @@ import uuid
 PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
-SCANNER_VERSION = "1.4.2"      # 包版本
+SCANNER_VERSION = "1.5.0"      # 包版本
 SCHEMA_VERSION = 3
 READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 MIN_READER_VERSION = "1.4.1"

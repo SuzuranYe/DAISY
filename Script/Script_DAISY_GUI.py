@@ -34,6 +34,7 @@ _DEFAULT_OUTPUT_ROOT = os.path.join(_BASE, "Output")
 _DEFAULT_REPORTS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Reports")
 _DEFAULT_SNAPSHOTS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Snapshots")
 _DEFAULT_DIFFS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Diffs")
+_DEFAULT_STORAGE_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Storage")
 _GUI_EVENT_PREFIX = "@@DAISY_GUI@@"
 _PROJECT_SELF_TEST_KEY = "project_self_test"
 _DEPENDENCY_INSTALL_KEY = "dependency_install"
@@ -54,24 +55,34 @@ _TOOL_FIELD_BY_NAME = {
     "ffprobe": "ffprobe_path",
     "sevenzip": "sevenzip_path",
     "powershell": "powershell_path",
+    "smartctl": "smartctl_path",
 }
 _TOOL_DISPLAY_NAMES = {
     "exiftool": "ExifTool",
     "ffprobe": "ffprobe",
     "sevenzip": "7-Zip",
     "powershell": "PowerShell",
+    "smartctl": "smartctl",
 }
 _INSTALLABLE_TOOL_PACKAGES = {
     "exiftool": ("ExifTool", "OliverBetz.ExifTool"),
     "ffprobe": ("ffprobe（FFmpeg）", "Gyan.FFmpeg"),
     "sevenzip": ("7-Zip", "7zip.7zip"),
+    "smartctl": ("smartctl", "smartmontools.smartmontools"),
 }
 _TASK_TOOL_NAMES = {
-    "env_check": ("exiftool", "ffprobe", "sevenzip", "powershell"),
+    "env_check": (
+        "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl"),
     "full_scan": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "check_format": ("exiftool", "ffprobe", "sevenzip"),
     "check_hash": ("powershell",),
+    "storage_list": ("smartctl", "powershell"),
+    "storage_collect": ("smartctl", "powershell"),
 }
+_RESULT_DIRECTORY_TASKS = frozenset((
+    "env_check", "full_scan", "quick_scan", "diff", "check_hash",
+    "check_format", "export_report", "storage_collect",
+))
 _PROJECT_CACHE_DIR_NAMES = frozenset((
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -125,6 +136,9 @@ _TASK_ACCENTS = {
     "check_hash": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "diff": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "export_report": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "storage_list": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "storage_collect": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "storage_verify": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
 }
 _NAV_COLOURS = {
     key: (colours[0], colours[1])
@@ -542,6 +556,10 @@ _PARTIAL_TYPES = (
     ("SQLite 数据库", "*.sqlite"),
     ("全部文件", "*.*"),
 )
+_ZIP_TYPES = (
+    ("存储档案 ZIP", "*.zip"),
+    ("全部文件", "*.*"),
+)
 _EXE_TYPES = (
     ("可执行文件", "*.exe"),
     ("全部文件", "*.*"),
@@ -568,9 +586,9 @@ TASKS = (
         "env-check",
         "ENV-01  环境检测",
         "环境检测",
-        "检查 ExifTool、ffprobe、7-Zip 与 PowerShell 的发现、版本和只读"
-        "冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能测试，也不"
-        "保存全局设置。",
+        "检查 ExifTool、ffprobe、7-Zip、PowerShell 与 smartctl 的发现、"
+        "版本和只读冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能"
+        "测试，也不保存全局设置。",
         "只读检查 · 不读取档案 · 不保存设置",
         (
             FieldSpec(
@@ -598,6 +616,11 @@ TASKS = (
                 "powershell_path", "PowerShell 路径覆盖",
                 "--powershell-path", "file",
                 help="通常留空；会依次检查 PATH 与 Windows 常规安装位置。",
+                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+            ),
+            FieldSpec(
+                "smartctl_path", "smartctl 路径覆盖", "--smartctl-path",
+                "file", help="通常留空；用于 STG 物理硬盘登记与只读核验。",
                 filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
             ),
         ),
@@ -983,6 +1006,85 @@ TASKS = (
             ),
         ),
     ),
+    TaskSpec(
+        "storage_list",
+        "storage-list",
+        "STG-11  物理硬盘清单",
+        "物理硬盘清单",
+        "联合 Windows 存储接口与 smartctl 列出物理硬盘、分区卷标和设备"
+        "关联。请先运行本项，再按 PhysicalDrive 编号执行信息登记。",
+        "物理盘只读 · 不生成产物 · 可能唤醒硬盘",
+        (
+            FieldSpec(
+                "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
+                help="留空时优先使用本窗口已验证路径，其次自动发现。",
+                filetypes=_EXE_TYPES,
+                section="工具路径覆盖", advanced=True,
+            ),
+            FieldSpec(
+                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
+                filetypes=_EXE_TYPES,
+                section="工具路径覆盖", advanced=True,
+            ),
+        ),
+    ),
+    TaskSpec(
+        "storage_collect",
+        "storage-collect",
+        "STG-12  硬盘信息登记",
+        "硬盘信息登记",
+        "重新确认指定物理盘身份，只读采集完整 Windows 存储资料和 smartctl"
+        " 原始证据，并生成带文件名指纹的独立 ZIP 档案。",
+        "物理盘只读 · 可能唤醒硬盘 · 生成 ZIP",
+        (
+            FieldSpec(
+                "disk_number", "物理硬盘编号", "--disk-number",
+                required=True,
+                help="填写 STG-11 所列 PhysicalDrive 后面的非负整数。",
+                section="采集目标",
+            ),
+            FieldSpec(
+                "output_dir", "存储档案目录", "--output-dir", "dir",
+                _DEFAULT_STORAGE_DIR,
+                help="默认指向项目内 Output\\Storage；每块硬盘生成独立 ZIP。",
+                section="输出",
+            ),
+            FieldSpec(
+                "summary_txt", "同时输出简化报告", "--summary-txt", "bool",
+                False, toggle_text="生成 ZIP 外部 TXT",
+                help="默认关闭；完整结构化资料始终保存在 ZIP 的 JSON 成员中。",
+                section="输出",
+            ),
+            FieldSpec(
+                "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
+                help="留空时优先使用本窗口已验证路径，其次自动发现。",
+                filetypes=_EXE_TYPES,
+                section="工具路径覆盖", advanced=True,
+            ),
+            FieldSpec(
+                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
+                filetypes=_EXE_TYPES,
+                section="工具路径覆盖", advanced=True,
+            ),
+        ),
+    ),
+    TaskSpec(
+        "storage_verify",
+        "storage-verify",
+        "STG-21  硬盘归档核验",
+        "硬盘归档核验",
+        "核验硬盘信息 ZIP 的文件名 SHA-256 指纹、存储归档 schema、固定"
+        "成员清单、Manifest 声明与 ZIP CRC，不读取真实硬盘。",
+        "归档只读 · 不访问硬盘 · 不生成产物",
+        (
+            FieldSpec(
+                "archive", "硬盘信息档案", None, "file", required=True,
+                filetypes=_ZIP_TYPES, section="输入",
+            ),
+        ),
+    ),
 )
 
 TASK_BY_KEY = {task.key: task for task in TASKS}
@@ -999,7 +1101,7 @@ _TASK_MENU_SECTIONS = (
             _PROJECT_SELF_TEST_KEY,
         ),
     ),
-    ("硬盘", ()),
+    ("硬盘", ("storage_list", "storage_collect", "storage_verify")),
 )
 _TASK_MENU_SECTION_COLOURS = {
     "环境": ("Env", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
@@ -1008,6 +1110,7 @@ _TASK_MENU_SECTION_COLOURS = {
 }
 _TASK_MENU_SEPARATOR_AFTER = frozenset((
     "env_check", "quick_scan", "diff", "check_format", "export_report",
+    "storage_list", "storage_collect",
 ))
 _TASK_MENU_ORDER = tuple(
     task_key
@@ -1019,11 +1122,10 @@ _TASK_MENU_SECTION_BY_KEY = {
     for section_label, task_keys in _TASK_MENU_SECTIONS
     for task_key in task_keys
 }
-_TASK_TOOLBAR_STORAGE_KEY = "__storage_placeholder__"
 _TASK_TOOLBAR_ROWS = (
     ("环境", "ENV", ("env_check",)),
     ("数据库", "DBS", _TASK_MENU_SECTIONS[1][1]),
-    ("硬盘", "STG", (_TASK_TOOLBAR_STORAGE_KEY,)),
+    ("硬盘", "STG", _TASK_MENU_SECTIONS[2][1]),
 )
 _TASK_TOOLBAR_LABELS = {
     "env_check": "运行环境检测",
@@ -1034,7 +1136,9 @@ _TASK_TOOLBAR_LABELS = {
     "check_format": "文件结构核验",
     "export_report": "结果报告导出",
     _PROJECT_SELF_TEST_KEY: "数据库自校验",
-    _TASK_TOOLBAR_STORAGE_KEY: "硬盘暂未开放",
+    "storage_list": "物理硬盘清单",
+    "storage_collect": "硬盘信息登记",
+    "storage_verify": "硬盘归档核验",
 }
 _TASK_TOOLBAR_BUTTON_WIDTH = 12
 _TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
@@ -1123,6 +1227,11 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
         output_dir = str(values.get("output_dir") or "").strip()
         if output_dir:
             args += ["--output-dir", _absolute(output_dir)]
+        return args
+    if task_key == "storage_verify":
+        archive = str(values.get("archive") or "").strip()
+        if archive:
+            args.append(_absolute(archive))
         return args
 
     for spec in task.fields:
@@ -1219,6 +1328,7 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
         ("full_scan", "verify_percent"): (0.0, 100.0, True, False),
         ("check_format", "sample_percent"): (0.0, 100.0, False, False),
         ("check_hash", "sample_percent"): (0.0, 100.0, False, False),
+        ("storage_collect", "disk_number"): (0.0, None, True, True),
     }
     for (rule_task, key), rule in numeric_rules.items():
         if rule_task != task_key or key not in active_keys:
@@ -2005,11 +2115,6 @@ class DaisyApp:
                 if (task_key in _TASK_MENU_SEPARATOR_AFTER
                         and task_key != task_keys[-1]):
                     task_menu.add_separator()
-            if not task_keys:
-                task_menu.add_command(
-                    label="STG- 功能将在后续版本提供",
-                    state="disabled",
-                )
             menu.add_cascade(label=section_label, menu=task_menu)
 
         self.task_toolbar_visible_var = tk.BooleanVar(value=True)
@@ -2116,18 +2221,6 @@ class DaisyApp:
                 button,
                 f"{task.nav}：切换到“{task.title}”页面；运行时功能模块会暂时锁定。",
             )
-        storage_button = ttk.Button(
-            body, text=_TASK_TOOLBAR_LABELS[_TASK_TOOLBAR_STORAGE_KEY],
-            style=f"{_TASK_TOOLBAR_STYLE_PREFIX}.TopTask.TButton",
-            state="disabled",
-            width=_TASK_TOOLBAR_BUTTON_WIDTH,
-            takefocus=False,
-        )
-        self.task_toolbar_buttons[_TASK_TOOLBAR_STORAGE_KEY] = storage_button
-        attach_tooltip(
-            storage_button,
-            "硬盘信息模块将在后续版本提供，本版本不创建空任务页。",
-        )
         self.root.after_idle(self._layout_task_toolbar)
 
     def _build_shell(self) -> None:
@@ -2812,8 +2905,6 @@ class DaisyApp:
                 ),
             )
         for task_key, button in self.task_toolbar_buttons.items():
-            if task_key == _TASK_TOOLBAR_STORAGE_KEY:
-                continue
             selected_suffix = (
                 "Selected" if task_key == self.task.key else ""
             )
@@ -2826,8 +2917,7 @@ class DaisyApp:
         for task_menu, entry_index in self.task_menu_entries.values():
             task_menu.entryconfigure(entry_index, state=state)
         for task_key, button in self.task_toolbar_buttons.items():
-            if task_key != _TASK_TOOLBAR_STORAGE_KEY:
-                button.configure(state=state)
+            button.configure(state=state)
 
     def _select_task(self, task_key: str, save_current: bool = True) -> None:
         if save_current:
@@ -3226,6 +3316,12 @@ class DaisyApp:
         report = str(values.get("report") or "").strip()
         if report:
             return os.path.dirname(_absolute(report))
+        if self.task.key == "storage_verify":
+            archive = str(values.get("archive") or "").strip()
+            if archive:
+                return os.path.dirname(_absolute(archive))
+        if self.task.key.startswith("storage_"):
+            return _DEFAULT_STORAGE_DIR
         return os.path.join(_BASE, "Output")
 
     def _open_project_directory(self) -> None:
@@ -3697,6 +3793,15 @@ class DaisyApp:
         if (self.task.key == "check_hash"
                 and values.get("check_scope") == "full"):
             warnings.append("全量哈希核对会读取所有有基准哈希的文件。")
+        if self.task.key == "storage_collect":
+            warnings.extend((
+                f"将只读登记 PhysicalDrive{values.get('disk_number')}；"
+                "程序会在采集前重新核对设备身份。",
+                "完整 smartctl 与 Windows 存储查询可能唤醒休眠硬盘，"
+                "但不会启动自检或修改硬盘设置。",
+                "生成的 ZIP 可能包含序列号、卷标、挂载路径、计算机名与"
+                " BitLocker 状态，请勿未经检查公开分享。",
+            ))
         if "force" in active_keys and values.get("force"):
             warnings.append("已启用文件名指纹缺失时的降级准入。")
         if not warnings:
@@ -4018,7 +4123,7 @@ class DaisyApp:
             self.run_results,
             stopped=stopped,
             maintenance=self_test or installing,
-        )
+        ) and self.process_task_key in _RESULT_DIRECTORY_TASKS
         result_directory = (
             self._output_path() if offer_result_directory else ""
         )
@@ -4196,6 +4301,16 @@ class DaisyApp:
             prompt = (
                 "这会中断当前 WinGet 进程；已经完成安装的软件不会回滚，"
                 "尚未开始的工具会取消。\n\n确定停止吗？"
+            )
+        elif self.process_task_key == "storage_collect":
+            prompt = (
+                "这会中断当前只读硬盘采集，可能在存储档案目录留下可安全"
+                "删除的 .partial.zip；不会修改硬盘。\n\n确定停止吗？"
+            )
+        elif self.process_task_key in ("storage_list", "storage_verify"):
+            prompt = (
+                "这会中断当前只读查询或归档核验；不会修改硬盘或既有归档。"
+                "\n\n确定停止吗？"
             )
         else:
             prompt = (

@@ -53,7 +53,7 @@ class TestGuiArguments(unittest.TestCase):
             fields,
             [
                 "output_dir", "exiftool_path", "ffprobe_path", "sevenzip_path",
-                "powershell_path",
+                "powershell_path", "smartctl_path",
             ],
         )
         args = gui.build_tool_args("env_check", {})
@@ -191,7 +191,7 @@ class TestGuiArguments(unittest.TestCase):
         expected = {
             "env_check": {
                 "--output-dir", "--exiftool-path", "--ffprobe-path",
-                "--sevenzip-path", "--powershell-path",
+                "--sevenzip-path", "--powershell-path", "--smartctl-path",
             },
             "full_scan": {
                 "--root", "--output-dir", "--hash", "--previous-snapshot",
@@ -214,6 +214,12 @@ class TestGuiArguments(unittest.TestCase):
                 "--old", "--new", "--output-dir", "--map-root", "--force",
             },
             "export_report": {"--output-dir"},
+            "storage_list": {"--smartctl-path", "--powershell-path"},
+            "storage_collect": {
+                "--disk-number", "--output-dir", "--summary-txt",
+                "--smartctl-path", "--powershell-path",
+            },
+            "storage_verify": set(),
         }
         for task_key, flags in expected.items():
             mapped = {
@@ -230,6 +236,7 @@ class TestGuiArguments(unittest.TestCase):
             ("check_format", "report_dir"): gui._DEFAULT_REPORTS_DIR,
             ("diff", "output_dir"): gui._DEFAULT_DIFFS_DIR,
             ("export_report", "output_dir"): gui._DEFAULT_REPORTS_DIR,
+            ("storage_collect", "output_dir"): gui._DEFAULT_STORAGE_DIR,
         }
         for (task_key, field_key), expected_dir in (
                 expected_output_dirs.items()):
@@ -730,7 +737,10 @@ class TestGuiArguments(unittest.TestCase):
             gui._TASK_MENU_SECTIONS[1][1][-1],
             gui._PROJECT_SELF_TEST_KEY,
         )
-        self.assertEqual(gui._TASK_MENU_SECTIONS[-1][1], ())
+        self.assertEqual(
+            gui._TASK_MENU_SECTIONS[-1][1],
+            ("storage_list", "storage_collect", "storage_verify"),
+        )
         self.assertEqual(
             tuple(
                 task_key
@@ -830,7 +840,19 @@ class TestGuiArguments(unittest.TestCase):
             gui._UNIFIED_ACTION_BACKGROUND,
         )
         self.assertEqual(
-            app.task_menus["硬盘"].entries[0]["state"], "disabled")
+            [
+                entry["label"]
+                for entry in app.task_menus["硬盘"].entries
+                if entry["kind"] == "radiobutton"
+            ],
+            [gui.TASK_BY_KEY[key].nav
+             for key in gui._TASK_MENU_SECTIONS[2][1]],
+        )
+        self.assertEqual(
+            sum(entry["kind"] == "separator"
+                for entry in app.task_menus["硬盘"].entries),
+            2,
+        )
 
     def test_idle_close_requires_confirmation(self):
         class RootProbe:
@@ -923,19 +945,20 @@ class TestGuiArguments(unittest.TestCase):
         app.task_toolbar_buttons = {
             "env_check": environment_button,
             "full_scan": database_button,
-            gui._TASK_TOOLBAR_STORAGE_KEY: storage_button,
+            "storage_list": storage_button,
         }
         app._set_task_navigation_state("disabled")
         self.assertEqual(environment_menu.states, {0: "disabled"})
         self.assertEqual(database_menu.states, {2: "disabled"})
         self.assertEqual(environment_button.states, ["disabled"])
         self.assertEqual(database_button.states, ["disabled"])
-        self.assertEqual(storage_button.states, [])
+        self.assertEqual(storage_button.states, ["disabled"])
         app._set_task_navigation_state("normal")
         self.assertEqual(environment_menu.states, {0: "normal"})
         self.assertEqual(database_menu.states, {2: "normal"})
         self.assertEqual(environment_button.states[-1], "normal")
         self.assertEqual(database_button.states[-1], "normal")
+        self.assertEqual(storage_button.states[-1], "normal")
 
     def test_top_task_navigation_selection_uses_theme_highlight(self):
         class MenuProbe:
@@ -965,7 +988,7 @@ class TestGuiArguments(unittest.TestCase):
         app.task_toolbar_buttons = {
             "env_check": environment_button,
             "full_scan": database_button,
-            gui._TASK_TOOLBAR_STORAGE_KEY: ButtonProbe(),
+            "storage_list": ButtonProbe(),
         }
         app._refresh_task_navigation_selection()
         self.assertEqual(
@@ -1135,9 +1158,7 @@ class TestGuiArguments(unittest.TestCase):
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.task_toolbar_body = BodyProbe()
-        all_keys = (
-            *gui._TASK_MENU_ORDER, gui._TASK_TOOLBAR_STORAGE_KEY,
-        )
+        all_keys = gui._TASK_MENU_ORDER
         app.task_toolbar_buttons = {
             key: WidgetProbe() for key in all_keys
         }
@@ -1293,6 +1314,9 @@ class TestGuiArguments(unittest.TestCase):
                 "DBS-32  文件结构核验",
                 "DBS-41  导出报告",
                 "DBS-91  数据库自检",
+                "STG-11  物理硬盘清单",
+                "STG-12  硬盘信息登记",
+                "STG-21  硬盘归档核验",
             ],
         )
         self.assertEqual(
@@ -1306,6 +1330,15 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             entry.COMMANDS["export-report"][0],
             "Script_DAISY_Tool_31_Export_Report")
+        self.assertEqual(
+            entry.COMMANDS["storage-list"][0],
+            "Script_DAISY_SMART_Tool_11_List_Disks")
+        self.assertEqual(
+            entry.COMMANDS["storage-collect"][0],
+            "Script_DAISY_SMART_Tool_12_Collect")
+        self.assertEqual(
+            entry.COMMANDS["storage-verify"][0],
+            "Script_DAISY_SMART_Tool_21_Verify_Archive")
         self.assertNotIn("migrate-naming", entry.COMMANDS)
 
     def test_validation_tasks_require_current_root(self):
@@ -1344,7 +1377,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.4.2")
+        self.assertEqual(core.SCANNER_VERSION, "1.5.0")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
@@ -2744,18 +2777,26 @@ class TestEnvironmentInventory(unittest.TestCase):
                     core, "resolved_tool_info", side_effect=resolved), \
                 patch.object(
                     dbh, "discover_powershell",
-                    return_value=(r"C:\Windows\powershell.exe", "5.1")):
+                    return_value=(r"C:\Windows\powershell.exe", "5.1")), \
+                patch.object(
+                    envcheck.smartctl, "find_smartctl",
+                    return_value=r"C:\Tools\smartctl.exe"), \
+                patch.object(
+                    envcheck.smartctl, "version", return_value="7.5"):
             tools, issues = envcheck.inspect_local_tools({
                 "exiftool": None,
                 "ffprobe": None,
                 "sevenzip": None,
                 "powershell": None,
+                "smartctl": None,
             })
 
         self.assertEqual(
-            set(tools), {"exiftool", "sevenzip", "powershell"})
+            set(tools),
+            {"exiftool", "sevenzip", "powershell", "smartctl"})
         self.assertEqual(tools["exiftool"]["version"], "13.59")
         self.assertEqual(tools["powershell"]["version"], "5.1")
+        self.assertEqual(tools["smartctl"]["version"], "7.5")
         self.assertEqual(
             issues,
             [{
@@ -3260,19 +3301,35 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
             argv = ["env-check", "--output-dir", td]
             with patch.object(sys, "argv", argv):
                 with patch.object(
-                        envcheck.core, "run_preflight",
-                        return_value=tools):
+                        envcheck, "inspect_local_tools",
+                        return_value=(tools, [])):
                     with patch.object(
-                            envcheck.dbh, "discover_powershell",
-                            return_value=(r"C:\Windows\powershell.exe",
-                                          "5.1.0")):
+                            envcheck.core, "run_preflight",
+                            return_value=tools):
+                        smart_scan = types.SimpleNamespace(
+                            devices=(object(),),
+                            executable=r"C:\Tools\smartctl.exe",
+                            version="7.5",
+                        )
+                        storage_inventory = types.SimpleNamespace(
+                            records=(object(),),
+                        )
                         with patch.object(
-                                envcheck.dbh, "get_filehash_batch",
-                                return_value=[SHA_ABC]):
-                            with patch.object(sys, "stdout", io.StringIO()):
+                                envcheck.smartctl, "scan",
+                                return_value=smart_scan), patch.object(
+                                envcheck.storage_windows, "read_inventory",
+                                return_value=storage_inventory):
+                            with patch.object(
+                                    envcheck.dbh, "discover_powershell",
+                                    return_value=(r"C:\Windows\powershell.exe",
+                                                  "5.1.0")):
                                 with patch.object(
-                                        sys, "stderr", io.StringIO()):
-                                    self.assertEqual(envcheck.main(), 0)
+                                        envcheck.dbh, "get_filehash_batch",
+                                        return_value=[SHA_ABC]):
+                                    with patch.object(sys, "stdout", io.StringIO()):
+                                        with patch.object(
+                                                sys, "stderr", io.StringIO()):
+                                            self.assertEqual(envcheck.main(), 0)
             reports = [
                 os.path.join(td, name) for name in os.listdir(td)
                 if name.startswith("Env_Check_") and name.endswith(".json")
@@ -3283,6 +3340,10 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
         self.assertEqual(report["tools"]["powershell"]["version"], "5.1.0")
         self.assertEqual(
             report["checks"]["powershell_get_filehash"], "passed")
+        self.assertEqual(
+            report["checks"]["smartctl_readonly_scan"], "passed")
+        self.assertEqual(
+            report["checks"]["windows_storage_inventory"], "passed")
 
 
 class TestIndependentVerify(_SnapshotFixture):

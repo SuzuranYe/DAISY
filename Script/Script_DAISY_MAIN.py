@@ -44,6 +44,12 @@ COMMANDS = {
                      "格式完整性校验：这些文件是不是好的"),
     "export-report": ("Script_DAISY_Tool_31_Export_Report",
                       "从快照/Diff 库导出报告"),
+    "storage-list": ("Script_DAISY_SMART_Tool_11_List_Disks",
+                     "列出物理硬盘、分区卷标与 smartctl 关联"),
+    "storage-collect": ("Script_DAISY_SMART_Tool_12_Collect",
+                        "只读登记单块硬盘并生成可核验 ZIP"),
+    "storage-verify": ("Script_DAISY_SMART_Tool_21_Verify_Archive",
+                       "核验硬盘档案指纹、成员结构与 CRC"),
 }
 
 
@@ -87,6 +93,7 @@ def guide() -> str:
         "",
         "产物去向：Output\\Snapshots\\（单文件自描述快照，文件名带高32bit指纹）",
         "          Output\\Diffs\\（单文件对比库）｜Output\\Reports\\（报告报表，可删可重生）",
+        "          Output\\Storage\\（单硬盘只读信息档案 ZIP）",
         "文档：README.md（入口与结构）",
         "      Spec\\Spec_DAISY_Technical.md（现行技术规格）",
     ]
