@@ -6,6 +6,7 @@ Script\Script_DAISY_MAIN.py 的既有子命令完成，避免形成第二套业�
 from __future__ import annotations
 
 import codecs
+import ctypes
 import json
 import math
 import os
@@ -18,6 +19,88 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+
+
+_TCL_RUNTIME_HANDLE: object | None = None
+
+
+def _prepare_windows_tk_runtime() -> None:
+    """在导入 tkinter 前初始化当前 Python 随附的 Tcl/Tk。"""
+    global _TCL_RUNTIME_HANDLE
+    if os.name != "nt":
+        return
+    runtime_root = os.path.dirname(os.path.abspath(sys.executable))
+    script_root = os.path.join(runtime_root, "tcl")
+    try:
+        with os.scandir(script_root) as entries:
+            directories = tuple(entries)
+    except OSError:
+        return
+
+    def script_directory(prefix: str, marker: str) -> str | None:
+        matches = [
+            entry.path for entry in directories
+            if entry.is_dir()
+            and entry.name.casefold().startswith(prefix)
+            and os.path.isfile(os.path.join(entry.path, marker))
+        ]
+        return max(
+            matches,
+            key=lambda path: tuple(
+                int(part) for part in re.findall(
+                    r"\d+", os.path.basename(path))
+            ),
+            default=None,
+        )
+
+    tcl_library = script_directory("tcl", "init.tcl")
+    tk_library = script_directory("tk", "tk.tcl")
+    if tcl_library is None or tk_library is None:
+        return
+
+    version_token = os.path.basename(tcl_library)[3:].replace(".", "")
+    dll_root = os.path.join(runtime_root, "DLLs")
+    previous_tcl_library = os.environ.pop("TCL_LIBRARY", None)
+    previous_tk_library = os.environ.pop("TK_LIBRARY", None)
+    try:
+        for filename in (
+            f"tcl{version_token}t.dll",
+            f"tcl{version_token}.dll",
+        ):
+            dll_path = os.path.join(dll_root, filename)
+            if not os.path.isfile(dll_path):
+                continue
+            try:
+                handle = ctypes.WinDLL(dll_path)
+                find_executable = handle.Tcl_FindExecutable
+                find_executable.argtypes = [ctypes.c_char_p]
+                find_executable.restype = None
+                find_executable(os.fsencode(sys.executable))
+            except (AttributeError, OSError):
+                continue
+            _TCL_RUNTIME_HANDLE = handle
+            break
+    finally:
+        os.environ["TCL_LIBRARY"] = (
+            previous_tcl_library
+            if previous_tcl_library and os.path.isfile(
+                os.path.join(previous_tcl_library, "init.tcl"))
+            else
+            tcl_library.replace("\\", "/")
+        )
+        os.environ["TK_LIBRARY"] = (
+            previous_tk_library
+            if previous_tk_library and os.path.isfile(
+                os.path.join(previous_tk_library, "tk.tcl"))
+            else
+            tk_library.replace("\\", "/")
+        )
+    # 某些 Windows Python 安装包含完整 Tcl/Tk 文件，但未在 tkinter 导入前
+    # 注册解释器路径；在无环境变量干扰时提前注册，可避免 init.tcl 被误报缺失。
+
+
+_prepare_windows_tk_runtime()
+
 import tkinter as tk
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
@@ -38,6 +121,8 @@ _DEFAULT_REPORTS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Reports")
 _DEFAULT_SNAPSHOTS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Snapshots")
 _DEFAULT_DIFFS_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Diffs")
 _DEFAULT_STORAGE_DIR = os.path.join(_DEFAULT_OUTPUT_ROOT, "Storage")
+_DEFAULT_HASH_REPORT_LOCATION = _DEFAULT_REPORTS_DIR
+_GUI_SETTINGS_PATH = os.path.join(_DEFAULT_OUTPUT_ROOT, "GUI_Settings.json")
 _GUI_EVENT_PREFIX = "@@DAISY_GUI@@"
 _PROJECT_SELF_TEST_KEY = "project_self_test"
 _DEPENDENCY_INSTALL_KEY = "dependency_install"
@@ -58,6 +143,18 @@ _ROOT_BATCH_COMBINED = "combined"
 _DEFAULT_WINDOW_SIZE = (1920, 1080)
 _WINDOW_WORK_MARGIN = (32, 40)
 _UI_FONT_FAMILY = "Microsoft YaHei UI"
+_UI_FONT_FAMILY_CANDIDATES = (
+    "Microsoft YaHei UI", "Noto Sans SC", "Microsoft JhengHei UI",
+    "Segoe UI",
+)
+_UI_FONT_SIZE_OPTIONS = (
+    ("标准", 0), ("较大", 1), ("特大", 2),
+)
+_WINDOW_SIZE_OPTIONS = (
+    ("1920 × 1080（默认）", (1920, 1080)),
+    ("1600 × 900", (1600, 900)),
+    ("1366 × 768", (1366, 768)),
+)
 _COLOUR_STRIP_HEIGHT = 4
 
 _TOOL_FIELD_BY_NAME = {
@@ -104,6 +201,66 @@ _PROJECT_CACHE_FILE_SUFFIXES = (".pyc", ".pyo")
 _CACHE_SCAN_EXCLUDED_DIR_NAMES = frozenset((
     ".git", ".venv", "venv", "node_modules", "output",
 ))
+
+
+def default_gui_preferences() -> dict[str, object]:
+    """返回不含任务参数的本地界面偏好默认值。"""
+    return {
+        "version": 1,
+        "window_size": list(_DEFAULT_WINDOW_SIZE),
+        "font_family": _UI_FONT_FAMILY,
+        "font_size_delta": 0,
+        "confirm_close_when_idle": True,
+    }
+
+
+def load_gui_preferences(
+    path: str = _GUI_SETTINGS_PATH,
+) -> dict[str, object]:
+    """容错读取 GUI 偏好；文件损坏时回到安全默认值。"""
+    preferences = default_gui_preferences()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return preferences
+    if not isinstance(loaded, dict):
+        return preferences
+
+    raw_size = loaded.get("window_size")
+    if (isinstance(raw_size, (list, tuple)) and len(raw_size) == 2
+            and all(isinstance(value, int) for value in raw_size)):
+        width, height = int(raw_size[0]), int(raw_size[1])
+        if 760 <= width <= 3840 and 640 <= height <= 2160:
+            preferences["window_size"] = [width, height]
+
+    family = loaded.get("font_family")
+    if isinstance(family, str) and 1 <= len(family.strip()) <= 80:
+        preferences["font_family"] = family.strip()
+
+    size_delta = loaded.get("font_size_delta")
+    allowed_deltas = {delta for _label, delta in _UI_FONT_SIZE_OPTIONS}
+    if isinstance(size_delta, int) and size_delta in allowed_deltas:
+        preferences["font_size_delta"] = size_delta
+
+    confirm_close = loaded.get("confirm_close_when_idle")
+    if isinstance(confirm_close, bool):
+        preferences["confirm_close_when_idle"] = confirm_close
+    return preferences
+
+
+def save_gui_preferences(
+    preferences: dict[str, object], path: str = _GUI_SETTINGS_PATH,
+) -> None:
+    """以 UTF-8／LF 原子保存本地 GUI 偏好。"""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(preferences, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temporary, path)
 
 # 《孤星》专项调查取色：米黄色纸面＋薄荷绿、橙黄、深红三种强调色。
 # 三个基准色取自官方素材右上角色条，米白取自设备外壳。
@@ -773,8 +930,7 @@ TASKS = (
         "env-check",
         "ENV-01  运行环境检测",
         "运行环境检测",
-        "检查 ExifTool、ffprobe、7-Zip、PowerShell 与 smartctl，并执行"
-        "只读冒烟和 SHA-256 自检；不读取档案或保存全局设置。",
+        "检查五项运行依赖与工具可用性，不读取档案或保存设置。",
         "只读检查 · 不读取档案 · 不保存设置",
         (
             FieldSpec(
@@ -816,8 +972,7 @@ TASKS = (
         "",
         "DBS-91  DAISY功能自检",
         "DAISY功能自检",
-        "运行 Script\\Test 中的全部自动化测试，覆盖 DBS／STG、GUI 参数和"
-        "硬盘只读边界；夹具只写系统临时目录，不访问真实档案或硬盘。",
+        "运行项目自动化测试；夹具仅写入系统临时目录。",
         "DBS 功能检测 · 临时夹具 · 不读取私人档案",
         (),
     ),
@@ -826,8 +981,7 @@ TASKS = (
         "full-scan",
         "DBS-11  完整档案扫描",
         "完整档案扫描",
-        "登记文件树、元数据与哈希，默认完整 SHA-256；生成可续传、封存后"
-        "不可变的单文件 SQLite 快照。适合首次建账和周期性完整复核。",
+        "登记目录、元数据与 SHA-256，生成可续传的封存快照。",
         "档案只读 · 长时任务 · 生成快照",
         (
             FieldSpec(
@@ -960,8 +1114,7 @@ TASKS = (
         "quick-scan",
         "DBS-12  快速档案扫描",
         "快速档案扫描",
-        "只登记文件树、大小、时间与文件标识，不读取文件内容，也不依赖外部"
-        "工具。适合接盘后快速确认目录结构。",
+        "快速登记目录与文件属性，不读取内容或调用外部工具。",
         "档案只读 · 快速 · 生成快照",
         (
             FieldSpec(
@@ -1007,8 +1160,7 @@ TASKS = (
         "check-format",
         "DBS-32  文件结构核验",
         "文件结构核验",
-        "依据封存快照定位当前文件，调用对应后端检查照片、视频、音频、文档和"
-        "压缩包是否可读。",
+        "按封存快照定位文件，检查常见文件格式能否正常读取。",
         "档案只读 · 生成 CSV/Markdown 报告",
         (
             FieldSpec(
@@ -1075,8 +1227,7 @@ TASKS = (
         "check-hash",
         "DBS-31  内容哈希核验",
         "内容哈希核验",
-        "将封存快照与当前磁盘核对：先检查文件状态，再抽样或全量重新计算"
-        " SHA-256。",
+        "按封存快照抽样或全量重算 SHA-256，核对文件内容。",
         "档案只读 · 生成 JSON 报告",
         (
             FieldSpec(
@@ -1121,8 +1272,10 @@ TASKS = (
                 section="故障恢复",
             ),
             FieldSpec(
-                "report", "报告 JSON 路径", "--report", "save",
-                help="可选；留空时写入 Output/Reports。",
+                "report", "报告位置", "--report", "save",
+                _DEFAULT_HASH_REPORT_LOCATION,
+                help="默认显示自动命名报告的输出目录；如需指定 JSON 文件名，"
+                     "可点击浏览另存。",
                 filetypes=(("JSON 报告", "*.json"), ("全部文件", "*.*")),
                 section="输出",
             ),
@@ -1133,8 +1286,7 @@ TASKS = (
         "diff",
         "DBS-21  快照变更分析",
         "快照变更分析",
-        "以旧快照为基准，与新快照进行 11 状态分类和证据等级判定，生成权威"
-        " Diff 数据库。",
+        "比较新旧封存快照，生成变更分类与证据等级数据库。",
         "输入只读 · 生成 Diff 数据库",
         (
             FieldSpec(
@@ -1171,8 +1323,7 @@ TASKS = (
         "export-report",
         "DBS-41  结果报告导出",
         "结果报告导出",
-        "从封存快照或 Diff 数据库导出 CSV／Markdown，并生成可直接用 Excel "
-        "打开的中文兼容工作簿；输入只读，报告可随时重建。",
+        "从快照或 Diff 数据库导出 Markdown、CSV 与 XLSX 报告。",
         "输入只读 · 生成 CSV/Markdown/XLSX",
         (
             FieldSpec(
@@ -1205,8 +1356,7 @@ TASKS = (
         "storage-list",
         "内部步骤  检测物理硬盘",
         "检测物理硬盘",
-        "通过 Windows 存储接口与 smartctl 检测物理硬盘及分区；完整结果需要"
-        "管理员权限。检测后可按 PhysicalDrive 编号登记。",
+        "以管理员权限只读检测物理硬盘与分区，建立候选清单。",
         "需要管理员权限 · 物理盘只读 · 可能唤醒硬盘",
         (
             FieldSpec(
@@ -1228,8 +1378,7 @@ TASKS = (
         "storage-collect",
         "STG-11  硬盘信息登记",
         "硬盘信息登记",
-        "确认物理盘身份后，只读采集 Windows 存储资料和 smartctl 原始证据，"
-        "生成独立 ZIP；完整结果需要管理员权限。",
+        "以管理员权限只读采集硬盘资料，每块硬盘生成独立 ZIP。",
         "需要管理员权限 · 物理盘只读 · 生成 ZIP",
         (
             FieldSpec(
@@ -1333,7 +1482,7 @@ def task_display_title(task_key: str) -> str:
 
 
 _TASK_TOOLBAR_BUTTON_WIDTH = 12
-_TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
+_TASK_TOOLBAR_BUTTON_PADDING = (12, 4)
 _TASK_TOOLBAR_STYLE_PREFIX = "Env"
 _TASK_TOOLBAR_LABEL_COLOUR = _TEXT
 _UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
@@ -1343,8 +1492,7 @@ _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 _PANEL_HEADER_PADX = 14
 _PANEL_ACTION_BUTTON_WIDTH = 12
 _PANEL_ACTION_BUTTON_GAP = 6
-_PANEL_SPLITTER_MIN_HEIGHT = 42
-_PANEL_SPLITTER_SASH_WIDTH = 9
+_FORM_ACTION_BUTTON_WIDTH = 12
 _STORAGE_DISK_CHECKBOX_SIZE = 20
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
 
@@ -1470,6 +1618,12 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
                 args += [spec.flag, item]
         else:
             text = str(value or "").strip()
+            if (task_key == "check_hash" and spec.key == "report"
+                    and os.path.normcase(_absolute(text)) == os.path.normcase(
+                        _DEFAULT_HASH_REPORT_LOCATION)):
+                # GUI 显示实际默认目录；保持不改写现有 CLI 协议，由 DBS-31
+                # 按原规则在该目录中自动生成报告文件名。
+                continue
             if text:
                 args += [spec.flag, text]
     return args
@@ -1703,7 +1857,7 @@ class ToolTip:
                 return
             pointer_x = self.widget.winfo_pointerx()
             pointer_y = self.widget.winfo_pointery()
-        except tk.TclError:
+        except (AttributeError, tk.TclError, TypeError):
             return
         window = tk.Toplevel(self.widget)
         self._window = window
@@ -1712,19 +1866,31 @@ class ToolTip:
             window.attributes("-topmost", True)
         except tk.TclError:
             pass
+        work_area = _monitor_work_area_for_window(self.widget)
+        top_level = self.widget.winfo_toplevel()
+        font_family = getattr(
+            top_level, "_daisy_font_family", _UI_FONT_FAMILY)
+        font_size_delta = int(getattr(
+            top_level, "_daisy_font_size_delta", 0))
         label = tk.Label(
             window, text=self.text, bg=_TEXT, fg="white",
-            font=("Microsoft YaHei UI", 9), justify="left",
-            relief="solid", bd=1, padx=9, pady=6, wraplength=360,
+            font=(font_family, 9 + font_size_delta), justify="left",
+            relief="solid", bd=1, padx=9, pady=6,
+            wraplength=max(220, min(420, work_area.width - 32)),
         )
         label.pack()
         window.update_idletasks()
         width = window.winfo_reqwidth()
         height = window.winfo_reqheight()
-        screen_width = window.winfo_screenwidth()
-        screen_height = window.winfo_screenheight()
-        x = min(pointer_x + 14, max(0, screen_width - width - 8))
-        y = min(pointer_y + 18, max(0, screen_height - height - 8))
+        minimum_x = work_area.left + 8
+        maximum_x = max(minimum_x, work_area.right - width - 8)
+        minimum_y = work_area.top + 8
+        maximum_y = max(minimum_y, work_area.bottom - height - 8)
+        x = min(max(pointer_x + 14, minimum_x), maximum_x)
+        preferred_y = pointer_y + 18
+        if preferred_y > maximum_y:
+            preferred_y = pointer_y - height - 14
+        y = min(max(preferred_y, minimum_y), maximum_y)
         window.wm_geometry(f"+{x}+{y}")
 
     def _hide(self, _event: tk.Event | None = None) -> None:
@@ -1876,14 +2042,15 @@ class DirectoryListEditor(tk.Frame):
         self.grid_columnconfigure(0, weight=1)
 
         self.rows = tk.Frame(self, bg=_SURFACE)
-        self.rows.grid(row=1, column=0, sticky="ew", padx=7, pady=(3, 7))
+        self.rows.grid(row=1, column=0, sticky="ew", padx=7, pady=(2, 4))
         self.rows.grid_columnconfigure(0, weight=1)
 
         footer = tk.Frame(self, bg=_SURFACE)
-        footer.grid(row=0, column=0, sticky="ew", padx=7, pady=(7, 3))
+        footer.grid(row=0, column=0, sticky="ew", padx=7, pady=(4, 2))
         footer.grid_columnconfigure(1, weight=1)
         self.add_button = ttk.Button(
-            footer, text="添加目录", style="Browse.TButton",
+            footer, text="添加目录", style="FormAction.TButton",
+            width=_FORM_ACTION_BUTTON_WIDTH,
             command=self.add_directory,
         )
         self.add_button.grid(row=0, column=0, sticky="w")
@@ -1918,7 +2085,7 @@ class DirectoryListEditor(tk.Frame):
             tk.Label(
                 self.rows, text="尚未添加目录", bg=_SURFACE, fg=_MUTED,
                 font=("Microsoft YaHei UI", 8), anchor="w",
-            ).grid(row=0, column=0, sticky="ew", padx=7, pady=7)
+            ).grid(row=0, column=0, sticky="ew", padx=7, pady=4)
         for index, item in enumerate(self._items):
             row = tk.Frame(self.rows, bg=_SURFACE)
             row.grid(row=index, column=0, sticky="ew", pady=(0, 4))
@@ -2037,34 +2204,46 @@ class StorageDiskPool(tk.Frame):
         self.grid_columnconfigure(0, weight=1)
 
         actions = tk.Frame(self, bg=_SURFACE)
-        actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
-        actions.grid_columnconfigure(0, weight=1, uniform="storage_pool_action")
-        actions.grid_columnconfigure(1, weight=1, uniform="storage_pool_action")
-        select_all = ttk.Button(
-            actions, text="选择所有联机硬盘", style="Browse.TButton",
+        actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(5, 2))
+        actions.grid_columnconfigure(2, weight=1)
+        self.select_all_button = ttk.Button(
+            actions, text="全选", style="FormAction.TButton",
+            width=_FORM_ACTION_BUTTON_WIDTH,
             command=self.select_all_online,
         )
-        select_all.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        clear = ttk.Button(
-            actions, text="清空选择", style="Browse.TButton",
+        self.select_all_button.grid(
+            row=0, column=0, sticky="w", padx=(0, 6))
+        self.clear_selection_button = ttk.Button(
+            actions, text="取消选择", style="FormAction.TButton",
+            width=_FORM_ACTION_BUTTON_WIDTH,
             command=self.clear_selection,
         )
-        clear.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.clear_selection_button.grid(row=0, column=1, sticky="w")
+        selectable_count = sum(option.selectable for option in options)
+        tk.Label(
+            actions,
+            text=f"可选 {selectable_count}/{len(options)}",
+            bg=_SURFACE, fg=_MUTED,
+            font=("Microsoft YaHei UI", 8), anchor="e",
+        ).grid(row=0, column=2, sticky="e")
         attach_tooltip(
-            select_all,
+            self.select_all_button,
             "选择当次清单中所有联机且已成功关联 smartctl 的物理硬盘。",
         )
-        attach_tooltip(clear, "清除硬盘池中的全部勾选，不会重新检测硬盘。")
+        attach_tooltip(
+            self.clear_selection_button,
+            "清除硬盘池中的全部勾选，不会重新检测硬盘。",
+        )
 
         rows = tk.Frame(self, bg=_SURFACE)
-        rows.grid(row=1, column=0, sticky="ew", padx=8, pady=(2, 8))
+        rows.grid(row=1, column=0, sticky="ew", padx=8, pady=(1, 5))
         rows.grid_columnconfigure(0, weight=1)
         if not options:
             tk.Label(
                 rows, text="尚无硬盘清单，请先点击「检测物理硬盘」。",
                 bg=_SURFACE, fg=_MUTED,
                 font=("Microsoft YaHei UI", 9), anchor="w",
-            ).grid(row=0, column=0, sticky="ew", padx=4, pady=8)
+            ).grid(row=0, column=0, sticky="ew", padx=4, pady=5)
             return
 
         self._checkbox_images = {
@@ -2223,10 +2402,12 @@ def project_self_test_preview() -> str:
     ])
 
 
-def window_size_for_screen(screen_width: int,
-                           screen_height: int) -> tuple[int, int]:
+def window_size_for_screen(
+    screen_width: int, screen_height: int,
+    preferred_size: tuple[int, int] = _DEFAULT_WINDOW_SIZE,
+) -> tuple[int, int]:
     """以 1920×1080 为目标，并按当前屏幕留出安全边缘。"""
-    target_width, target_height = _DEFAULT_WINDOW_SIZE
+    target_width, target_height = preferred_size
     width = min(target_width, max(640, screen_width - 80))
     height = min(target_height, max(480, screen_height - 60))
     width = min(width, max(320, screen_width - 20))
@@ -2431,6 +2612,18 @@ def _create_daisy_icon(root: tk.Misc, size: int) -> tk.PhotoImage:
     return image
 
 
+def _create_combobox_chevron(
+    root: tk.Misc, colour: str,
+) -> tk.PhotoImage:
+    """创建细线下箭头；图形与点击热区分离，避免过小难点。"""
+    image = tk.PhotoImage(master=root, width=22, height=16)
+    for step in range(6):
+        y = 4 + step
+        for x in (5 + step, 16 - step):
+            image.put(colour, to=(x, y, x + 2, y + 2))
+    return image
+
+
 def _install_daisy_window_icon(
     root: tk.Misc,
 ) -> tuple[tk.PhotoImage, ...] | None:
@@ -2446,6 +2639,15 @@ def _install_daisy_window_icon(
 class DaisyApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self.gui_preferences = load_gui_preferences()
+        raw_window_size = self.gui_preferences["window_size"]
+        self.default_window_size = (
+            int(raw_window_size[0]), int(raw_window_size[1]))
+        self.ui_font_family = str(self.gui_preferences["font_family"])
+        self.ui_font_size_delta = int(
+            self.gui_preferences["font_size_delta"])
+        self.confirm_close_when_idle = bool(
+            self.gui_preferences["confirm_close_when_idle"])
         self.task = TASKS[0]
         self.values: dict[
             str, tk.Variable | tk.Text | DirectoryListEditor
@@ -2471,8 +2673,9 @@ class DaisyApp:
         self.progress_expanded = False
         self.log_expanded = False
         self.command_preview_expanded = False
-        self._panel_expanded_heights: dict[str, int] = {}
-        self._mini_panel_heights: dict[str, int] = {}
+        self.log_window: tk.Toplevel | None = None
+        self.log_window_text: tk.Text | None = None
+        self.log_window_icon_handle: tuple[tk.PhotoImage, ...] | None = None
         self._normal_geometry = ""
         self._normal_window_state = "normal"
         self._normal_position = (0, 0)
@@ -2497,6 +2700,7 @@ class DaisyApp:
         self._set_progress_expanded(False)
         self._set_log_expanded(False)
         self._select_task(self.task.key, save_current=False)
+        self._apply_interface_font_preferences()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind(
             "<Configure>", self._schedule_monitor_refresh, add="+")
@@ -2509,7 +2713,8 @@ class DaisyApp:
         self.root.after(100, self._apply_window_icon)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        width, height = window_size_for_screen(screen_width, screen_height)
+        width, height = window_size_for_screen(
+            screen_width, screen_height, self.default_window_size)
         x = max(0, (screen_width - width) // 2)
         y = max(0, (screen_height - height) // 2)
         self.compact_layout = width < 1080 or height < 700
@@ -2522,16 +2727,34 @@ class DaisyApp:
         ] | None = None
         self._monitor_applied_size: tuple[int, int] | None = None
         self._monitor_refresh_after_id: str | None = None
+        self._form_scroll_sync_after_id: str | None = None
         self.root.minsize(*self.normal_min_size)
         self.root.configure(bg=_BG)
-        self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
+        available_families = {
+            family.casefold(): family
+            for family in tkfont.families(self.root)
+        }
+        selected_family = available_families.get(
+            self.ui_font_family.casefold())
+        if selected_family is None:
+            selected_family = available_families.get(
+                _UI_FONT_FAMILY.casefold(), _UI_FONT_FAMILY)
+        self.ui_font_family = selected_family
+        self.gui_preferences["font_family"] = selected_family
+        self.root._daisy_font_family = selected_family  # type: ignore[attr-defined]
+        self.root._daisy_font_size_delta = (  # type: ignore[attr-defined]
+            self.ui_font_size_delta)
+        self.root.option_add("*Font", (selected_family, 10))
+        self._named_font_base_sizes: dict[str, int] = {}
         for font_name in (
                 "TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
                 "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont",
                 "TkIconFont", "TkTooltipFont"):
             try:
-                tkfont.nametofont(font_name, root=self.root).configure(
-                    family=_UI_FONT_FAMILY)
+                named_font = tkfont.nametofont(font_name, root=self.root)
+                self._named_font_base_sizes[font_name] = abs(int(
+                    named_font.actual("size")))
+                named_font.configure(family=selected_family)
             except tk.TclError:
                 continue
 
@@ -2602,6 +2825,199 @@ class DaisyApp:
     def _apply_window_icon(self) -> None:
         self.window_icon_handle = _install_daisy_window_icon(self.root)
 
+    def _font_tuple(
+        self, base_size: int, weight: str = "normal",
+    ) -> tuple[object, ...]:
+        value: list[object] = [
+            self.ui_font_family,
+            max(8, int(base_size) + self.ui_font_size_delta),
+        ]
+        if weight != "normal":
+            value.append(weight)
+        return tuple(value)
+
+    def _available_ui_font_families(self) -> tuple[str, ...]:
+        installed = {
+            family.casefold(): family
+            for family in tkfont.families(self.root)
+        }
+        result: list[str] = []
+        for candidate in (
+                self.ui_font_family, *_UI_FONT_FAMILY_CANDIDATES):
+            family = installed.get(candidate.casefold())
+            if family is not None and family not in result:
+                result.append(family)
+        return tuple(result) or (self.ui_font_family,)
+
+    def _apply_style_fonts(self) -> None:
+        style_specs = {
+            "TLabel": (10, "normal"),
+            "Muted.TLabel": (9, "normal"),
+            "Badge.TLabel": (9, "bold"),
+            "TEntry": (10, "normal"),
+            "TCombobox": (10, "normal"),
+            "Daisy.TCombobox": (10, "normal"),
+            "Browse.TButton": (9, "normal"),
+            "FormAction.TButton": (9, "normal"),
+            "Remove.TButton": (9, "bold"),
+            "Primary.TButton": (10, "bold"),
+            "Stop.TButton": (10, "bold"),
+            "Secondary.TButton": (10, "normal"),
+            "Mini.TButton": (8, "normal"),
+            "PanelHeader.TButton": (8, "normal"),
+            "MiniStop.TButton": (8, "bold"),
+        }
+        for style_name, (size, weight) in style_specs.items():
+            self.style.configure(
+                style_name, font=self._font_tuple(size, weight))
+        for _section_label, (
+                style_prefix, _accent, _deep, _soft
+        ) in _TASK_MENU_SECTION_COLOURS.items():
+            for suffix in ("TopTask", "TopTaskSelected"):
+                self.style.configure(
+                    f"{style_prefix}.{suffix}.TButton",
+                    font=self._font_tuple(9),
+                )
+
+    def _apply_font_to_tree(self, widget: tk.Misc) -> None:
+        try:
+            has_font = "font" in widget.keys()
+        except (AttributeError, tk.TclError):
+            has_font = False
+        if has_font:
+            try:
+                base = getattr(widget, "_daisy_base_font", None)
+                if base is None:
+                    raw_font = str(widget.cget("font"))
+                    named_size = self._named_font_base_sizes.get(raw_font)
+                    actual = tkfont.Font(
+                        root=self.root, font=raw_font).actual()
+                    base = (
+                        named_size or abs(int(actual["size"])),
+                        str(actual["weight"]), str(actual["slant"]),
+                        bool(actual["underline"]), bool(actual["overstrike"]),
+                    )
+                    widget._daisy_base_font = base  # type: ignore[attr-defined]
+                size, weight, slant, underline, overstrike = base
+                font_parts: list[object] = [
+                    self.ui_font_family,
+                    max(8, int(size) + self.ui_font_size_delta),
+                ]
+                if weight != "normal":
+                    font_parts.append(weight)
+                if slant != "roman":
+                    font_parts.append(slant)
+                if underline:
+                    font_parts.append("underline")
+                if overstrike:
+                    font_parts.append("overstrike")
+                widget.configure(font=tuple(font_parts))
+            except (tk.TclError, TypeError, ValueError):
+                pass
+        try:
+            children = widget.winfo_children()
+        except (AttributeError, tk.TclError):
+            children = ()
+        for child in children:
+            self._apply_font_to_tree(child)
+
+    def _apply_interface_font_preferences(self) -> None:
+        self.root._daisy_font_family = (  # type: ignore[attr-defined]
+            self.ui_font_family)
+        self.root._daisy_font_size_delta = (  # type: ignore[attr-defined]
+            self.ui_font_size_delta)
+        self.root.option_add("*Font", (self.ui_font_family, 10))
+        self._apply_font_to_tree(self.root)
+        for font_name, base_size in self._named_font_base_sizes.items():
+            try:
+                tkfont.nametofont(font_name, root=self.root).configure(
+                    family=self.ui_font_family,
+                    size=max(8, base_size + self.ui_font_size_delta),
+                )
+            except tk.TclError:
+                continue
+        self._apply_style_fonts()
+        self.settings_title_expanded_font = self._font_tuple(
+            14 if self.compact_layout else 16, "bold")
+        self.title_label.configure(font=(
+            self.settings_title_expanded_font
+            if self.settings_expanded else self._font_tuple(9, "bold")
+        ))
+        self.root.update_idletasks()
+
+    def _save_gui_preferences(self) -> None:
+        self.gui_preferences.update({
+            "window_size": list(self.default_window_size),
+            "font_family": self.ui_font_family,
+            "font_size_delta": self.ui_font_size_delta,
+            "confirm_close_when_idle": self.confirm_close_when_idle,
+        })
+        try:
+            save_gui_preferences(self.gui_preferences)
+        except OSError as exc:
+            messagebox.showwarning(
+                "无法保存界面设置",
+                f"本次设置已生效，但无法写入：\n{exc}",
+                parent=self.root,
+            )
+
+    def _set_ui_font(
+        self, *, family: str | None = None,
+        size_delta: int | None = None, persist: bool = True,
+    ) -> None:
+        if family is not None:
+            available = {
+                value.casefold(): value
+                for value in self._available_ui_font_families()
+            }
+            resolved = available.get(family.casefold())
+            if resolved is None:
+                return
+            self.ui_font_family = resolved
+        if size_delta is not None:
+            allowed = {delta for _label, delta in _UI_FONT_SIZE_OPTIONS}
+            if size_delta not in allowed:
+                return
+            self.ui_font_size_delta = int(size_delta)
+        if hasattr(self, "ui_font_family_var"):
+            self.ui_font_family_var.set(self.ui_font_family)
+        if hasattr(self, "ui_font_size_var"):
+            self.ui_font_size_var.set(self.ui_font_size_delta)
+        self._apply_interface_font_preferences()
+        if persist:
+            self._save_gui_preferences()
+
+    def _set_default_window_size(
+        self, size: tuple[int, int], *, persist: bool = True,
+    ) -> None:
+        self.default_window_size = (int(size[0]), int(size[1]))
+        self._preferred_normal_size = self.default_window_size
+        if hasattr(self, "default_window_size_var"):
+            self.default_window_size_var.set(
+                f"{size[0]}x{size[1]}")
+        if not self.mini_mode:
+            work_area = _monitor_work_area_for_window(self.root)
+            width, height, x, y = fit_window_to_work_area(
+                self.default_window_size,
+                (self.root.winfo_x(), self.root.winfo_y()), work_area,
+            )
+            self.normal_width_cap = min(1200, width)
+            self.normal_min_size = (min(760, width), min(640, height))
+            self.root.minsize(*self.normal_min_size)
+            self.root.geometry(_window_geometry_string(width, height, x, y))
+        if persist:
+            self._save_gui_preferences()
+
+    def _set_idle_close_confirmation(
+        self, enabled: bool, *, persist: bool = True,
+    ) -> None:
+        self.confirm_close_when_idle = bool(enabled)
+        if hasattr(self, "confirm_close_when_idle_var"):
+            self.confirm_close_when_idle_var.set(
+                self.confirm_close_when_idle)
+        if persist:
+            self._save_gui_preferences()
+
     def _configure_styles(self) -> None:
         self.style = ttk.Style(self.root)
         style = self.style
@@ -2624,27 +3040,76 @@ class DaisyApp:
         style.configure(
             "TEntry", fieldbackground=_FIELD, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
-            padding=7,
+            padding=(7, 4),
         )
         style.configure(
             "TCombobox", fieldbackground=_FIELD, background=_FIELD,
             foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
-            padding=6,
+            padding=(8, 4), relief="flat",
         )
         style.map(
             "TCombobox",
             fieldbackground=[("readonly", _FIELD)],
+            background=[("readonly", _FIELD), ("active", _CONTROL_HOVER)],
+            selectbackground=[("readonly", _FIELD)],
+            selectforeground=[("readonly", _TEXT)],
+        )
+        normal_arrow = _create_combobox_chevron(self.root, _MUTED)
+        active_arrow = _create_combobox_chevron(self.root, _GREEN_DEEP)
+        disabled_arrow = _create_combobox_chevron(self.root, _BORDER)
+        self.combobox_arrow_images = (
+            normal_arrow, active_arrow, disabled_arrow)
+        style.element_create(
+            "Daisy.Combobox.chevron", "image", normal_arrow,
+            ("active", active_arrow), ("pressed", active_arrow),
+            ("disabled", disabled_arrow), sticky="",
+        )
+        style.layout(
+            "Daisy.TCombobox",
+            [("Combobox.field", {
+                "sticky": "nswe",
+                "children": [
+                    ("Daisy.Combobox.chevron", {
+                        "side": "right", "sticky": "ns"}),
+                    ("Combobox.padding", {
+                        "sticky": "nswe",
+                        "children": [
+                            ("Combobox.textarea", {"sticky": "nswe"}),
+                        ],
+                    }),
+                ],
+            })],
+        )
+        style.configure(
+            "Daisy.TCombobox", fieldbackground=_FIELD, background=_FIELD,
+            foreground=_TEXT, bordercolor=_BORDER,
+            lightcolor=_BORDER, darkcolor=_BORDER,
+            padding=(8, 4), relief="flat",
+        )
+        style.map(
+            "Daisy.TCombobox",
+            fieldbackground=[("readonly", _FIELD)],
+            background=[("readonly", _FIELD), ("active", _CONTROL_HOVER)],
             selectbackground=[("readonly", _FIELD)],
             selectforeground=[("readonly", _TEXT)],
         )
         style.configure(
             "Browse.TButton", background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
-            padding=(10, 7), font=("Microsoft YaHei UI", 9),
+            padding=(9, 4), font=("Microsoft YaHei UI", 9),
         )
         style.map(
             "Browse.TButton", background=[("active", _CONTROL_HOVER)])
+        style.configure(
+            "FormAction.TButton", background=_CONTROL, foreground=_TEXT,
+            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            padding=(9, 4), font=("Microsoft YaHei UI", 9),
+        )
+        style.map(
+            "FormAction.TButton",
+            background=[("active", _CONTROL_HOVER)],
+        )
         style.configure(
             "Remove.TButton", background=_DANGER_SOFT, foreground=_DANGER,
             bordercolor=_DANGER_BORDER, padding=(6, 5),
@@ -2956,6 +3421,61 @@ class DaisyApp:
             self.database_self_test_menu_index)
         menu.add_cascade(label="高级", menu=advanced_menu)
 
+        settings_menu = tk.Menu(menu, **base_menu_options)
+        self.settings_menu = settings_menu
+        window_size_menu = tk.Menu(settings_menu, **base_menu_options)
+        self.default_window_size_var = tk.StringVar(
+            value=(f"{self.default_window_size[0]}x"
+                   f"{self.default_window_size[1]}"))
+        for label, size in _WINDOW_SIZE_OPTIONS:
+            token = f"{size[0]}x{size[1]}"
+            window_size_menu.add_radiobutton(
+                label=label,
+                variable=self.default_window_size_var,
+                value=token,
+                command=lambda selected=size:
+                self._set_default_window_size(selected),
+            )
+        settings_menu.add_cascade(
+            label="默认窗口大小", menu=window_size_menu)
+
+        font_menu = tk.Menu(settings_menu, **base_menu_options)
+        font_family_menu = tk.Menu(font_menu, **base_menu_options)
+        self.ui_font_family_var = tk.StringVar(value=self.ui_font_family)
+        for family in self._available_ui_font_families():
+            font_family_menu.add_radiobutton(
+                label=family,
+                variable=self.ui_font_family_var,
+                value=family,
+                command=lambda selected=family:
+                self._set_ui_font(family=selected),
+            )
+        font_menu.add_cascade(label="字体", menu=font_family_menu)
+
+        font_size_menu = tk.Menu(font_menu, **base_menu_options)
+        self.ui_font_size_var = tk.IntVar(value=self.ui_font_size_delta)
+        for label, size_delta in _UI_FONT_SIZE_OPTIONS:
+            font_size_menu.add_radiobutton(
+                label=label + ("（默认）" if size_delta == 0 else ""),
+                variable=self.ui_font_size_var,
+                value=size_delta,
+                command=lambda selected=size_delta:
+                self._set_ui_font(size_delta=selected),
+            )
+        font_menu.add_cascade(label="字号", menu=font_size_menu)
+        settings_menu.add_cascade(label="界面字体", menu=font_menu)
+
+        settings_menu.add_separator()
+        self.confirm_close_when_idle_var = tk.BooleanVar(
+            value=self.confirm_close_when_idle)
+        settings_menu.add_checkbutton(
+            label="空闲关闭时需要确认",
+            variable=self.confirm_close_when_idle_var,
+            command=lambda: self._set_idle_close_confirmation(
+                self.confirm_close_when_idle_var.get()),
+        )
+        menu.add_cascade(label="设置", menu=settings_menu)
+
         self.task_toolbar_visible_var = tk.BooleanVar(value=True)
         self.settings_visible_var = tk.BooleanVar(value=True)
         self.progress_visible_var = tk.BooleanVar(value=False)
@@ -3018,7 +3538,7 @@ class DaisyApp:
             self.content_pad + _PANEL_HEADER_PADX)
         header.pack(
             fill="x", padx=self.task_toolbar_horizontal_pad,
-            pady=(6, 4),
+            pady=(4, 2),
         )
         tk.Label(
             header, text="功能模块", bg=_SURFACE,
@@ -3057,7 +3577,7 @@ class DaisyApp:
         self.task_toolbar_body = body
         body.pack(
             fill="x", padx=self.task_toolbar_horizontal_pad,
-            pady=(0, 8),
+            pady=(0, 5),
         )
         self.task_toolbar_section_labels: dict[str, tk.Label] = {}
         for section_label, short_label, _task_keys in _TASK_TOOLBAR_ROWS:
@@ -3092,7 +3612,7 @@ class DaisyApp:
         self.root.after_idle(self._layout_task_toolbar)
 
     def _build_shell(self) -> None:
-        content_pad = 12 if self.compact_layout else 18
+        content_pad = 12 if self.compact_layout else 14
         self.content_pad = content_pad
 
         colour_strip = tk.Frame(
@@ -3118,37 +3638,17 @@ class DaisyApp:
         )
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
-
-        panel_splitter = tk.PanedWindow(
-            content,
-            orient=tk.VERTICAL,
-            bg=_BORDER,
-            bd=0,
-            highlightthickness=0,
-            opaqueresize=True,
-            sashcursor="sb_v_double_arrow",
-            sashpad=0,
-            sashrelief="flat",
-            sashwidth=_PANEL_SPLITTER_SASH_WIDTH,
-            showhandle=False,
-        )
-        self.panel_splitter = panel_splitter
-        panel_splitter.grid(row=0, column=0, sticky="nsew")
+        content.grid_rowconfigure(2, weight=0)
 
         self.task_card = tk.Frame(
-            panel_splitter, bg=_SURFACE, highlightbackground=_BORDER,
+            content, bg=_SURFACE, highlightbackground=_BORDER,
             highlightthickness=1,
         )
-        panel_splitter.add(
-            self.task_card,
-            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
-            stretch="always",
-            sticky="nsew",
-        )
+        self.task_card.grid(row=0, column=0, sticky="nsew")
 
         title_row = tk.Frame(self.task_card, bg=_SURFACE)
         self.settings_title_row = title_row
-        title_row.pack(fill="x", padx=22, pady=(12, 8))
+        title_row.pack(fill="x", padx=22, pady=(10, 6))
         self.settings_title_expanded_font = (
             "Microsoft YaHei UI",
             14 if self.compact_layout else 16,
@@ -3176,7 +3676,7 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9), anchor="w", justify="left",
             wraplength=820,
         )
-        self.desc_label.pack(fill="x", padx=22, pady=(0, 8))
+        self.desc_label.pack(fill="x", padx=22, pady=(0, 5))
         self.task_card.bind(
             "<Configure>",
             lambda e: self.desc_label.configure(
@@ -3196,21 +3696,16 @@ class DaisyApp:
             style="Daisy.Vertical.TScrollbar",
         )
         self.form_canvas.configure(yscrollcommand=self.form_scroll.set)
-        self.form_scroll.pack(side="right", fill="y")
         self.form_canvas.pack(side="left", fill="both", expand=True)
         self.form_inner = tk.Frame(self.form_canvas, bg=_SURFACE)
         self.form_window = self.form_canvas.create_window(
             (0, 0), window=self.form_inner, anchor="nw",
         )
         self.form_inner.bind(
-            "<Configure>",
-            lambda _e: self.form_canvas.configure(
-                scrollregion=self.form_canvas.bbox("all")),
+            "<Configure>", self._schedule_form_scroll_sync,
         )
         self.form_canvas.bind(
-            "<Configure>",
-            lambda e: self.form_canvas.itemconfigure(
-                self.form_window, width=e.width),
+            "<Configure>", self._resize_form_canvas_window,
         )
         self.form_canvas.bind(
             "<Enter>", lambda _e: self.form_canvas.bind_all(
@@ -3221,16 +3716,12 @@ class DaisyApp:
         )
 
         progress_panel = tk.Frame(
-            panel_splitter, bg=_SURFACE, highlightbackground=_BORDER,
+            content, bg=_SURFACE, highlightbackground=_BORDER,
             highlightthickness=1,
         )
         self.progress_panel = progress_panel
-        panel_splitter.add(
-            progress_panel,
-            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
-            stretch="never",
-            sticky="nsew",
-        )
+        progress_panel.grid(
+            row=1, column=0, sticky="ew", pady=(10, 0))
         progress_inner = tk.Frame(progress_panel, bg=_SURFACE)
         self.progress_inner = progress_inner
         progress_inner.pack(
@@ -3365,16 +3856,11 @@ class DaisyApp:
             row=6, column=0, columnspan=3, sticky="ew", pady=(4, 5))
 
         log_panel = tk.Frame(
-            panel_splitter, bg=_LOG_BG, highlightbackground=_BORDER,
+            content, bg=_LOG_BG, highlightbackground=_BORDER,
             highlightthickness=1,
         )
         self.log_panel = log_panel
-        panel_splitter.add(
-            log_panel,
-            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
-            stretch="never",
-            sticky="nsew",
-        )
+        log_panel.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         log_header = tk.Frame(log_panel, bg=_LOG_HEADER)
         log_header.pack(fill="x")
         tk.Label(
@@ -3390,6 +3876,10 @@ class DaisyApp:
             1, minsize=_PANEL_ACTION_BUTTON_GAP)
         log_actions.grid_columnconfigure(
             2, weight=1, uniform="panel_header_action")
+        log_actions.grid_columnconfigure(
+            3, minsize=_PANEL_ACTION_BUTTON_GAP)
+        log_actions.grid_columnconfigure(
+            4, weight=1, uniform="panel_header_action")
         self.clear_log_button = ttk.Button(
             log_actions, text="清空日志", style="PanelHeader.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
@@ -3398,14 +3888,24 @@ class DaisyApp:
         self.clear_log_button.grid(row=0, column=0, sticky="ew")
         attach_tooltip(
             self.clear_log_button,
-            "清空当前窗口的运行日志，不影响任务或正式产物。",
+            "清空主界面与独立窗口中的运行日志，不影响任务或正式产物。",
+        )
+        self.open_log_window_button = ttk.Button(
+            log_actions, text="独立窗口", style="PanelHeader.TButton",
+            width=_PANEL_ACTION_BUTTON_WIDTH,
+            command=self._open_log_window,
+        )
+        self.open_log_window_button.grid(row=0, column=2, sticky="ew")
+        attach_tooltip(
+            self.open_log_window_button,
+            "在独立窗口中打开并实时同步运行日志。",
         )
         self.log_toggle_button = ttk.Button(
             log_actions, text="收起日志", style="PanelHeader.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_log_panel,
         )
-        self.log_toggle_button.grid(row=0, column=2, sticky="ew")
+        self.log_toggle_button.grid(row=0, column=4, sticky="ew")
         attach_tooltip(
             self.log_toggle_button,
             "展开或收起运行日志；已有日志内容不会被清除。",
@@ -3430,14 +3930,11 @@ class DaisyApp:
         self.log.configure(yscrollcommand=log_scroll.set)
         log_scroll.pack(side="right", fill="y")
         self.log.pack(fill="both", expand=True)
-        self.log.tag_configure("meta", foreground=_GREEN_DEEP)
-        self.log.tag_configure("success", foreground=_SUCCESS)
-        self.log.tag_configure("warning", foreground=_WARNING)
-        self.log.tag_configure("error", foreground=_DANGER)
+        self._configure_log_tags(self.log)
 
         command_panel = tk.Frame(content, bg=_BG)
         self.command_panel = command_panel
-        command_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        command_panel.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         command_preview_body = tk.Frame(command_panel, bg=_BG)
         self.command_preview_body = command_preview_body
         tk.Label(
@@ -3452,7 +3949,8 @@ class DaisyApp:
         )
         preview_entry.pack(side="left", fill="x", expand=True)
         self.copy_button = ttk.Button(
-            preview_row, text="复制", style="Browse.TButton",
+            preview_row, text="复制", style="FormAction.TButton",
+            width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._copy_command,
         )
         self.copy_button.pack(side="left", padx=(8, 0))
@@ -3541,13 +4039,13 @@ class DaisyApp:
                 enumerate(_TASK_TOOLBAR_ROWS)):
             self.task_toolbar_section_labels[section_label].grid(
                 row=row_index, column=0, sticky="w",
-                padx=(0, 12), pady=(4 if row_index else 0, 0),
+                padx=(0, 12), pady=(2 if row_index else 0, 0),
             )
             column = 1
             for task_key in task_keys:
                 self.task_toolbar_buttons[task_key].grid(
                     row=row_index, column=column, sticky="w",
-                    padx=(0, 6), pady=(4 if row_index else 0, 0),
+                    padx=(0, 6), pady=(2 if row_index else 0, 0),
                 )
                 column += 1
         self._task_toolbar_layout_ready = True
@@ -3644,121 +4142,18 @@ class DaisyApp:
             row=0, column=1, sticky="e", padx=(0, 8))
         self.run_button.grid(row=0, column=2, sticky="e")
 
-    def _splitter_panel(self, panel_key: str) -> tk.Widget | None:
-        return {
-            "settings": getattr(self, "task_card", None),
-            "progress": getattr(self, "progress_panel", None),
-            "log": getattr(self, "log_panel", None),
-        }.get(panel_key)
-
-    def _splitter_manages(self, panel: tk.Widget | None) -> bool:
-        splitter = getattr(self, "panel_splitter", None)
-        if splitter is None or panel is None:
-            return False
-        try:
-            return str(panel) in {str(item) for item in splitter.panes()}
-        except (AttributeError, tk.TclError):
-            return False
-
-    def _remember_splitter_panel_height(self, panel_key: str) -> None:
-        """折叠前记住用户拖动得到的面板高度。"""
-        if getattr(self, "mini_mode", False):
+    def _refresh_content_row_weights(self) -> None:
+        """让设置区或日志区占满固定布局中的剩余纵向空间。"""
+        if self.mini_mode:
             return
-        panel = self._splitter_panel(panel_key)
-        if not self._splitter_manages(panel):
-            return
-        try:
-            height = int(panel.winfo_height())
-        except (AttributeError, tk.TclError, TypeError, ValueError):
-            return
-        if height > _PANEL_SPLITTER_MIN_HEIGHT:
-            self._panel_expanded_heights[panel_key] = height
-
-    def _apply_splitter_panel_state(
-        self, panel_key: str, expanded: bool,
-    ) -> None:
-        """折叠时收紧面板，重新展开时恢复此前的纵向占比。"""
-        if getattr(self, "mini_mode", False):
-            return
-        splitter = getattr(self, "panel_splitter", None)
-        panel = self._splitter_panel(panel_key)
-        if splitter is None or not self._splitter_manages(panel):
-            return
-        try:
-            requested_height = max(
-                _PANEL_SPLITTER_MIN_HEIGHT,
-                int(panel.winfo_reqheight()),
-            )
-            if expanded:
-                target_height = max(
-                    requested_height,
-                    int(self._panel_expanded_heights.get(
-                        panel_key, requested_height)),
-                )
-                minimum_height = _PANEL_SPLITTER_MIN_HEIGHT
-            else:
-                target_height = requested_height
-                minimum_height = requested_height
-            splitter.paneconfigure(
-                panel,
-                height=target_height,
-                minsize=minimum_height,
-                stretch="always" if expanded else "never",
-            )
-        except (AttributeError, tk.TclError, TypeError, ValueError):
-            return
-
-    def _schedule_splitter_panel_state(
-        self, panel_key: str, expanded: bool,
-    ) -> None:
-        root = getattr(self, "root", None)
-        if root is None or not hasattr(root, "after_idle"):
-            return
-        root.after_idle(
-            lambda key=panel_key, value=expanded:
-            self._apply_splitter_panel_state(key, value),
-        )
-
-    def _capture_splitter_panel_heights(self) -> dict[str, int]:
-        heights: dict[str, int] = {}
-        for panel_key in ("settings", "progress", "log"):
-            panel = self._splitter_panel(panel_key)
-            if not self._splitter_manages(panel):
-                continue
-            try:
-                heights[panel_key] = max(
-                    _PANEL_SPLITTER_MIN_HEIGHT,
-                    int(panel.winfo_height()),
-                )
-            except (AttributeError, tk.TclError, TypeError, ValueError):
-                continue
-        return heights
-
-    def _restore_splitter_panel_heights(
-        self, heights: dict[str, int],
-    ) -> None:
-        if getattr(self, "mini_mode", False):
-            return
-        splitter = getattr(self, "panel_splitter", None)
-        if splitter is None:
-            return
-        for panel_key, height in heights.items():
-            panel = self._splitter_panel(panel_key)
-            if not self._splitter_manages(panel):
-                continue
-            try:
-                splitter.paneconfigure(
-                    panel,
-                    height=max(_PANEL_SPLITTER_MIN_HEIGHT, int(height)),
-                )
-            except (AttributeError, tk.TclError, TypeError, ValueError):
-                continue
+        settings_weight = 1 if self.settings_expanded else 0
+        log_weight = 1 if self.log_expanded and not settings_weight else 0
+        self.content.grid_rowconfigure(0, weight=settings_weight)
+        self.content.grid_rowconfigure(2, weight=log_weight)
+        self.log_panel.grid_configure(
+            sticky="nsew" if log_weight else "ew")
 
     def _set_settings_expanded(self, expanded: bool) -> None:
-        was_expanded = getattr(self, "settings_expanded", True)
-        was_visible = bool(self.settings_body.winfo_manager())
-        if was_expanded and not expanded:
-            self._remember_splitter_panel_height("settings")
         self.settings_expanded = expanded
         if expanded:
             if not self.settings_body.winfo_manager():
@@ -3767,11 +4162,11 @@ class DaisyApp:
             self.settings_body.pack_forget()
         self.title_label.configure(font=(
             self.settings_title_expanded_font
-            if expanded else _COLLAPSED_PANEL_TITLE_FONT
+            if expanded else self._font_tuple(9, "bold")
         ))
         self.settings_title_row.pack_configure(
             padx=(22 if expanded else _PANEL_HEADER_PADX),
-            pady=((12, 8) if expanded
+            pady=((10, 6) if expanded
                   else _COLLAPSED_SETTINGS_HEADER_PADY),
         )
         self.settings_toggle_button.configure(
@@ -3779,17 +4174,12 @@ class DaisyApp:
         if hasattr(self, "settings_visible_var"):
             self.settings_visible_var.set(expanded)
         self._refresh_view_menu_labels()
-        if was_expanded != expanded or was_visible != expanded:
-            self._schedule_splitter_panel_state("settings", expanded)
+        self._refresh_content_row_weights()
 
     def _toggle_settings_panel(self) -> None:
         self._set_settings_expanded(not self.settings_expanded)
 
     def _set_progress_expanded(self, expanded: bool) -> None:
-        was_expanded = getattr(self, "progress_expanded", False)
-        was_visible = bool(self.progress_body.winfo_manager())
-        if was_expanded and not expanded:
-            self._remember_splitter_panel_height("progress")
         self.progress_expanded = expanded
         if expanded:
             if not self.progress_body.winfo_manager():
@@ -3801,17 +4191,11 @@ class DaisyApp:
         if hasattr(self, "progress_visible_var"):
             self.progress_visible_var.set(expanded)
         self._refresh_view_menu_labels()
-        if was_expanded != expanded or was_visible != expanded:
-            self._schedule_splitter_panel_state("progress", expanded)
 
     def _toggle_progress_panel(self) -> None:
         self._set_progress_expanded(not self.progress_expanded)
 
     def _set_log_expanded(self, expanded: bool) -> None:
-        was_expanded = getattr(self, "log_expanded", False)
-        was_visible = bool(self.log_body.winfo_manager())
-        if was_expanded and not expanded:
-            self._remember_splitter_panel_height("log")
         self.log_expanded = expanded
         if expanded:
             if not self.log_body.winfo_manager():
@@ -3823,8 +4207,7 @@ class DaisyApp:
         if hasattr(self, "log_visible_var"):
             self.log_visible_var.set(expanded)
         self._refresh_view_menu_labels()
-        if was_expanded != expanded or was_visible != expanded:
-            self._schedule_splitter_panel_state("log", expanded)
+        self._refresh_content_row_weights()
 
     def _toggle_log_panel(self) -> None:
         self._set_log_expanded(not self.log_expanded)
@@ -3890,14 +4273,15 @@ class DaisyApp:
 
         self.colour_strip.pack_forget()
         self.task_toolbar_panel.pack_forget()
-        self._mini_panel_heights = (
-            self._capture_splitter_panel_heights())
         self._mini_progress_was_expanded = self.progress_expanded
         self.mini_mode = True
         self._set_progress_expanded(True)
-        self.panel_splitter.forget(self.task_card)
-        self.panel_splitter.forget(self.log_panel)
+        self.task_card.grid_remove()
+        self.log_panel.grid_remove()
         self.command_panel.grid_remove()
+        self.progress_panel.grid_configure(row=0, pady=0)
+        self.content.grid_rowconfigure(0, weight=0)
+        self.content.grid_rowconfigure(2, weight=0)
         self.content.pack_configure(padx=10, pady=10)
         self.mini_stop_button.pack(side="right", padx=(0, 6))
         self._refresh_mini_action()
@@ -3923,29 +4307,18 @@ class DaisyApp:
         if not self.mini_mode:
             return
         self.mini_stop_button.pack_forget()
-        self.panel_splitter.add(
-            self.task_card,
-            before=self.progress_panel,
-            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
-            stretch="always" if self.settings_expanded else "never",
-            sticky="nsew",
-        )
-        self.panel_splitter.add(
-            self.log_panel,
-            after=self.progress_panel,
-            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
-            stretch="always" if self.log_expanded else "never",
-            sticky="nsew",
-        )
+        self.progress_panel.grid_configure(row=1, pady=(10, 0))
+        self.task_card.grid()
+        self.log_panel.grid()
         self.command_panel.grid()
-        self._set_settings_expanded(self.settings_expanded)
-        self._set_progress_expanded(self._mini_progress_was_expanded)
         self.content.pack_configure(
             padx=self.content_pad, pady=self.content_pad)
         self.colour_strip.pack(fill="x", side="top", before=self.body)
         self.task_toolbar_panel.pack(
             fill="x", side="top", before=self.body)
         self.mini_mode = False
+        self._set_settings_expanded(self.settings_expanded)
+        self._set_progress_expanded(self._mini_progress_was_expanded)
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         self.root.title(project_window_title())
@@ -3969,10 +4342,6 @@ class DaisyApp:
         )
         self.root.geometry(
             _window_geometry_string(width, height, x, y))
-        self.root.after_idle(
-            lambda heights=dict(self._mini_panel_heights):
-            self._restore_splitter_panel_heights(heights),
-        )
         if self._normal_window_state != "normal":
             self.root.after_idle(
                 lambda state=self._normal_window_state:
@@ -4009,19 +4378,85 @@ class DaisyApp:
                             pass
         return "break"
 
-    def _form_content_fits_viewport(self) -> bool:
-        """内容未溢出时禁止 Canvas 产生顶部或底部空白。"""
+    def _resize_form_canvas_window(self, event: tk.Event) -> None:
+        """让表单跟随视口宽度，并在几何稳定后重算滚动范围。"""
+        try:
+            self.form_canvas.itemconfigure(
+                self.form_window, width=max(1, int(event.width)))
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return
+        self._schedule_form_scroll_sync()
+
+    def _schedule_form_scroll_sync(
+        self, _event: tk.Event | None = None,
+    ) -> None:
+        """合并连续的控件几何事件，避免保留旧页面的滚动范围。"""
+        pending = getattr(self, "_form_scroll_sync_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except (AttributeError, tk.TclError):
+                pass
+        try:
+            self._form_scroll_sync_after_id = self.root.after_idle(
+                self._sync_form_scroll_region)
+        except (AttributeError, tk.TclError):
+            self._form_scroll_sync_after_id = None
+
+    def _form_content_height(self) -> int:
+        """返回表单真实请求高度，不受旧 scrollregion 或视口空白影响。"""
+        inner = getattr(self, "form_inner", None)
+        if inner is not None:
+            try:
+                return max(0, int(inner.winfo_reqheight()))
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                pass
         try:
             bounds = self.form_canvas.bbox("all")
             if bounds is None:
-                return True
-            content_height = max(0, int(bounds[3]) - int(bounds[1]))
+                return 0
+            return max(0, int(bounds[3]) - int(bounds[1]))
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return -1
+
+    def _sync_form_scroll_region(self) -> None:
+        """仅在表单真实溢出时启用滚动，并把未溢出页面锁在顶部。"""
+        self._form_scroll_sync_after_id = None
+        try:
+            viewport_width = max(1, int(self.form_canvas.winfo_width()))
+            viewport_height = max(1, int(self.form_canvas.winfo_height()))
+            content_height = max(0, self._form_content_height())
+            overflow = content_height > viewport_height
+            self.form_canvas.configure(
+                scrollregion=(
+                    0, 0, viewport_width,
+                    content_height if overflow else viewport_height,
+                ),
+            )
+            if overflow:
+                if not self.form_scroll.winfo_manager():
+                    self.form_scroll.pack(
+                        side="right", fill="y", before=self.form_canvas)
+            else:
+                self.form_canvas.yview_moveto(0.0)
+                if self.form_scroll.winfo_manager():
+                    self.form_scroll.pack_forget()
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return
+
+    def _form_content_fits_viewport(self) -> bool:
+        """内容未溢出时禁止 Canvas 产生顶部或底部空白。"""
+        try:
+            content_height = self._form_content_height()
             viewport_height = max(1, int(self.form_canvas.winfo_height()))
         except (AttributeError, tk.TclError, TypeError, ValueError):
+            return False
+        if content_height < 0:
             return False
         return content_height <= viewport_height
 
     def _position_form_scroll(self, fraction: float) -> None:
+        self._sync_form_scroll_region()
         target = 0.0 if self._form_content_fits_viewport() else max(
             0.0, min(1.0, float(fraction)))
         self.form_canvas.yview_moveto(target)
@@ -4050,10 +4485,8 @@ class DaisyApp:
                 ),
                 activebackground=_UNIFIED_ACTION_BACKGROUND,
                 activeforeground=_UNIFIED_ACTION_FOREGROUND,
-                font=(
-                    ("Microsoft YaHei UI", 9, "bold")
-                    if selected else ("Microsoft YaHei UI", 9)
-                ),
+                font=self._font_tuple(
+                    9, "bold" if selected else "normal"),
             )
         for task_key, button in self.task_toolbar_buttons.items():
             selected_suffix = (
@@ -4135,12 +4568,12 @@ class DaisyApp:
         )
         panel.grid(
             row=row, column=0, columnspan=2, sticky="ew",
-            padx=form_pad, pady=(15, 8),
+            padx=form_pad, pady=(8, 4),
         )
         panel.grid_columnconfigure(0, weight=1)
 
         header = tk.Frame(panel, bg=_SURFACE)
-        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 2))
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 2))
         tk.Frame(header, bg=_GREEN_DARK, width=4, height=18).pack(
             side="left", fill="y")
         tk.Label(
@@ -4160,7 +4593,7 @@ class DaisyApp:
             justify="left", wraplength=720,
         )
         install_help.grid(
-            row=1, column=0, sticky="ew", padx=12, pady=(3, 9))
+            row=1, column=0, sticky="ew", padx=12, pady=(2, 6))
         panel.bind(
             "<Configure>",
             lambda event, label=install_help: label.configure(
@@ -4169,23 +4602,22 @@ class DaisyApp:
 
         button_grid = tk.Frame(panel, bg=_SURFACE)
         button_grid.grid(
-            row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
-        for column in range(2):
+            row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        for column in range(len(_INSTALLABLE_TOOL_PACKAGES)):
             button_grid.grid_columnconfigure(
                 column, weight=1, uniform="environment_install")
         for index, (tool_name, (display_name, _package_id)) in enumerate(
                 _INSTALLABLE_TOOL_PACKAGES.items()):
-            grid_row, grid_column = divmod(index, 2)
             button = ttk.Button(
                 button_grid,
-                text=f"下载并安装 {display_name}",
-                style="Secondary.TButton",
+                text=f"安装 {_TOOL_DISPLAY_NAMES[tool_name]}",
+                style="FormAction.TButton",
                 command=lambda name=tool_name: self._install_tool(name),
             )
             button.grid(
-                row=grid_row, column=grid_column, sticky="ew",
-                padx=((0, 5) if grid_column == 0 else (5, 0)),
-                pady=((0, 5) if grid_row == 0 else (5, 0)),
+                row=0, column=index, sticky="ew",
+                padx=(0, 6 if index < len(
+                    _INSTALLABLE_TOOL_PACKAGES) - 1 else 0),
             )
             self.install_tool_buttons[tool_name] = button
             attach_tooltip(
@@ -4204,13 +4636,13 @@ class DaisyApp:
         )
         panel.grid(
             row=row, column=0, columnspan=2, sticky="ew",
-            padx=form_pad, pady=(15, 5),
+            padx=form_pad, pady=(5, 2),
         )
         tk.Label(
             panel, text="需要管理员权限", bg=_AMBER_SOFT,
             fg=_AMBER_DEEP,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
-        ).pack(fill="x", padx=12, pady=(10, 3))
+        ).pack(fill="x", padx=12, pady=(6, 2))
         detail = tk.Label(
             panel,
             text=(
@@ -4222,7 +4654,7 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9), anchor="w",
             justify="left", wraplength=720,
         )
-        detail.pack(fill="x", padx=12, pady=(0, 11))
+        detail.pack(fill="x", padx=12, pady=(0, 7))
         panel.bind(
             "<Configure>",
             lambda event, label=detail: label.configure(
@@ -4239,7 +4671,7 @@ class DaisyApp:
         )
         panel.grid(
             row=row, column=0, columnspan=2, sticky="ew",
-            padx=form_pad, pady=(15, 5),
+            padx=form_pad, pady=(5, 2),
         )
         found_count = len(self.storage_disk_options)
         selectable_count = sum(
@@ -4247,7 +4679,7 @@ class DaisyApp:
         tk.Label(
             panel, text="登记准备", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
-        ).pack(fill="x", padx=12, pady=(10, 3))
+        ).pack(fill="x", padx=12, pady=(6, 2))
         detail = tk.Label(
             panel,
             text=(
@@ -4261,14 +4693,14 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9), anchor="w",
             justify="left", wraplength=720,
         )
-        detail.pack(fill="x", padx=12, pady=(0, 8))
+        detail.pack(fill="x", padx=12, pady=(0, 5))
         self.storage_detect_button = ttk.Button(
             panel,
             text="重新检测硬盘" if found_count else "检测物理硬盘",
-            style="Secondary.TButton",
+            style="FormAction.TButton", width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._run_storage_inventory,
         )
-        self.storage_detect_button.pack(anchor="w", padx=12, pady=(0, 11))
+        self.storage_detect_button.pack(anchor="w", padx=12, pady=(0, 7))
         attach_tooltip(
             self.storage_detect_button,
             "运行内部 STG-11 只读列盘步骤，并刷新本页的物理硬盘选择。",
@@ -4342,10 +4774,10 @@ class DaisyApp:
                 section = tk.Frame(self.form_inner, bg=_SURFACE)
                 section.grid(
                     row=row, column=0, columnspan=2, sticky="ew",
-                    padx=form_pad, pady=(9, 1),
+                    padx=form_pad, pady=(2, 0),
                 )
                 tk.Frame(
-                    section, bg=section_colour, width=4, height=18,
+                    section, bg=section_colour, width=4, height=15,
                 ).pack(side="left", fill="y")
                 tk.Label(
                     section, text=current_section,
@@ -4356,18 +4788,19 @@ class DaisyApp:
 
             current = saved.get(spec.key, spec.default)
             label = spec.label + ("  *" if spec.required else "")
-            tk.Label(
+            field_label = tk.Label(
                 self.form_inner, text=label, bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9, "bold"), anchor="ne",
-            ).grid(
+            )
+            field_label.grid(
                 row=row, column=0, sticky="ne",
                 padx=(form_pad, 11 if self.compact_layout else 14),
-                pady=(7, 0),
+                pady=(4, 0),
             )
 
             cell = tk.Frame(self.form_inner, bg=_SURFACE)
             cell.grid(row=row, column=1, sticky="ew", padx=(0, form_pad),
-                      pady=(5, 2))
+                      pady=(2, 1))
             cell.grid_columnconfigure(0, weight=1)
 
             if spec.kind == "disk_pool":
@@ -4383,8 +4816,10 @@ class DaisyApp:
                     value=self._choice_display(spec, current))
                 widget = ttk.Combobox(
                     cell, textvariable=var, state="readonly",
+                    style="Daisy.TCombobox",
                     values=[label for label, _value in choices],
                 )
+                widget._daisy_field_key = spec.key  # type: ignore[attr-defined]
                 widget.grid(row=0, column=0, sticky="ew")
                 widget.bind("<<ComboboxSelected>>",
                             self._choice_changed)
@@ -4415,7 +4850,8 @@ class DaisyApp:
                 self.values[spec.key] = widget
                 if spec.kind == "multimapdir":
                     add_directory_button = ttk.Button(
-                        cell, text="添加目录", style="Browse.TButton",
+                        cell, text="添加目录", style="FormAction.TButton",
+                        width=_FORM_ACTION_BUTTON_WIDTH,
                         command=lambda s=spec, w=widget:
                         self._append_directory(s, w),
                     )
@@ -4439,7 +4875,8 @@ class DaisyApp:
                     )
                 if spec.kind in ("dir", "file", "save"):
                     browse_button = ttk.Button(
-                        cell, text="浏览", style="Browse.TButton",
+                        cell, text="浏览", style="FormAction.TButton",
+                        width=_FORM_ACTION_BUTTON_WIDTH,
                         command=lambda s=spec, v=var: self._browse(s, v),
                     )
                     browse_button.grid(row=0, column=1, padx=(8, 0))
@@ -4453,25 +4890,16 @@ class DaisyApp:
                     )
 
             if spec.help:
-                help_label = ttk.Label(
-                    cell, text=spec.help, style="Muted.TLabel",
-                    wraplength=690, justify="left",
-                )
-                help_label.grid(
-                    row=1, column=0, columnspan=2, sticky="w",
-                    pady=(2, 0),
-                )
-                cell.bind(
-                    "<Configure>",
-                    lambda e, label=help_label: label.configure(
-                        wraplength=max(260, e.width - 10)),
-                )
+                attach_tooltip(field_label, spec.help)
+                attach_tooltip(cell, spec.help)
+                attach_tooltip(widget, spec.help)
             row += 1
 
         if self.task.key == "env_check":
             row = self._build_environment_installation(row, form_pad)
 
-        self.form_inner.grid_rowconfigure(row, minsize=6)
+        self.form_inner.grid_rowconfigure(row, minsize=4)
+        self._apply_font_to_tree(self.form_inner)
         self.form_canvas.update_idletasks()
         self._position_form_scroll(scroll_fraction)
         task_key = self.task.key
@@ -4482,10 +4910,25 @@ class DaisyApp:
         )
         self._update_preview()
 
-    def _choice_changed(self, _event: tk.Event) -> None:
+    def _choice_changed(self, event: tk.Event) -> None:
+        task_key = self.task.key
+        field_key = getattr(event.widget, "_daisy_field_key", None)
+        previous = _task_values(
+            self.task, self.saved_values.get(task_key, {}))
         scroll_fraction = self.form_canvas.yview()[0]
-        self.saved_values[self.task.key] = self._collect_values()
-        self._build_form(scroll_fraction)
+        collected = self._collect_values()
+        self.saved_values[task_key] = collected
+        if field_key is not None and (
+                collected.get(field_key) == previous.get(field_key)):
+            self._update_preview()
+            return
+
+        # 等待 ComboboxSelected 事件完成后再重建条件字段，避免 Tcl/Tk 在原
+        # 控件销毁后继续刷新选择状态，导致重复选择当前项时显示为空。
+        self.root.after_idle(
+            lambda key=task_key, fraction=scroll_fraction:
+            self._build_form(fraction) if self.task.key == key else None
+        )
 
     def _text_changed(self, event: tk.Event) -> None:
         widget = event.widget
@@ -4811,7 +5254,7 @@ class DaisyApp:
                 "管理员模式启动失败", str(exc), parent=self.root)
             self._refresh_environment_actions()
             return
-        self.root.destroy()
+        self._destroy_root()
 
     def _open_project_directory(self) -> None:
         try:
@@ -4871,10 +5314,118 @@ class DaisyApp:
             messagebox.showerror(
                 "无法打开结果文件夹", str(exc), parent=self.root)
 
+    @staticmethod
+    def _configure_log_tags(widget: tk.Text) -> None:
+        widget.tag_configure("meta", foreground=_GREEN_DEEP)
+        widget.tag_configure("success", foreground=_SUCCESS)
+        widget.tag_configure("warning", foreground=_WARNING)
+        widget.tag_configure("error", foreground=_DANGER)
+
+    def _active_log_widgets(self) -> tuple[tk.Text, ...]:
+        widgets = [self.log]
+        detached = getattr(self, "log_window_text", None)
+        if detached is not None:
+            try:
+                exists = bool(detached.winfo_exists())
+            except (AttributeError, tk.TclError):
+                exists = False
+            if exists:
+                widgets.append(detached)
+        return tuple(widgets)
+
+    def _close_log_window(self) -> None:
+        window = getattr(self, "log_window", None)
+        self.log_window = None
+        self.log_window_text = None
+        self.log_window_icon_handle = None
+        if window is None:
+            return
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except tk.TclError:
+            pass
+
+    def _open_log_window(self) -> None:
+        """打开单例独立日志窗口，并保持后续日志实时同步。"""
+        window = getattr(self, "log_window", None)
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    window.deiconify()
+                    window.lift()
+                    window.focus_set()
+                    return
+            except tk.TclError:
+                pass
+            self._close_log_window()
+
+        window = tk.Toplevel(self.root)
+        self.log_window = window
+        window.title(f"{core.PROJECT_NAME} {_version()} · 运行日志")
+        window.configure(bg=_BG)
+        work_area = _monitor_work_area_for_window(self.root)
+        width = min(1100, max(640, work_area.width - 80))
+        height = min(820, max(420, work_area.height - 80))
+        width, height, x, y = fit_window_to_work_area(
+            (width, height),
+            (self.root.winfo_x() + 48, self.root.winfo_y() + 48),
+            work_area,
+        )
+        window.geometry(_window_geometry_string(width, height, x, y))
+        window.minsize(min(640, width), min(360, height))
+
+        header = tk.Frame(window, bg=_LOG_HEADER)
+        header.pack(fill="x")
+        tk.Label(
+            header, text="运行日志 · 与主界面实时同步",
+            bg=_LOG_HEADER, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side="left", padx=14, pady=9)
+        ttk.Button(
+            header, text="关闭", style="PanelHeader.TButton",
+            width=8, command=self._close_log_window,
+        ).pack(side="right", padx=(6, 12), pady=6)
+        ttk.Button(
+            header, text="清空日志", style="PanelHeader.TButton",
+            width=10, command=self._clear_log,
+        ).pack(side="right", pady=6)
+
+        body = tk.Frame(window, bg=_LOG_BG)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        detached = tk.Text(
+            body, bg=_LOG_BG, fg=_LOG_TEXT, insertbackground=_TEXT,
+            selectbackground=_LOG_SELECT, relief="flat", bd=0,
+            font=("Microsoft YaHei UI", 9), wrap="word",
+            padx=13, pady=10, state="normal",
+        )
+        scroll = ttk.Scrollbar(
+            body, orient="vertical", command=detached.yview,
+            style="Daisy.Vertical.TScrollbar",
+        )
+        detached.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        detached.pack(fill="both", expand=True)
+        self._configure_log_tags(detached)
+        detached.insert("1.0", self.log.get("1.0", "end-1c"))
+        for tag in ("meta", "success", "warning", "error"):
+            ranges = self.log.tag_ranges(tag)
+            for index in range(0, len(ranges), 2):
+                detached.tag_add(
+                    tag, str(ranges[index]), str(ranges[index + 1]))
+        detached.see("end")
+        detached.configure(state="disabled")
+        self.log_window_text = detached
+        self.log_window_icon_handle = _install_daisy_window_icon(window)
+        window.protocol("WM_DELETE_WINDOW", self._close_log_window)
+        window.bind("<Escape>", lambda _event: self._close_log_window())
+        self._apply_font_to_tree(window)
+
     def _clear_log(self) -> None:
-        self.log.configure(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.configure(state="disabled")
+        for widget in self._active_log_widgets():
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.configure(state="disabled")
 
     def _clear_tool_cache(self) -> None:
         if self.process is not None or self.worker_starting or self.run_jobs:
@@ -4933,13 +5484,14 @@ class DaisyApp:
 
     def _append_log(self, text: str, tag: str | None = None) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        self.log.configure(state="normal")
-        self.log.insert("end", text, tag or ())
-        line_count = int(self.log.index("end-1c").split(".")[0])
-        if line_count > 10_000:
-            self.log.delete("1.0", "1000.0")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        for widget in self._active_log_widgets():
+            widget.configure(state="normal")
+            widget.insert("end", text, tag or ())
+            line_count = int(widget.index("end-1c").split(".")[0])
+            if line_count > 10_000:
+                widget.delete("1.0", "1000.0")
+            widget.see("end")
+            widget.configure(state="disabled")
 
     def _set_status(self, text: str, colour: str | None = None) -> None:
         background = status_badge_background(self.task.key, colour)
@@ -4966,9 +5518,8 @@ class DaisyApp:
             else "disabled"
         )
         for tool_name, button in self.install_tool_buttons.items():
-            display_name = _INSTALLABLE_TOOL_PACKAGES[tool_name][0]
             button.configure(
-                text=f"下载并安装 {display_name}",
+                text=f"安装 {_TOOL_DISPLAY_NAMES[tool_name]}",
                 state=action_state,
             )
         storage_button = getattr(self, "storage_detect_button", None)
@@ -5032,6 +5583,50 @@ class DaisyApp:
             "disk_number", None)
         if rebuild_form:
             self._build_form()
+
+    def _restore_storage_selection_after_detection(self) -> None:
+        """检测成功后返回硬盘选择区；失败路径保留日志供诊断。"""
+        if self.mini_mode:
+            self._leave_mini_mode()
+        self._set_settings_expanded(True)
+        self._set_progress_expanded(False)
+        self._set_log_expanded(False)
+        found_count = len(self.storage_disk_options)
+        selectable_count = sum(
+            option.selectable for option in self.storage_disk_options)
+        if selectable_count:
+            self._set_status(
+                f"硬盘检测完成：请选择 {selectable_count} 块可登记硬盘。",
+                _SUCCESS,
+            )
+            title = "硬盘检测完成"
+            message = (
+                f"已识别 {found_count} 块物理硬盘，其中 {selectable_count} 块"
+                "可登记。\n\n已返回任务设置，请选择需要登记的硬盘；点击"
+                "“开始任务”后会再次收起设置并展开进度与日志。"
+            )
+            show_dialog = messagebox.showinfo
+        else:
+            self._set_status(
+                "硬盘检测完成，但没有找到可登记的硬盘。", _WARNING)
+            title = "没有可登记的硬盘"
+            message = (
+                f"已识别 {found_count} 块物理硬盘，但没有硬盘同时满足联机"
+                "且已关联 smartctl 的登记条件。\n\n已返回任务设置，可查看"
+                "硬盘清单中的具体原因或重新检测。"
+            )
+            show_dialog = messagebox.showwarning
+
+        def finish_transition() -> None:
+            try:
+                if not self.root.winfo_exists():
+                    return
+                self._position_form_scroll(0.0)
+                show_dialog(title, message, parent=self.root)
+            except tk.TclError:
+                return
+
+        self.root.after_idle(finish_transition)
 
     def _cache_detected_tools(self, payload: dict[str, object]) -> None:
         tools = payload.get("tools")
@@ -5161,9 +5756,11 @@ class DaisyApp:
         self.current_stage_total = 0
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
+        detecting_storage = self.process_task_key == "storage_list"
         title = (
             "DAISY功能自检" if self_test else
             "安装缺失工具" if installing else
+            "检测物理硬盘" if detecting_storage else
             task_display_title(self.task.key)
         )
         self.progress_stage_bar.configure(
@@ -5181,6 +5778,8 @@ class DaisyApp:
                 if self_test else
                 "正在等待 WinGet 输出…"
                 if installing else
+                "正在查询 Windows 存储接口与 smartctl…"
+                if detecting_storage else
                 "等待任务报告阶段…"
             ),
             fg=_MUTED,
@@ -5385,6 +5984,7 @@ class DaisyApp:
         self.admin_mode_switch.set_mode(
             value=self.is_administrator, enabled=False)
         self._set_stop_state("disabled")
+        self._set_settings_expanded(False)
         self._set_progress_expanded(True)
         self._set_log_expanded(True)
         self._prepare_queue_progress()
@@ -5702,7 +6302,10 @@ class DaisyApp:
         returncode = self.run_results[-1] if self.run_results else None
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
+        detecting_storage = self.process_task_key == "storage_list"
         stopped = self.stop_requested
+        storage_detection_succeeded = (
+            detecting_storage and returncode == 0 and not stopped)
         offer_result_directory = should_offer_result_directory(
             self.run_results,
             stopped=stopped,
@@ -5798,9 +6401,11 @@ class DaisyApp:
         self.worker_starting = False
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
+        if storage_detection_succeeded:
+            self._restore_storage_selection_after_detection()
         if self.close_after_stop:
             self.close_after_stop = False
-            self.root.after_idle(self.root.destroy)
+            self.root.after_idle(self._destroy_root)
         elif installing and not stopped:
             refresh_windows_process_path()
             self.environment_missing_names = ()
@@ -5946,14 +6551,16 @@ class DaisyApp:
             or bool(self.run_jobs)
             or bool(getattr(self, "worker_starting", False))
         )
-        if not messagebox.askyesno(
-            "确认退出",
-            "确定关闭 DAISY 吗？",
-            icon="question", parent=self.root,
-        ):
+        if (active or getattr(
+                self, "confirm_close_when_idle", True)) and not (
+                messagebox.askyesno(
+                    "确认退出",
+                    "确定关闭 DAISY 吗？",
+                    icon="question", parent=self.root,
+                )):
             return
         if not active:
-            self.root.destroy()
+            self._destroy_root()
             return
 
         detail = "关闭界面会停止当前任务，并可能留下未完成产物。确定继续吗？"
@@ -5980,7 +6587,34 @@ class DaisyApp:
             self.close_after_stop = True
             self._set_status("正在取消启动，随后关闭窗口…", _WARNING)
             return
-        self.root.destroy()
+        self._destroy_root()
+
+    def _destroy_root(self) -> None:
+        """取消当前 Tk 解释器的定时器后销毁窗口，避免残留 Tcl 回调。"""
+        try:
+            pending = self.root.tk.call("after", "info")
+            callback_ids = (
+                pending if isinstance(pending, (tuple, list))
+                else self.root.tk.splitlist(pending)
+            )
+            for callback_id in callback_ids:
+                while isinstance(callback_id, (tuple, list)):
+                    if not callback_id:
+                        break
+                    callback_id = callback_id[0]
+                if not callback_id:
+                    continue
+                try:
+                    self.root.tk.call(
+                        "after", "cancel", str(callback_id))
+                except (tk.TclError, TypeError):
+                    pass
+            self.root.destroy()
+        except (AttributeError, tk.TclError, TypeError):
+            try:
+                self.root.destroy()
+            except (AttributeError, tk.TclError):
+                pass
 
 
 def _enable_dpi_awareness() -> None:

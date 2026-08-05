@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -30,6 +31,37 @@ import Script_DAISY_MAIN as entry
 
 
 class TestGuiArguments(unittest.TestCase):
+    def test_gui_preferences_round_trip_as_utf8_lf(self):
+        preferences = gui.default_gui_preferences()
+        preferences.update({
+            "window_size": [1600, 900],
+            "font_family": "Segoe UI",
+            "font_size_delta": 1,
+            "confirm_close_when_idle": False,
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            path = os.path.join(temporary, "GUI_Settings.json")
+            gui.save_gui_preferences(preferences, path)
+            self.assertEqual(gui.load_gui_preferences(path), preferences)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertNotIn(b"\r\n", raw)
+        self.assertTrue(raw.endswith(b"\n"))
+
+    def test_invalid_gui_preferences_fall_back_safely(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = os.path.join(temporary, "GUI_Settings.json")
+            with open(path, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump({
+                    "window_size": [10, 20],
+                    "font_family": "",
+                    "font_size_delta": 99,
+                    "confirm_close_when_idle": "no",
+                }, handle)
+            loaded = gui.load_gui_preferences(path)
+        self.assertEqual(loaded, gui.default_gui_preferences())
+
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
         self.assertEqual(
@@ -175,6 +207,22 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertIn("--full", full_hash_check)
         self.assertNotIn("--sample-percent", full_hash_check)
+        self.assertNotIn(
+            "--report", full_hash_check,
+            "GUI 显示默认报告目录时仍须沿用 DBS-31 的自动命名规则",
+        )
+        custom_hash_report = gui.build_tool_args(
+            "check_hash",
+            {
+                "snapshot": r"E:\Runs\A.sqlite",
+                "root_map": r"E:\Archive",
+                "report": r"E:\Reports\Hash.json",
+            },
+        )
+        self.assertEqual(
+            custom_hash_report[custom_hash_report.index("--report") + 1],
+            r"E:\Reports\Hash.json",
+        )
 
         sampled_format = gui.build_tool_args(
             "check_format",
@@ -233,6 +281,7 @@ class TestGuiArguments(unittest.TestCase):
             ("full_scan", "output_dir"): gui._DEFAULT_SNAPSHOTS_DIR,
             ("quick_scan", "output_dir"): gui._DEFAULT_SNAPSHOTS_DIR,
             ("check_format", "report_dir"): gui._DEFAULT_REPORTS_DIR,
+            ("check_hash", "report"): gui._DEFAULT_REPORTS_DIR,
             ("diff", "output_dir"): gui._DEFAULT_DIFFS_DIR,
             ("export_report", "output_dir"): gui._DEFAULT_REPORTS_DIR,
             ("storage_collect", "output_dir"): gui._DEFAULT_STORAGE_DIR,
@@ -607,10 +656,11 @@ class TestGuiArguments(unittest.TestCase):
 
         for name in gui._INSTALLABLE_TOOL_PACKAGES:
             button = app.install_tool_buttons[name]
-            display = gui._INSTALLABLE_TOOL_PACKAGES[name][0]
             self.assertEqual(button.options["state"], "normal")
             self.assertEqual(
-                button.options["text"], f"下载并安装 {display}")
+                button.options["text"],
+                f"安装 {gui._TOOL_DISPLAY_NAMES[name]}",
+            )
         self.assertEqual(
             app.admin_mode_switch.options["enabled"],
             os.name == "nt",
@@ -1010,6 +1060,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("Kit_AL v1.0.2", evolution)
         self.assertIn("DAISY v1.4.2", evolution)
         self.assertIn("DAISY v1.5.0", evolution)
+        self.assertIn("DAISY v1.5.1", evolution)
         self.assertIn("STG-11 硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
@@ -1079,11 +1130,18 @@ class TestGuiArguments(unittest.TestCase):
             def layout(self, name, layout):
                 self.layouts[name] = layout
 
+            def element_create(self, name, *definition, **options):
+                self.layouts[name] = (definition, options)
+
         style = StyleProbe()
         app = object.__new__(gui.DaisyApp)
         app.root = object()
         app.task = gui.TASKS[0]
-        with patch.object(gui.ttk, "Style", return_value=style):
+        with (
+            patch.object(gui.ttk, "Style", return_value=style),
+            patch.object(
+                gui, "_create_combobox_chevron", return_value=object()),
+        ):
             app._configure_styles()
 
         for _section, (prefix, _accent, deep, soft) in (
@@ -1230,10 +1288,17 @@ class TestGuiArguments(unittest.TestCase):
         app.root = RootProbe()
         app.task = gui.TASKS[0]
         app.task_menu_entries = {}
+        app.default_window_size = (1920, 1080)
+        app.ui_font_family = "Microsoft YaHei UI"
+        app.ui_font_size_delta = 0
+        app.confirm_close_when_idle = True
+        app._available_ui_font_families = lambda: (
+            "Microsoft YaHei UI", "Segoe UI")
         with (
             patch.object(gui.tk, "Menu", MenuProbe),
             patch.object(gui.tk, "StringVar", VariableProbe),
             patch.object(gui.tk, "BooleanVar", VariableProbe),
+            patch.object(gui.tk, "IntVar", VariableProbe),
         ):
             app._build_menu()
         top_labels = [
@@ -1243,7 +1308,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             top_labels,
             [
-                "文件", "面板", "高级", "视图", "帮助",
+                "文件", "面板", "高级", "设置", "视图", "帮助",
             ],
         )
         file_menu = app.app_menu.entries[0]["menu"]
@@ -1295,6 +1360,16 @@ class TestGuiArguments(unittest.TestCase):
                 "DBS-31 内容哈希抽样：1.0%",
                 "全部恢复默认比例",
             ],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.settings_menu.entries
+             if entry["kind"] == "cascade"],
+            ["默认窗口大小", "界面字体"],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.settings_menu.entries
+             if entry["kind"] == "checkbutton"],
+            ["空闲关闭时需要确认"],
         )
         self.assertEqual(
             [
@@ -1403,6 +1478,8 @@ class TestGuiArguments(unittest.TestCase):
         app.root = RootProbe()
         app.process = None
         app.run_jobs = []
+        app.worker_starting = False
+        app.confirm_close_when_idle = True
 
         with patch.object(
                 gui.messagebox, "askyesno", side_effect=(False, True)) \
@@ -1416,6 +1493,25 @@ class TestGuiArguments(unittest.TestCase):
         self.assertTrue(all(
             call.args[0] == "确认退出" for call in confirm.call_args_list
         ))
+
+    def test_idle_close_confirmation_can_be_disabled(self):
+        class RootProbe:
+            def __init__(self):
+                self.destroy_calls = 0
+
+            def destroy(self):
+                self.destroy_calls += 1
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.process = None
+        app.run_jobs = []
+        app.worker_starting = False
+        app.confirm_close_when_idle = False
+        with patch.object(gui.messagebox, "askyesno") as confirm:
+            app._on_close()
+        confirm.assert_not_called()
+        self.assertEqual(app.root.destroy_calls, 1)
 
     def test_administrator_restart_uses_current_python_and_canonical_gui(self):
         executable = os.path.abspath(r"C:\Python\pythonw.exe")
@@ -1513,6 +1609,7 @@ class TestGuiArguments(unittest.TestCase):
         app.process = None
         app.run_jobs = [object()]
         app.worker_starting = False
+        app.confirm_close_when_idle = False
         app.stop_requested = False
         app._set_stop_state = lambda _state: None
 
@@ -1641,6 +1738,8 @@ class TestGuiArguments(unittest.TestCase):
             "full_scan": database_button,
             "storage_list": ButtonProbe(),
         }
+        app.ui_font_family = "Microsoft YaHei UI"
+        app.ui_font_size_delta = 0
         app._refresh_task_navigation_selection()
         self.assertEqual(
             environment_menu.options[0]["background"], gui._SURFACE)
@@ -1743,7 +1842,11 @@ class TestGuiArguments(unittest.TestCase):
         app.settings_expanded = True
         app.settings_title_expanded_font = (
             "Microsoft YaHei UI", 16, "bold")
+        app.ui_font_family = "Microsoft YaHei UI"
+        app.ui_font_size_delta = 0
         app.mini_mode = False
+        app._refresh_view_menu_labels = lambda: None
+        app._refresh_content_row_weights = lambda: None
 
         app._set_settings_expanded(False)
         self.assertEqual(
@@ -1764,7 +1867,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app.settings_title_row.options,
-            {"padx": 22, "pady": (12, 8)},
+            {"padx": 22, "pady": (10, 6)},
         )
 
     def test_top_task_toolbar_keeps_fixed_theme_rows(self):
@@ -1820,7 +1923,7 @@ class TestGuiArguments(unittest.TestCase):
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
         self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 12)
-        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (12, 7))
+        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (12, 4))
         self.assertEqual(gui._TASK_TOOLBAR_STYLE_PREFIX, "Env")
         self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._TEXT)
         self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
@@ -1896,49 +1999,831 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.queue_detail_label.options["text"], "0/3 · 队列已准备")
 
-    def test_splitter_restores_height_after_panel_collapse(self):
-        class PanelProbe:
-            @staticmethod
-            def winfo_height():
-                return 320
+    def _real_tk_app(self):
+        gui._enable_dpi_awareness()
+        try:
+            root = gui.tk.Tk()
+        except gui.tk.TclError as exc:
+            self.skipTest(f"当前会话不能建立 Tk 窗口：{exc}")
+        try:
+            root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            root.withdraw()
+        def destroy_root():
+            try:
+                pending = root.tk.call("after", "info")
+                callback_ids = (
+                    pending if isinstance(pending, (tuple, list))
+                    else root.tk.splitlist(pending)
+                )
+                for callback_id in callback_ids:
+                    while isinstance(callback_id, (tuple, list)):
+                        if not callback_id:
+                            break
+                        callback_id = callback_id[0]
+                    if not callback_id:
+                        continue
+                    try:
+                        root.tk.call("after", "cancel", str(callback_id))
+                    except (gui.tk.TclError, TypeError):
+                        pass
+                if root.winfo_exists():
+                    root.destroy()
+            except gui.tk.TclError:
+                pass
+        self.addCleanup(destroy_root)
+        with patch.object(
+                gui, "load_gui_preferences",
+                return_value=gui.default_gui_preferences()):
+            app = gui.DaisyApp(root)
+        root.geometry("1840x1020+0+0")
+        root.update()
+        return root, app
 
-            @staticmethod
-            def winfo_reqheight():
-                return 48
+    @staticmethod
+    def _tk_descendants(widget):
+        descendants = []
+        for child in widget.winfo_children():
+            descendants.append(child)
+            descendants.extend(TestGuiArguments._tk_descendants(child))
+        return descendants
 
-        class SplitterProbe:
-            def __init__(self, panel):
-                self.panel = panel
-                self.options = []
+    def _assert_real_tk_page_geometry(self, root, app, context):
+        """检查当前页面的边界、可点击控件尺寸与纵向可达性。"""
+        root.update()
+        root_left = root.winfo_rootx()
+        root_top = root.winfo_rooty()
+        root_right = root_left + root.winfo_width()
+        root_bottom = root_top + root.winfo_height()
+        self.assertGreater(root.winfo_width(), 700, context)
+        self.assertGreater(root.winfo_height(), 600, context)
 
-            def panes(self):
-                return (self.panel,)
+        visible_panels = [
+            panel for panel in (
+                app.task_card, app.progress_panel,
+                app.log_panel, app.command_panel)
+            if panel.winfo_ismapped()
+        ]
+        previous_bottom = None
+        for panel in visible_panels:
+            panel_left = panel.winfo_rootx()
+            panel_top = panel.winfo_rooty()
+            panel_right = panel_left + panel.winfo_width()
+            panel_bottom = panel_top + panel.winfo_height()
+            self.assertGreaterEqual(panel_left, root_left, context)
+            self.assertGreaterEqual(panel_top, root_top, context)
+            self.assertLessEqual(panel_right, root_right + 1, context)
+            self.assertLessEqual(panel_bottom, root_bottom + 1, context)
+            if previous_bottom is not None:
+                self.assertGreaterEqual(panel_top, previous_bottom, context)
+            previous_bottom = panel_bottom
 
-            def paneconfigure(self, panel, **options):
-                self.options.append((panel, options))
+        self.assertGreaterEqual(
+            app.title_label.winfo_height(),
+            app.title_label.winfo_reqheight(), context)
+        self.assertGreaterEqual(
+            app.desc_label.winfo_height(),
+            app.desc_label.winfo_reqheight(), context)
+        self.assertGreater(app.form_canvas.winfo_width(), 360, context)
+        self.assertGreater(app.form_canvas.winfo_height(), 20, context)
 
-        panel = PanelProbe()
-        app = object.__new__(gui.DaisyApp)
-        app.task_card = panel
-        app.panel_splitter = SplitterProbe(panel)
-        app._panel_expanded_heights = {}
-        app.mini_mode = False
-        app._remember_splitter_panel_height("settings")
-        app._apply_splitter_panel_state("settings", False)
-        app._apply_splitter_panel_state("settings", True)
-        self.assertEqual(app._panel_expanded_heights["settings"], 320)
+        inner_left = app.form_inner.winfo_rootx()
+        inner_right = inner_left + app.form_inner.winfo_width()
+        clickable_types = (gui.tk.Button, gui.ttk.Button, gui.ttk.Combobox)
+        for widget in self._tk_descendants(app.form_inner):
+            if not widget.winfo_ismapped() or widget.winfo_width() <= 1:
+                continue
+            widget_left = widget.winfo_rootx()
+            widget_right = widget_left + widget.winfo_width()
+            self.assertGreaterEqual(widget_left, inner_left - 1, context)
+            self.assertLessEqual(widget_right, inner_right + 1, context)
+            if isinstance(widget, clickable_types):
+                self.assertGreaterEqual(
+                    widget.winfo_width() + 1,
+                    widget.winfo_reqwidth(),
+                    f"{context} · {widget}",
+                )
+
+        content_height = app._form_content_height()
+        viewport_height = app.form_canvas.winfo_height()
+        if content_height <= viewport_height:
+            self.assertFalse(app.form_scroll.winfo_manager(), context)
+            self.assertEqual(
+                tuple(float(value) for value in app.form_canvas.yview()),
+                (0.0, 1.0), context)
+        else:
+            self.assertEqual(app.form_scroll.winfo_manager(), "pack", context)
+            app.form_canvas.yview_moveto(1.0)
+            root.update_idletasks()
+            visible_bottom = app.form_canvas.canvasy(viewport_height)
+            self.assertGreaterEqual(
+                visible_bottom + 2, content_height, context)
+            app.form_canvas.yview_moveto(0.0)
+            root.update_idletasks()
+            self.assertEqual(float(app.form_canvas.yview()[0]), 0.0, context)
+
+        command_bottom = (
+            app.command_panel.winfo_rooty()
+            + app.command_panel.winfo_height())
+        self.assertLessEqual(command_bottom, root_bottom + 1, context)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_shell_can_be_constructed(self):
+        root, app = self._real_tk_app()
+        self.assertFalse(hasattr(app, "panel_splitter"))
+        self.assertEqual(app.task_card.grid_info()["row"], 0)
+        self.assertEqual(app.progress_panel.grid_info()["row"], 1)
+        self.assertEqual(app.log_panel.grid_info()["row"], 2)
+        self.assertEqual(app.command_panel.grid_info()["row"], 3)
+
+        app._enter_mini_mode()
+        root.update()
+        self.assertFalse(app.task_card.winfo_manager())
+        self.assertEqual(app.progress_panel.winfo_manager(), "grid")
+        self.assertFalse(app.log_panel.winfo_manager())
+        app._leave_mini_mode()
+        root.update()
+        for widget in (
+                app.task_card, app.progress_panel,
+                app.log_panel, app.command_panel):
+            self.assertEqual(widget.winfo_manager(), "grid")
+        self.assertEqual(root.winfo_width(), 1840)
+        self.assertEqual(root.winfo_height(), 1020)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_1080p_default_forms_fit_without_scrolling(self):
+        root, app = self._real_tk_app()
+        app._select_task("full_scan", save_current=False)
+        root.update()
+        description_heights = set()
+        for task in gui.TASKS:
+            app._select_task(task.key, save_current=False)
+            root.update()
+            bounds = app.form_canvas.bbox("all")
+            content_height = (
+                0 if bounds is None else int(bounds[3]) - int(bounds[1]))
+            viewport_height = int(app.form_canvas.winfo_height())
+            self.assertLessEqual(
+                content_height, viewport_height,
+                f"{task.key} 默认表单超出 1080P 可视区",
+            )
+            self.assertFalse(
+                app.form_scroll.winfo_manager(),
+                f"{task.key} 内容未溢出时不应显示滚动条",
+            )
+            for delta in (-120, -120, 120, 120):
+                app._scroll_form(types.SimpleNamespace(delta=delta, num=0))
+            root.update_idletasks()
+            self.assertEqual(
+                tuple(float(value) for value in app.form_canvas.yview()),
+                (0.0, 1.0),
+                f"{task.key} 内容未溢出时不应响应纵向滚动",
+            )
+            description_heights.add(app.desc_label.winfo_reqheight())
         self.assertEqual(
-            app.panel_splitter.options[0][1],
-            {"height": 48, "minsize": 48, "stretch": "never"},
+            len(description_heights), 1,
+            "各页面副标题应保持统一单行高度",
         )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_independent_log_is_singleton_and_synchronized(self):
+        root, app = self._real_tk_app()
+        first = gui.TASKS[0].title + "\n"
+        second = gui.TASKS[-1].title + "\n"
+        app._append_log(first, "meta")
+        app._open_log_window()
+        try:
+            app.log_window.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            pass
+        root.update()
+        window = app.log_window
+        self.assertGreaterEqual(window.winfo_height(), 700)
+        app._open_log_window()
+        self.assertIs(app.log_window, window)
+        app._append_log(second, "success")
+        expected = first + second
+        self.assertEqual(app.log.get("1.0", "end-1c"), expected)
         self.assertEqual(
-            app.panel_splitter.options[1][1],
-            {
-                "height": 320,
-                "minsize": gui._PANEL_SPLITTER_MIN_HEIGHT,
-                "stretch": "always",
-            },
+            app.log_window_text.get("1.0", "end-1c"), expected)
+        app._clear_log()
+        self.assertEqual(app.log.get("1.0", "end-1c"), "")
+        self.assertEqual(app.log_window_text.get("1.0", "end-1c"), "")
+        app._close_log_window()
+        self.assertIsNone(app.log_window)
+        self.assertIsNone(app.log_window_text)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_form_actions_and_storage_progress_are_consistent(self):
+        root, app = self._real_tk_app()
+        app._select_task("env_check", save_current=False)
+        root.update()
+        self.assertTrue(app.install_tool_buttons)
+        install_positions = set()
+        for button in app.install_tool_buttons.values():
+            self.assertEqual(button.cget("style"), "FormAction.TButton")
+            self.assertLess(button.winfo_reqwidth(), 220)
+            self.assertGreaterEqual(
+                button.winfo_width(), button.winfo_reqwidth())
+            install_positions.add((
+                int(button.grid_info()["row"]),
+                int(button.grid_info()["column"]),
+            ))
+        self.assertEqual(
+            install_positions, {(0, 0), (0, 1), (0, 2), (0, 3)})
+
+        app._select_task("full_scan", save_current=False)
+        root.update()
+        roots = app.values["roots"]
+        self.assertEqual(
+            roots.add_button.cget("style"), "FormAction.TButton")
+        self.assertGreaterEqual(roots.add_button.winfo_reqwidth(), 100)
+        tooltip = roots.add_button._daisy_tooltip
+        tooltip._show()
+        root.update_idletasks()
+        tooltip_label = tooltip._window.winfo_children()[0]
+        self.assertEqual(tooltip_label.cget("text"), tooltip.text)
+        work_area = gui._monitor_work_area_for_window(roots.add_button)
+        self.assertLessEqual(
+            tooltip._window.winfo_y() + tooltip._window.winfo_reqheight(),
+            work_area.bottom,
         )
+        tooltip._hide()
+
+        form_tooltip_targets = [
+            child for child in app.form_inner.winfo_children()
+            if getattr(child, "_daisy_tooltip", None) is not None
+        ]
+        self.assertGreaterEqual(len(form_tooltip_targets), 2)
+
+        combobox = next(
+            child
+            for cell in app.form_inner.winfo_children()
+            for child in cell.winfo_children()
+            if isinstance(child, gui.ttk.Combobox)
+        )
+        arrow_element = combobox.identify(
+            combobox.winfo_width() - 11, combobox.winfo_height() // 2)
+        self.assertEqual(combobox.cget("style"), "Daisy.TCombobox")
+        arrow_layout = repr(app.style.layout("Daisy.TCombobox"))
+        self.assertIn("Daisy.Combobox.chevron", arrow_layout)
+        self.assertNotIn("Combobox.downarrow", arrow_layout)
+        self.assertIn("Daisy.Combobox.chevron", arrow_element)
+        normal_arrow = app.combobox_arrow_images[0]
+        self.assertEqual((normal_arrow.width(), normal_arrow.height()), (22, 16))
+        self.assertTrue(normal_arrow.transparency_get(0, 0))
+        self.assertFalse(normal_arrow.transparency_get(10, 9))
+
+        app._select_task("storage_collect", save_current=False)
+        root.update()
+        pool = app.values["disk_number"]
+        self.assertEqual(
+            pool.select_all_button.cget("style"), "FormAction.TButton")
+        self.assertEqual(
+            pool.clear_selection_button.cget("style"),
+            "FormAction.TButton",
+        )
+        self.assertLess(pool.select_all_button.winfo_reqwidth(), 160)
+        self.assertLess(pool.clear_selection_button.winfo_reqwidth(), 160)
+        self.assertEqual(
+            app.storage_detect_button.cget("style"),
+            "FormAction.TButton",
+        )
+
+        app.process_task_key = "storage_list"
+        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_job_index = 0
+        app._begin_progress()
+        self.assertEqual(
+            app.progress_stage_label.cget("text"),
+            "检测物理硬盘 · 正在启动",
+        )
+        self.assertIn(
+            "正在查询 Windows 存储接口与 smartctl",
+            app.progress_detail_label.cget("text"),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_scrollbar_only_appears_for_actual_overflow(self):
+        root, app = self._real_tk_app()
+        app._set_default_window_size((1366, 768), persist=False)
+        app._set_ui_font(size_delta=2, persist=False)
+        app._select_task("full_scan", save_current=False)
+        root.update()
+        self.assertGreater(
+            app._form_content_height(), app.form_canvas.winfo_height())
+        self.assertEqual(app.form_scroll.winfo_manager(), "pack")
+        for _index in range(8):
+            app._scroll_form(types.SimpleNamespace(delta=-120, num=0))
+        root.update_idletasks()
+        self.assertGreater(float(app.form_canvas.yview()[0]), 0.0)
+        for _index in range(80):
+            app._scroll_form(types.SimpleNamespace(delta=120, num=0))
+        root.update_idletasks()
+        self.assertEqual(float(app.form_canvas.yview()[0]), 0.0)
+
+        app._select_task(gui._PROJECT_SELF_TEST_KEY, save_current=False)
+        root.update()
+        self.assertLessEqual(
+            app._form_content_height(), app.form_canvas.winfo_height())
+        self.assertFalse(app.form_scroll.winfo_manager())
+        self.assertEqual(
+            tuple(float(value) for value in app.form_canvas.yview()),
+            (0.0, 1.0),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_storage_detection_success_returns_to_selection(self):
+        root, app = self._real_tk_app()
+        app._select_task("storage_collect", save_current=False)
+        app.storage_disk_options = (
+            types.SimpleNamespace(selectable=True),
+            types.SimpleNamespace(selectable=False),
+        )
+        app._set_settings_expanded(False)
+        app._set_progress_expanded(True)
+        app._set_log_expanded(True)
+        app.process_task_key = "storage_list"
+        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_job_index = 0
+        app.run_results = [0]
+        app.stop_requested = False
+        app.worker_starting = False
+        app.close_after_stop = False
+        with patch.object(gui.messagebox, "showinfo") as shown:
+            app._finalize_run(0.2)
+            root.update()
+        shown.assert_called_once()
+        self.assertTrue(app.settings_expanded)
+        self.assertFalse(app.progress_expanded)
+        self.assertFalse(app.log_expanded)
+        self.assertIn("1 块可登记硬盘", app.status_label.cget("text"))
+
+        app._start_next_job = lambda: None
+        app._begin_run_jobs(
+            "storage_collect", [gui.RunJob("PhysicalDrive3", {})])
+        self.assertFalse(app.settings_expanded)
+        self.assertTrue(app.progress_expanded)
+        self.assertTrue(app.log_expanded)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_storage_detection_failure_keeps_diagnostics_open(self):
+        root, app = self._real_tk_app()
+        app._select_task("storage_collect", save_current=False)
+        app._set_settings_expanded(False)
+        app._set_progress_expanded(True)
+        app._set_log_expanded(True)
+        app.process_task_key = "storage_list"
+        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_job_index = 0
+        app.run_results = [2]
+        app.stop_requested = False
+        app.worker_starting = False
+        app.close_after_stop = False
+        with (
+            patch.object(gui.messagebox, "showinfo") as info,
+            patch.object(gui.messagebox, "showwarning") as warning,
+        ):
+            app._finalize_run(0.2)
+            root.update()
+        info.assert_not_called()
+        warning.assert_not_called()
+        self.assertFalse(app.settings_expanded)
+        self.assertTrue(app.progress_expanded)
+        self.assertTrue(app.log_expanded)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_storage_detection_without_selectable_disk_warns(self):
+        root, app = self._real_tk_app()
+        app._select_task("storage_collect", save_current=False)
+        app.storage_disk_options = (
+            types.SimpleNamespace(selectable=False),
+        )
+        app._set_settings_expanded(False)
+        app._set_progress_expanded(True)
+        app._set_log_expanded(True)
+        app.process_task_key = "storage_list"
+        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_job_index = 0
+        app.run_results = [0]
+        app.stop_requested = False
+        app.worker_starting = False
+        app.close_after_stop = False
+        with patch.object(gui.messagebox, "showwarning") as shown:
+            app._finalize_run(0.2)
+            root.update()
+        shown.assert_called_once()
+        self.assertTrue(app.settings_expanded)
+        self.assertFalse(app.progress_expanded)
+        self.assertFalse(app.log_expanded)
+        self.assertIn("没有找到可登记", app.status_label.cget("text"))
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_every_field_tooltip_uses_text_cell_and_control(self):
+        root, app = self._real_tk_app()
+        expected_specs = [
+            (task, spec)
+            for task in gui.TASKS
+            for spec in task.fields
+            if spec.help and not spec.top_menu
+        ]
+        checked = 0
+        for task, spec in expected_specs:
+            app.saved_values[task.key] = {
+                key: allowed[0]
+                for key, allowed in spec.active_when
+            }
+            app._select_task(task.key, save_current=False)
+            root.update()
+            label_text = spec.label + ("  *" if spec.required else "")
+            field_label = next(
+                child for child in app.form_inner.winfo_children()
+                if (isinstance(child, gui.tk.Label)
+                    and child.cget("text") == label_text)
+            )
+            row = int(field_label.grid_info()["row"])
+            cell = next(
+                child for child in app.form_inner.winfo_children()
+                if (isinstance(child, gui.tk.Frame)
+                    and int(child.grid_info().get("row", -1)) == row
+                    and int(child.grid_info().get("column", -1)) == 1)
+            )
+            targets = [field_label, cell, *self._tk_descendants(cell)]
+            matching = [
+                target for target in targets
+                if getattr(
+                    getattr(target, "_daisy_tooltip", None),
+                    "text", None) == spec.help
+            ]
+            context = f"{task.key}.{spec.key}"
+            self.assertNotIn("ⓘ", field_label.cget("text"), context)
+            self.assertIn(field_label, matching, context)
+            self.assertIn(cell, matching, context)
+            self.assertTrue(field_label.bind("<Enter>"), context)
+            self.assertTrue(cell.bind("<Enter>"), context)
+            self.assertGreaterEqual(len(matching), 3, context)
+
+            tooltip = field_label._daisy_tooltip
+            tooltip._show()
+            root.update_idletasks()
+            self.assertIsNotNone(tooltip._window, context)
+            work_area = gui._monitor_work_area_for_window(field_label)
+            self.assertGreaterEqual(
+                tooltip._window.winfo_x(), work_area.left, context)
+            self.assertLessEqual(
+                tooltip._window.winfo_x()
+                + tooltip._window.winfo_reqwidth(),
+                work_area.right,
+                context,
+            )
+            self.assertLessEqual(
+                tooltip._window.winfo_y()
+                + tooltip._window.winfo_reqheight(),
+                work_area.bottom,
+                context,
+            )
+            tooltip._hide()
+            checked += 1
+        self.assertEqual(checked, len(expected_specs))
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_reselecting_same_choice_keeps_visible_text(self):
+        root, app = self._real_tk_app()
+        app._select_task("full_scan", save_current=False)
+        root.update()
+
+        def comboboxes(widget):
+            found = []
+            for child in widget.winfo_children():
+                if isinstance(child, gui.ttk.Combobox):
+                    found.append(child)
+                found.extend(comboboxes(child))
+            return found
+
+        original = next(
+            widget for widget in comboboxes(app.form_inner)
+            if getattr(widget, "_daisy_field_key", None) == "start_mode"
+        )
+        initial_text = original.get()
+        original.current(original.current())
+        original.event_generate("<<ComboboxSelected>>")
+        root.update()
+        self.assertTrue(original.winfo_exists())
+        self.assertEqual(original.get(), initial_text)
+
+        original.current(1)
+        original.event_generate("<<ComboboxSelected>>")
+        root.update()
+        changed = next(
+            widget for widget in comboboxes(app.form_inner)
+            if getattr(widget, "_daisy_field_key", None) == "start_mode"
+        )
+        self.assertFalse(original.winfo_exists())
+        self.assertTrue(changed.get())
+        self.assertEqual(
+            app.saved_values["full_scan"]["start_mode"], "resume")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_running_layout_fills_remaining_height_with_log(self):
+        root, app = self._real_tk_app()
+        app._set_settings_expanded(False)
+        app._set_progress_expanded(True)
+        app._set_log_expanded(True)
+        root.update()
+        self.assertFalse(app.settings_expanded)
+        self.assertTrue(app.progress_expanded)
+        self.assertTrue(app.log_expanded)
+        self.assertEqual(
+            int(app.content.grid_rowconfigure(0)["weight"]), 0)
+        self.assertEqual(
+            int(app.content.grid_rowconfigure(2)["weight"]), 1)
+        self.assertGreater(app.log_panel.winfo_height(), 120)
+        command_bottom = (
+            app.command_panel.winfo_y() + app.command_panel.winfo_height())
+        self.assertLessEqual(
+            abs(command_bottom - app.content.winfo_height()), 1)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_window_font_matrix_keeps_controls_usable(self):
+        root, app = self._real_tk_app()
+        families = app._available_ui_font_families()
+        self.assertGreaterEqual(len(families), 2)
+        checks = 0
+        for family in families:
+            for _label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
+                app._set_ui_font(
+                    family=family, size_delta=size_delta, persist=False)
+                for _window_label, window_size in gui._WINDOW_SIZE_OPTIONS:
+                    app._set_default_window_size(
+                        window_size, persist=False)
+                    root.update()
+                    for task_key in (
+                            "env_check", "full_scan", "storage_collect"):
+                        app._select_task(task_key, save_current=False)
+                        root.update()
+                        self.assertTrue(app.title_label.cget("text"))
+                        self.assertTrue(app.desc_label.cget("text"))
+                        self.assertGreater(app.form_canvas.winfo_width(), 400)
+                        self.assertGreater(app.form_canvas.winfo_height(), 20)
+                        root_right = root.winfo_rootx() + root.winfo_width()
+                        for button in app.task_toolbar_buttons.values():
+                            self.assertLessEqual(
+                                button.winfo_rootx() + button.winfo_width(),
+                                root_right + 1,
+                            )
+                        bounds = app.form_canvas.bbox("all")
+                        content_height = (
+                            0 if bounds is None
+                            else int(bounds[3]) - int(bounds[1]))
+                        if content_height > app.form_canvas.winfo_height():
+                            app.form_canvas.yview_moveto(1.0)
+                            root.update_idletasks()
+                            self.assertGreater(
+                                float(app.form_canvas.yview()[0]), 0.0)
+                            app.form_canvas.yview_moveto(0.0)
+                    checks += 1
+        self.assertEqual(
+            checks,
+            len(families)
+            * len(gui._UI_FONT_SIZE_OPTIONS)
+            * len(gui._WINDOW_SIZE_OPTIONS),
+        )
+        self.assertTrue(hasattr(app, "settings_menu"))
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_exhaustive_font_size_aspect_ratio_matrix(self):
+        root, app = self._real_tk_app()
+        families = app._available_ui_font_families()
+        geometries = (
+            (1840, 1020),
+            (1440, 900),
+            (1280, 720),
+            (1280, 960),
+            (1280, 1024),
+            (1100, 850),
+            (1024, 768),
+        )
+        task_keys = tuple(task.key for task in gui.TASKS)
+        checks = 0
+        for family in families:
+            for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
+                app._set_ui_font(
+                    family=family, size_delta=size_delta, persist=False)
+                for width, height in geometries:
+                    root.geometry(f"{width}x{height}+0+0")
+                    root.update()
+                    self.assertEqual(
+                        (root.winfo_width(), root.winfo_height()),
+                        (width, height),
+                    )
+                    for task_key in task_keys:
+                        app._select_task(task_key, save_current=False)
+                        context = (
+                            f"{family} / +{size_delta} / "
+                            f"{width}x{height} / {task_key}")
+                        with self.subTest(context=context):
+                            self._assert_real_tk_page_geometry(
+                                root, app, context)
+                        checks += 1
+        self.assertEqual(
+            checks,
+            len(families) * len(gui._UI_FONT_SIZE_OPTIONS)
+            * len(geometries) * len(task_keys),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_relative_scaling_aspect_ratio_matrix(self):
+        root, app = self._real_tk_app()
+        base_scaling = float(root.tk.call("tk", "scaling"))
+        scaling_factors = (1.0, 1.25, 1.5)
+        geometries = (
+            (1440, 900),
+            (1280, 720),
+            (1280, 960),
+            (1100, 850),
+        )
+        task_keys = tuple(task.key for task in gui.TASKS)
+        checks = 0
+        try:
+            for scaling_factor in scaling_factors:
+                root.tk.call(
+                    "tk", "scaling", base_scaling * scaling_factor)
+                for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
+                    app._set_ui_font(
+                        size_delta=size_delta, persist=False)
+                    for width, height in geometries:
+                        root.geometry(f"{width}x{height}+0+0")
+                        root.update()
+                        self.assertEqual(
+                            (root.winfo_width(), root.winfo_height()),
+                            (width, height),
+                        )
+                        for task_key in task_keys:
+                            app._select_task(task_key, save_current=False)
+                            context = (
+                                f"scale {scaling_factor:.2f} / "
+                                f"+{size_delta} / {width}x{height} / "
+                                f"{task_key}")
+                            with self.subTest(context=context):
+                                self._assert_real_tk_page_geometry(
+                                    root, app, context)
+                            checks += 1
+        finally:
+            root.tk.call("tk", "scaling", base_scaling)
+        self.assertEqual(
+            checks,
+            len(scaling_factors) * len(gui._UI_FONT_SIZE_OPTIONS)
+            * len(geometries) * len(task_keys),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_every_combobox_arrow_and_selection_path(self):
+        root, app = self._real_tk_app()
+        choice_kinds = {"choice", "choice_flag", "disk_choice"}
+        expected_specs = [
+            (task, spec)
+            for task in gui.TASKS
+            for spec in task.fields
+            if spec.kind in choice_kinds and not spec.top_menu
+        ]
+        checked = 0
+        for task, spec in expected_specs:
+            saved = {
+                key: allowed[0]
+                for key, allowed in spec.active_when
+            }
+            app.saved_values[task.key] = saved
+            app._select_task(task.key, save_current=False)
+            root.update()
+            combobox = next(
+                widget
+                for widget in self._tk_descendants(app.form_inner)
+                if (isinstance(widget, gui.ttk.Combobox)
+                    and getattr(widget, "_daisy_field_key", None)
+                    == spec.key)
+            )
+            context = f"{task.key}.{spec.key}"
+            arrow_hits = [
+                x for x in range(
+                    max(0, combobox.winfo_width() - 24),
+                    combobox.winfo_width())
+                if "Daisy.Combobox.chevron" in combobox.identify(
+                    x, combobox.winfo_height() // 2)
+            ]
+            self.assertGreaterEqual(len(arrow_hits), 20, context)
+            click_x = arrow_hits[len(arrow_hits) // 2]
+            initial_text = combobox.get()
+            combobox.event_generate(
+                "<ButtonPress-1>", x=click_x,
+                y=combobox.winfo_height() // 2)
+            combobox.event_generate(
+                "<ButtonRelease-1>", x=click_x,
+                y=combobox.winfo_height() // 2)
+            root.update()
+            try:
+                root.tk.call("ttk::combobox::Unpost", str(combobox))
+            except gui.tk.TclError:
+                pass
+            self.assertEqual(combobox.get(), initial_text, context)
+
+            current_index = combobox.current()
+            combobox.current(current_index)
+            combobox.event_generate("<<ComboboxSelected>>")
+            root.update()
+            self.assertTrue(combobox.winfo_exists(), context)
+            self.assertEqual(combobox.get(), initial_text, context)
+
+            values = tuple(combobox.cget("values"))
+            if len(values) > 1:
+                alternate_index = (current_index + 1) % len(values)
+                combobox.current(alternate_index)
+                combobox.event_generate("<<ComboboxSelected>>")
+                root.update()
+                rebuilt = next(
+                    widget
+                    for widget in self._tk_descendants(app.form_inner)
+                    if (isinstance(widget, gui.ttk.Combobox)
+                        and getattr(widget, "_daisy_field_key", None)
+                        == spec.key)
+                )
+                self.assertTrue(rebuilt.get(), context)
+                self.assertEqual(rebuilt.current(), alternate_index, context)
+            checked += 1
+        self.assertEqual(checked, len(expected_specs))
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_tcl_runtime_bootstrap_survives_missing_or_bad_environment(self):
+        code = (
+            "import os,sys;"
+            "sys.path.insert(0,os.path.join(os.getcwd(),'Script'));"
+            "import Script_DAISY_GUI as gui;"
+            "root=gui.tk.Tk();root.withdraw();"
+            "print(root.tk.call('info','patchlevel'));"
+            "print(root.tk.call('package','require','Tk'));"
+            "root.update_idletasks();root.destroy()"
+        )
+        for mode in ("missing", "invalid"):
+            environment = os.environ.copy()
+            if mode == "missing":
+                environment.pop("TCL_LIBRARY", None)
+                environment.pop("TK_LIBRARY", None)
+            else:
+                environment["TCL_LIBRARY"] = r"Z:\missing\tcl"
+                environment["TK_LIBRARY"] = r"Z:\missing\tk"
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", code],
+                cwd=gui._BASE,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+            self.assertEqual(
+                completed.returncode, 0,
+                f"{mode}: {completed.stderr}")
+            versions = completed.stdout.splitlines()
+            self.assertEqual(len(versions), 2, mode)
+            self.assertTrue(all(
+                version.startswith("8.6") for version in versions), mode)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_both_user_gui_entries_construct_and_close_cleanly(self):
+        original_tk = gui.tk.Tk
+        original_app = gui.DaisyApp
+        roots = []
+
+        def auto_closing_root():
+            root = original_tk()
+            root.withdraw()
+            roots.append(root)
+            return root
+
+        def auto_closing_app(root):
+            app = original_app(root)
+            root.after(120, app._destroy_root)
+            return app
+
+        launcher = os.path.join(gui._BASE, "Start_DAISY_GUI.pyw")
+        with (
+            patch.object(gui.tk, "Tk", side_effect=auto_closing_root),
+            patch.object(gui, "DaisyApp", side_effect=auto_closing_app),
+            patch.object(
+                gui, "load_gui_preferences",
+                return_value=gui.default_gui_preferences()),
+        ):
+            with self.assertRaises(SystemExit) as launcher_exit:
+                runpy.run_path(launcher, run_name="__main__")
+            self.assertEqual(launcher_exit.exception.code, 0)
+
+            with patch.object(
+                    sys, "argv", ["Script_DAISY_MAIN.py", "gui"]):
+                self.assertEqual(entry.main(), 0)
+
+        self.assertEqual(len(roots), 2)
+        for root in roots:
+            with self.assertRaises(gui.tk.TclError):
+                root.winfo_exists()
 
     def test_starting_jobs_expands_progress_and_log(self):
         class WidgetProbe:
@@ -1965,6 +2850,8 @@ class TestGuiArguments(unittest.TestCase):
         app.is_administrator = False
         calls = []
         app._set_stop_state = lambda state: calls.append(("stop", state))
+        app._set_settings_expanded = (
+            lambda value: calls.append(("settings", value)))
         app._set_progress_expanded = (
             lambda value: calls.append(("progress", value)))
         app._set_log_expanded = lambda value: calls.append(("log", value))
@@ -1976,8 +2863,11 @@ class TestGuiArguments(unittest.TestCase):
         app._start_next_job = lambda: calls.append(("start", True))
         app._begin_run_jobs(
             "full_scan", [gui.RunJob("档案", {"roots": r"E:\档案"})])
+        self.assertIn(("settings", False), calls)
         self.assertIn(("progress", True), calls)
         self.assertIn(("log", True), calls)
+        self.assertLess(
+            calls.index(("settings", False)), calls.index(("start", True)))
         self.assertLess(
             calls.index(("log", True)), calls.index(("start", True)))
 
@@ -2157,7 +3047,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.5.0")
+        self.assertEqual(core.SCANNER_VERSION, "1.5.1")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
