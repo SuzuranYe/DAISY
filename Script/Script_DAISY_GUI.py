@@ -1611,6 +1611,118 @@ def attach_tooltip(widget: tk.Misc, text: str) -> ToolTip:
     return tooltip
 
 
+class AdminModeSwitch(tk.Frame):
+    """顶部管理员状态开关；开启动作由外部完成 UAC 重启。"""
+
+    def __init__(
+        self, master: tk.Misc, *, value: bool = False,
+        enabled: bool = True, command=None,
+    ) -> None:
+        super().__init__(master, bg=_SURFACE)
+        self._value = bool(value)
+        self._enabled = bool(enabled)
+        self._hovered = False
+        self._command = command
+
+        self.title_label = tk.Label(
+            self, text="管理员模式", bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 8, "bold"),
+        )
+        self.title_label.pack(side="left")
+        self.canvas = tk.Canvas(
+            self, width=42, height=22, bg=_SURFACE,
+            highlightthickness=0, bd=0, takefocus=True,
+        )
+        self.canvas.pack(side="left", padx=(6, 4))
+        self.state_label = tk.Label(
+            self, width=4, bg=_SURFACE,
+            font=("Microsoft YaHei UI", 8, "bold"),
+        )
+        self.state_label.pack(side="left")
+
+        for widget in self.tooltip_widgets:
+            widget.bind("<Button-1>", self._activate, add="+")
+            widget.bind("<Enter>", self._enter, add="+")
+            widget.bind("<Leave>", self._leave, add="+")
+        self.canvas.bind("<space>", self._activate, add="+")
+        self.canvas.bind("<Return>", self._activate, add="+")
+        self._draw()
+
+    @property
+    def value(self) -> bool:
+        return self._value
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def tooltip_widgets(self) -> tuple[tk.Misc, ...]:
+        return (self.title_label, self.canvas, self.state_label)
+
+    def set_mode(
+        self, *, value: bool | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        if value is not None:
+            self._value = bool(value)
+        if enabled is not None:
+            self._enabled = bool(enabled)
+        if not self._enabled:
+            self._hovered = False
+        self._draw()
+
+    def _activate(self, _event: tk.Event | None = None) -> None:
+        if not self._enabled:
+            return
+        self.canvas.focus_set()
+        if callable(self._command):
+            self._command(not self._value)
+
+    def _enter(self, _event: tk.Event | None = None) -> None:
+        if self._enabled:
+            self._hovered = True
+            self._draw()
+
+    def _leave(self, _event: tk.Event | None = None) -> None:
+        if self._hovered:
+            self._hovered = False
+            self._draw()
+
+    def _draw(self) -> None:
+        if self._value:
+            track = _GREEN_DEEP if self._hovered else _GREEN_DARK
+            if not self._enabled:
+                track = _GREEN
+        else:
+            track = _BORDER if self._hovered else _CONTROL_HOVER
+            if not self._enabled:
+                track = _CONTROL
+        self.canvas.delete("all")
+        self.canvas.create_oval(
+            2, 2, 20, 20, fill=track, outline=track)
+        self.canvas.create_oval(
+            22, 2, 40, 20, fill=track, outline=track)
+        self.canvas.create_rectangle(
+            11, 2, 31, 20, fill=track, outline=track)
+        knob_left = 22 if self._value else 4
+        self.canvas.create_oval(
+            knob_left, 4, knob_left + 14, 18,
+            fill=_FIELD, outline=_BORDER,
+        )
+        self.canvas.configure(
+            cursor="hand2" if self._enabled else "arrow")
+        title_colour = (
+            _GREEN_DEEP if self._value else
+            _TEXT if self._enabled else _MUTED
+        )
+        self.title_label.configure(fg=title_colour)
+        self.state_label.configure(
+            text="开启" if self._value else "关闭",
+            fg=_GREEN_DEEP if self._value else _MUTED,
+        )
+
+
 class DirectoryListEditor(tk.Frame):
     """最多九项的目录列表；每项可编辑标签并单独移除。"""
 
@@ -1945,6 +2057,7 @@ class DaisyApp:
         self._task_toolbar_layout_ready = False
         self.detected_tools: dict[str, dict[str, object]] = {}
         self.manual_tool_paths: dict[str, str] = {}
+        self.install_tool_buttons: dict[str, ttk.Button] = {}
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
         self.is_administrator = is_windows_administrator()
@@ -2376,6 +2489,21 @@ class DaisyApp:
             self.task_toolbar_toggle_button,
             "展开或收起顶部功能模块；当前页面和已填写内容保持不变。",
         )
+        self.admin_mode_switch = AdminModeSwitch(
+            header,
+            value=self.is_administrator,
+            enabled=(os.name == "nt" and not self.is_administrator),
+            command=self._request_admin_mode,
+        )
+        self.admin_mode_switch.pack(side="right", padx=(0, 12))
+        admin_tooltip = (
+            "当前已使用管理员权限；如需恢复普通模式，请关闭后正常启动。"
+            if self.is_administrator else
+            "开启后将确认并通过 Windows UAC 以管理员权限重新启动；"
+            "任务运行期间不可切换。"
+        )
+        for widget in self.admin_mode_switch.tooltip_widgets:
+            attach_tooltip(widget, admin_tooltip)
 
         body = tk.Frame(panel, bg=_SURFACE)
         self.task_toolbar_body = body
@@ -2732,28 +2860,10 @@ class DaisyApp:
             utility_action_area, text="清理缓存", style="Secondary.TButton",
             command=self._clear_tool_cache, state="disabled",
         )
-        self.admin_restart_button = ttk.Button(
-            utility_action_area, text="管理员模式重启",
-            style="Secondary.TButton",
-            command=self._restart_as_admin,
-        )
-        self.install_tool_buttons: dict[str, ttk.Button] = {}
-        for tool_name, (display_name, _package_id) in (
-                _INSTALLABLE_TOOL_PACKAGES.items()):
-            button = ttk.Button(
-                utility_action_area,
-                text=f"下载并安装 {display_name}",
-                style="Secondary.TButton",
-                command=lambda name=tool_name:
-                self._install_tool(name),
-            )
-            self.install_tool_buttons[tool_name] = button
         self.utility_buttons = (
             self.open_output_button,
             self.clear_log_button,
             self.clear_cache_button,
-            self.admin_restart_button,
-            *self.install_tool_buttons.values(),
         )
 
         tk.Frame(action_button_area, bg=_BORDER, height=1).pack(
@@ -2780,21 +2890,12 @@ class DaisyApp:
             (self.clear_cache_button,
              "清除可重建缓存，并把参数、队列、日志和进度恢复为首次启动状态；"
              "不触碰正式产物。"),
-            (self.admin_restart_button,
-             "关闭当前空闲窗口，并通过 Windows UAC 以管理员权限重新启动。"),
             (self.clear_log_button,
              "清空当前窗口的运行日志。"),
             (self.open_output_button,
              "在资源管理器中打开当前任务对应的结果目录。"),
         ):
             attach_tooltip(button, tooltip)
-        for tool_name, button in self.install_tool_buttons.items():
-            display_name = _INSTALLABLE_TOOL_PACKAGES[tool_name][0]
-            attach_tooltip(
-                button,
-                f"仅通过 WinGet 下载并安装 {display_name}；不会连带安装"
-                "其它缺失工具。",
-            )
         action_button_area.bind("<Configure>", self._layout_action_buttons)
         self.root.after_idle(self._layout_action_buttons)
 
@@ -2888,10 +2989,7 @@ class DaisyApp:
             self.open_output_button,
             self.clear_log_button,
             self.clear_cache_button,
-            self.admin_restart_button,
         ]
-        if self.task.key == "env_check":
-            visible_utilities.extend(self.install_tool_buttons.values())
 
         width = (
             int(event.width) if event is not None
@@ -3177,10 +3275,81 @@ class DaisyApp:
             return (("请先运行 STG-11 获取可登记硬盘", ""),)
         return (("请选择本次清单中的物理硬盘", ""), *discovered)
 
+    def _build_environment_installation(
+        self, row: int, form_pad: int,
+    ) -> int:
+        """在 ENV-01 设置页建立独立的软件安装区。"""
+        panel = tk.Frame(
+            self.form_inner, bg=_GREEN_SOFT,
+            highlightbackground=_GREEN, highlightthickness=1,
+        )
+        panel.grid(
+            row=row, column=0, columnspan=2, sticky="ew",
+            padx=form_pad, pady=(15, 8),
+        )
+        panel.grid_columnconfigure(0, weight=1)
+
+        header = tk.Frame(panel, bg=_GREEN_SOFT)
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 2))
+        tk.Frame(header, bg=_GREEN_DARK, width=4, height=18).pack(
+            side="left", fill="y")
+        tk.Label(
+            header, text="软件安装", bg=_GREEN_SOFT, fg=_GREEN_DEEP,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+        ).pack(side="left", padx=(8, 0))
+
+        install_help = tk.Label(
+            panel,
+            text=(
+                "以下操作分别调用 WinGet。即使已有环境检测结果，仍可单独"
+                "下载、安装或更新；实际安装状态由 WinGet 判断。PowerShell "
+                "由系统提供，不在此安装。"
+            ),
+            bg=_GREEN_SOFT, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9), anchor="w",
+            justify="left", wraplength=720,
+        )
+        install_help.grid(
+            row=1, column=0, sticky="ew", padx=12, pady=(3, 9))
+        panel.bind(
+            "<Configure>",
+            lambda event, label=install_help: label.configure(
+                wraplength=max(260, event.width - 24)),
+        )
+
+        button_grid = tk.Frame(panel, bg=_GREEN_SOFT)
+        button_grid.grid(
+            row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        for column in range(2):
+            button_grid.grid_columnconfigure(
+                column, weight=1, uniform="environment_install")
+        for index, (tool_name, (display_name, _package_id)) in enumerate(
+                _INSTALLABLE_TOOL_PACKAGES.items()):
+            grid_row, grid_column = divmod(index, 2)
+            button = ttk.Button(
+                button_grid,
+                text=f"下载并安装 {display_name}",
+                style="Secondary.TButton",
+                command=lambda name=tool_name: self._install_tool(name),
+            )
+            button.grid(
+                row=grid_row, column=grid_column, sticky="ew",
+                padx=((0, 5) if grid_column == 0 else (5, 0)),
+                pady=((0, 5) if grid_row == 0 else (5, 0)),
+            )
+            self.install_tool_buttons[tool_name] = button
+            attach_tooltip(
+                button,
+                f"仅通过 WinGet 下载并安装 {display_name}；不会连带安装"
+                "其它工具。",
+            )
+        return row + 1
+
     def _build_form(self, scroll_fraction: float = 0.0) -> None:
         for child in self.form_inner.winfo_children():
             child.destroy()
         self.values = {}
+        self.install_tool_buttons = {}
         form_pad = 16 if self.compact_layout else 22
         saved = _task_values(
             self.task, self.saved_values.get(self.task.key, {}))
@@ -3418,6 +3587,9 @@ class DaisyApp:
                 )
             row += 1
 
+        if self.task.key == "env_check":
+            row = self._build_environment_installation(row, form_pad)
+
         self.form_inner.grid_rowconfigure(row, minsize=10)
         self.form_canvas.update_idletasks()
         self.form_canvas.yview_moveto(scroll_fraction)
@@ -3634,13 +3806,17 @@ class DaisyApp:
             if count else "工具路径已经使用自动发现。"
         )
 
-    def _restart_as_admin(self) -> None:
+    def _request_admin_mode(self, desired: bool) -> None:
+        if not desired:
+            self._refresh_environment_actions()
+            return
         if self._task_is_active():
             messagebox.showinfo(
                 "任务运行中",
                 "请先等待任务结束或停止任务，再切换管理员模式。",
                 parent=self.root,
             )
+            self._refresh_environment_actions()
             return
         if getattr(self, "is_administrator", False):
             messagebox.showinfo(
@@ -3648,6 +3824,7 @@ class DaisyApp:
                 "当前 DAISY 已具有管理员权限，无需重新启动。",
                 parent=self.root,
             )
+            self._refresh_environment_actions()
             return
         if os.name != "nt":
             messagebox.showerror(
@@ -3655,18 +3832,21 @@ class DaisyApp:
                 "管理员模式重启仅适用于 Windows。",
                 parent=self.root,
             )
+            self._refresh_environment_actions()
             return
         if not messagebox.askyesno(
                 "以管理员模式重新启动",
                 "当前窗口将关闭，并触发 Windows UAC 确认。尚未运行的"
                 "表单内容和本窗口日志不会保留。\n\n确定继续吗？",
                 icon="question", parent=self.root):
+            self._refresh_environment_actions()
             return
         try:
             restart_as_windows_administrator()
         except OSError as exc:
             messagebox.showerror(
                 "管理员模式启动失败", str(exc), parent=self.root)
+            self._refresh_environment_actions()
             return
         self.root.destroy()
 
@@ -3825,19 +4005,14 @@ class DaisyApp:
                 text=f"下载并安装 {display_name}",
                 state=action_state,
             )
-        if hasattr(self, "admin_restart_button"):
+        if hasattr(self, "admin_mode_switch"):
             already_admin = bool(getattr(self, "is_administrator", False))
-            self.admin_restart_button.configure(
-                text=(
-                    "已是管理员模式"
-                    if already_admin else "管理员模式重启"
-                ),
-                state=(
-                    "normal"
-                    if action_state == "normal"
+            self.admin_mode_switch.set_mode(
+                value=already_admin,
+                enabled=(
+                    action_state == "normal"
                     and os.name == "nt"
                     and not already_admin
-                    else "disabled"
                 ),
             )
         self.root.after_idle(self._layout_action_buttons)
@@ -4214,7 +4389,8 @@ class DaisyApp:
         self.run_button.configure(state="disabled")
         for button in self.install_tool_buttons.values():
             button.configure(state="disabled")
-        self.admin_restart_button.configure(state="disabled")
+        self.admin_mode_switch.set_mode(
+            value=self.is_administrator, enabled=False)
         self._set_stop_state("disabled")
         self._prepare_queue_progress()
         self._refresh_mini_action()

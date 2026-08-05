@@ -495,7 +495,9 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
   可折叠区域显示下一步的“展开／折叠”动作，命令预览保留“显示”开关。
   功能模块仍使用等宽居中的六字名称；普通窗口最小宽度以 1200 客户区像素封顶，
   最小高度以 640 客户区像素封顶，从而可置于 1280×720 屏幕的可用工作区。
-  空闲时可通过独立按钮触发 Windows UAC 管理员重启。
+  功能模块标题栏常驻管理员模式开关并显示当前状态；空闲且尚未提权时可触发
+  Windows UAC 管理员重启，运行中不可切换。四个 WinGet 安装入口固定放在
+  ENV-01 任务设置页的「软件安装」区，以等宽 2×2 布局显示，不进入底部辅助操作行。
 - `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
   元数据 profile 和 GPS 表；跨版本 partial 明确拒绝。已完成的 schema 3 封存
   快照仍可按现有准入规则只读使用。
@@ -509,9 +511,10 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
 - 无 Python 时，`Script\Script_DAISY_Install_Python.ps1` 只在用户确认后
   通过固定包 ID 安装 Python 3.14，不安装其他工具。
 - Python 已可运行时，「ENV-01 环境检测」会同时报告已发现工具的本机版本和
-  全部缺失项。无论检测结果如何，GUI 均常驻显示 ExifTool、ffprobe、7-Zip、
-  smartctl 四个独立安装按钮，并只在用户再次确认后通过固定 WinGet 白名单处理
-  所选工具；已安装状态和可用更新由 WinGet 判断，PowerShell 不由 GUI 安装。
+  全部缺失项。无论检测结果如何，ENV-01 任务设置页的「软件安装」区均以等宽
+  2×2 布局常驻显示 ExifTool、ffprobe、7-Zip、smartctl 四个独立安装按钮，
+  并只在用户再次确认后通过固定 WinGet 白名单处理所选工具；已安装状态和可用
+  更新由 WinGet 判断，PowerShell 不由 GUI 安装。
 - ExifTool、ffprobe、7-Zip、PowerShell、smartctl 的手动可执行文件路径只在
   顶部“指定工具路径”菜单统一指定，并优先于本窗口检测缓存和运行时自动发现。
 - 安装队列完成后 GUI 刷新当前进程 PATH 并重新检测。所有业务任务本身没有

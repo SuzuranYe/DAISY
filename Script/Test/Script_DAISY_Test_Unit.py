@@ -522,6 +522,13 @@ class TestGuiArguments(unittest.TestCase):
             def configure(self, **options):
                 self.options.update(options)
 
+        class SwitchProbe:
+            def __init__(self):
+                self.options = {}
+
+            def set_mode(self, **options):
+                self.options.update(options)
+
         class RootProbe:
             @staticmethod
             def after_idle(_callback):
@@ -536,7 +543,7 @@ class TestGuiArguments(unittest.TestCase):
             name: ButtonProbe()
             for name in gui._INSTALLABLE_TOOL_PACKAGES
         }
-        app.admin_restart_button = ButtonProbe()
+        app.admin_mode_switch = SwitchProbe()
         app.is_administrator = False
 
         app._refresh_environment_actions()
@@ -548,11 +555,11 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(
                 button.options["text"], f"下载并安装 {display}")
         self.assertEqual(
-            app.admin_restart_button.options["state"],
-            "normal" if os.name == "nt" else "disabled",
+            app.admin_mode_switch.options["enabled"],
+            os.name == "nt",
         )
         self.assertEqual(
-            app.admin_restart_button.options["text"], "管理员模式重启")
+            app.admin_mode_switch.options["value"], False)
 
         app.process = object()
         app._refresh_environment_actions()
@@ -561,7 +568,13 @@ class TestGuiArguments(unittest.TestCase):
             for button in app.install_tool_buttons.values()
         ))
         self.assertEqual(
-            app.admin_restart_button.options["state"], "disabled")
+            app.admin_mode_switch.options["enabled"], False)
+
+        app.process = None
+        app.is_administrator = True
+        app._refresh_environment_actions()
+        self.assertEqual(app.admin_mode_switch.options["value"], True)
+        self.assertEqual(app.admin_mode_switch.options["enabled"], False)
 
     def test_environment_summary_displays_local_versions(self):
         cache = {
@@ -1132,18 +1145,31 @@ class TestGuiArguments(unittest.TestCase):
             def destroy(self):
                 self.destroy_calls += 1
 
+            @staticmethod
+            def after_idle(_callback):
+                pass
+
+        class SwitchProbe:
+            def __init__(self):
+                self.options = {}
+
+            def set_mode(self, **options):
+                self.options.update(options)
+
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.process = None
         app.worker_starting = False
         app.run_jobs = []
         app.is_administrator = False
+        app.install_tool_buttons = {}
+        app.admin_mode_switch = SwitchProbe()
         with (
             patch.object(gui.os, "name", "nt"),
             patch.object(gui.messagebox, "askyesno", return_value=True),
             patch.object(gui, "restart_as_windows_administrator") as restart,
         ):
-            app._restart_as_admin()
+            app._request_admin_mode(True)
         restart.assert_called_once_with()
         self.assertEqual(app.root.destroy_calls, 1)
 
@@ -1157,9 +1183,16 @@ class TestGuiArguments(unittest.TestCase):
             ),
             patch.object(gui.messagebox, "showerror") as shown,
         ):
-            app._restart_as_admin()
+            app._request_admin_mode(True)
         self.assertEqual(app.root.destroy_calls, 0)
         shown.assert_called_once()
+        self.assertEqual(app.admin_mode_switch.options["value"], False)
+        self.assertEqual(app.admin_mode_switch.options["enabled"], True)
+
+        with patch.object(
+                gui, "restart_as_windows_administrator") as restart:
+            app._request_admin_mode(False)
+        restart.assert_not_called()
 
     def test_active_close_requires_second_confirmation(self):
         class RootProbe:
