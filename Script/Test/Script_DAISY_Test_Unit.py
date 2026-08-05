@@ -21,8 +21,8 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT = os.path.dirname(_TEST_DIR)
 _REPO_ROOT = os.path.dirname(_SCRIPT)
 _LIB = os.path.join(_SCRIPT, "Lib")
-_TOOL = os.path.join(_SCRIPT, "Tool")
-sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _TOOL]
+_MODULE = os.path.join(_SCRIPT, "Module")
+sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_GUI as gui
@@ -293,23 +293,24 @@ class TestGuiArguments(unittest.TestCase):
                 "Diff_details.csv", "Diff_subtrees.csv"):
             self.assertIn(filename, source_type.help)
 
-    def test_storage_collect_requires_a_nonnegative_integer_disk_number(self):
+    def test_storage_collect_requires_valid_disk_pool_numbers(self):
         self.assertIn(
-            "请填写“物理硬盘编号”。",
+            "请填写“物理硬盘池”。",
             gui.validate_values("storage_collect", {"disk_number": ""}),
         )
         for invalid in ("-1", "3.0", "disk3"):
             self.assertIn(
-                "“物理硬盘编号”必须是非负整数。",
+                "“物理硬盘池”包含无效编号，请重新检测并选择。",
                 gui.validate_values(
                     "storage_collect", {"disk_number": invalid}),
             )
         self.assertNotIn(
-            "“物理硬盘编号”必须是非负整数。",
-            gui.validate_values("storage_collect", {"disk_number": "0"}),
+            "“物理硬盘池”包含无效编号，请重新检测并选择。",
+            gui.validate_values(
+                "storage_collect", {"disk_number": "0\n3"}),
         )
 
-    def test_storage_inventory_populates_only_registrable_disk_choices(self):
+    def test_storage_inventory_builds_full_pool_and_registrable_choices(self):
         targets = [
             {
                 "disk_number": 3,
@@ -338,20 +339,38 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(choices[0][1], "3")
         self.assertIn("PhysicalDrive3", choices[0][0])
         self.assertIn("D: Node", choices[0][0])
+        options = gui.storage_disk_options(targets)
+        self.assertEqual([option.disk_number for option in options], [3, 4])
+        self.assertTrue(options[0].selectable)
+        self.assertFalse(options[1].selectable)
+        self.assertEqual(options[1].reason, "smartctl 未关联")
 
         app = object.__new__(gui.DaisyApp)
         app.storage_disk_choices = ()
+        app.storage_disk_options = ()
         app.saved_values = {"storage_collect": {"disk_number": "9"}}
         app._apply_storage_inventory({"targets": targets})
         self.assertEqual(app.storage_disk_choices, choices)
+        self.assertEqual(app.storage_disk_options, options)
         self.assertNotIn(
             "disk_number", app.saved_values["storage_collect"])
         disk_spec = next(
             spec for spec in gui.TASK_BY_KEY["storage_collect"].fields
             if spec.key == "disk_number")
-        self.assertEqual(disk_spec.kind, "disk_choice")
+        self.assertEqual(disk_spec.kind, "disk_pool")
+
+    def test_storage_pool_splits_each_selected_disk_into_queue_job(self):
+        jobs = gui.build_run_jobs(
+            "storage_collect", {"disk_number": "3\n1\n3"})
         self.assertEqual(
-            app._field_choices(disk_spec)[0][1], "")
+            [job.label for job in jobs],
+            ["PhysicalDrive3", "PhysicalDrive1"],
+        )
+        self.assertEqual(
+            [job.values["disk_number"] for job in jobs], ["3", "1"])
+        for job in jobs:
+            args = gui.build_tool_args("storage_collect", job.values)
+            self.assertEqual(args.count("--disk-number"), 1)
 
     def test_storage_detection_is_an_internal_step_of_registration(self):
         app = object.__new__(gui.DaisyApp)
@@ -360,6 +379,7 @@ class TestGuiArguments(unittest.TestCase):
         app.run_jobs = []
         app.is_administrator = True
         app.storage_disk_choices = (("PhysicalDrive3", "3"),)
+        app.storage_disk_options = ()
         app.saved_values = {
             "storage_collect": {
                 "disk_number": "3",
@@ -966,7 +986,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("Kit_AL v1.0.2", evolution)
         self.assertIn("DAISY v1.4.2", evolution)
         self.assertIn("DAISY v1.5.0", evolution)
-        self.assertIn("STG-12 硬盘信息登记", evolution)
+        self.assertIn("STG-11 硬盘信息登记", evolution)
         storage_spec_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Storage.md")
         with open(storage_spec_path, "r", encoding="utf-8") as f:
@@ -1107,7 +1127,7 @@ class TestGuiArguments(unittest.TestCase):
             ("storage_collect",),
         )
         self.assertNotIn("storage_list", gui._TASK_MENU_ORDER)
-        self.assertNotIn("storage_verify", gui.TASK_BY_KEY)
+        self.assertNotIn("storage_" + "verify", gui.TASK_BY_KEY)
         self.assertEqual(
             tuple(
                 task_key
@@ -1258,6 +1278,12 @@ class TestGuiArguments(unittest.TestCase):
                 if entry["kind"] == "checkbutton"
             ],
             [],
+        )
+        help_menu = app.app_menu.entries[-1]["menu"]
+        self.assertEqual(
+            [entry["label"] for entry in help_menu.entries
+             if entry["kind"] == "command"],
+            ["联系作者", "关于 DAISY", "打开 GitHub 主页"],
         )
         self.assertEqual(
             [
@@ -1764,7 +1790,8 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 12)
         self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (12, 7))
         self.assertEqual(gui._TASK_TOOLBAR_STYLE_PREFIX, "Env")
-        self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._GREEN_DEEP)
+        self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._TEXT)
+        self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
         with patch.object(
                 gui.DaisyApp, "_sync_task_toolbar_minimum_width") as sync:
             for available in (1600, 1000, 760, 520):
@@ -1824,7 +1851,7 @@ class TestGuiArguments(unittest.TestCase):
         app._prepare_queue_progress()
         self.assertEqual(
             app.queue_detail_label.options["text"],
-            "0/1 · 单项任务已准备",
+            "0/1 · 队列已准备",
         )
         app.run_job_index = 0
         app._update_queue_progress(0.5)
@@ -1906,48 +1933,56 @@ class TestGuiArguments(unittest.TestCase):
                 "DBS-31  内容哈希核验",
                 "DBS-32  文件结构核验",
                 "DBS-41  结果报告导出",
-                "STG-12  硬盘信息登记",
+                "STG-11  硬盘信息登记",
             ],
         )
         expected = (
             ("env-check", "env_check", "ENV-01  运行环境检测",
-             "Script_DAISY_Tool_ENV_01_Env_Check"),
+             "Script_DAISY_Module_ENV_01_Env_Check"),
             ("full-scan", "full_scan", "DBS-11  完整档案扫描",
-             "Script_DAISY_Tool_DBS_11_Full_Scan"),
+             "Script_DAISY_Module_DBS_11_Full_Scan"),
             ("quick-scan", "quick_scan", "DBS-12  快速档案扫描",
-             "Script_DAISY_Tool_DBS_12_Quick_Scan"),
+             "Script_DAISY_Module_DBS_12_Quick_Scan"),
             ("diff", "diff", "DBS-21  快照变更分析",
-             "Script_DAISY_Tool_DBS_21_Diff"),
+             "Script_DAISY_Module_DBS_21_Diff"),
             ("check-hash", "check_hash", "DBS-31  内容哈希核验",
-             "Script_DAISY_Tool_DBS_31_Check_Hash"),
+             "Script_DAISY_Module_DBS_31_Check_Hash"),
             ("check-format", "check_format", "DBS-32  文件结构核验",
-             "Script_DAISY_Tool_DBS_32_Check_Format"),
+             "Script_DAISY_Module_DBS_32_Check_Format"),
             ("export-report", "export_report", "DBS-41  结果报告导出",
-             "Script_DAISY_Tool_DBS_41_Export_Report"),
-            ("storage-list", "storage_list", "STG-11  物理硬盘清单",
-             "Script_DAISY_Tool_STG_11_List_Disks"),
-            ("storage-collect", "storage_collect", "STG-12  硬盘信息登记",
-             "Script_DAISY_Tool_STG_12_Collect"),
+             "Script_DAISY_Module_DBS_41_Export_Report"),
+            ("storage-collect", "storage_collect", "STG-11  硬盘信息登记",
+             "Script_DAISY_Module_STG_11_Collect"),
         )
         for command, task_key, nav, module in expected:
             task = gui.TASK_BY_KEY[task_key]
             self.assertEqual(task.command, command)
             self.assertEqual(task.nav, nav)
             self.assertEqual(entry.COMMANDS[command][0], module)
-            self.assertTrue(os.path.isfile(
-                os.path.join(_TOOL, module + ".py")))
+            module_path = os.path.join(_MODULE, module + ".py")
+            self.assertTrue(os.path.isfile(module_path))
+            with open(module_path, encoding="utf-8") as handle:
+                self.assertIn(" ".join(nav.split()), handle.read())
+        self.assertEqual(len(gui._TASK_MENU_ORDER), 8)
+        self.assertEqual(
+            sorted(
+                name for name in os.listdir(_MODULE)
+                if name.startswith("Script_DAISY_Module_")
+                and name.endswith(".py")
+            ),
+            sorted(module + ".py" for *_prefix, module in expected),
+        )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
             "DBS-91  DAISY功能自检",
         )
         self.assertNotIn(gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
-        verify_module, verify_description = entry.COMMANDS["storage-verify"]
         self.assertEqual(
-            verify_module, "Script_DAISY_Tool_STG_21_Verify_Archive")
-        self.assertIn("STG-21", verify_description)
-        self.assertTrue(os.path.isfile(
-            os.path.join(_TOOL, verify_module + ".py")))
-        self.assertNotIn("storage_verify", gui.TASK_BY_KEY)
+            entry.COMMANDS["storage-list"][0],
+            "Script_DAISY_Module_STG_11_Collect",
+        )
+        self.assertNotIn("storage-" + "verify", entry.COMMANDS)
+        self.assertNotIn("storage_" + "verify", gui.TASK_BY_KEY)
         self.assertNotIn("migrate-naming", entry.COMMANDS)
 
     def test_stg_gui_module_and_internal_detection_require_admin(self):
@@ -2015,6 +2050,10 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(core.PROJECT_AUTHOR, "Suzuran Ye")
         self.assertEqual(
+            gui._PROJECT_CONTACT,
+            "151104858+SuzuranYe@users.noreply.github.com",
+        )
+        self.assertEqual(
             gui._PROJECT_GITHUB_URL,
             "https://github.com/SuzuranYe/DAISY",
         )
@@ -2034,6 +2073,8 @@ class TestGuiArguments(unittest.TestCase):
                 "未完成 partial：仅允许相同生成器版本",
                 "DBS 与 STG 数据模型彼此独立"):
             self.assertIn(token, about)
+        self.assertIn(gui._PROJECT_CONTACT, about)
+        self.assertIn(gui._PROJECT_CONTACT, gui.contact_message())
 
     def test_gui_stream_parser_handles_chunked_events(self):
         prefix = "@@DAISY_GUI@@"
@@ -2216,6 +2257,7 @@ class TestGuiArguments(unittest.TestCase):
         }
         app.saved_values = {"full_scan": {"roots": r"E:\Archive"}}
         app.storage_disk_choices = (("PhysicalDrive3", "3"),)
+        app.storage_disk_options = (object(),)
         app.environment_missing_names = ("sevenzip",)
         app.missing_installable_tools = ("sevenzip",)
         app.mini_mode = False
@@ -2255,6 +2297,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.manual_tool_paths, {})
         self.assertEqual(app.saved_values, {})
         self.assertEqual(app.storage_disk_choices, ())
+        self.assertEqual(app.storage_disk_options, ())
         self.assertEqual(app.environment_missing_names, ())
         self.assertEqual(app.missing_installable_tools, ())
         self.assertIn(("toolbar", True), calls)
@@ -3490,11 +3533,11 @@ import importlib                                               # noqa: E402
 import time                                                    # noqa: E402
 
 import Script_DAISY_Lib_03_Hash as dbh                                   # noqa: E402
-import Script_DAISY_Tool_ENV_01_Env_Check as envcheck                    # noqa: E402
+import Script_DAISY_Module_ENV_01_Env_Check as envcheck                  # noqa: E402
 
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
-FullScan = importlib.import_module("Script_DAISY_Tool_DBS_11_Full_Scan")
+FullScan = importlib.import_module("Script_DAISY_Module_DBS_11_Full_Scan")
 
 
 class TestEnvironmentInventory(unittest.TestCase):
@@ -4138,7 +4181,7 @@ class TestVerifyHashPatrol(unittest.TestCase):
 
     def test_patrol_ok_then_detects_injection(self):
         vh = importlib.import_module(
-            "Script_DAISY_Tool_DBS_31_Check_Hash")
+            "Script_DAISY_Module_DBS_31_Check_Hash")
         rep = vh.patrol(self.final, {"Arch": self.arch},
                         sample_percent=100.0, full=True)
         self.assertTrue(rep["ok"])
@@ -4169,7 +4212,7 @@ class TestVerifyHashPatrol(unittest.TestCase):
         report = os.path.join(
             self._td.name, "new", "nested", "hash_report.json")
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_DBS_31_Check_Hash.py")
+            _MODULE, "Script_DAISY_Module_DBS_31_Check_Hash.py")
         result = subprocess.run(
             [
                 sys.executable, "-B", script,
@@ -4185,13 +4228,18 @@ class TestVerifyHashPatrol(unittest.TestCase):
             result.stderr.decode("utf-8", "replace"))
         self.assertTrue(os.path.isfile(report))
         with open(report, encoding="utf-8") as handle:
-            self.assertTrue(json.load(handle)["ok"])
+            payload = json.load(handle)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            payload["report_metadata"],
+            core.report_metadata("DBS-31 内容哈希核验"),
+        )
 
     def test_cli_problem_adds_clean_named_markdown_report(self):
         os.remove(os.path.join(self.arch, "q.bin"))
         report = os.path.join(self._td.name, "hash_report.json")
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_DBS_31_Check_Hash.py")
+            _MODULE, "Script_DAISY_Module_DBS_31_Check_Hash.py")
         result = subprocess.run(
             [
                 sys.executable, "-B", script,
@@ -4837,7 +4885,7 @@ class TestDiffGolden(_DiffFixture):
 import csv                                                     # noqa: E402
 
 Export = importlib.import_module(
-    "Script_DAISY_Tool_DBS_41_Export_Report")
+    "Script_DAISY_Module_DBS_41_Export_Report")
 
 
 class TestExportSnapshot(_DiffFixture):
@@ -4862,8 +4910,12 @@ class TestExportSnapshot(_DiffFixture):
         res = Export.export_snapshot(snap, out_dir)
         folder = res["folder"]
         for page in ("Tree.csv", "Tree_dirs.csv", "Hash_inventory.csv",
-                     "GPS_inventory_video.csv", "Summary.csv", "Errors.csv"):
+                     "GPS_inventory_video.csv", "Summary.csv", "Errors.csv",
+                     "Report_info.csv"):
             self.assertTrue(os.path.isfile(os.path.join(folder, page)), page)
+        report_info = self._read_csv(os.path.join(folder, "Report_info.csv"))
+        self.assertIn(["tool_author", core.PROJECT_AUTHOR], report_info)
+        self.assertIn(["tool_version", core.SCANNER_VERSION], report_info)
         tree = self._read_csv(os.path.join(folder, "Tree.csv"))
         self.assertEqual(len(tree) - 1, 3)              # 表头＋3 文件
         header = tree[0]
@@ -4967,6 +5019,9 @@ class TestExportDiff(_DiffFixture):
         self.assertIn("内容维度", md)
         self.assertIn("结构维度", md)
         self.assertIn("不一致", md)         # 本场景内容与结构均有差异
+        self.assertIn(core.PROJECT_AUTHOR, md)
+        self.assertTrue(os.path.isfile(
+            os.path.join(folder, "Report_info.csv")))
         for extra in ("Diff_dirs.csv", "Diff_hash_groups.csv"):
             self.assertTrue(os.path.isfile(os.path.join(folder, extra)))
 
@@ -4986,7 +5041,7 @@ class TestExportDiff(_DiffFixture):
 
 
 Validate = importlib.import_module(
-    "Script_DAISY_Tool_DBS_32_Check_Format")
+    "Script_DAISY_Module_DBS_32_Check_Format")
 
 
 class TestValidators(unittest.TestCase):
@@ -5225,6 +5280,12 @@ class TestValidateSnapshot(_DiffFixture):
         self.assertEqual(by["note.txt"]["status"], "unsupported")
         self.assertEqual(by["gone.bin"]["status"], "missing")
         self.assertFalse(rep["ok"])
+        self.assertEqual(
+            rep["report_metadata"],
+            core.report_metadata("DBS-32 文件结构核验"),
+        )
+        self.assertTrue(any(
+            path.endswith("_Info.csv") for path in rep["files"]))
         for suffix in (".json", ".csv", ".md"):
             self.assertTrue(any(f.endswith(suffix) for f in rep["files"]),
                             suffix)
@@ -5328,7 +5389,7 @@ class TestQuickScan(unittest.TestCase):
 
     def _run_quick(self):
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_DBS_12_Quick_Scan.py")
+            _MODULE, "Script_DAISY_Module_DBS_12_Quick_Scan.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--root", f"Q={self.arch}",
                             "--output-dir", self.out, "--quiet"],
@@ -5412,7 +5473,7 @@ class TestQuickScan(unittest.TestCase):
         s2 = tt.build_snapshot(self.arch, self.out, "d2", label="测试库")
         diffs = os.path.join(self._td.name, "Diffs")
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_DBS_21_Diff.py")
+            _MODULE, "Script_DAISY_Module_DBS_21_Diff.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--old", s1, "--new", s2,
                             "--output-dir", diffs], capture_output=True,
@@ -5438,7 +5499,7 @@ class TestQuickScan(unittest.TestCase):
         os.rename(s2, legacy)
         diffs = os.path.join(self._td.name, "ForcedDiffs")
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_DBS_21_Diff.py")
+            _MODULE, "Script_DAISY_Module_DBS_21_Diff.py")
         result = subprocess.run(
             [sys.executable, "-B", script, "--old", s1, "--new", legacy,
              "--output-dir", diffs, "--force"],

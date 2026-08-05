@@ -19,14 +19,14 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT = os.path.dirname(_TEST_DIR)
 _REPO_ROOT = os.path.dirname(_SCRIPT)
 _LIB = os.path.join(_SCRIPT, "Lib")
-_TOOL = os.path.join(_SCRIPT, "Tool")
-sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _TOOL]
+_MODULE = os.path.join(_SCRIPT, "Module")
+sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_04_Diff as dbdiff
 
 QUICK = os.path.join(
-    _TOOL, "Script_DAISY_Tool_DBS_12_Quick_Scan.py")
+    _MODULE, "Script_DAISY_Module_DBS_12_Quick_Scan.py")
 
 
 def snapshot_uuid(db: str) -> str:

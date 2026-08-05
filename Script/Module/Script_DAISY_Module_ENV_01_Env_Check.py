@@ -1,4 +1,4 @@
-"""Script_DAISY_Tool_ENV_01_Env_Check：运行环境检测。
+"""Script_DAISY_Module_ENV_01_Env_Check：ENV-01 运行环境检测。
 
 只检查 DAISY 所需工具、版本、冒烟样本、只读断言与 SHA-256 自检；不读取
 用户档案，也不执行性能测试。
@@ -12,8 +12,8 @@ import sys
 import tempfile
 import time
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_03_Hash as dbh
@@ -169,7 +169,8 @@ def main() -> int:
     print(
         "  SHA-256 NIST 向量 / 五工具冒烟＋存储只读查询断言：通过")
 
-    report = {"generated_at_utc": core.now_utc_iso(),
+    report = {**core.report_metadata("ENV-01 运行环境检测"),
+              "generated_at_utc": core.now_utc_iso(),
               "scanner_version": core.SCANNER_VERSION, "tools": tools,
               "checks": {"sha256_nist": "passed",
                          "tool_smoke_readonly": "passed",

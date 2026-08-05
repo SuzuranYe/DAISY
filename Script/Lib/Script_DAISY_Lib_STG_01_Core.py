@@ -19,6 +19,8 @@ from typing import Any, Iterable
 APP_NAME = "DAISY"
 APP_TITLE = "DAISY 存储设备信息登记"
 APP_VERSION = "1.5.0"
+APP_AUTHOR = "Suzuran Ye"
+APP_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 ARCHIVE_SCHEMA_VERSION = 3
 ARCHIVE_KIND = "PROFILE"
 ARCHIVE_ROLE = "single_disk_read_only_profile"
@@ -27,6 +29,15 @@ COLLECTION_STATUSES = frozenset(
     {"complete", "complete_with_warnings", "incomplete"}
 )
 GUI_EVENT_PREFIX = "@@DAISY_GUI@@"
+
+
+def report_metadata(tool_name: str) -> dict[str, str]:
+    """返回 STG 报告及 JSON 输出共用的工具身份。"""
+    return {
+        "tool_name": f"{APP_NAME} {str(tool_name).strip()}",
+        "tool_version": APP_VERSION,
+        "tool_author": APP_AUTHOR,
+    }
 
 SMARTCTL_EXIT_FLAGS = (
     (0x01, "命令行解析或内部错误"),
@@ -282,7 +293,11 @@ class ScanResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "application": {"name": APP_NAME, "version": APP_VERSION},
+            "application": {
+                "name": APP_NAME,
+                "version": APP_VERSION,
+                "author": APP_AUTHOR,
+            },
             "targets": [target.to_dict() for target in self.targets],
             "warnings": list(self.warnings),
             "smartctl": {
@@ -335,7 +350,11 @@ class CollectionResult:
 
     def summary_dict(self) -> dict[str, Any]:
         return {
-            "application": {"name": APP_NAME, "version": APP_VERSION},
+            "application": {
+                "name": APP_NAME,
+                "version": APP_VERSION,
+                "author": APP_AUTHOR,
+            },
             "collection_status": self.collection_status,
             "started_at_utc": self.started_at_utc,
             "collected_at_utc": self.collected_at_utc,

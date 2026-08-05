@@ -17,8 +17,8 @@ from unittest.mock import patch
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT_DIR = os.path.dirname(_TEST_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
-_TOOL_DIR = os.path.join(_SCRIPT_DIR, "Tool")
-sys.path[:0] = [_LIB_DIR, _TOOL_DIR, _SCRIPT_DIR]
+_MODULE_DIR = os.path.join(_SCRIPT_DIR, "Module")
+sys.path[:0] = [_LIB_DIR, _MODULE_DIR, _SCRIPT_DIR]
 
 import Script_DAISY_Lib_STG_01_Core as core
 import Script_DAISY_Lib_STG_02_Windows as windows
@@ -26,7 +26,7 @@ import Script_DAISY_Lib_STG_03_Smartctl as smartctl
 import Script_DAISY_Lib_STG_04_Service as service
 import Script_DAISY_Lib_STG_05_Archive as archive
 import Script_DAISY_MAIN as entry
-import Script_DAISY_Tool_STG_12_Collect as collect_tool
+import Script_DAISY_Module_STG_11_Collect as collect_module
 
 
 def fixture_record(
@@ -336,6 +336,8 @@ class TestServiceMapping(unittest.TestCase):
             warnings=collection.warnings,
         )
         self.assertIn("Windows 只读属性：否", report)
+        self.assertIn("工具：DAISY STG-11 硬盘信息登记", report)
+        self.assertIn("作者：Suzuran Ye", report)
         self.assertIn("05 Reallocated_Sector_Ct｜RAW 0", report)
         self.assertIn("C5 Current_Pending_Sector｜RAW 1", report)
         self.assertIn("状态 注意（RAW 非零，未触发阈值）", report)
@@ -346,6 +348,19 @@ class TestServiceMapping(unittest.TestCase):
 
 
 class TestArchive(unittest.TestCase):
+    def test_create_runs_full_internal_verification_after_publish(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original = archive.verify_archive
+            with patch.object(
+                    archive, "verify_archive", wraps=original) as verified:
+                result = archive.create_archive(
+                    fixture_collection(), temp_dir)
+            verified.assert_called_once()
+            self.assertEqual(
+                os.path.abspath(os.fspath(verified.call_args.args[0])),
+                os.path.abspath(result.path),
+            )
+
     def test_create_verify_and_internal_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             result = archive.create_archive(fixture_collection(), temp_dir)
@@ -359,6 +374,8 @@ class TestArchive(unittest.TestCase):
             self.assertEqual(verified.zip_sha256, result.zip_sha256)
             self.assertEqual(
                 verified.manifest["application"]["version"], "1.5.0")
+            self.assertEqual(
+                verified.manifest["application"]["author"], "Suzuran Ye")
             self.assertEqual(
                 verified.manifest["archive_schema_version"],
                 3,
@@ -513,7 +530,7 @@ class TestEntry(unittest.TestCase):
     def test_guide_lists_public_commands(self):
         text = entry.guide()
         for command in (
-            "env-check", "storage-list", "storage-collect", "storage-verify",
+            "env-check", "storage-list", "storage-collect",
         ):
             self.assertIn(command, text)
         self.assertIn("只读", text)
@@ -536,29 +553,47 @@ class TestEntry(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
-            patch.object(collect_tool.service, "scan_targets", return_value=scan),
+            patch.object(collect_module.service, "scan_targets", return_value=scan),
             patch.object(
-                collect_tool.service,
+                collect_module.service,
                 "target_by_disk_number",
                 return_value=collection.target,
             ),
             patch.object(
-                collect_tool.service,
+                collect_module.service,
                 "collect_target",
                 return_value=collection,
             ),
             patch.object(
-                collect_tool.archive,
+                collect_module.archive,
                 "create_archive",
                 return_value=result,
             ),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
-            status = collect_tool.main(["--disk-number", "3", "--json"])
+            status = collect_module.main(["--disk-number", "3", "--json"])
         self.assertEqual(status, 1)
         self.assertFalse(json.loads(stdout.getvalue())["complete"])
         self.assertIn("不能视为完整硬盘登记", stderr.getvalue())
+
+    def test_fused_stg_module_dispatches_internal_list_mode(self):
+        collection = fixture_collection()
+        scan = core.ScanResult(
+            targets=(collection.target,), warnings=(),
+            smartctl_executable="smartctl.exe", smartctl_version="7.5",
+        )
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                collect_module.service, "scan_targets", return_value=scan),
+            redirect_stdout(stdout),
+        ):
+            status = collect_module.main(["--list", "--json"])
+        self.assertEqual(status, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["targets"][0]["disk_number"], 3)
+        self.assertEqual(payload["application"]["author"], "Suzuran Ye")
 
 
 if __name__ == "__main__":

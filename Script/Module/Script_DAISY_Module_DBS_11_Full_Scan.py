@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_DBS_11_Full_Scan：完整档案扫描——扫描档案生成不可变快照库（树＋元数据＋哈希）。
+r"""Script_DAISY_Module_DBS_11_Full_Scan：DBS-11 完整档案扫描——扫描档案生成不可变快照库（树＋元数据＋哈希）。
 
 六阶段管线：预检→枚举（可重跑对账）→哈希（full/incremental/none，逐文件续传）
 →元数据（双后端，逐文件续传）→复扫＋独立实现抽验→封存。
@@ -17,8 +17,8 @@ import os
 import sqlite3
 import sys
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_03_Hash as dbh
@@ -75,7 +75,8 @@ def open_resume(partial: str) -> tuple[sqlite3.Connection, list]:
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="初始构建：档案 → 不可变快照库")
+    ap = argparse.ArgumentParser(
+        description="DBS-11 完整档案扫描：档案 → 不可变快照库")
     ap.add_argument("--root", action="append", default=[],
                     help="档案根文件夹，可重复；语法 label=路径 或 路径")
     ap.add_argument("--output-dir", default="Output/Snapshots")

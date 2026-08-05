@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_DBS_12_Quick_Scan：快速档案扫描——只登记文件信息的轻量快照。
+r"""Script_DAISY_Module_DBS_12_Quick_Scan：DBS-12 快速档案扫描——只登记文件信息的轻量快照。
 
 与 DBS-11 完整档案扫描采用同一快照格式（同 DDL、内嵌事件与清单），但**完全
 不接触外部工具**（无 ExifTool/ffprobe/7-Zip 依赖，未安装也能跑）、不哈希、
@@ -21,8 +21,8 @@ import os
 import shutil
 import sys
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 
@@ -32,7 +32,8 @@ MIN_FREE_BYTES = 200 * 1024 * 1024
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="快速档案扫描：仅文件信息的轻量快照")
+    ap = argparse.ArgumentParser(
+        description="DBS-12 快速档案扫描：仅文件信息的轻量快照")
     ap.add_argument("--root", action="append", default=[], required=True,
                     help="档案根文件夹，可重复；语法 label=路径 或 路径")
     ap.add_argument("--output-dir", default="Output/Snapshots")

@@ -22,22 +22,24 @@ DAISY v1.5.0 的信息能力分为两个并列功能域：
 写入 DBS 的 SQLite，DBS 也不把物理盘资料嵌入快照；当前版本不自动建立文件条目
 与物理硬盘档案之间的关联。
 
-现行编号、名称、界面角色、CLI 与任务脚本必须按下表对齐。六字「界面名称」同时
-用于功能模块按钮、面板菜单项和对应设置页标题：
+现行编号、六字名称、GUI、CLI 与 `Script/Module` 脚本必须一一对应。以下 8 项
+就是完整的用户功能模块集合，也必须恰好对应 8 个 Module 脚本：
 
-| 编号 | 界面名称／步骤名 | GUI 角色 | CLI | 任务脚本 |
-|---|---|---|---|---|
-| ENV-01 | 运行环境检测 | 可见功能模块 | `env-check` | `Script_DAISY_Tool_ENV_01_Env_Check.py` |
-| DBS-11 | 完整档案扫描 | 可见功能模块 | `full-scan` | `Script_DAISY_Tool_DBS_11_Full_Scan.py` |
-| DBS-12 | 快速档案扫描 | 可见功能模块 | `quick-scan` | `Script_DAISY_Tool_DBS_12_Quick_Scan.py` |
-| DBS-21 | 快照变更分析 | 可见功能模块 | `diff` | `Script_DAISY_Tool_DBS_21_Diff.py` |
-| DBS-31 | 内容哈希核验 | 可见功能模块 | `check-hash` | `Script_DAISY_Tool_DBS_31_Check_Hash.py` |
-| DBS-32 | 文件结构核验 | 可见功能模块 | `check-format` | `Script_DAISY_Tool_DBS_32_Check_Format.py` |
-| DBS-41 | 结果报告导出 | 可见功能模块 | `export-report` | `Script_DAISY_Tool_DBS_41_Export_Report.py` |
-| DBS-91 | DAISY功能自检 | 「高级」维护入口；不是功能模块 | 无独立 CLI | 无独立任务脚本；运行 `unittest discover` |
-| STG-11 | 物理硬盘清单 | 登记页内部检测步骤；不显示为功能模块 | `storage-list` | `Script_DAISY_Tool_STG_11_List_Disks.py` |
-| STG-12 | 硬盘信息登记 | 唯一可见硬盘功能模块 | `storage-collect` | `Script_DAISY_Tool_STG_12_Collect.py` |
-| STG-21 | 硬盘归档核验 | 仅 CLI；不显示为功能模块 | `storage-verify` | `Script_DAISY_Tool_STG_21_Verify_Archive.py` |
+| 编号 | 六字名称 | CLI | Module 脚本 |
+|---|---|---|---|
+| ENV-01 | 运行环境检测 | `env-check` | `Script_DAISY_Module_ENV_01_Env_Check.py` |
+| DBS-11 | 完整档案扫描 | `full-scan` | `Script_DAISY_Module_DBS_11_Full_Scan.py` |
+| DBS-12 | 快速档案扫描 | `quick-scan` | `Script_DAISY_Module_DBS_12_Quick_Scan.py` |
+| DBS-21 | 快照变更分析 | `diff` | `Script_DAISY_Module_DBS_21_Diff.py` |
+| DBS-31 | 内容哈希核验 | `check-hash` | `Script_DAISY_Module_DBS_31_Check_Hash.py` |
+| DBS-32 | 文件结构核验 | `check-format` | `Script_DAISY_Module_DBS_32_Check_Format.py` |
+| DBS-41 | 结果报告导出 | `export-report` | `Script_DAISY_Module_DBS_41_Export_Report.py` |
+| STG-11 | 硬盘信息登记 | `storage-collect` | `Script_DAISY_Module_STG_11_Collect.py` |
+
+`DBS-91 DAISY功能自检` 只属于「高级」维护入口，通过 `unittest` 运行正式测试，
+不占用功能模块或 Module 脚本。`storage-list` 是同一 STG-11 脚本的 `--list` 内部
+准备模式，也不另占编号或脚本。归档核验不再提供独立用户命令；创建 ZIP 后仍由
+STG-11 在底层自动执行同等完整核验。
 
 文档解释意图和不变量，代码保存容易漂移的精确定义：
 
@@ -449,24 +451,24 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
 
 ## 十一、STG 存储设备信息登记
 
-- `STG-12 硬盘信息登记` 是 GUI 中唯一可见的硬盘功能模块。登记页的「检测物理
-  硬盘」按钮在同一页面调用内部 `STG-11`，清单完成后刷新目标下拉框；用户不需要
-  在两个功能模块之间切换。`STG-21` 只保留 CLI 入口。
-- 内部 `STG-11` 与可见 `STG-12` 的完整执行需要管理员权限。GUI 在模块说明、
+- `STG-11 硬盘信息登记` 是 GUI 中唯一的硬盘功能模块。登记页的「检测物理硬盘」
+  按钮调用同一 Module 脚本的内部列盘模式；它不是另一个功能或编号。
+- STG-11 的检测与登记均需要管理员权限才能完整运行。GUI 在模块说明、
   悬停说明、任务设置页和启动确认中显示该要求；管理员模式悬停说明明确当前仅
   「硬盘信息登记」及其检测步骤需要此模式。未提权时应开启顶部管理员模式开关，
   确认后由 Windows UAC 重新启动 DAISY。任务运行期间不能切换权限。未提权继续
   运行只会如实保留权限缺口、不完整诊断或失败，不会降低只读安全边界。
-- `STG-11`／`storage-list` 联合 Windows 存储 cmdlet 和
+- `storage-list` 内部模式联合 Windows 存储 cmdlet 和
   `smartctl --scan-open --json=c` 列出物理盘；盘符只用于人类识别，不作为
-  权威身份。GUI 每次重新列盘会清除旧选择，`STG-12` 只允许从当次清单中选择
-  同时具有 Windows 记录和 smartctl 关联的目标。
-- `STG-12`／`storage-collect` 按 `DiskNumber` 重新取得详细 Windows 清单并
-  核对容量、UniqueId 和序列号，再以固定只读模板
+  权威身份。GUI 每次重新列盘会清除旧选择。硬盘池列出全部已识别设备；脱机盘、
+  Windows 资料缺失或 smartctl 未关联的设备显示原因并禁止勾选。用户可逐盘勾选，
+  也可选择所有联机且可登记的物理硬盘。选择框使用 20 px 自绘指示器；检测结果提示
+  「若接入硬盘发生变化，请重新进行检测。」
+- `STG-11`／`storage-collect` 将每块已选硬盘拆为独立队列项，按 `DiskNumber`
+  重新取得详细 Windows 清单并核对容量、UniqueId 和序列号，再以固定只读模板
   `smartctl -x --json=ov -d <扫描类型> <扫描设备>` 采集单盘证据。
-- `STG-21`／`storage-verify` 是仅 CLI 的安全核验工具，只读取既有 ZIP，核验文件名 SHA-256 高 32 bit、
-  固定成员集合、Manifest、时间对、成员字节数和 ZIP CRC；不访问真实硬盘，也
-  不需要管理员权限。
+- ZIP 发布后，创建流程自动核验文件名 SHA-256 高 32 bit、固定成员集合、
+  Manifest、时间对、成员字节数、安全路径和 ZIP CRC；任一失败均明确报错。
 - 默认输出为 `Output\Storage`。每块物理盘生成独立 PROFILE ZIP，可选在 ZIP
   外生成简化 TXT；目标存在即失败，不覆盖既有文件。
 - STG ZIP 使用独立 `archive_schema_version=3`。它不导入 `sqlite3`，也不创建、
@@ -507,16 +509,29 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
   DPI 感知；窗口进入不同分辨率、工作区或 DPI 的显示器后，会重新约束尺寸、位置、
   最小值和功能模块宽度。工作区不足时优先完整留在当前显示器内，不强行保持
   1280×720。
-- GUI 中仅「硬盘信息登记」及其内部 STG-11 检测步骤需要管理员权限，顶部管理员
-  模式开关在空闲时通过 Windows UAC 重新启动应用；仅 CLI 的 STG-21 不需要提权。
-  开关不会在原进程内动态改变权限。
+- GUI 中仅「硬盘信息登记」及其检测步骤需要管理员权限，顶部管理员模式开关在
+  空闲时通过 Windows UAC 重新启动应用；开关不会在原进程内动态改变权限。
 - 「结果报告导出」按输入类型说明产物：封存快照导出文件树、目录、规范化元数据、
   视频 GPS、媒体流、哈希、压缩包、错误和 Summary 等 CSV；Diff 数据库导出
   `Diff_summary.md`、`Diff_details.csv`、`Diff_dirs.csv`、
   `Diff_hash_groups.csv` 与 `Diff_subtrees.csv`。
-- 「关于 DAISY」显示应用／DBS 生成器版本、DBS SQLite schema、元数据 profile、
+- 「帮助」首项为「联系作者」，显示作者及 GitHub noreply 邮箱；「关于 DAISY」
+  显示应用／DBS 生成器版本、DBS SQLite schema、元数据 profile、
   DBS／STG 文件名布局、STG 归档 schema 和 `v1.4.1` 最低读取器版本，并明确完整
   schema 3 快照与同生成器版本 partial 的不同兼容边界。
+- GUI 所有显式字体与 Tk 命名字体统一为 `Microsoft YaHei UI`，不依赖第三方字体。
+  运行进度和运行日志标题区的 4 个操作按钮使用相同字体、宽度、内边距、列间距和
+  右侧基线；功能模块标题使用与运行进度、运行日志一致的黑色标题字，三色装饰线
+  恢复为原有 4 px 细线。系统标题栏使用 16／32／48 px 小雏菊多尺寸图标；界面不再
+  显示 DAISY 花体字标。
+- 单项任务也完整进入队列模型，始终显示 `队列 1/1`；多根目录和多块物理硬盘按
+  实际子进程逐项显示 `队列 i/n`。每项在普通界面和小窗中均显示完整当前目标。
+- 可同时打开多个 GUI 窗口。每个窗口的表单、队列、日志、进度、事件队列和子进程
+  句柄属于各自实例；相同或不同模块可并发运行。窗口仍共享操作系统资源、外部工具和
+  用户指定的输出路径，因此并发会竞争磁盘 I/O；确定性报告目标应使用不同输出目录，
+  快照类产物继续依靠唯一 partial 与 no-clobber 保护正式文件。
+- JSON 和 Markdown／TXT 报告直接写入 DAISY 工具名、版本与作者；纯业务 CSV
+  保持原有表头，并用同组的 `Report_info.csv` 或 `_Info.csv` 保存报告身份。
 
 ### 12.1 GUI 安装与缓存边界
 

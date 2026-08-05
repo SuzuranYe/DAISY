@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_DBS_32_Check_Format：文件结构核验。
+r"""Script_DAISY_Module_DBS_32_Check_Format：DBS-32 文件结构核验。
 
 哈希证明「没变」，本脚本回答「是不是好的」。从快照读目标清单，对当前磁盘
 文件执行结构级校验（每格式一档，不做深度解码），产出 JSON＋CSV＋MD 报告，
@@ -35,8 +35,8 @@ import time
 import zipfile
 import zlib
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_03_Hash as dbh
@@ -340,7 +340,9 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
         on_progress(len(entries), len(entries))
 
     ok = not counts.get("invalid") and not counts.get("missing")
-    report = {"snapshot": os.path.basename(snapshot_path),
+    report = {"report_metadata": core.report_metadata(
+                  "DBS-32 文件结构核验"),
+              "snapshot": os.path.basename(snapshot_path),
               "snapshot_uuid": uuid_,
               "mode": ("full" if sample_percent >= 100.0
                        else f"sample_{sample_percent}pct"),
@@ -368,7 +370,15 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
                         r["validator"], r["status"], r["detail"],
                         r["stat_match"]])
     files.append(base + ".csv")
+    info_path = base + "_Info.csv"
+    identity = core.report_metadata("DBS-32 文件结构核验")
+    with open(info_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(["key", "value"])
+        writer.writerows(identity.items())
+    files.append(info_path)
     md = ["# 文件结构核验报告", "",
+          *core.report_markdown_lines("DBS-32 文件结构核验"), "",
           f"- 快照：`{report['snapshot']}`（uuid `{uuid_}`）",
           f"- 口径：{report['mode']}；核对 {report['checked']:,} 条；"
           f"用时 {report['elapsed_s']}s",

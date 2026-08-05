@@ -7,12 +7,11 @@ DAISY v1.5.0 同时包含两个并列的信息域：DBS 获取文件树、文件
 保存为 ZIP。两者共用统一 GUI、CLI、环境检测、管理员模式和测试入口，但没有
 共享数据表，也不自动建立 SQLite 条目到某块物理盘的关联。
 
-STG 功能域用于 Windows 单机、单物理盘的只读信息登记与证据归档。GUI 只有一个
-用户可见功能模块：`STG-12 硬盘信息登记`。该页的「检测物理硬盘」按钮调用内部
-`STG-11 物理硬盘清单` 准备步骤并刷新目标选择；`STG-21 硬盘归档核验` 只保留
-CLI 入口，不显示为 GUI 功能模块。统一 CLI 仍对应 `storage-list`、
-`storage-collect` 和 `storage-verify`。归档类型标识为 `PROFILE`，源码统一使用
-`DAISY_Lib_STG` 和 `DAISY_Tool_STG` 命名空间。
+STG 功能域用于 Windows 单机上的只读硬盘信息登记与证据归档。GUI 只有一个硬盘
+功能模块：`STG-11 硬盘信息登记`。同一页的「检测物理硬盘」按钮调用该模块脚本的
+内部列盘模式并刷新硬盘池，不另占功能编号。统一 CLI 提供 `storage-list` 和
+`storage-collect`，二者均由同一个 STG-11 Module 脚本分派。归档类型标识为
+`PROFILE`，源码统一使用 `DAISY_Lib_STG` 和 `DAISY_Module_STG` 命名空间。
 
 `archive_schema_version=3` 只表示 STG ZIP 协议，和快照／Diff 的 SQLite
 `schema_version=3` 没有数据模型关系。STG 不导入 `sqlite3`，不创建、读取或修改
@@ -28,9 +27,7 @@ CLI 入口，不显示为 GUI 功能模块。统一 CLI 仍对应 `storage-list`
 | smartctl 命令与解析 | `Script/Lib/Script_DAISY_Lib_STG_03_Smartctl.py` |
 | 扫描关联、身份确认与报告 | `Script/Lib/Script_DAISY_Lib_STG_04_Service.py` |
 | ZIP 生成、发布与核验 | `Script/Lib/Script_DAISY_Lib_STG_05_Archive.py` |
-| `STG-11` 入口 | `Script/Tool/Script_DAISY_Tool_STG_11_List_Disks.py` |
-| `STG-12` 入口 | `Script/Tool/Script_DAISY_Tool_STG_12_Collect.py` |
-| `STG-21` 入口 | `Script/Tool/Script_DAISY_Tool_STG_21_Verify_Archive.py` |
+| `STG-11` 列盘与登记入口 | `Script/Module/Script_DAISY_Module_STG_11_Collect.py` |
 | 统一 GUI／CLI 接入 | `Script/Script_DAISY_GUI.py`、`Script/Script_DAISY_MAIN.py` |
 
 ## 二、系统不变量
@@ -52,18 +49,19 @@ CLI 入口，不显示为 GUI 功能模块。统一 CLI 仍对应 `storage-list`
 9. **本地运行**：采集、归档和验证不联网、不上传、不遥测。
 10. **完整性显式**：访问或命令层错误必须标为 `incomplete`，不得仅凭 ZIP
     成功生成就宣称登记完整。
-11. **权限显式**：内部 `STG-11` 和可见 `STG-12` 需要管理员权限才能完整运行。
+11. **权限显式**：`STG-11` 的列盘与登记模式需要管理员权限才能完整运行。
     GUI 在模块说明、悬停说明、任务设置页和启动确认中显示要求，并提供顶部管理员
     模式开关，通过 Windows UAC 重启；开关悬停说明明确当前仅「硬盘信息登记」及其
-    检测步骤需要此模式。仅 CLI 的 `STG-21` 只读取 ZIP，不需要管理员权限。
+    检测步骤需要此模式。
+12. **发布后自检**：最终 ZIP 发布后必须自动执行完整归档核验；不提供可被误认为
+    独立业务功能的手动核验模块。
 
 ## 三、只读命令边界
 
-登记页内部 `STG-11` 和可见 `STG-12` 应在管理员模式下运行，以获得完整的 Windows
+STG-11 的列盘和登记模式应在管理员模式下运行，以获得完整的 Windows
 存储与 smartctl 资料。GUI 顶部管理员模式开关会先确认，再通过 Windows UAC 重启
 当前应用；任务运行期间不可切换权限。未提权运行不放宽只读边界，只会如实记录
-权限缺口、失败或 `incomplete` 诊断结果。仅 CLI 的 `STG-21` 不访问真实硬盘，
-不要求提权。
+权限缺口、失败或 `incomplete` 诊断结果。
 
 smartctl 扫描固定为：
 
@@ -95,14 +93,16 @@ Windows 清单和 smartctl 扫描独立执行，任一失败时仍保留另一�
 2. `/dev/pdN`；
 3. Windows smartmontools 的 `/dev/sdX` 编号规则。
 
-Windows 盘存在而 smartctl 未发现时，`STG-11` 仍列出 Windows 目标并说明关联
-缺口，但 `STG-12` 禁止建立完整归档。smartctl 项无法关联 Windows
+Windows 盘存在而 smartctl 未发现时，STG-11 仍列出 Windows 目标并说明关联
+缺口，但禁止为该项建立完整归档。smartctl 项无法关联 Windows
 `DiskNumber` 时也列出，但不能当作完整目标。
 同一物理盘出现多个 smartctl 项时保留提示并使用扫描顺序中的第一项。
-统一 GUI 只把同时具有 Windows 记录和 smartctl 关联的目标加入 `STG-12`
-下拉框；每次点击「检测物理硬盘」都会先清除上一轮清单与选择，再执行内部
-`STG-11`。热插拔后必须重新检测，不能沿用旧 DiskNumber。目标下拉框未展开时
-忽略滚轮改值，防止滚动设置页时误选其它物理盘。
+GUI 硬盘池列出当次扫描到的全部有效 DiskNumber。脱机、Windows 资料缺失或
+smartctl 未关联的设备保留在池中并显示原因，但复选框禁用。用户可逐项勾选，也可
+点击「选择所有联机硬盘」选择所有联机且资料完整的设备。每块已选硬盘拆成独立
+`队列 i/n` 子进程和独立 ZIP；即使只选一块也显示 `队列 1/1`。每次点击「检测物理
+硬盘」都会先清除上一轮清单与选择。选择框使用 20 px 自绘指示器；检测结果显示
+「若接入硬盘发生变化，请重新进行检测。」接入状态改变后不得沿用旧 DiskNumber。
 
 ## 五、Windows 数据模型
 
@@ -164,6 +164,7 @@ used_percent = used_bytes / size * 100
 
 `<前缀>` 为 `<卷标或回退>_PROFILE_YYYY-MM-DD_HH-MM-SS`。3 个文件全部位于 ZIP
 根目录；成员名不含最终 ZIP 指纹，避免哈希自引用。内部不保存逐文件 SHA-256。
+Manifest 与 Storage JSON 的应用字段记录 DAISY 名称、版本和作者。
 
 GUI 在“外部简化 TXT”下拉项选择“生成 ZIP 外部 TXT”，或 CLI 使用
 `--summary-txt` 时，在 ZIP 同目录生成
@@ -171,7 +172,8 @@ GUI 在“外部简化 TXT”下拉项选择“生成 ZIP 外部 TXT”，或 CL
 总体结论、关键 SMART 属性、分区、空间、可靠性和警告；不记录温度、关联 ZIP
 文件名或 SHA-256，默认不生成。缺失值显示为“未提供”，布尔值显示为“是／否”；
 HDD 的 Windows 磨损值明确注明不一定适用。关键风险计数 RAW 非零时显示“注意”，
-但只有 smartctl 的 `when_failed` 非空时才标为“异常”。
+但只有 smartctl 的 `when_failed` 非空时才标为“异常”。TXT 标题区记录生成工具名、
+DAISY 版本和作者。
 
 Manifest 的 `collection.status` 取值如下：
 
@@ -190,7 +192,9 @@ ZIP 发布顺序：
 5. 取摘要前 8 个十六进制字符并转大写；
 6. 构造最终名称；
 7. 以目标存在即失败的方式发布；冲突时保留 partial。
-8. 若选择简化报告，再以 no-clobber 方式发布外部 TXT；极端竞态导致 TXT 发布
+8. 对最终 ZIP 自动执行完整核验：文件名指纹、安全路径、成员集合、Manifest、
+   时间对、成员字节数和 CRC 必须全部通过；失败时保留已发布 ZIP 并明确报错。
+9. 若选择简化报告，再以 no-clobber 方式发布外部 TXT；极端竞态导致 TXT 发布
    失败时，已经发布的 ZIP 保留，并明确报告 TXT partial 的位置。
 
 最终名称：
@@ -205,7 +209,7 @@ ZIP 发布顺序：
 完整 ZIP SHA-256 不写回 ZIP 内部，避免自引用。文件名只保留高 32 bit；完整
 摘要由生成结果和核验命令输出。
 
-## 八、核验准入
+## 八、创建后自动核验准入
 
 核验必须同时满足：
 
@@ -218,13 +222,14 @@ ZIP 发布顺序：
 - Manifest 中同一事件的 UTC 与本地时间可以解析、带时区且代表同一时刻；
 - Manifest 的 payload 名称、角色及字节数与 ZIP 成员一致。
 
-任一失败均返回失败，不提供 `--force` 绕过。
+任一失败均令创建流程返回失败，不提供 `--force` 绕过。底层核验函数保留供创建
+流程和测试调用，但不暴露为独立 GUI 功能、Module 脚本或统一 CLI 子命令。
 
 ## 九、错误与退出码
 
-- CLI `0`：完整或带提示的完整采集，或核验完成；
+- CLI `0`：完整或带提示的完整采集；
 - CLI `1`：诊断 ZIP 已生成，但采集状态为 `incomplete`；
-- CLI `2`：环境、参数、采集、发布或核验失败；
+- CLI `2`：环境、参数、采集、发布或创建后自动核验失败；
 - smartctl 的位掩码不直接作为 DAISY 进程退出码；它写入 Manifest，并在选择
   外部简化报告时写入报告；
 - smartctl 返回健康或历史错误位但 JSON 可解析时，采集仍可归档；

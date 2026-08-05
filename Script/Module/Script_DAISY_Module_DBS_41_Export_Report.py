@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_DBS_41_Export_Report：结果报告导出。
+r"""Script_DAISY_Module_DBS_41_Export_Report：DBS-41 结果报告导出。
 
 快照导出（分组清单＋簿记，多 CSV、UTF-8 无 BOM、LF；规范化字段不剔除）：
   Tree.csv / Tree_dirs.csv                 —— 树
@@ -28,8 +28,8 @@ import os
 import sqlite3
 import sys
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 
@@ -41,6 +41,17 @@ def _write_csv(path: str, header: list, rows: list) -> None:
         w = csv.writer(f, lineterminator="\n")
         w.writerow(header)
         w.writerows(rows)
+
+
+def _write_report_info(folder: str) -> str:
+    """写入不破坏业务 CSV 表头的独立报告身份页。"""
+    name = "Report_info.csv"
+    identity = core.report_metadata("DBS-41 结果报告导出")
+    _write_csv(
+        os.path.join(folder, name), ["key", "value"],
+        list(identity.items()),
+    )
+    return name
 
 
 def _dump_query(con: sqlite3.Connection, folder: str, name: str,
@@ -84,7 +95,7 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
     folder = os.path.join(os.path.abspath(output_dir), stem + "_Report")
     os.makedirs(folder, exist_ok=True)
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
-    files = []
+    files = [_write_report_info(folder)]
     try:
         core.require_sealed_snapshot(con)
         # 人读路径一律拼接为「label\rel_path」完整逻辑路径
@@ -165,7 +176,7 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
     folder = os.path.join(os.path.abspath(output_dir), stem + "_Report")
     os.makedirs(folder, exist_ok=True)
     con = sqlite3.connect(f"file:{diff_path}?mode=ro", uri=True)
-    files = []
+    files = [_write_report_info(folder)]
     try:
         core.require_sqlite_integrity(con, "Diff 数据库")
         schema_version, = con.execute(
@@ -240,6 +251,8 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
 
     lines = [
         "# Diff 摘要",
+        "",
+        *core.report_markdown_lines("DBS-41 结果报告导出"),
         "",
         f"- 旧快照：`{info['old_snapshot_file']}`（uuid `{info['old_snapshot_uuid']}`，"
         f"hash_coverage=**{info['old_hash_coverage']}**）",

@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BASE = os.path.dirname(_SCRIPT_DIR)
@@ -50,12 +50,15 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Storage_Read_Only.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
+_PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 _MAX_ROOT_DIRECTORIES = 9
 _ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
 _DEFAULT_WINDOW_SIZE = (1280, 720)
 _WINDOW_WORK_MARGIN = (32, 40)
+_UI_FONT_FAMILY = "Microsoft YaHei UI"
+_COLOUR_STRIP_HEIGHT = 4
 
 _TOOL_FIELD_BY_NAME = {
     "exiftool": "exiftool_path",
@@ -250,13 +253,30 @@ def queue_progress_fraction(
     )
 
 
-def storage_target_choices(
-    raw_targets: object,
-) -> tuple[tuple[str, str], ...]:
-    """把 STG-11 事件转换为仅含可登记物理盘的稳定下拉选项。"""
+@dataclass(frozen=True)
+class StorageDiskOption:
+    """硬盘池中的一项；脱机或资料不完整的设备只展示、不可选择。"""
+
+    disk_number: int
+    display: str
+    online: bool
+    registrable: bool
+    reason: str
+
+    @property
+    def selectable(self) -> bool:
+        return self.online and self.registrable
+
+    @property
+    def value(self) -> str:
+        return str(self.disk_number)
+
+
+def storage_disk_options(raw_targets: object) -> tuple[StorageDiskOption, ...]:
+    """把 STG-11 事件转换为包含可用与不可用设备的稳定硬盘池。"""
     if not isinstance(raw_targets, list):
         return ()
-    choices: list[tuple[int, str, str]] = []
+    options: list[StorageDiskOption] = []
     seen: set[int] = set()
     for target in raw_targets:
         if not isinstance(target, dict):
@@ -269,18 +289,20 @@ def storage_target_choices(
             or isinstance(disk_number, bool)
             or disk_number < 0
             or disk_number in seen
-            or not isinstance(windows, dict)
-            or not isinstance(smart_device, dict)
         ):
             continue
-        disk = windows.get("disk")
+        windows_available = isinstance(windows, dict)
+        smart_available = isinstance(smart_device, dict)
+        disk = windows.get("disk") if windows_available else {}
         if not isinstance(disk, dict):
             disk = {}
         model = str(
-            disk.get("friendly_name") or disk.get("model") or "型号未提供"
+            disk.get("friendly_name") or disk.get("model")
+            or (smart_device.get("info_name") if smart_available else "")
+            or "型号未提供"
         ).strip()
         explorer_names: list[str] = []
-        partitions = windows.get("partitions")
+        partitions = windows.get("partitions") if windows_available else None
         if isinstance(partitions, list):
             for partition in partitions:
                 if not isinstance(partition, dict):
@@ -308,10 +330,37 @@ def storage_target_choices(
             model[:64],
             size_text,
         ))
-        choices.append((disk_number, display, str(disk_number)))
+        online = windows_available and disk.get("is_offline") is not True
+        registrable = windows_available and smart_available
+        if not windows_available:
+            reason = "Windows 资料不可用"
+        elif not online:
+            reason = "已脱机"
+        elif not smart_available:
+            reason = "smartctl 未关联"
+        else:
+            reason = "联机 · 可登记"
+        options.append(StorageDiskOption(
+            disk_number=disk_number,
+            display=display,
+            online=online,
+            registrable=registrable,
+            reason=reason,
+        ))
         seen.add(disk_number)
-    choices.sort(key=lambda item: item[0])
-    return tuple((display, value) for _number, display, value in choices)
+    options.sort(key=lambda item: item.disk_number)
+    return tuple(options)
+
+
+def storage_target_choices(
+    raw_targets: object,
+) -> tuple[tuple[str, str], ...]:
+    """兼容旧调用：返回硬盘池中联机且资料完整的设备。"""
+    return tuple(
+        (option.display, option.value)
+        for option in storage_disk_options(raw_targets)
+        if option.selectable
+    )
 
 
 def _format_bytes(value: object) -> str:
@@ -1163,8 +1212,8 @@ TASKS = (
     TaskSpec(
         "storage_list",
         "storage-list",
-        "STG-11  物理硬盘清单",
-        "物理硬盘清单",
+        "内部步骤  检测物理硬盘",
+        "检测物理硬盘",
         "联合 Windows 存储接口与 smartctl 列出物理硬盘、分区卷标和设备"
         "关联。此功能需要管理员权限才能完整运行；未提权时请开启顶部管理"
         "员模式开关，并按提示重新启动 DAISY。请先运行本项，再按 "
@@ -1188,7 +1237,7 @@ TASKS = (
     TaskSpec(
         "storage_collect",
         "storage-collect",
-        "STG-12  硬盘信息登记",
+        "STG-11  硬盘信息登记",
         "硬盘信息登记",
         "重新确认指定物理盘身份，只读采集完整 Windows 存储资料和 smartctl"
         " 原始证据，并生成带文件名指纹的独立 ZIP 档案。此功能需要管理员权限"
@@ -1197,9 +1246,10 @@ TASKS = (
         "需要管理员权限 · 物理盘只读 · 生成 ZIP",
         (
             FieldSpec(
-                "disk_number", "物理硬盘编号", "--disk-number",
-                "disk_choice", required=True,
-                help="先点击本页的「检测硬盘」，再从本次清单中选择目标；"
+                "disk_number", "物理硬盘池", "--disk-number",
+                "disk_pool", required=True,
+                help="先检测硬盘，再逐项勾选，或选择全部联机硬盘。脱机或"
+                "缺少 smartctl 关联的设备会保留在清单中说明原因，但不可登记；"
                 "重新检测会清除旧选择，避免热插拔后沿用过期编号。",
                 section="采集目标",
             ),
@@ -1298,12 +1348,15 @@ def task_display_title(task_key: str) -> str:
 _TASK_TOOLBAR_BUTTON_WIDTH = 12
 _TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
 _TASK_TOOLBAR_STYLE_PREFIX = "Env"
-_TASK_TOOLBAR_LABEL_COLOUR = _GREEN_DEEP
+_TASK_TOOLBAR_LABEL_COLOUR = _TEXT
 _UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
 _UNIFIED_ACTION_FOREGROUND = "white"
 _RUN_BUTTON_TEXT = "开始任务"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 _PANEL_HEADER_PADX = 14
+_PANEL_ACTION_BUTTON_WIDTH = 9
+_PANEL_ACTION_BUTTON_GAP = 6
+_STORAGE_DISK_CHECKBOX_SIZE = 20
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
 
 
@@ -1329,9 +1382,20 @@ def _root_job_label(root_spec: str) -> str:
 
 def build_run_jobs(task_key: str,
                    values: dict[str, object]) -> list[RunJob]:
-    """把 GUI 参数拆成实际子进程任务；分别模式是一根一任务。"""
+    """把 GUI 参数拆成实际子进程任务；目录和硬盘均可逐项排队。"""
     task = TASK_BY_KEY[task_key]
     merged = _task_values(task, values)
+    if task_key == "storage_collect":
+        jobs: list[RunJob] = []
+        seen: set[str] = set()
+        for disk_number in _lines(merged.get("disk_number")):
+            if disk_number in seen:
+                continue
+            job_values = dict(merged)
+            job_values["disk_number"] = disk_number
+            jobs.append(RunJob(f"PhysicalDrive{disk_number}", job_values))
+            seen.add(disk_number)
+        return jobs or [RunJob(task.title, merged)]
     if task_key not in _ROOT_BATCH_TASKS:
         return [RunJob(task.title, merged)]
     if (task_key == "full_scan"
@@ -1503,9 +1567,9 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
                 and not resume.lower().endswith(".partial.sqlite")):
             issues.append("续传文件必须以 .partial.sqlite 结尾。")
     if task_key == "storage_collect":
-        disk_number = str(values.get("disk_number") or "").strip()
-        if disk_number and not re.fullmatch(r"\d+", disk_number):
-            issues.append("“物理硬盘编号”必须是非负整数。")
+        disk_numbers = _lines(values.get("disk_number"))
+        if any(not re.fullmatch(r"\d+", number) for number in disk_numbers):
+            issues.append("“物理硬盘池”包含无效编号，请重新检测并选择。")
 
     numeric_rules = {
         ("full_scan", "verify_percent"): (0.0, 100.0, True, False),
@@ -1873,7 +1937,7 @@ class DirectoryListEditor(tk.Frame):
             tk.Label(
                 row, text=f"{index + 1}", width=2,
                 bg=_CONTROL, fg=_GREEN_DEEP,
-                font=("Segoe UI", 8, "bold"),
+                font=("Microsoft YaHei UI", 8, "bold"),
             ).grid(row=0, column=0, sticky="ns", padx=(0, 6))
             variable = tk.StringVar(value=item)
             variable.trace_add(
@@ -1941,6 +2005,144 @@ class DirectoryListEditor(tk.Frame):
     def get(self) -> str:
         values = [variable.get().strip() for variable in self._variables]
         return "\n".join(value for value in values if value)
+
+
+class StorageDiskPool(tk.Frame):
+    """展示当次列盘结果，并允许逐盘或一次选择全部可登记联机盘。"""
+
+    @staticmethod
+    def _checkbox_image(
+        master: tk.Misc, *, selected: bool, disabled: bool = False,
+    ) -> tk.PhotoImage:
+        """绘制 20 px 选择框，避免系统原生小指示器随主题缩得过小。"""
+        size = _STORAGE_DISK_CHECKBOX_SIZE
+        image = tk.PhotoImage(master=master, width=size + 6, height=size)
+        border = _MUTED if disabled else (_GREEN_DEEP if selected else _BORDER)
+        fill = _FIELD if disabled or not selected else _GREEN_DEEP
+        image.put(border, to=(1, 1, size - 1, size - 1))
+        image.put(fill, to=(3, 3, size - 3, size - 3))
+        if selected:
+            for x, y in (
+                (5, 10), (6, 11), (7, 12), (8, 13),
+                (9, 12), (10, 11), (11, 10), (12, 9),
+                (13, 8), (14, 7), (15, 6),
+            ):
+                image.put("white", to=(x, y, x + 2, y + 2))
+        return image
+
+    def __init__(
+        self, master: tk.Misc, *,
+        options: tuple[StorageDiskOption, ...], initial: object = "",
+        on_change=None,
+    ) -> None:
+        super().__init__(
+            master, bg=_SURFACE, highlightbackground=_BORDER,
+            highlightthickness=1,
+        )
+        self.options = options
+        self.on_change = on_change
+        selected = set(_lines(initial))
+        self._variables: dict[int, tk.BooleanVar] = {}
+        self.checkboxes: list[tk.Checkbutton] = []
+        self._checkbox_images: dict[str, tk.PhotoImage] = {}
+        self.grid_columnconfigure(0, weight=1)
+
+        actions = tk.Frame(self, bg=_SURFACE)
+        actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        actions.grid_columnconfigure(0, weight=1, uniform="storage_pool_action")
+        actions.grid_columnconfigure(1, weight=1, uniform="storage_pool_action")
+        select_all = ttk.Button(
+            actions, text="选择所有联机硬盘", style="Browse.TButton",
+            command=self.select_all_online,
+        )
+        select_all.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        clear = ttk.Button(
+            actions, text="清空选择", style="Browse.TButton",
+            command=self.clear_selection,
+        )
+        clear.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        attach_tooltip(
+            select_all,
+            "选择当次清单中所有联机且已成功关联 smartctl 的物理硬盘。",
+        )
+        attach_tooltip(clear, "清除硬盘池中的全部勾选，不会重新检测硬盘。")
+
+        rows = tk.Frame(self, bg=_SURFACE)
+        rows.grid(row=1, column=0, sticky="ew", padx=8, pady=(2, 8))
+        rows.grid_columnconfigure(0, weight=1)
+        if not options:
+            tk.Label(
+                rows, text="尚无硬盘清单，请先点击「检测物理硬盘」。",
+                bg=_SURFACE, fg=_MUTED,
+                font=("Microsoft YaHei UI", 9), anchor="w",
+            ).grid(row=0, column=0, sticky="ew", padx=4, pady=8)
+            return
+
+        self._checkbox_images = {
+            "off": self._checkbox_image(self, selected=False),
+            "on": self._checkbox_image(self, selected=True),
+            "disabled": self._checkbox_image(
+                self, selected=False, disabled=True),
+        }
+
+        for row_index, option in enumerate(options):
+            row = tk.Frame(rows, bg=_SURFACE)
+            row.grid(row=row_index, column=0, sticky="ew", pady=(0, 3))
+            row.grid_columnconfigure(0, weight=1)
+            variable = tk.BooleanVar(
+                value=option.selectable and option.value in selected)
+            self._variables[option.disk_number] = variable
+            base_image = self._checkbox_images[
+                "off" if option.selectable else "disabled"]
+            checkbox = tk.Checkbutton(
+                row, text=option.display, variable=variable,
+                command=self._notify, state=(
+                    "normal" if option.selectable else "disabled"),
+                image=base_image,
+                selectimage=self._checkbox_images["on"],
+                indicatoron=False, compound="left",
+                bg=_SURFACE, activebackground=_SURFACE,
+                fg=_TEXT, activeforeground=_TEXT,
+                disabledforeground=_MUTED, selectcolor=_FIELD,
+                font=("Microsoft YaHei UI", 9), anchor="w",
+                justify="left", wraplength=650,
+                highlightthickness=0, bd=0, relief="flat",
+                offrelief="flat", overrelief="flat", padx=4, pady=4,
+            )
+            checkbox.grid(row=0, column=0, sticky="ew")
+            self.checkboxes.append(checkbox)
+            status_colour = _GREEN_DEEP if option.selectable else _MUTED
+            tk.Label(
+                row, text=option.reason, bg=_SURFACE, fg=status_colour,
+                font=("Microsoft YaHei UI", 8), anchor="e",
+            ).grid(row=0, column=1, sticky="e", padx=(10, 4))
+            row.bind(
+                "<Configure>",
+                lambda event, widget=checkbox: widget.configure(
+                    wraplength=max(220, event.width - 145)),
+            )
+
+    def _notify(self) -> None:
+        if callable(self.on_change):
+            self.on_change()
+
+    def select_all_online(self) -> None:
+        for option in self.options:
+            self._variables[option.disk_number].set(option.selectable)
+        self._notify()
+
+    def clear_selection(self) -> None:
+        for variable in self._variables.values():
+            variable.set(False)
+        self._notify()
+
+    def get(self) -> str:
+        return "\n".join(
+            option.value
+            for option in self.options
+            if option.selectable
+            and self._variables[option.disk_number].get()
+        )
 
 
 def _console_python() -> str:
@@ -2172,7 +2374,8 @@ def about_message() -> str:
     return (
         f"{core.PROJECT_NAME} {_version()}\n"
         f"{core.PROJECT_FULL_NAME}\n"
-        f"作者：{core.PROJECT_AUTHOR}\n\n"
+        f"作者：{core.PROJECT_AUTHOR}\n"
+        f"联系：{_PROJECT_CONTACT}\n\n"
         "环境：检测并管理本机外部工具。\n"
         "数据：生成、核验、分析和导出独立 SQLite 档案快照。\n"
         "硬盘：只读登记物理硬盘信息并生成独立 STG ZIP。\n\n"
@@ -2191,52 +2394,63 @@ def about_message() -> str:
     )
 
 
-def _install_blank_window_icon(root: tk.Misc) -> object | None:
-    """在 Windows 标题栏安装透明 HICON，不影响系统窗口控制。"""
-    if os.name != "nt":
-        return None
+def contact_message() -> str:
+    """返回可复制的作者联系信息。"""
+    return (
+        f"作者：{core.PROJECT_AUTHOR}\n"
+        f"GitHub：{_PROJECT_GITHUB_URL}\n"
+        f"邮箱：{_PROJECT_CONTACT}"
+    )
+
+
+def _create_daisy_icon(root: tk.Misc, size: int) -> tk.PhotoImage:
+    """生成透明底小雏菊图标；提供独立尺寸以避免标题栏缩放发虚。"""
+    image = tk.PhotoImage(master=root, width=size, height=size)
+    scale = 32.0 / size
+    petal_angles = tuple(index * math.pi / 4 for index in range(8))
+    for pixel_y in range(size):
+        y = (pixel_y + 0.5) * scale - 16.0
+        for pixel_x in range(size):
+            x = (pixel_x + 0.5) * scale - 16.0
+            petal_outer = False
+            petal_inner = False
+            for angle in petal_angles:
+                cosine = math.cos(angle)
+                sine = math.sin(angle)
+                radial = x * cosine + y * sine
+                lateral = -x * sine + y * cosine
+                petal_outer = petal_outer or (
+                    ((radial - 8.3) / 6.1) ** 2
+                    + (lateral / 3.5) ** 2 <= 1.0
+                )
+                petal_inner = petal_inner or (
+                    ((radial - 8.3) / 5.3) ** 2
+                    + (lateral / 2.7) ** 2 <= 1.0
+                )
+            radius_squared = x * x + y * y
+            colour = None
+            if petal_outer:
+                colour = _GREEN_DARK
+            if petal_inner:
+                colour = "#FFFDF5"
+            if radius_squared <= 24.0:
+                colour = _AMBER_DEEP
+            if radius_squared <= 14.0:
+                colour = _AMBER
+            if colour is not None:
+                image.put(colour, to=(pixel_x, pixel_y))
+    return image
+
+
+def _install_daisy_window_icon(
+    root: tk.Misc,
+) -> tuple[tk.PhotoImage, ...] | None:
+    """安装简洁小雏菊窗口图标，并保留多尺寸图像防止被回收。"""
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        create_icon = user32.CreateIcon
-        create_icon.argtypes = (
-            wintypes.HINSTANCE, ctypes.c_int, ctypes.c_int,
-            wintypes.BYTE, wintypes.BYTE,
-            ctypes.POINTER(wintypes.BYTE),
-            ctypes.POINTER(wintypes.BYTE),
-        )
-        create_icon.restype = wintypes.HICON
-        send_message = user32.SendMessageW
-        send_message.argtypes = (
-            wintypes.HWND, wintypes.UINT,
-            wintypes.WPARAM, wintypes.LPARAM,
-        )
-        send_message.restype = ctypes.c_ssize_t
-        get_parent = user32.GetParent
-        get_parent.argtypes = (wintypes.HWND,)
-        get_parent.restype = wintypes.HWND
-        set_class_icon = user32.SetClassLongPtrW
-        set_class_icon.argtypes = (
-            wintypes.HWND, ctypes.c_int, ctypes.c_void_p,
-        )
-        set_class_icon.restype = ctypes.c_void_p
-
-        and_mask = (wintypes.BYTE * 2)(0xFF, 0xFF)
-        xor_mask = (wintypes.BYTE * 2)(0x00, 0x00)
-        icon = create_icon(None, 1, 1, 1, 1, and_mask, xor_mask)
-        if not icon:
-            return None
-        widget_handle = wintypes.HWND(root.winfo_id())
-        window_handle = get_parent(widget_handle) or widget_handle
-        set_class_icon(window_handle, -14, icon)
-        set_class_icon(window_handle, -34, icon)
-        wm_seticon = 0x0080
-        send_message(window_handle, wm_seticon, 0, icon)
-        send_message(window_handle, wm_seticon, 1, icon)
-        return icon
-    except (AttributeError, OSError, TypeError, ValueError):
+        icons = tuple(_create_daisy_icon(root, size) for size in (16, 32, 48))
+        root.iconphoto(True, *icons)
+        return icons
+    except (AttributeError, tk.TclError, TypeError, ValueError):
         return None
 
 
@@ -2245,7 +2459,8 @@ class DaisyApp:
         self.root = root
         self.task = TASKS[0]
         self.values: dict[
-            str, tk.Variable | tk.Text | DirectoryListEditor] = {}
+            str, tk.Variable | tk.Text | DirectoryListEditor
+            | StorageDiskPool] = {}
         self.saved_values: dict[str, dict[str, object]] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
@@ -2257,6 +2472,7 @@ class DaisyApp:
         self.missing_installable_tools: tuple[str, ...] = ()
         self.is_administrator = is_windows_administrator()
         self.storage_disk_choices: tuple[tuple[str, str], ...] = ()
+        self.storage_disk_options: tuple[StorageDiskOption, ...] = ()
         self._work_progress_indeterminate = False
         self.current_stage_index = 0
         self.current_stage_total = 0
@@ -2299,7 +2515,7 @@ class DaisyApp:
     def _configure_window(self) -> None:
         self.root.title(project_window_title())
         self.window_icon_handle: object | None = None
-        self.root.after(100, self._apply_blank_window_icon)
+        self.root.after(100, self._apply_window_icon)
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         width, height = window_size_for_screen(screen_width, screen_height)
@@ -2318,6 +2534,15 @@ class DaisyApp:
         self.root.minsize(*self.normal_min_size)
         self.root.configure(bg=_BG)
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
+        for font_name in (
+                "TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
+                "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont",
+                "TkIconFont", "TkTooltipFont"):
+            try:
+                tkfont.nametofont(font_name, root=self.root).configure(
+                    family=_UI_FONT_FAMILY)
+            except tk.TclError:
+                continue
 
     def _schedule_monitor_refresh(
         self, event: tk.Event | None = None,
@@ -2383,8 +2608,8 @@ class DaisyApp:
             self.root.geometry(
                 _window_geometry_string(width, height, x, y))
 
-    def _apply_blank_window_icon(self) -> None:
-        self.window_icon_handle = _install_blank_window_icon(self.root)
+    def _apply_window_icon(self) -> None:
+        self.window_icon_handle = _install_daisy_window_icon(self.root)
 
     def _configure_styles(self) -> None:
         self.style = ttk.Style(self.root)
@@ -2432,7 +2657,7 @@ class DaisyApp:
         style.configure(
             "Remove.TButton", background=_DANGER_SOFT, foreground=_DANGER,
             bordercolor=_DANGER_BORDER, padding=(6, 5),
-            font=("Segoe UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 9, "bold"),
         )
         style.map(
             "Remove.TButton",
@@ -2475,6 +2700,16 @@ class DaisyApp:
         )
         style.map(
             "Mini.TButton", background=[("active", _CONTROL_HOVER)])
+        style.configure(
+            "PanelHeader.TButton", background=_CONTROL, foreground=_TEXT,
+            padding=(9, 4), font=("Microsoft YaHei UI", 8),
+            borderwidth=1, bordercolor=_BORDER,
+            lightcolor=_BORDER, darkcolor=_BORDER,
+        )
+        style.map(
+            "PanelHeader.TButton",
+            background=[("active", _CONTROL_HOVER)],
+        )
         top_task_layout = [(
             "Button.border",
             {
@@ -2764,7 +2999,9 @@ class DaisyApp:
         menu.add_cascade(label="视图", menu=view_menu)
 
         help_menu = tk.Menu(menu, **base_menu_options)
+        help_menu.add_command(label="联系作者", command=self._show_author_contact)
         help_menu.add_command(label="关于 DAISY", command=self._show_about)
+        help_menu.add_separator()
         help_menu.add_command(
             label="打开 GitHub 主页", command=self._open_github)
         menu.add_cascade(label="帮助", menu=help_menu)
@@ -2863,7 +3100,8 @@ class DaisyApp:
         content_pad = 12 if self.compact_layout else 18
         self.content_pad = content_pad
 
-        colour_strip = tk.Frame(self.root, bg=_BG, height=4)
+        colour_strip = tk.Frame(
+            self.root, bg=_BG, height=_COLOUR_STRIP_HEIGHT)
         self.colour_strip = colour_strip
         colour_strip.pack(fill="x", side="top")
         colour_strip.pack_propagate(False)
@@ -2985,23 +3223,33 @@ class DaisyApp:
             progress_header, text="运行进度", bg=_SURFACE, fg=_TEXT,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         ).pack(side="left")
-        self.progress_toggle_button = ttk.Button(
-            progress_header, text="收起进度", style="Mini.TButton",
-            command=self._toggle_progress_panel,
-        )
-        self.progress_toggle_button.pack(side="right")
-        attach_tooltip(
-            self.progress_toggle_button,
-            "展开或收起队列、任务阶段与本阶段进度。",
-        )
+        progress_actions = tk.Frame(progress_header, bg=_SURFACE)
+        progress_actions.pack(side="right")
+        progress_actions.grid_columnconfigure(
+            0, weight=1, uniform="panel_header_action")
+        progress_actions.grid_columnconfigure(
+            1, minsize=_PANEL_ACTION_BUTTON_GAP)
+        progress_actions.grid_columnconfigure(
+            2, weight=1, uniform="panel_header_action")
         self.mini_mode_button = ttk.Button(
-            progress_header, text="小窗运行", style="Mini.TButton",
+            progress_actions, text="小窗运行", style="PanelHeader.TButton",
+            width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_mini_mode, state="normal",
         )
-        self.mini_mode_button.pack(side="right", padx=(0, 6))
+        self.mini_mode_button.grid(row=0, column=0, sticky="ew")
         attach_tooltip(
             self.mini_mode_button,
             "随时切换小窗；只保留进度、停止与返回控制。",
+        )
+        self.progress_toggle_button = ttk.Button(
+            progress_actions, text="收起进度", style="PanelHeader.TButton",
+            width=_PANEL_ACTION_BUTTON_WIDTH,
+            command=self._toggle_progress_panel,
+        )
+        self.progress_toggle_button.grid(row=0, column=2, sticky="ew")
+        attach_tooltip(
+            self.progress_toggle_button,
+            "展开或收起队列、任务阶段与本阶段进度。",
         )
         self.mini_stop_button = ttk.Button(
             progress_header, text="停止", style="MiniStop.TButton",
@@ -3047,7 +3295,7 @@ class DaisyApp:
         self.queue_detail_label.grid(row=1, column=1, sticky="ew")
         self.queue_percent_label = tk.Label(
             progress_body, text="0%", bg=_SURFACE, fg=_GREEN_DEEP,
-            font=("Segoe UI", 8, "bold"), anchor="e",
+            font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
         )
         self.queue_percent_label.grid(row=1, column=2, sticky="e")
         self.queue_progress_bar = ttk.Progressbar(
@@ -3085,7 +3333,7 @@ class DaisyApp:
         self.progress_detail_label.grid(row=5, column=1, sticky="ew")
         self.progress_percent_label = tk.Label(
             progress_body, text="0%", bg=_SURFACE, fg=_GREEN_DARK,
-            font=("Segoe UI", 8, "bold"), anchor="e",
+            font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
         )
         self.progress_percent_label.grid(row=5, column=2, sticky="e")
         self.progress_work_bar = ttk.Progressbar(
@@ -3107,24 +3355,34 @@ class DaisyApp:
             log_header, text="运行日志", bg=_LOG_HEADER, fg=_TEXT,
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left", padx=14, pady=8)
-        self.log_toggle_button = ttk.Button(
-            log_header, text="收起日志", style="Mini.TButton",
-            command=self._toggle_log_panel,
-        )
-        self.log_toggle_button.pack(
+        log_actions = tk.Frame(log_header, bg=_LOG_HEADER)
+        log_actions.pack(
             side="right", padx=_PANEL_HEADER_PADX, pady=5)
-        attach_tooltip(
-            self.log_toggle_button,
-            "展开或收起运行日志；已有日志内容不会被清除。",
-        )
+        log_actions.grid_columnconfigure(
+            0, weight=1, uniform="panel_header_action")
+        log_actions.grid_columnconfigure(
+            1, minsize=_PANEL_ACTION_BUTTON_GAP)
+        log_actions.grid_columnconfigure(
+            2, weight=1, uniform="panel_header_action")
         self.clear_log_button = ttk.Button(
-            log_header, text="清空日志", style="Mini.TButton",
+            log_actions, text="清空日志", style="PanelHeader.TButton",
+            width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._clear_log,
         )
-        self.clear_log_button.pack(side="right", padx=(0, 6), pady=5)
+        self.clear_log_button.grid(row=0, column=0, sticky="ew")
         attach_tooltip(
             self.clear_log_button,
             "清空当前窗口的运行日志，不影响任务或正式产物。",
+        )
+        self.log_toggle_button = ttk.Button(
+            log_actions, text="收起日志", style="PanelHeader.TButton",
+            width=_PANEL_ACTION_BUTTON_WIDTH,
+            command=self._toggle_log_panel,
+        )
+        self.log_toggle_button.grid(row=0, column=2, sticky="ew")
+        attach_tooltip(
+            self.log_toggle_button,
+            "展开或收起运行日志；已有日志内容不会被清除。",
         )
         log_body = tk.Frame(
             log_panel, bg=_LOG_BG,
@@ -3136,7 +3394,7 @@ class DaisyApp:
         self.log = tk.Text(
             log_body, bg=_LOG_BG, fg=_LOG_TEXT, insertbackground=_TEXT,
             selectbackground=_LOG_SELECT, relief="flat", bd=0,
-            font=("Consolas", 9), wrap="word", padx=13, pady=10,
+            font=("Microsoft YaHei UI", 9), wrap="word", padx=13, pady=10,
             state="disabled",
         )
         log_scroll = ttk.Scrollbar(
@@ -3772,7 +4030,9 @@ class DaisyApp:
             row=row, column=0, columnspan=2, sticky="ew",
             padx=form_pad, pady=(15, 5),
         )
-        found_count = len(self.storage_disk_choices)
+        found_count = len(self.storage_disk_options)
+        selectable_count = sum(
+            option.selectable for option in self.storage_disk_options)
         tk.Label(
             panel, text="登记准备", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
@@ -3780,9 +4040,10 @@ class DaisyApp:
         detail = tk.Label(
             panel,
             text=(
-                f"已找到 {found_count} 块可登记硬盘。请在热插拔后重新检测。"
+                f"已检测 {found_count} 块物理硬盘，其中 {selectable_count} 块"
+                "联机且可登记。若接入硬盘发生变化，请重新进行检测。"
                 if found_count else
-                "先检测本机物理硬盘，再从本次清单选择登记目标。检测是登记"
+                "先检测本机物理硬盘，再从硬盘池选择登记目标。检测是登记"
                 "流程的准备步骤，不是独立功能模块。"
             ),
             bg=_SURFACE, fg=_TEXT,
@@ -3898,7 +4159,14 @@ class DaisyApp:
                       pady=(8, 3))
             cell.grid_columnconfigure(0, weight=1)
 
-            if spec.kind in ("choice", "choice_flag", "disk_choice"):
+            if spec.kind == "disk_pool":
+                widget = StorageDiskPool(
+                    cell, options=self.storage_disk_options,
+                    initial=current, on_change=self._update_preview,
+                )
+                widget.grid(row=0, column=0, columnspan=2, sticky="ew")
+                self.values[spec.key] = widget
+            elif spec.kind in ("choice", "choice_flag", "disk_choice"):
                 choices = self._field_choices(spec)
                 var = tk.StringVar(
                     value=self._choice_display(spec, current))
@@ -3925,7 +4193,8 @@ class DaisyApp:
                 widget = tk.Text(
                     cell, height=3, wrap="none", bg=_FIELD, fg=_TEXT,
                     insertbackground=_TEXT, relief="solid", bd=1,
-                    highlightthickness=0, font=("Consolas", 9),
+                    highlightthickness=0,
+                    font=("Microsoft YaHei UI", 9),
                     padx=7, pady=6,
                 )
                 widget.grid(row=0, column=0, sticky="ew")
@@ -4066,7 +4335,7 @@ class DaisyApp:
         specs = {spec.key: spec for spec in self.task.fields}
         for key, source in self.values.items():
             spec = specs[key]
-            if isinstance(source, DirectoryListEditor):
+            if isinstance(source, (DirectoryListEditor, StorageDiskPool)):
                 result[key] = source.get()
             elif isinstance(source, tk.Text):
                 result[key] = source.get("1.0", "end-1c")
@@ -4354,6 +4623,13 @@ class DaisyApp:
             parent=self.root,
         )
 
+    def _show_author_contact(self) -> None:
+        messagebox.showinfo(
+            "联系作者",
+            contact_message(),
+            parent=self.root,
+        )
+
     def _open_output(self) -> None:
         path = self._output_path()
         if not os.path.isdir(path):
@@ -4412,6 +4688,7 @@ class DaisyApp:
         disk = clean_project_caches()
         self.saved_values.clear()
         self.storage_disk_choices = ()
+        self.storage_disk_options = ()
         self.environment_missing_names = ()
         self.missing_installable_tools = ()
         if self.mini_mode:
@@ -4533,8 +4810,13 @@ class DaisyApp:
         )
         if rebuild_form and getattr(self, "values", None):
             self.saved_values["storage_collect"] = self._collect_values()
-        self.storage_disk_choices = storage_target_choices(
+        self.storage_disk_options = storage_disk_options(
             payload.get("targets"))
+        self.storage_disk_choices = tuple(
+            (option.display, option.value)
+            for option in self.storage_disk_options
+            if option.selectable
+        )
         self.saved_values.setdefault("storage_collect", {}).pop(
             "disk_number", None)
         if rebuild_form:
@@ -4622,7 +4904,7 @@ class DaisyApp:
 
     def _queue_prefix(self) -> str:
         total = len(self.run_jobs)
-        if total <= 1 or self.run_job_index < 0:
+        if total <= 0 or self.run_job_index < 0:
             return ""
         label = self.run_jobs[self.run_job_index].label
         return f"队列 {self.run_job_index + 1}/{total} · {label} · "
@@ -4634,10 +4916,7 @@ class DaisyApp:
             style="Queue.Horizontal.TProgressbar",
         )
         self.queue_detail_label.configure(
-            text=(
-                f"0/{total} · 队列已准备"
-                if total > 1 else "0/1 · 单项任务已准备"
-            ),
+            text=f"0/{max(1, total)} · 队列已准备",
             fg=_MUTED,
         )
         self.queue_percent_label.configure(text="0%", fg=_GREEN_DEEP)
@@ -4855,9 +5134,12 @@ class DaisyApp:
                 and values.get("check_scope") == "full"):
             warnings.append("全量哈希核对会读取所有有基准哈希的文件。")
         if self.task.key == "storage_collect":
+            disk_numbers = _lines(values.get("disk_number"))
+            disk_list = "\n".join(
+                f"• PhysicalDrive{number}" for number in disk_numbers)
             warnings.extend((
-                f"将只读登记 PhysicalDrive{values.get('disk_number')}；"
-                "程序会在采集前重新核对设备身份。",
+                "将对以下物理硬盘分别运行硬盘信息登记，并分别生成独立 ZIP："
+                f"\n{disk_list}\n程序会在每次采集前重新核对设备身份。",
                 "完整 smartctl 与 Windows 存储查询可能唤醒休眠硬盘，"
                 "但不会启动自检或修改硬盘设置。",
                 "生成的 ZIP 可能包含序列号、卷标、挂载路径、计算机名与"
@@ -4877,6 +5159,7 @@ class DaisyApp:
         """锁定界面并启动同一任务的一项或多项目标。"""
         if task_key == "storage_list":
             self.storage_disk_choices = ()
+            self.storage_disk_options = ()
             self.saved_values.setdefault("storage_collect", {}).pop(
                 "disk_number", None)
         self.process_task_key = task_key
@@ -4896,12 +5179,9 @@ class DaisyApp:
         self._set_task_navigation_state("disabled")
         self._refresh_environment_actions()
         if task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("正在启动 DAISY 功能自检…")
+            self._set_status(f"队列已准备：{len(jobs)} 项 · DAISY 功能自检。")
         else:
-            self._set_status(
-                f"队列已准备：{len(jobs)} 项。" if len(jobs) > 1
-                else "正在启动任务…"
-            )
+            self._set_status(f"队列已准备：{len(jobs)} 项。")
         self._start_next_job()
 
     def _run_self_test(self) -> None:
@@ -4946,6 +5226,7 @@ class DaisyApp:
             return
         self._save_current_values()
         self.storage_disk_choices = ()
+        self.storage_disk_options = ()
         self.saved_values.setdefault("storage_collect", {}).pop(
             "disk_number", None)
         self._build_form()
@@ -5044,21 +5325,17 @@ class DaisyApp:
             command = [_console_python(), "-u", _MAIN] + tool_args
             command_text = preview_commands(task_key, effective)[0][1]
         total = len(self.run_jobs)
-        if total > 1:
-            self._set_status(
-                f"队列 {next_index + 1}/{total} · 正在启动 {job.label}…"
-            )
-        elif task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("DAISY 功能自检运行中…")
-        elif task_key == _DEPENDENCY_INSTALL_KEY:
-            self._set_status(
-                f"正在下载并安装 {job.label}…")
-        else:
-            self._set_status("正在启动任务…")
+        action = (
+            "正在运行 DAISY 功能自检"
+            if task_key == _PROJECT_SELF_TEST_KEY else
+            f"正在下载并安装 {job.label}"
+            if task_key == _DEPENDENCY_INSTALL_KEY else
+            f"正在启动 {job.label}"
+        )
+        self._set_status(
+            f"队列 {next_index + 1}/{total} · {action}…")
         self._begin_progress()
-        heading = (
-            f"队列 {next_index + 1}/{total}「{job.label}」"
-            if total > 1 else job.label)
+        heading = f"队列 {next_index + 1}/{total}「{job.label}」"
         self._append_log(
             f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
             f"开始 {heading}：{command_text}\n",
@@ -5342,20 +5619,18 @@ class DaisyApp:
         job = (
             self.run_jobs[self.run_job_index]
             if self.run_jobs and self.run_job_index >= 0 else None)
-        if total > 1:
-            self._update_queue_progress(
-                1.0,
-                f"已处理 {len(self.run_results)}/{total} · {job.label}"
-                if job else f"已处理 {len(self.run_results)}/{total}",
-            )
+        self._update_queue_progress(
+            1.0,
+            f"已处理 {len(self.run_results)}/{total} · {job.label}"
+            if job else f"已处理 {len(self.run_results)}/{total}",
+        )
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         item = (
             f"队列 {self.run_job_index + 1}/{total}「{job.label}」"
-            if total > 1 and job else
+            if job else
             ("DAISY 功能自检" if self_test else "任务"))
         if returncode is None:
-            if total > 1:
-                self._append_log(f"\n{item}未能启动。\n", "error")
+            self._append_log(f"\n{item}未能启动。\n", "error")
         elif self.stop_requested:
             self._append_log(
                 f"\n{item}已停止（退出码 {returncode}，"
@@ -5366,7 +5641,7 @@ class DaisyApp:
         elif (returncode == 1 and total <= 1 and not self_test
               and self.process_task_key != _DEPENDENCY_INSTALL_KEY):
             self._append_log(
-                f"\n任务完成，但发现差异或异常（退出码 1，用时 "
+                f"\n{item}完成，但发现差异或异常（退出码 1，用时 "
                 f"{elapsed:.1f}s）。\n", "warning")
         else:
             self._append_log(

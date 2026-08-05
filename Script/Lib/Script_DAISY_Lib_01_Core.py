@@ -20,6 +20,7 @@ import uuid
 PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
+PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 SCANNER_VERSION = "1.5.0"      # 包版本
 SCHEMA_VERSION = 3
 READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
@@ -27,6 +28,25 @@ MIN_READER_VERSION = "1.4.1"
 DATA_CONTRACT = "daisy-snapshot-v3"
 PATH_KEY_RULE = 1
 FILENAME_LAYOUT_VERSION = 2
+
+
+def report_metadata(tool_name: str) -> dict[str, str]:
+    """返回报告文件共用的生成工具身份，不涉及数据库 schema。"""
+    return {
+        "tool_name": f"{PROJECT_NAME} {str(tool_name).strip()}",
+        "tool_version": SCANNER_VERSION,
+        "tool_author": PROJECT_AUTHOR,
+    }
+
+
+def report_markdown_lines(tool_name: str) -> list[str]:
+    """返回可直接插入 Markdown 报告标题后的工具署名。"""
+    identity = report_metadata(tool_name)
+    return [
+        f"- 工具：`{identity['tool_name']}`",
+        f"- 版本：`{identity['tool_version']}`",
+        f"- 作者：`{identity['tool_author']}`",
+    ]
 
 # 支持格式映射；配置可扩展，新增格式须附样本实测
 EXT_TO_KIND = {
@@ -1576,6 +1596,7 @@ def render_snapshot_issue_report(snapshot_path: str,
     lines = [
         "# DAISY 问题报告",
         "",
+        *report_markdown_lines("DBS 快照问题报告"),
         f"- 数据库：`{artifact_filename or os.path.basename(path)}`",
         f"- 快照 UUID：`{info['snapshot_uuid']}`",
         f"- 原扫描器版本：`{info['scanner_version']}`",

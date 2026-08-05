@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_DBS_31_Check_Hash：内容哈希核验。
+r"""Script_DAISY_Module_DBS_31_Check_Hash：DBS-31 内容哈希核验。
 
 ① 全量 stat 核对：快照全部条目的存在性与 size/mtime（枚举级，分钟级）；
 ② 哈希核对：stat 未变者中抽样（默认 1%，至少 100，按大小分层）或 --full 全量，
@@ -18,8 +18,8 @@ import os
 import sqlite3
 import sys
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_03_Hash as dbh
@@ -179,6 +179,7 @@ def main() -> int:
 
     prog.finish(
         f"stat {rep['stat_checked']:,} 条 / 哈希 {rep['hash_checked']:,} 条")
+    rep["report_metadata"] = core.report_metadata("DBS-31 内容哈希核验")
     if args.report:
         report_path = os.path.abspath(args.report)
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
@@ -201,6 +202,7 @@ def main() -> int:
         )
         lines = [
             "# DAISY 内容哈希核验问题报告", "",
+            *core.report_markdown_lines("DBS-31 内容哈希核验"), "",
             f"- 快照：`{rep['snapshot']}`",
             f"- 快照 UUID：`{rep['snapshot_uuid']}`",
             f"- 核对时间：`{rep['checked_at_utc']}`",

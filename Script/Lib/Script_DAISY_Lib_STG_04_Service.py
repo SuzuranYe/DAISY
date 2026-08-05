@@ -245,7 +245,9 @@ def render_collection_report(
     smart_flags = core.decode_smartctl_exit_status(smart.exit_status)
     critical_smart_lines = _critical_smart_lines(smart.payload)
     lines = [
-        f"{core.APP_TITLE} v{core.APP_VERSION}",
+        f"工具：{core.APP_NAME} STG-11 硬盘信息登记",
+        f"版本：{core.APP_VERSION}",
+        f"作者：{core.APP_AUTHOR}",
         "=" * 72,
         f"采集开始（UTC）：{started_at_utc}",
         f"采集完成（UTC）：{collected_at_utc}",

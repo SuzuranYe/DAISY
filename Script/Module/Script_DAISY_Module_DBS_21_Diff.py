@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_DBS_21_Diff：快照变更分析。
+r"""Script_DAISY_Module_DBS_21_Diff：DBS-21 快照变更分析。
 
 语义说明：Spec/Spec_DAISY_Technical.md。摘要／CSV 导出由 `export-report`
 子命令从 Diff 数据库生成；本脚本输出控制台摘要。
@@ -15,8 +15,8 @@ import os
 import sqlite3
 import sys
 
-_TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
-_LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
+_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+_LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_04_Diff as dbdiff
@@ -65,6 +65,8 @@ def _render_diff_issue_report(db_path: str, artifact_filename: str,
     ]
     lines = [
         "# DAISY Diff 问题报告",
+        "",
+        *core.report_markdown_lines("DBS-21 快照变更分析"),
         "",
         f"- 数据库：`{artifact_filename}`",
         f"- 报告生成时间：`{core.now_utc_iso()}`",

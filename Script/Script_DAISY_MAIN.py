@@ -1,6 +1,6 @@
 r"""Script_DAISY_MAIN：DAISY 统一入口。
 
-全部日常命令行操作从本文件进入；工具位于 Tool 子目录并由本入口分发，
+全部日常命令行操作从本文件进入；功能模块位于 Module 子目录并由本入口分发，
 项目根的 Python 运行入口只保留 Windows GUI 启动器。
 
 用法：
@@ -20,36 +20,37 @@ if hasattr(sys.stdout, "reconfigure"):
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BASE = os.path.dirname(_SCRIPT_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
-_TOOL_DIR = os.path.join(_SCRIPT_DIR, "Tool")
+_MODULE_DIR = os.path.join(_SCRIPT_DIR, "Module")
 sys.path[:0] = [
-    path for path in (_SCRIPT_DIR, _LIB_DIR, _TOOL_DIR)
+    path for path in (_SCRIPT_DIR, _LIB_DIR, _MODULE_DIR)
     if path not in sys.path
 ]
 
-# 子命令 → (模块名, 一句话说明)。分发为薄转发：参数原样传给工具的 main()。
+# 子命令 → (模块名, 一句话说明)。分发为薄转发：参数原样传给模块的 main()。
 COMMANDS = {
     "gui": ("Script_DAISY_GUI",
             "图形界面：填写参数、查看进度与实时日志"),
-    "env-check": ("Script_DAISY_Tool_ENV_01_Env_Check",
+    "env-check": ("Script_DAISY_Module_ENV_01_Env_Check",
                   "ENV-01 运行环境检测：工具发现、版本、冒烟与只读断言"),
-    "full-scan": ("Script_DAISY_Tool_DBS_11_Full_Scan",
+    "full-scan": ("Script_DAISY_Module_DBS_11_Full_Scan",
                   "DBS-11 完整档案扫描：文件树、元数据与哈希快照"),
-    "quick-scan": ("Script_DAISY_Tool_DBS_12_Quick_Scan",
+    "quick-scan": ("Script_DAISY_Module_DBS_12_Quick_Scan",
                    "DBS-12 快速档案扫描：只登记文件树与文件信息"),
-    "diff": ("Script_DAISY_Tool_DBS_21_Diff",
+    "diff": ("Script_DAISY_Module_DBS_21_Diff",
              "DBS-21 快照变更分析：分类变化与证据等级"),
-    "check-hash": ("Script_DAISY_Tool_DBS_31_Check_Hash",
+    "check-hash": ("Script_DAISY_Module_DBS_31_Check_Hash",
                    "DBS-31 内容哈希核验：独立复算 SHA-256"),
-    "check-format": ("Script_DAISY_Tool_DBS_32_Check_Format",
+    "check-format": ("Script_DAISY_Module_DBS_32_Check_Format",
                      "DBS-32 文件结构核验：检查结构与可解析性"),
-    "export-report": ("Script_DAISY_Tool_DBS_41_Export_Report",
+    "export-report": ("Script_DAISY_Module_DBS_41_Export_Report",
                       "DBS-41 结果报告导出：从快照或 Diff 导出报告"),
-    "storage-list": ("Script_DAISY_Tool_STG_11_List_Disks",
-                     "STG-11 物理硬盘清单：列盘并关联 smartctl"),
-    "storage-collect": ("Script_DAISY_Tool_STG_12_Collect",
-                        "STG-12 硬盘信息登记：只读采集并生成 ZIP"),
-    "storage-verify": ("Script_DAISY_Tool_STG_21_Verify_Archive",
-                       "STG-21 硬盘归档核验：核验指纹、结构与 CRC"),
+    "storage-list": ("Script_DAISY_Module_STG_11_Collect",
+                     "STG-11 页内检测：列盘并关联 smartctl"),
+    "storage-collect": ("Script_DAISY_Module_STG_11_Collect",
+                        "STG-11 硬盘信息登记：只读采集并生成 ZIP"),
+}
+COMMAND_ARGUMENT_PREFIXES = {
+    "storage-list": ("--list",),
 }
 
 
@@ -92,7 +93,6 @@ def guide() -> str:
         "  完整性复核      full-scan --hash full --metadata-storage normalized 后与首扫快照 diff",
         "  物理硬盘清单    python .\\Script\\Script_DAISY_MAIN.py storage-list",
         "  单盘信息登记    python .\\Script\\Script_DAISY_MAIN.py storage-collect --disk-number 3",
-        "  存储档案核验    python .\\Script\\Script_DAISY_MAIN.py storage-verify .\\Output\\Storage\\档案.zip",
         "",
         "产物去向：Output\\Snapshots\\（单文件自描述快照，文件名带高32bit指纹）",
         "          Output\\Diffs\\（单文件对比库）｜Output\\Reports\\（报告报表，可删可重生）",
@@ -132,11 +132,15 @@ def main() -> int:
         mod = importlib.import_module(module_name)
     except ImportError as exc:               # 包不完整：给人话而非堆栈
         print(f"包不完整，无法加载子命令 {cmd} 所需模块：{exc}\n"
-              f"  请核对 {_SCRIPT_DIR} 下 GUI、Tool 与 Lib 内容"
+              f"  请核对 {_SCRIPT_DIR} 下 GUI、Module 与 Lib 内容"
               f"是否齐全（清单见 README.md）",
               file=sys.stderr)
         return 2
-    sys.argv = [module_name + ".py"] + sys.argv[2:]
+    sys.argv = [
+        module_name + ".py",
+        *COMMAND_ARGUMENT_PREFIXES.get(cmd, ()),
+        *sys.argv[2:],
+    ]
     t0 = time.monotonic()
     rc = mod.main()
     elapsed = time.monotonic() - t0

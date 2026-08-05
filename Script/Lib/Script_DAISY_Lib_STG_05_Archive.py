@@ -100,6 +100,7 @@ def _manifest(
             "name": core.APP_NAME,
             "title": core.APP_TITLE,
             "version": core.APP_VERSION,
+            "author": core.APP_AUTHOR,
         },
         "archive_role": core.ARCHIVE_ROLE,
         "archive": {
@@ -328,6 +329,12 @@ def create_archive(
         _write_exclusive(summary_working, report_bytes, label="简化报告")
 
     _publish_no_clobber(working, final, label="ZIP 归档")
+    try:
+        verified = verify_archive(final)
+    except core.DaisySmartError as exc:
+        raise core.DaisySmartError(
+            f"ZIP 已发布，但创建后完整自检失败：{final}：{exc}"
+        ) from exc
     if summary_final is not None and summary_working is not None:
         try:
             _publish_no_clobber(summary_working, summary_final, label="简化报告")
@@ -340,8 +347,8 @@ def create_archive(
         path=str(final),
         zip_sha256=zip_sha256,
         fingerprint=fingerprint,
-        internal_files=tuple(sorted(archive_files)),
-        manifest=manifest,
+        internal_files=verified.internal_files,
+        manifest=verified.manifest,
         summary_report_path=str(summary_final) if summary_final else None,
     )
 
