@@ -1,4 +1,4 @@
-"""列出 Windows 物理盘及其 smartctl 关联。"""
+"""Script_DAISY_Tool_STG_11_List_Disks：列出物理盘及 smartctl 关联。"""
 from __future__ import annotations
 
 import argparse
@@ -10,8 +10,8 @@ _TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 
-import Script_DAISY_SMART_Lib_01_Core as core
-import Script_DAISY_SMART_Lib_04_Service as service
+import Script_DAISY_Lib_STG_01_Core as core
+import Script_DAISY_Lib_STG_04_Service as service
 
 
 def main(argv: list[str] | None = None) -> int:

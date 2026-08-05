@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import Script_DAISY_SMART_Lib_01_Core as core
+import Script_DAISY_Lib_STG_01_Core as core
 
 
 SMARTCTL_ENV = "SMARTCTL_PATH"

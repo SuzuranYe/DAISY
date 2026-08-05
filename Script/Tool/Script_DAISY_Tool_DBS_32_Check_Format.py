@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_23_Check_Format：格式完整性校验。
+r"""Script_DAISY_Tool_DBS_32_Check_Format：文件结构核验。
 
 哈希证明「没变」，本脚本回答「是不是好的」。从快照读目标清单，对当前磁盘
 文件执行结构级校验（每格式一档，不做深度解码），产出 JSON＋CSV＋MD 报告，
@@ -368,7 +368,7 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
                         r["validator"], r["status"], r["detail"],
                         r["stat_match"]])
     files.append(base + ".csv")
-    md = [f"# 格式完整性校验报告", "",
+    md = ["# 文件结构核验报告", "",
           f"- 快照：`{report['snapshot']}`（uuid `{uuid_}`）",
           f"- 口径：{report['mode']}；核对 {report['checked']:,} 条；"
           f"用时 {report['elapsed_s']}s",
@@ -397,7 +397,8 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="格式完整性校验（只读，独立报告）")
+    ap = argparse.ArgumentParser(
+        description="DBS-32 文件结构核验（只读，独立报告）")
     ap.add_argument("--snapshot", required=True)
     ap.add_argument(
         "--root", action="append", required=True,

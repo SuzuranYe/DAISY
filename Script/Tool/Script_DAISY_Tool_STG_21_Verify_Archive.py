@@ -1,4 +1,4 @@
-"""核验 DAISY ZIP 的文件名指纹、schema 3 成员结构与 CRC。"""
+"""Script_DAISY_Tool_STG_21_Verify_Archive：核验存储 ZIP 结构与 CRC。"""
 from __future__ import annotations
 
 import argparse
@@ -10,8 +10,8 @@ _TOOL_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 
-import Script_DAISY_SMART_Lib_01_Core as core
-import Script_DAISY_SMART_Lib_05_Archive as archive
+import Script_DAISY_Lib_STG_01_Core as core
+import Script_DAISY_Lib_STG_05_Archive as archive
 
 
 def main(argv: list[str] | None = None) -> int:

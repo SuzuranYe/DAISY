@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_21_Diff：对比两个封存快照，产出 Diff 数据库（权威结果）。
+r"""Script_DAISY_Tool_DBS_21_Diff：快照变更分析。
 
 语义说明：Spec/Spec_DAISY_Technical.md。摘要／CSV 导出由 `export-report`
 子命令从 Diff 数据库生成；本脚本输出控制台摘要。
@@ -101,7 +101,8 @@ def _render_diff_issue_report(db_path: str, artifact_filename: str,
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="快照对比（只读双输入，独立输出）")
+    ap = argparse.ArgumentParser(
+        description="DBS-21 快照变更分析（只读双输入，独立输出）")
     ap.add_argument("--old", required=True, help="旧（基准）封存快照 .sqlite")
     ap.add_argument("--new", required=True, help="新封存快照 .sqlite")
     ap.add_argument("--output-dir", default="Output/Diffs")

@@ -1,4 +1,4 @@
-"""采集单块硬盘并生成指纹 ZIP。"""
+"""Script_DAISY_Tool_STG_12_Collect：采集单块硬盘并生成指纹 ZIP。"""
 from __future__ import annotations
 
 import argparse
@@ -12,9 +12,9 @@ _BASE = os.path.dirname(_SCRIPT_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 sys.path.insert(0, _LIB_DIR)
 
-import Script_DAISY_SMART_Lib_01_Core as core
-import Script_DAISY_SMART_Lib_04_Service as service
-import Script_DAISY_SMART_Lib_05_Archive as archive
+import Script_DAISY_Lib_STG_01_Core as core
+import Script_DAISY_Lib_STG_04_Service as service
+import Script_DAISY_Lib_STG_05_Archive as archive
 
 
 def main(argv: list[str] | None = None) -> int:

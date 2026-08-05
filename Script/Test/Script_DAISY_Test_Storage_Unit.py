@@ -20,13 +20,13 @@ _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 _TOOL_DIR = os.path.join(_SCRIPT_DIR, "Tool")
 sys.path[:0] = [_LIB_DIR, _TOOL_DIR, _SCRIPT_DIR]
 
-import Script_DAISY_SMART_Lib_01_Core as core
-import Script_DAISY_SMART_Lib_02_Windows as windows
-import Script_DAISY_SMART_Lib_03_Smartctl as smartctl
-import Script_DAISY_SMART_Lib_04_Service as service
-import Script_DAISY_SMART_Lib_05_Archive as archive
+import Script_DAISY_Lib_STG_01_Core as core
+import Script_DAISY_Lib_STG_02_Windows as windows
+import Script_DAISY_Lib_STG_03_Smartctl as smartctl
+import Script_DAISY_Lib_STG_04_Service as service
+import Script_DAISY_Lib_STG_05_Archive as archive
 import Script_DAISY_MAIN as entry
-import Script_DAISY_SMART_Tool_12_Collect as collect_tool
+import Script_DAISY_Tool_STG_12_Collect as collect_tool
 
 
 def fixture_record(

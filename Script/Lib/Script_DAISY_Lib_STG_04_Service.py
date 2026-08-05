@@ -5,9 +5,9 @@ import os
 from datetime import datetime
 from typing import Any
 
-import Script_DAISY_SMART_Lib_01_Core as core
-import Script_DAISY_SMART_Lib_02_Windows as windows
-import Script_DAISY_SMART_Lib_03_Smartctl as smartctl
+import Script_DAISY_Lib_STG_01_Core as core
+import Script_DAISY_Lib_STG_02_Windows as windows
+import Script_DAISY_Lib_STG_03_Smartctl as smartctl
 
 
 _CRITICAL_ATA_ATTRIBUTE_IDS = (

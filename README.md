@@ -7,8 +7,10 @@
 许可证：**MIT**
 
 DAISY 是面向摄影素材库、个人档案与存储设备的本地清点、登记、核验和对比
-工具。档案扫描生成独立、自描述、不可回写的 SQLite 快照；硬盘信息登记生成
-独立 ZIP，不写入或扩展快照数据库。扫描源目录与被登记硬盘均保持只读。
+工具。DBS 功能域获取文件树、文件信息、元数据、哈希及其变化并生成独立、
+自描述、不可回写的 SQLite 快照或 Diff；STG 功能域获取物理硬盘、分区、卷和
+smartctl 证据并生成独立 ZIP。两个功能域统一由同一 GUI／CLI 调度，但不混用
+数据模型；扫描源目录与被登记硬盘均保持只读。
 
 ## 主要能力
 
@@ -21,9 +23,9 @@ DAISY 是面向摄影素材库、个人档案与存储设备的本地清点、�
 - 只读登记单块物理硬盘的 Windows 存储资料与 smartctl 原始证据，并生成可核验
   ZIP；
 - 使用 Tkinter／ttk 图形界面，不需要安装额外 Python 包；多目录任务单独显示
-  队列总进度、当前任务阶段和本阶段工作量，运行时可切换到只保留进度与停止
-  控制的小窗视图；任务从顶部主题菜单选择，任务设置、运行进度和运行日志
-  均可主动折叠。
+  队列总进度、当前任务阶段和本阶段工作量，小窗视图在空闲和运行时均可进入；
+  任务从顶部「面板」菜单选择，任务设置、运行进度和运行日志均可主动折叠，
+  运行进度与运行日志默认折叠。
 
 ## 运行环境
 
@@ -44,7 +46,7 @@ ExifTool、FFmpeg、7-Zip 和 smartmontools 由用户通过 WinGet 独立安装�
 
 DAISY 兼容 Windows PowerShell 5.1 与 PowerShell 7.x。自动发现顺序为：
 手动路径、当前进程的 `PATH`、两个系列的 Windows 常规安装位置。便携版或
-自定义目录可在 GUI 顶部“指定工具路径”菜单中统一指定，也可通过 CLI 的
+自定义目录可在 GUI 顶部「高级 > 工具路径」菜单中统一指定，也可通过 CLI 的
 `--powershell-path` 指定。
 
 ### 自动安装依赖
@@ -61,7 +63,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Script\Script_DAISY_In
 `Python.Python.3.14`；它不会安装 ExifTool、FFmpeg、7-Zip 或 smartmontools。安装完成后
 请重新打开 DAISY。
 
-Python 已可用时，进入「ENV-01 环境检测」运行检测。页面会显示本机实际发现的
+Python 已可用时，进入「ENV-01 运行环境检测」运行检测。页面会显示本机实际发现的
 版本；无论工具是否已经发现，任务设置页的「软件安装」区都会常驻显示 ExifTool、
 ffprobe、7-Zip 和 smartctl 四个彼此独立的「下载并安装」按钮，并采用等宽 2×2
 布局。用户点击其中一项并再次确认后，
@@ -105,7 +107,7 @@ Get-Command powershell.exe,pwsh.exe -ErrorAction SilentlyContinue |
     Select-Object Name,Source
 ```
 
-随后在顶部“指定工具路径”菜单中选择对应的 `.exe`。该菜单统一管理 ExifTool、
+随后在顶部「高级 > 工具路径」菜单中选择对应的 `.exe`。该菜单统一管理 ExifTool、
 ffprobe、7-Zip、PowerShell 和 smartctl，并可恢复全部自动发现。CLI
 也可以运行 `env-check --powershell-path "完整路径"`；验证成功后，GUI 会在
 当前窗口中缓存该路径。
@@ -122,50 +124,66 @@ python .\Script\Script_DAISY_MAIN.py gui
 python .\Script\Script_DAISY_MAIN.py <子命令> --help
 ```
 
-首次建立正式基准时，在 GUI 中选择“DBS-11 完整扫描”并保留默认值：
+首次建立正式基准时，在 GUI 中选择「DBS-11 完整档案扫描」并保留默认值：
 
 - 完整 SHA-256：开启；
 - 元数据范围：全量元数据；
 - NTFS File ID：采集；
 - 多目录：按添加顺序分别生成。
 
-“独立哈希抽验比例”位于独立的“哈希抽样”下拉分组。它是在主 SHA-256 完成后，使用
+「独立哈希抽验比例」位于顶部「高级 > 哈希比例」菜单。它是在主 SHA-256 完成后，使用
 PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%，至少
 100 个，候选不足时全验。它不是主哈希的覆盖比例。
 
-扫描可能持续数小时；GUI 提供进度、实时日志和停止控制。
+完整档案扫描可能持续几小时到几天；GUI 提供进度、实时日志和停止控制。开始前的
+确认框会按分别／合并模式列出全部扫描根目录的完整路径。
 
-## 环境、数据库、存储任务与自检
+## 环境、数据与硬盘功能
 
-| 编号 | GUI／CLI | 用途 |
+| 编号 | 界面角色／CLI | 用途 |
 |---|---|---|
-| ENV-01 | 环境检测／`env-check` | 检查五项外部工具、存储查询、只读冒烟和 SHA-256 |
-| DBS-11 | 完整扫描／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
-| DBS-12 | 快速扫描／`quick-scan` | 只登记树、大小、时间和可选 File ID |
+| ENV-01 | 运行环境检测／`env-check` | 检查五项外部工具、存储查询、只读冒烟和 SHA-256 |
+| DBS-11 | 完整档案扫描／`full-scan` | 生成完整 SQLite 快照，支持断点续传 |
+| DBS-12 | 快速档案扫描／`quick-scan` | 只登记树、大小、时间和可选 File ID |
 | DBS-21 | 快照变更分析／`diff` | 对两份快照分类并判定证据等级 |
-| DBS-31 | 内容一致性核验／`check-hash` | 用独立实现复算 SHA-256 |
+| DBS-31 | 内容哈希核验／`check-hash` | 用独立实现复算 SHA-256 |
 | DBS-32 | 文件结构核验／`check-format` | 检查当前文件结构和可解析性 |
-| DBS-41 | 导出报告／`export-report` | 导出 CSV 和 Markdown |
-| DBS-91 | 数据库自检／GUI 维护入口 | 运行随附 unittest，重点验证数据库与关键工作流；不读取私人档案或生成正式产物 |
-| STG-11 | 物理硬盘清单／`storage-list` | 列出物理盘、卷标、型号及 smartctl 关联 |
+| DBS-41 | 结果报告导出／`export-report` | 导出 CSV 和 Markdown |
+| DBS-91 | 「高级 > DAISY功能自检」 | 运行随附 unittest；不读取私人档案或生成正式产物 |
+| STG-11 | 登记页内部检测／`storage-list` | 列出物理盘、卷标、型号及 smartctl 关联 |
 | STG-12 | 硬盘信息登记／`storage-collect` | 只读采集单块物理盘并生成指纹 ZIP |
-| STG-21 | 硬盘归档核验／`storage-verify` | 核验 ZIP 指纹、成员结构、Manifest 与 CRC |
+| STG-21 | 仅 CLI：`storage-verify` | 核验 ZIP 指纹、成员结构、Manifest 与 CRC |
 
-顶部菜单栏按“环境”“数据库”“硬盘”提供三个任务下拉菜单，色带下方另有
-可折叠的任务按钮菜单，两套入口同步当前选中项，不再使用左侧工作台。下拉
-菜单按任务性质加入分隔线、主题色悬停和当前项高亮。`DBS-11 完整扫描` 与
-`DBS-12 快速扫描` 因生成快照数据库而列入数据库菜单，之后依次为 `DBS-21`、
-`DBS-31`、`DBS-32`、`DBS-41` 和维护编号 `DBS-91`。其中 `11/12` 表示快照采集，
-`21` 表示分析，`31/32` 表示核验，`41` 表示输出，`91` 表示维护测试。`STG`
-硬盘行在 v1.5.0 开放 `11` 清单、`12` 登记和 `21` 归档核验。STG 产物是
-`Output\Storage` 下的独立 ZIP；不会写入 DBS 的 SQLite 快照或 Diff 数据库。
+「结果报告导出」会按输入类型说明实际产物。封存快照导出 `Tree.csv`、目录、
+规范化元数据、视频 GPS、媒体流、哈希、压缩包、错误和 `Summary.csv` 等清单；
+Diff 数据库导出 `Diff_summary.md`、`Diff_details.csv`、`Diff_dirs.csv`、
+`Diff_hash_groups.csv` 和 `Diff_subtrees.csv`。
 
-推荐先运行 `STG-11`，根据当次清单确认 PhysicalDrive 编号，再进入 `STG-12`。
+顶部「面板」菜单包含「环境」「数据」「硬盘」三个子菜单，色带下方另有
+可折叠的功能模块按钮区；两套入口同步当前选中项，不使用左侧工作台。三行标题
+分别为「环境 ENV」「数据 DBS」「硬盘 STG」。所有按钮和对应设置页标题共用同一
+套六字名称，子菜单按任务性质加入分隔线、悬停和当前项高亮。
+
+数据区包含 `DBS-11`、`DBS-12`、`DBS-21`、`DBS-31`、`DBS-32` 和 `DBS-41`；
+维护编号 `DBS-91 DAISY功能自检` 位于顶部「高级」菜单，不是业务功能模块。
+其中 `11/12` 表示快照采集，`21` 表示分析，`31/32` 表示核验，`41` 表示输出，
+`91` 表示维护测试。
+
+硬盘区只有一个可见功能模块：`STG-12 硬盘信息登记`。登记页中的「检测物理硬盘」
+按钮会调用内部 `STG-11` 只读列盘步骤并刷新当次选择；`STG-21` 保留为仅供 CLI
+使用的归档安全核验工具，不显示为 GUI 功能模块。STG 产物是 `Output\Storage`
+下的独立 ZIP，不会写入 DBS 的 SQLite 快照或 Diff 数据库。
+
+内部 `STG-11` 与可见 `STG-12` 需要管理员权限才能完整运行。管理员模式的悬停说明
+会明确：GUI 中目前仅「硬盘信息登记」及其内部检测步骤需要此模式。未提权时，模块说明、
+悬停说明、任务设置页、状态栏和启动确认都会提示：开启顶部管理员模式开关，并按
+提示重新启动 DAISY；确认后 DAISY 通过 Windows UAC 请求提权。在硬盘信息登记页
+先点击「检测物理硬盘」，再从当次清单选择目标并点击「开始任务」。
 热插拔后必须重新列盘，不能长期把某个盘符或编号当作固定硬盘身份。完整 SMART
 读取可能唤醒休眠硬盘，但不会启动 SMART 自检或修改磁盘、分区、卷、文件系统及
-BitLocker 设置。通常建议以管理员权限启动 DAISY；权限不足时程序会保留实际
+BitLocker 设置。权限不足时程序会保留实际
 错误，并把已生成 ZIP 标为 `incomplete` 诊断归档，不会伪称登记完整。归档核验
-不访问真实硬盘。对应 CLI 示例：
+`STG-21` 不访问真实硬盘，不需要管理员权限。对应 CLI 示例：
 
 ```powershell
 python .\Script\Script_DAISY_MAIN.py storage-list
@@ -247,10 +265,12 @@ v1.4.2 只调整 GUI：队列总进度固定显示在任务阶段与本阶段进
 统一使用深绿色；选中后统一切换为深绿色底和白字，不再按分区切换颜色。功能块
 不随窗口宽度重排，普通窗口也不能缩得比
 完整功能模块更窄；完整编号与名称保留在悬停说明中。各任务中的
-哈希抽样比例在 v1.4.2 当时统一归入高级设置；v1.5.0 已改为独立用途下拉分组。
+哈希抽样比例在 v1.4.2 当时统一归入页内高级设置；v1.5.0 已移入顶部
+「高级 > 哈希比例」菜单。
 标准菜单还提供项目目录、
-结果目录、带关闭确认的退出、面板显示、关于信息与 GitHub 主页入口；命令预览默认关闭并可由“视图”
-菜单打开。右侧滚动条使用低对比度米黄色滑块，不再跟随任务主题变色。按钮悬停
+结果目录、带关闭确认的退出、面板显示、关于信息与 GitHub 主页入口；命令预览默认
+关闭。v1.4.2 当时由「视图」菜单打开，v1.5.0 已移入「高级」。右侧滚动条使用低
+对比度米黄色滑块，不再跟随任务主题变色。按钮悬停
 会显示用途说明，
 目录／日志／缓存等辅助操作与开始／停止任务控制分为上下两组，辅助操作会
 随可用宽度自动换行；右下角主操作统一显示“开始任务”，并使用深绿色底和白字。
@@ -264,9 +284,10 @@ GUI 不再注册
 数据格式、元数据 profile、CLI 参数和业务任务语义均未改变；新产物继续使用
 `schema_version=3` 与 `min_reader_version=1.4.1`。
 
-### v1.5.0 存储设备信息登记
+### v1.5.0 数据与硬盘功能域融合
 
-v1.5.0 将原独立硬盘工具作为 STG 功能域并入统一 GUI 和 CLI。新增物理硬盘清单、
+v1.5.0 将原独立硬盘工具吸收为 DAISY 的 STG 功能域，与原 DBS 数据库档案信息
+功能域并列，共用统一 GUI、CLI、环境检测、管理员模式和测试入口。新增物理硬盘清单、
 单盘信息登记及存储档案核验；`ENV-01` 同时检测 smartctl 和 Windows 存储查询，
 可在用户逐项确认后通过固定 WinGet 包安装 smartmontools。STG 只调用 Windows
 只读查询与固定的 `smartctl --scan-open --json=c`、
@@ -278,15 +299,27 @@ STG 归档使用独立 ZIP `archive_schema_version=3`，与 SQLite
 逻辑均保持 v1.4.2 行为。由于 partial 继续要求精确匹配生成器版本，v1.4.2 的
 未完成 partial 不能由 v1.5.0 续传；既有完整 schema 3 快照仍可只读使用。
 
-同版 GUI 把所有手动工具路径移到顶部“指定工具路径”下拉菜单；原低频参数不再统称
-“高级设置”，而是按“哈希抽样”“故障恢复”“根标签配对”等用途独立下拉。
-STG-12 的外部简化 TXT 改为“生成／不生成”下拉选择，默认不生成。运行日志默认
-折叠；“视图”菜单对功能模块、任务设置、运行进度和运行日志显示下一步的“展开”
-或“折叠”动作，命令预览仍使用“显示命令预览”。普通窗口允许缩入 1280×720
-屏幕的可用工作区。管理员模式以开关形式常驻功能模块标题栏，显示当前开启／关闭
-状态；空闲且尚未提权时可确认并通过 Windows UAC 重新启动，任务运行中不可切换。
+同版 GUI 顶栏整理为 `文件｜面板｜高级｜视图｜帮助`，菜单栏使用浅米黄色底色。
+「面板」包含环境、数据、硬盘三个子菜单；「高级」包含「工具路径」「哈希比例」、
+动态「显示／隐藏命令预览」和「DAISY功能自检」。故障恢复改为「不启用／启用」
+下拉项，根标签映射直接显示为文本输入，不再使用页内展开控件；所有设置下拉框在
+未展开时忽略滚轮改值。STG-12 的外部简化 TXT 改为「生成／不生成」下拉选择，
+默认不生成。
+
+硬盘区只有 `STG-12 硬盘信息登记` 一个 GUI 功能模块；`STG-11` 由页内检测按钮
+调用，`STG-21` 仅保留 CLI。运行进度和运行日志默认折叠；「视图」菜单对功能模块、
+任务设置、运行进度和运行日志显示下一步的「展开」或「折叠」动作。各设置页标题与
+功能模块按钮严格共用六字名称。小窗视图在空闲和运行时均可进入，并保留当前扫描
+根文件夹的完整路径；运行日志标题旁提供「清空日志」。普通窗口在足够大的显示器上
+默认以 1280×720 客户区打开；目标显示器工作区较小时自动缩小。进程启用
+Per-Monitor V2 DPI 感知，窗口跨不同分辨率、工作区或 DPI 的显示器后重新约束
+尺寸、位置和最小值。管理员模式以开关形式常驻功能模块标题栏，显示当前开启／关闭
+状态；悬停说明指出目前仅「硬盘信息登记」及其检测步骤需要此模式。空闲且尚未
+提权时可确认并通过 Windows UAC 重新启动，任务运行中不可切换。
 四个工具安装入口位于 ENV-01 任务设置页的「软件安装」区，不再与目录、日志、
-缓存或开始／停止按钮混排。
+缓存或开始／停止按钮混排。「关于 DAISY」列出应用／DBS 生成器、DBS schema、
+元数据 profile、DBS／STG 文件名布局、STG 归档 schema、完整快照最低读取器
+`v1.4.1`，并说明 partial 仅允许同生成器版本续传。
 
 增量扫描只复用满足当前 schema 的完整封存库。文件名指纹不符、SQLite 损坏、
 扫描未完成、目录枚举缺口、哈希失败或 unstable 条目会拒绝作为增量来源；
@@ -362,22 +395,22 @@ DAISY\
    │  ├─ Script_DAISY_Lib_02_Meta.py
    │  ├─ Script_DAISY_Lib_03_Hash.py
    │  ├─ Script_DAISY_Lib_04_Diff.py
-   │  ├─ Script_DAISY_SMART_Lib_01_Core.py
-   │  ├─ Script_DAISY_SMART_Lib_02_Windows.py
-   │  ├─ Script_DAISY_SMART_Lib_03_Smartctl.py
-   │  ├─ Script_DAISY_SMART_Lib_04_Service.py
-   │  └─ Script_DAISY_SMART_Lib_05_Archive.py
+   │  ├─ Script_DAISY_Lib_STG_01_Core.py
+   │  ├─ Script_DAISY_Lib_STG_02_Windows.py
+   │  ├─ Script_DAISY_Lib_STG_03_Smartctl.py
+   │  ├─ Script_DAISY_Lib_STG_04_Service.py
+   │  └─ Script_DAISY_Lib_STG_05_Archive.py
    ├─ Tool\
-   │  ├─ Script_DAISY_Tool_10_Env_Check.py
-   │  ├─ Script_DAISY_Tool_11_Full_Scan.py
-   │  ├─ Script_DAISY_Tool_12_Quick_Scan.py
-   │  ├─ Script_DAISY_Tool_21_Diff.py
-   │  ├─ Script_DAISY_Tool_22_Check_Hash.py
-   │  ├─ Script_DAISY_Tool_23_Check_Format.py
-   │  ├─ Script_DAISY_Tool_31_Export_Report.py
-   │  ├─ Script_DAISY_SMART_Tool_11_List_Disks.py
-   │  ├─ Script_DAISY_SMART_Tool_12_Collect.py
-   │  └─ Script_DAISY_SMART_Tool_21_Verify_Archive.py
+   │  ├─ Script_DAISY_Tool_ENV_01_Env_Check.py
+   │  ├─ Script_DAISY_Tool_DBS_11_Full_Scan.py
+   │  ├─ Script_DAISY_Tool_DBS_12_Quick_Scan.py
+   │  ├─ Script_DAISY_Tool_DBS_21_Diff.py
+   │  ├─ Script_DAISY_Tool_DBS_31_Check_Hash.py
+   │  ├─ Script_DAISY_Tool_DBS_32_Check_Format.py
+   │  ├─ Script_DAISY_Tool_DBS_41_Export_Report.py
+   │  ├─ Script_DAISY_Tool_STG_11_List_Disks.py
+   │  ├─ Script_DAISY_Tool_STG_12_Collect.py
+   │  └─ Script_DAISY_Tool_STG_21_Verify_Archive.py
    └─ Test\
       ├─ Script_DAISY_Test_Tree.py
       ├─ Script_DAISY_Test_Unit.py
@@ -401,7 +434,7 @@ DAISY\
 python -B -m unittest discover -s .\Script\Test -p "Script_DAISY_Test_*.py" -v
 ```
 
-也可以进入 GUI 的“DBS-91 数据库自检”页点击“开始任务”。它调用同一套
+也可以从 GUI 顶部「高级 > DAISY功能自检」运行 `DBS-91`。它调用同一套
 `unittest`，结果实时写入 GUI 日志，不作为业务任务，也不生成正式产物。
 
 也可以分别运行数据库与存储测试文件：
@@ -421,7 +454,7 @@ python -B .\Script\Test\Script_DAISY_Test_Tree.py --list
 
 所有业务任务均不导入 `Script\Test\`。存储测试使用合成设备与系统临时目录，
 默认不会读取真实硬盘。测试层可以独立移除而不影响 DAISY
-业务功能；缺少测试文件时，“DBS-91 数据库自检”页的运行按钮会禁用。
+业务功能；缺少测试文件时，「DAISY功能自检」入口会显示不可用提示。
 
 GUI 的“清理缓存”会先确认，然后删除项目目录内可安全重建的 `__pycache__`、
 `.pytest_cache`、`.mypy_cache`、`.ruff_cache` 和独立 `.pyc`／`.pyo`
@@ -431,7 +464,7 @@ GUI 的“清理缓存”会先确认，然后删除项目目录内可安全重�
 
 ## 问题反馈
 
-反馈问题前请先运行“ENV-01 环境检测”和“DBS-91 数据库自检”，并说明 Windows、Python 和
+反馈问题前请先运行「ENV-01 运行环境检测」和「DBS-91 DAISY功能自检」，并说明 Windows、Python 和
 外部工具版本。可以提供经过脱敏的错误文本和最小复现步骤，但不要附带真实
 快照数据库、私人媒体或未经检查的 Raw Payload。
 

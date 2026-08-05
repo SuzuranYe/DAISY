@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import codecs
 import json
+import math
 import os
 import queue
 import re
@@ -18,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BASE = os.path.dirname(_SCRIPT_DIR)
@@ -28,6 +29,8 @@ _MAIN = os.path.join(_SCRIPT_DIR, "Script_DAISY_MAIN.py")
 sys.path.insert(0, _LIB_DIR)
 
 import Script_DAISY_Lib_01_Core as core
+import Script_DAISY_Lib_02_Meta as metadata
+import Script_DAISY_Lib_STG_01_Core as storage_core
 
 
 _DEFAULT_OUTPUT_ROOT = os.path.join(_BASE, "Output")
@@ -51,6 +54,8 @@ _MAX_ROOT_DIRECTORIES = 9
 _ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
+_DEFAULT_WINDOW_SIZE = (1280, 720)
+_WINDOW_WORK_MARGIN = (32, 40)
 
 _TOOL_FIELD_BY_NAME = {
     "exiftool": "exiftool_path",
@@ -88,6 +93,7 @@ _RESULT_DIRECTORY_TASKS = frozenset((
     "env_check", "full_scan", "quick_scan", "diff", "check_hash",
     "check_format", "export_report", "storage_collect",
 ))
+_STG_ADMIN_TASKS = frozenset(("storage_list", "storage_collect"))
 _PROJECT_CACHE_DIR_NAMES = frozenset((
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -120,6 +126,7 @@ _MUTED = "#66685e"
 _BORDER = "#cfc2aa"
 _FIELD = "#fff9ee"
 _CONTROL = "#e8ddc9"
+_MENU_BACKGROUND = "#eee3cf"
 _CONTROL_HOVER = "#d9ccb4"
 _LOG_BG = "#eee4d2"
 _LOG_HEADER = "#dfd3bd"
@@ -143,7 +150,6 @@ _TASK_ACCENTS = {
     "export_report": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "storage_list": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "storage_collect": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
-    "storage_verify": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
 }
 _NAV_COLOURS = {
     key: (colours[0], colours[1])
@@ -600,9 +606,7 @@ class FieldSpec:
     help: str = ""
     choices: tuple[tuple[str, object], ...] = ()
     filetypes: tuple[tuple[str, str], ...] = ()
-    toggle_text: str = "启用"
     section: str = "任务参数"
-    dropdown: bool = False
     top_menu: bool = False
     active_when: tuple[tuple[str, tuple[object, ...]], ...] = ()
     flag_value: object | None = None
@@ -624,6 +628,67 @@ class RunJob:
     values: dict[str, object]
 
 
+def run_job_target_text(task_key: str, job: RunJob) -> str:
+    """返回进度区使用的完整当前目标；目录任务不缩写路径。"""
+    field_key = {
+        "full_scan": "roots",
+        "quick_scan": "roots",
+        "check_hash": "root_map",
+        "check_format": "root_map",
+        "diff": "map_root",
+    }.get(task_key)
+    if field_key:
+        paths: list[str] = []
+        for root_spec in _lines(job.values.get(field_key)):
+            try:
+                _label, root_path = core.parse_root_spec(root_spec)
+            except (OSError, ValueError, core.PreflightError):
+                root_path = root_spec
+            paths.append(str(root_path))
+        if paths:
+            return "；".join(paths)
+    if task_key == "full_scan":
+        resume = str(job.values.get("resume") or "").strip()
+        if resume:
+            return f"续传快照：{_absolute(resume)}"
+    if task_key == "storage_collect":
+        disk_number = str(job.values.get("disk_number") or "").strip()
+        if disk_number:
+            return f"PhysicalDrive{disk_number}"
+    if task_key == "storage_list":
+        return "本机物理硬盘"
+    for field in ("source_path", "snapshot", "old", "archive"):
+        value = str(job.values.get(field) or "").strip()
+        if value:
+            return _absolute(value)
+    return job.label
+
+
+@dataclass(frozen=True)
+class MonitorWorkArea:
+    handle: int
+    left: int
+    top: int
+    right: int
+    bottom: int
+    dpi: int = 96
+
+    @property
+    def width(self) -> int:
+        return max(1, self.right - self.left)
+
+    @property
+    def height(self) -> int:
+        return max(1, self.bottom - self.top)
+
+    @property
+    def signature(self) -> tuple[int, int, int, int, int, int]:
+        return (
+            self.handle, self.left, self.top,
+            self.right, self.bottom, self.dpi,
+        )
+
+
 _SQLITE_TYPES = (
     ("SQLite 数据库", "*.sqlite"),
     ("全部文件", "*.*"),
@@ -631,10 +696,6 @@ _SQLITE_TYPES = (
 _PARTIAL_TYPES = (
     ("未完成快照", "*.partial.sqlite"),
     ("SQLite 数据库", "*.sqlite"),
-    ("全部文件", "*.*"),
-)
-_ZIP_TYPES = (
-    ("存储档案 ZIP", "*.zip"),
     ("全部文件", "*.*"),
 )
 _EXE_TYPES = (
@@ -661,8 +722,8 @@ TASKS = (
     TaskSpec(
         "env_check",
         "env-check",
-        "ENV-01  环境检测",
-        "环境检测",
+        "ENV-01  运行环境检测",
+        "运行环境检测",
         "检查 ExifTool、ffprobe、7-Zip、PowerShell 与 smartctl 的发现、"
         "版本和只读冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能"
         "测试，也不保存全局设置。",
@@ -677,48 +738,48 @@ TASKS = (
             FieldSpec(
                 "exiftool_path", "ExifTool 路径覆盖", "--exiftool-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "ffprobe_path", "ffprobe 路径覆盖", "--ffprobe-path", "file",
                 help="通常留空；手动指定成功后也会更新本窗口缓存。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径覆盖", "--sevenzip-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径覆盖",
                 "--powershell-path", "file",
                 help="通常留空；会依次检查 PATH 与 Windows 常规安装位置。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "smartctl_path", "smartctl 路径覆盖", "--smartctl-path",
                 "file", help="通常留空；用于 STG 物理硬盘登记与只读核验。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
         ),
     ),
     TaskSpec(
         _PROJECT_SELF_TEST_KEY,
         "",
-        "DBS-91  数据库自检",
-        "数据库自检",
-        "运行 Script\\Test 中的全部自动化测试，重点验证 SQLite schema、"
-        "数据库约束、快照、Diff 与关键工作流，同时覆盖 GUI 参数映射。"
+        "DBS-91  DAISY功能自检",
+        "DAISY功能自检",
+        "运行 Script\\Test 中的全部自动化测试，检测 DAISY 自身的 DBS 功能域、"
+        "SQLite schema、数据库约束、快照、Diff 与关键工作流，同时覆盖 GUI 参数映射。"
         "同时验证 STG 归档和硬盘只读边界；测试夹具只写入系统临时目录，"
         "不使用表单中的档案目录、访问真实硬盘或生成正式产物。",
-        "数据库测试 · 临时夹具 · 不读取私人档案",
+        "DBS 功能检测 · 临时夹具 · 不读取私人档案",
         (),
     ),
     TaskSpec(
         "full_scan",
         "full-scan",
-        "DBS-11  完整扫描",
-        "完整扫描",
+        "DBS-11  完整档案扫描",
+        "完整档案扫描",
         "登记文件树、元数据与哈希，默认完整 SHA-256；生成可续传、封存后"
         "不可变的单文件 SQLite 快照。适合首次建账和周期性完整复核。",
         "档案只读 · 长时任务 · 生成快照",
@@ -816,38 +877,38 @@ TASKS = (
                     "再由 PowerShell Get-FileHash 独立重算；默认 1%，至少 "
                     "100 个（不足则全验）。这不是主哈希的覆盖比例。"
                 ),
-                section="哈希抽样", dropdown=True,
+                section="哈希比例", top_menu=True,
                 active_when=_FULL_HASHED,
             ),
             FieldSpec(
                 "map_root", "增量根标签映射", "--map-root", "multiline",
                 help="可选；每行“旧label=新label”。",
-                section="增量复用", dropdown=True,
+                section="增量复用",
                 active_when=_FULL_INCREMENTAL,
             ),
             FieldSpec(
                 "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "ffprobe_path", "ffprobe 路径", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file",
                 help="独立哈希抽验使用；留空时优先继承已验证路径，其次自动发现。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
                 active_when=_FULL_POWERSHELL,
             ),
         ),
@@ -855,8 +916,8 @@ TASKS = (
     TaskSpec(
         "quick_scan",
         "quick-scan",
-        "DBS-12  快速扫描",
-        "快速扫描",
+        "DBS-12  快速档案扫描",
+        "快速档案扫描",
         "只登记文件树、大小、时间与文件标识，不读取文件内容，也不依赖外部"
         "工具。适合接盘后快速确认目录结构。",
         "档案只读 · 快速 · 生成快照",
@@ -943,32 +1004,35 @@ TASKS = (
                 "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "ffprobe_path", "ffprobe 路径", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "force", "文件名指纹缺失时降级继续", "--force", "bool",
+                "force", "文件名指纹缺失时降级继续", "--force",
+                "choice_flag", False,
+                choices=(("不启用（默认）", False), ("启用", True)),
+                flag_value=True,
                 help="仅允许指纹缺失；指纹与实际字节不符仍会拒绝。",
-                section="故障恢复", dropdown=True,
+                section="故障恢复",
             ),
         ),
     ),
     TaskSpec(
         "check_hash",
         "check-hash",
-        "DBS-31  内容一致性核验",
-        "内容一致性核验",
+        "DBS-31  内容哈希核验",
+        "内容哈希核验",
         "将封存快照与当前磁盘核对：先检查文件状态，再抽样或全量重新计算"
         " SHA-256。",
         "档案只读 · 生成 JSON 报告",
@@ -997,19 +1061,22 @@ TASKS = (
             FieldSpec(
                 "sample_percent", "哈希抽样比例（%）", "--sample-percent",
                 default="1.0", help="默认抽查 1% 的可哈希文件。",
-                section="哈希抽样", dropdown=True,
+                section="哈希比例", top_menu=True,
                 active_when=_HASH_SAMPLE,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file",
                 help="留空时优先继承 11／31 已验证路径，其次自动发现；填写则手动覆盖。",
-                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "force", "文件名指纹缺失时降级继续", "--force", "bool",
+                "force", "文件名指纹缺失时降级继续", "--force",
+                "choice_flag", False,
+                choices=(("不启用（默认）", False), ("启用", True)),
+                flag_value=True,
                 help="仅允许指纹缺失；指纹与实际字节不符仍会拒绝。",
-                section="故障恢复", dropdown=True,
+                section="故障恢复",
             ),
             FieldSpec(
                 "report", "报告 JSON 路径", "--report", "save",
@@ -1045,29 +1112,39 @@ TASKS = (
             FieldSpec(
                 "map_root", "根标签映射", "--map-root", "multiline",
                 help="可选；每行“旧label=新label”。单根异名通常可自动配对。",
-                section="根标签配对", dropdown=True,
+                section="根标签配对",
             ),
             FieldSpec(
-                "force", "文件名指纹缺失时降级继续", "--force", "bool",
+                "force", "文件名指纹缺失时降级继续", "--force",
+                "choice_flag", False,
+                choices=(("不启用（默认）", False), ("启用", True)),
+                flag_value=True,
                 help="降级结果会生成同目录 Issues.md；指纹不符仍会拒绝。",
-                section="故障恢复", dropdown=True,
+                section="故障恢复",
             ),
         ),
     ),
     TaskSpec(
         "export_report",
         "export-report",
-        "DBS-41  导出报告",
-        "导出报告",
-        "从封存快照或 Diff 数据库生成 CSV 与 Markdown 报告。输入数据库保持"
-        "只读，报告可随时删除并重新生成。",
+        "DBS-41  结果报告导出",
+        "结果报告导出",
+        "从封存快照导出文件树、元数据、哈希与诊断 CSV，或从 Diff 数据库"
+        "导出变更摘要 Markdown 与变更明细 CSV。输入数据库保持只读，报告"
+        "可随时删除并重新生成。",
         "输入只读 · 生成 CSV/Markdown",
         (
             FieldSpec(
                 "source_type", "输入类型", None, "choice", "snapshot",
                 choices=(
-                    ("封存快照（默认）", "snapshot"),
-                    ("Diff 数据库", "diff"),
+                    ("封存快照：导出清单与诊断 CSV（默认）", "snapshot"),
+                    ("Diff 数据库：导出摘要 Markdown 与变更 CSV", "diff"),
+                ),
+                help=(
+                    "封存快照会导出 Tree、目录、规范化元数据、视频 GPS、媒体流、"
+                    "哈希、压缩包、错误和 Summary 等 CSV；Diff 数据库会导出 "
+                    "Diff_summary.md、Diff_details.csv、Diff_dirs.csv、"
+                    "Diff_hash_groups.csv 与 Diff_subtrees.csv。"
                 ),
                 section="输入",
             ),
@@ -1089,20 +1166,22 @@ TASKS = (
         "STG-11  物理硬盘清单",
         "物理硬盘清单",
         "联合 Windows 存储接口与 smartctl 列出物理硬盘、分区卷标和设备"
-        "关联。请先运行本项，再按 PhysicalDrive 编号执行信息登记。",
-        "物理盘只读 · 不生成产物 · 可能唤醒硬盘",
+        "关联。此功能需要管理员权限才能完整运行；未提权时请开启顶部管理"
+        "员模式开关，并按提示重新启动 DAISY。请先运行本项，再按 "
+        "PhysicalDrive 编号执行信息登记。",
+        "需要管理员权限 · 物理盘只读 · 可能唤醒硬盘",
         (
             FieldSpec(
                 "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
         ),
     ),
@@ -1112,14 +1191,16 @@ TASKS = (
         "STG-12  硬盘信息登记",
         "硬盘信息登记",
         "重新确认指定物理盘身份，只读采集完整 Windows 存储资料和 smartctl"
-        " 原始证据，并生成带文件名指纹的独立 ZIP 档案。",
-        "物理盘只读 · 可能唤醒硬盘 · 生成 ZIP",
+        " 原始证据，并生成带文件名指纹的独立 ZIP 档案。此功能需要管理员权限"
+        "才能完整运行；未提权时请开启顶部管理员模式开关，并按提示重新启动 "
+        "DAISY。",
+        "需要管理员权限 · 物理盘只读 · 生成 ZIP",
         (
             FieldSpec(
                 "disk_number", "物理硬盘编号", "--disk-number",
                 "disk_choice", required=True,
-                help="先运行 STG-11，再从本次清单中选择目标；重新列盘会清除"
-                "旧选择，避免热插拔后沿用过期编号。",
+                help="先点击本页的「检测硬盘」，再从本次清单中选择目标；"
+                "重新检测会清除旧选择，避免热插拔后沿用过期编号。",
                 section="采集目标",
             ),
             FieldSpec(
@@ -1143,57 +1224,44 @@ TASKS = (
                 "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
+                section="工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="指定工具路径", top_menu=True,
-            ),
-        ),
-    ),
-    TaskSpec(
-        "storage_verify",
-        "storage-verify",
-        "STG-21  硬盘归档核验",
-        "硬盘归档核验",
-        "核验硬盘信息 ZIP 的文件名 SHA-256 指纹、存储归档 schema、固定"
-        "成员清单、Manifest 声明与 ZIP CRC，不读取真实硬盘。",
-        "归档只读 · 不访问硬盘 · 不生成产物",
-        (
-            FieldSpec(
-                "archive", "硬盘信息档案", None, "file", required=True,
-                filetypes=_ZIP_TYPES, section="输入",
+                section="工具路径", top_menu=True,
             ),
         ),
     ),
 )
 
 TASK_BY_KEY = {task.key: task for task in TASKS}
+_HASH_PERCENTAGE_MENU_FIELDS = (
+    ("full_scan", "verify_percent", "DBS-11 独立哈希抽验", True),
+    ("check_hash", "sample_percent", "DBS-31 内容哈希抽样", False),
+)
 _TASK_MENU_SECTIONS = (
     (
         "环境",
         ("env_check",),
     ),
     (
-        "数据库",
+        "数据",
         (
             "full_scan", "quick_scan", "diff",
             "check_hash", "check_format", "export_report",
-            _PROJECT_SELF_TEST_KEY,
         ),
     ),
-    ("硬盘", ("storage_list", "storage_collect", "storage_verify")),
+    ("硬盘", ("storage_collect",)),
 )
 _TASK_MENU_SECTION_COLOURS = {
     "环境": ("Env", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
-    "数据库": ("Database", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
+    "数据": ("Data", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
     "硬盘": ("Storage", _RED, _RED_DEEP, _RED_SOFT),
 }
 _TASK_MENU_SEPARATOR_AFTER = frozenset((
     "env_check", "quick_scan", "diff", "check_format", "export_report",
-    "storage_list", "storage_collect",
 ))
 _TASK_MENU_ORDER = tuple(
     task_key
@@ -1206,9 +1274,9 @@ _TASK_MENU_SECTION_BY_KEY = {
     for task_key in task_keys
 }
 _TASK_TOOLBAR_ROWS = (
-    ("环境", "ENV", ("env_check",)),
-    ("数据库", "DBS", _TASK_MENU_SECTIONS[1][1]),
-    ("硬盘", "STG", _TASK_MENU_SECTIONS[2][1]),
+    ("环境", "环境 ENV", ("env_check",)),
+    ("数据", "数据 DBS", _TASK_MENU_SECTIONS[1][1]),
+    ("硬盘", "硬盘 STG", _TASK_MENU_SECTIONS[2][1]),
 )
 _TASK_TOOLBAR_LABELS = {
     "env_check": "运行环境检测",
@@ -1218,11 +1286,15 @@ _TASK_TOOLBAR_LABELS = {
     "check_hash": "内容哈希核验",
     "check_format": "文件结构核验",
     "export_report": "结果报告导出",
-    _PROJECT_SELF_TEST_KEY: "数据库自校验",
-    "storage_list": "物理硬盘清单",
     "storage_collect": "硬盘信息登记",
-    "storage_verify": "硬盘归档核验",
 }
+
+
+def task_display_title(task_key: str) -> str:
+    """返回设置卡与功能模块共用的六字标题。"""
+    return _TASK_TOOLBAR_LABELS.get(task_key, TASK_BY_KEY[task_key].title)
+
+
 _TASK_TOOLBAR_BUTTON_WIDTH = 12
 _TASK_TOOLBAR_BUTTON_PADDING = (12, 7)
 _TASK_TOOLBAR_STYLE_PREFIX = "Env"
@@ -1297,21 +1369,6 @@ def active_field_keys(task_key: str,
     return {spec.key for spec in task.fields if _field_active(spec, merged)}
 
 
-def dropdown_field_groups(
-    task_key: str, values: dict[str, object],
-) -> tuple[tuple[str, tuple[FieldSpec, ...]], ...]:
-    """按表单顺序返回当前生效的独立下拉分组。"""
-    task = TASK_BY_KEY[task_key]
-    merged = _task_values(task, values)
-    groups: dict[str, list[FieldSpec]] = {}
-    for spec in task.fields:
-        if spec.dropdown and _field_active(spec, merged):
-            groups.setdefault(spec.section, []).append(spec)
-    return tuple(
-        (section, tuple(specs)) for section, specs in groups.items()
-    )
-
-
 def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
     """把 GUI 值转换为统一入口参数；目录参数统一展开为绝对路径。"""
     task = TASK_BY_KEY[task_key]
@@ -1326,12 +1383,6 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
         if output_dir:
             args += ["--output-dir", _absolute(output_dir)]
         return args
-    if task_key == "storage_verify":
-        archive = str(values.get("archive") or "").strip()
-        if archive:
-            args.append(_absolute(archive))
-        return args
-
     for spec in task.fields:
         if not spec.flag or not _field_active(spec, values):
             continue
@@ -1399,6 +1450,36 @@ def _absolute(path: str) -> str:
 def _root_path(spec: str) -> str:
     _label, sep, path = spec.partition("=")
     return path if sep else spec
+
+
+def root_confirmation_text(
+    task_key: str, values: dict[str, object],
+) -> str:
+    """返回开始前用于核对扫描范围的完整目录清单。"""
+    if task_key not in _ROOT_BATCH_TASKS:
+        return ""
+    if (task_key == "full_scan"
+            and values.get("start_mode") == "resume"):
+        return ""
+    roots = [
+        _absolute(_root_path(root_spec))
+        for root_spec in _lines(values.get("roots"))
+    ]
+    if not roots:
+        return ""
+    title = task_display_title(task_key)
+    mode = str(values.get("root_batch_mode") or _ROOT_BATCH_SEPARATE)
+    if mode == _ROOT_BATCH_COMBINED and len(roots) > 1:
+        heading = (
+            f"将对以下文件夹合并运行{title}，并共同生成一个数据库："
+        )
+    elif len(roots) > 1:
+        heading = (
+            f"将对以下文件夹分别运行{title}并分别生成数据库："
+        )
+    else:
+        heading = f"将对以下文件夹运行{title}并生成数据库："
+    return heading + "\n" + "\n".join(f"• {path}" for path in roots)
 
 
 def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
@@ -1791,7 +1872,7 @@ class DirectoryListEditor(tk.Frame):
             row.grid_columnconfigure(1, weight=1)
             tk.Label(
                 row, text=f"{index + 1}", width=2,
-                bg=_GREEN_SOFT, fg=_GREEN_DEEP,
+                bg=_CONTROL, fg=_GREEN_DEEP,
                 font=("Segoe UI", 8, "bold"),
             ).grid(row=0, column=0, sticky="ns", padx=(0, 6))
             variable = tk.StringVar(value=item)
@@ -1923,7 +2004,7 @@ def restart_as_windows_administrator() -> None:
 
 
 def project_self_test_missing_files() -> list[str]:
-    """返回数据库自检缺少的正式测试文件名，不读取任何档案目录。"""
+    """返回 DAISY 功能自检缺少的正式测试文件名，不读取任何档案目录。"""
     return [
         name for name in _PROJECT_TEST_FILES
         if not os.path.isfile(os.path.join(_TEST_DIR, name))
@@ -1931,7 +2012,7 @@ def project_self_test_missing_files() -> list[str]:
 
 
 def project_self_test_command(python_executable: str | None = None) -> list[str]:
-    """返回 GUI 数据库自检实际使用的 unittest discovery 命令。"""
+    """返回 GUI DAISY 功能自检实际使用的 unittest discovery 命令。"""
     return [
         python_executable or _console_python(),
         "-B", "-m", "unittest", "discover",
@@ -1953,12 +2034,103 @@ def project_self_test_preview() -> str:
 
 def window_size_for_screen(screen_width: int,
                            screen_height: int) -> tuple[int, int]:
-    """按当前屏幕留出边缘和任务栏空间，返回 Tk 窗口客户区尺寸。"""
-    width = min(1920, max(820, screen_width - 80))
-    height = min(1080, max(640, screen_height - 60))
-    width = min(width, max(640, screen_width - 20))
-    height = min(height, max(480, screen_height - 50))
+    """以 1280×720 为目标，并按当前屏幕留出安全边缘。"""
+    target_width, target_height = _DEFAULT_WINDOW_SIZE
+    width = min(target_width, max(640, screen_width - 80))
+    height = min(target_height, max(480, screen_height - 60))
+    width = min(width, max(320, screen_width - 20))
+    height = min(height, max(320, screen_height - 40))
     return width, height
+
+
+def fit_window_to_work_area(
+    preferred_size: tuple[int, int], position: tuple[int, int],
+    work_area: MonitorWorkArea,
+    margin: tuple[int, int] = _WINDOW_WORK_MARGIN,
+) -> tuple[int, int, int, int]:
+    """把客户区尺寸和位置约束到指定显示器工作区。"""
+    horizontal_margin, vertical_margin = margin
+    available_width = max(1, work_area.width - horizontal_margin)
+    available_height = max(1, work_area.height - vertical_margin)
+    width = max(1, min(int(preferred_size[0]), available_width))
+    height = max(1, min(int(preferred_size[1]), available_height))
+    left_margin = max(0, horizontal_margin // 2)
+    top_margin = max(0, vertical_margin // 2)
+    minimum_x = work_area.left + left_margin
+    minimum_y = work_area.top + top_margin
+    maximum_x = max(
+        minimum_x,
+        work_area.right - width - (horizontal_margin - left_margin),
+    )
+    maximum_y = max(
+        minimum_y,
+        work_area.bottom - height - (vertical_margin - top_margin),
+    )
+    x = min(max(int(position[0]), minimum_x), maximum_x)
+    y = min(max(int(position[1]), minimum_y), maximum_y)
+    return width, height, x, y
+
+
+def _window_geometry_string(
+    width: int, height: int, x: int, y: int,
+) -> str:
+    return f"{width}x{height}{x:+d}{y:+d}"
+
+
+def _monitor_work_area_for_window(
+    window: tk.Misc,
+) -> MonitorWorkArea:
+    """返回窗口所在显示器的工作区；非 Windows 使用 Tk 当前屏幕。"""
+    if os.name != "nt":
+        return MonitorWorkArea(
+            0, 0, 0,
+            int(window.winfo_screenwidth()),
+            int(window.winfo_screenheight()),
+        )
+    import ctypes
+    from ctypes import wintypes
+
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = (
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+        )
+
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = wintypes.HWND(window.winfo_id())
+        monitor_from_window = user32.MonitorFromWindow
+        monitor_from_window.argtypes = (wintypes.HWND, wintypes.DWORD)
+        monitor_from_window.restype = wintypes.HANDLE
+        monitor = monitor_from_window(hwnd, 2)
+        if not monitor:
+            raise OSError("MonitorFromWindow failed")
+        info = MonitorInfo()
+        info.cbSize = ctypes.sizeof(MonitorInfo)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            raise OSError("GetMonitorInfoW failed")
+        dpi = 96
+        get_dpi_for_window = getattr(user32, "GetDpiForWindow", None)
+        if get_dpi_for_window is not None:
+            detected_dpi = int(get_dpi_for_window(hwnd))
+            if detected_dpi > 0:
+                dpi = detected_dpi
+        handle = int(getattr(monitor, "value", monitor) or 0)
+        work = info.rcWork
+        return MonitorWorkArea(
+            handle,
+            int(work.left), int(work.top),
+            int(work.right), int(work.bottom),
+            dpi,
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return MonitorWorkArea(
+            0, 0, 0,
+            int(window.winfo_screenwidth()),
+            int(window.winfo_screenheight()),
+        )
 
 
 def action_button_row_indexes(
@@ -1993,6 +2165,30 @@ def _version() -> str:
 def project_window_title() -> str:
     return (f"{core.PROJECT_NAME} {_version()} - "
             f"{core.PROJECT_FULL_NAME} - Author: {core.PROJECT_AUTHOR}")
+
+
+def about_message() -> str:
+    """返回关于窗口的版本、功能域与兼容边界。"""
+    return (
+        f"{core.PROJECT_NAME} {_version()}\n"
+        f"{core.PROJECT_FULL_NAME}\n"
+        f"作者：{core.PROJECT_AUTHOR}\n\n"
+        "环境：检测并管理本机外部工具。\n"
+        "数据：生成、核验、分析和导出独立 SQLite 档案快照。\n"
+        "硬盘：只读登记物理硬盘信息并生成独立 STG ZIP。\n\n"
+        "版本与格式\n"
+        f"DAISY／DBS 生成器：{_version()}\n"
+        f"DBS SQLite schema：{core.SCHEMA_VERSION}\n"
+        f"DBS 元数据 profile：{metadata.PROFILE_VERSION}\n"
+        f"DBS 文件名布局：{core.FILENAME_LAYOUT_VERSION}\n"
+        f"STG 归档 schema：{storage_core.ARCHIVE_SCHEMA_VERSION}\n"
+        f"STG 文件名布局：{storage_core.FILENAME_LAYOUT_VERSION}\n\n"
+        "兼容性\n"
+        f"DBS 完整快照最低读取器：v{core.MIN_READER_VERSION}\n"
+        f"未完成 partial：仅允许相同生成器版本 {_version()} 续传\n\n"
+        "DBS 与 STG 数据模型彼此独立。业务数据留在本机；源档案和物理硬盘"
+        "保持只读。"
+    )
 
 
 def _install_blank_window_icon(root: tk.Misc) -> object | None:
@@ -2051,7 +2247,6 @@ class DaisyApp:
         self.values: dict[
             str, tk.Variable | tk.Text | DirectoryListEditor] = {}
         self.saved_values: dict[str, dict[str, object]] = {}
-        self.dropdown_expanded: dict[tuple[str, str], bool] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
         self._task_toolbar_layout_ready = False
@@ -2068,11 +2263,15 @@ class DaisyApp:
         self.mini_mode = False
         self.task_toolbar_expanded = True
         self.settings_expanded = True
-        self.progress_expanded = True
+        self.progress_expanded = False
         self.log_expanded = False
         self.command_preview_expanded = False
         self._normal_geometry = ""
         self._normal_window_state = "normal"
+        self._normal_position = (0, 0)
+        self._normal_monitor_signature: tuple[
+            int, int, int, int, int, int
+        ] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.process_started = 0.0
         self.process_task_key: str | None = None
@@ -2088,9 +2287,13 @@ class DaisyApp:
         self._configure_styles()
         self._build_shell()
         self._build_menu()
+        self._set_progress_expanded(False)
         self._set_log_expanded(False)
         self._select_task(self.task.key, save_current=False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind(
+            "<Configure>", self._schedule_monitor_refresh, add="+")
+        self.root.after_idle(self._refresh_monitor_layout)
         self.root.after(80, self._poll_events)
 
     def _configure_window(self) -> None:
@@ -2103,12 +2306,82 @@ class DaisyApp:
         x = max(0, (screen_width - width) // 2)
         y = max(0, (screen_height - height) // 2)
         self.compact_layout = width < 1080 or height < 700
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.geometry(_window_geometry_string(width, height, x, y))
         self.normal_width_cap = min(1200, width)
         self.normal_min_size = (min(760, width), min(640, height))
+        self._preferred_normal_size = (width, height)
+        self._monitor_signature: tuple[
+            int, int, int, int, int, int
+        ] | None = None
+        self._monitor_applied_size: tuple[int, int] | None = None
+        self._monitor_refresh_after_id: str | None = None
         self.root.minsize(*self.normal_min_size)
         self.root.configure(bg=_BG)
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
+
+    def _schedule_monitor_refresh(
+        self, event: tk.Event | None = None,
+    ) -> None:
+        if event is not None and event.widget is not self.root:
+            return
+        if self._monitor_refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self._monitor_refresh_after_id)
+            except tk.TclError:
+                pass
+        self._monitor_refresh_after_id = self.root.after(
+            120, self._refresh_monitor_layout)
+
+    def _refresh_monitor_layout(self) -> None:
+        """跨屏后按目标显示器工作区重算尺寸、位置和最小值。"""
+        self._monitor_refresh_after_id = None
+        try:
+            state = self.root.state()
+            if state in ("iconic", "withdrawn"):
+                return
+            work_area = _monitor_work_area_for_window(self.root)
+            signature = work_area.signature
+            current_size = (
+                int(self.root.winfo_width()),
+                int(self.root.winfo_height()),
+            )
+            current_position = (
+                int(self.root.winfo_x()), int(self.root.winfo_y()))
+        except (tk.TclError, TypeError, ValueError):
+            return
+
+        if signature == self._monitor_signature:
+            if (not self.mini_mode
+                    and current_size != self._monitor_applied_size):
+                self._preferred_normal_size = current_size
+                self._monitor_applied_size = None
+            return
+
+        self._monitor_signature = signature
+        if state != "normal":
+            return
+        preferred_size = (
+            current_size if self.mini_mode
+            else self._preferred_normal_size
+        )
+        width, height, x, y = fit_window_to_work_area(
+            preferred_size, current_position, work_area)
+
+        if self.mini_mode:
+            self.root.minsize(min(520, width), min(height, 300))
+        else:
+            self.normal_width_cap = min(1200, width)
+            self.normal_min_size = (
+                min(760, width), min(640, height))
+            self._sync_task_toolbar_minimum_width()
+            self._monitor_applied_size = (
+                (width, height)
+                if (width, height) != self._preferred_normal_size else None
+            )
+        if ((width, height) != current_size
+                or (x, y) != current_position):
+            self.root.geometry(
+                _window_geometry_string(width, height, x, y))
 
     def _apply_blank_window_icon(self) -> None:
         self.window_icon_handle = _install_blank_window_icon(self.root)
@@ -2129,7 +2402,7 @@ class DaisyApp:
         )
         style.configure(
             "Badge.TLabel", foreground=_GREEN_DEEP,
-            background=_GREEN_SOFT,
+            background=_CONTROL,
             font=("Microsoft YaHei UI", 9, "bold"), padding=(9, 4),
         )
         style.configure(
@@ -2148,15 +2421,6 @@ class DaisyApp:
             fieldbackground=[("readonly", _FIELD)],
             selectbackground=[("readonly", _FIELD)],
             selectforeground=[("readonly", _TEXT)],
-        )
-        style.configure(
-            "TCheckbutton", background=_SURFACE, foreground=_TEXT,
-            font=("Microsoft YaHei UI", 9),
-        )
-        style.map(
-            "TCheckbutton",
-            background=[("active", _SURFACE)],
-            foreground=[("disabled", _MUTED)],
         )
         style.configure(
             "Browse.TButton", background=_CONTROL, foreground=_TEXT,
@@ -2344,22 +2608,27 @@ class DaisyApp:
             "relief": "flat",
             "font": ("Microsoft YaHei UI", 9),
         }
-        menu = tk.Menu(self.root, **base_menu_options)
+        menu = tk.Menu(
+            self.root,
+            **{**base_menu_options, "background": _MENU_BACKGROUND},
+        )
 
         file_menu = tk.Menu(menu, **base_menu_options)
         file_menu.add_command(
             label="打开项目目录", command=self._open_project_directory)
         file_menu.add_command(
-            label="打开当前结果目录", command=self._open_output)
+            label="打开结果目录", command=self._open_output)
         file_menu.add_separator()
         file_menu.add_command(label="退出 DAISY", command=self._on_close)
         menu.add_cascade(label="文件", menu=file_menu)
 
         self.task_menu_var = tk.StringVar(value=self.task.key)
         self.task_menus: dict[str, tk.Menu] = {}
+        panel_menu = tk.Menu(menu, **base_menu_options)
+        self.panel_menu = panel_menu
         for section_label, task_keys in _TASK_MENU_SECTIONS:
             task_menu = tk.Menu(
-                menu,
+                panel_menu,
                 **{
                     **base_menu_options,
                     "activebackground": _UNIFIED_ACTION_BACKGROUND,
@@ -2371,7 +2640,7 @@ class DaisyApp:
             for task_key in task_keys:
                 task = TASK_BY_KEY[task_key]
                 task_menu.add_radiobutton(
-                    label=task.nav,
+                    label=_TASK_TOOLBAR_LABELS[task_key],
                     variable=self.task_menu_var,
                     value=task_key,
                     command=lambda key=task_key: self._select_task(key),
@@ -2385,9 +2654,14 @@ class DaisyApp:
                 if (task_key in _TASK_MENU_SEPARATOR_AFTER
                         and task_key != task_keys[-1]):
                     task_menu.add_separator()
-            menu.add_cascade(label=section_label, menu=task_menu)
+            panel_menu.add_cascade(label=section_label, menu=task_menu)
+        menu.add_cascade(label="面板", menu=panel_menu)
 
-        tool_path_menu = tk.Menu(menu, **base_menu_options)
+        advanced_menu = tk.Menu(menu, **base_menu_options)
+        self.advanced_menu = advanced_menu
+        self.advanced_locked_menu_entries: list[int] = []
+        self.command_preview_visible_var = tk.BooleanVar(value=False)
+        tool_path_menu = tk.Menu(advanced_menu, **base_menu_options)
         self.tool_path_menu = tool_path_menu
         self.tool_path_menu_entries: dict[str, int] = {}
         for tool_name in _TOOL_PATH_MENU_ORDER:
@@ -2404,25 +2678,69 @@ class DaisyApp:
             label="全部恢复自动发现",
             command=self._clear_manual_tool_paths,
         )
-        menu.add_cascade(label="指定工具路径", menu=tool_path_menu)
-        tool_cascade_index = menu.index("end")
-        self.tool_path_menu_cascade_index = (
-            int(tool_cascade_index)
-            if tool_cascade_index is not None else None
+        advanced_menu.add_cascade(
+            label="工具路径", menu=tool_path_menu)
+        tool_path_index = advanced_menu.index("end")
+        if tool_path_index is not None:
+            self.advanced_locked_menu_entries.append(int(tool_path_index))
+
+        hash_percentage_menu = tk.Menu(
+            advanced_menu, **base_menu_options)
+        self.hash_percentage_menu = hash_percentage_menu
+        self.hash_percentage_menu_entries: dict[tuple[str, str], int] = {}
+        for task_key, field_key, _label, _allow_zero in (
+                _HASH_PERCENTAGE_MENU_FIELDS):
+            hash_percentage_menu.add_command(
+                label=self._hash_percentage_menu_label(
+                    task_key, field_key),
+                command=lambda task=task_key, field=field_key:
+                self._edit_hash_percentage(task, field),
+            )
+            entry_index = hash_percentage_menu.index("end")
+            if entry_index is not None:
+                self.hash_percentage_menu_entries[(task_key, field_key)] = (
+                    int(entry_index))
+        hash_percentage_menu.add_separator()
+        hash_percentage_menu.add_command(
+            label="全部恢复默认比例",
+            command=self._reset_hash_percentages,
         )
+        advanced_menu.add_cascade(
+            label="哈希比例", menu=hash_percentage_menu)
+        hash_percentage_index = advanced_menu.index("end")
+        if hash_percentage_index is not None:
+            self.advanced_locked_menu_entries.append(
+                int(hash_percentage_index))
+        advanced_menu.add_separator()
+        advanced_menu.add_command(
+            label="显示命令预览",
+            command=lambda: self._set_command_preview_expanded(
+                not self.command_preview_expanded),
+        )
+        self.command_preview_menu_index = int(
+            advanced_menu.index("end"))
+        advanced_menu.add_separator()
+        advanced_menu.add_command(
+            label="DAISY功能自检",
+            command=lambda: self._select_task(_PROJECT_SELF_TEST_KEY),
+        )
+        self.database_self_test_menu_index = int(
+            advanced_menu.index("end"))
+        self.advanced_locked_menu_entries.append(
+            self.database_self_test_menu_index)
+        menu.add_cascade(label="高级", menu=advanced_menu)
 
         self.task_toolbar_visible_var = tk.BooleanVar(value=True)
         self.settings_visible_var = tk.BooleanVar(value=True)
-        self.progress_visible_var = tk.BooleanVar(value=True)
+        self.progress_visible_var = tk.BooleanVar(value=False)
         self.log_visible_var = tk.BooleanVar(value=False)
-        self.command_preview_visible_var = tk.BooleanVar(value=False)
         view_menu = tk.Menu(menu, **base_menu_options)
         self.view_menu = view_menu
         self.view_panel_menu_entries: dict[str, int] = {}
         panel_states = {
             "task_toolbar": getattr(self, "task_toolbar_expanded", True),
             "settings": getattr(self, "settings_expanded", True),
-            "progress": getattr(self, "progress_expanded", True),
+            "progress": getattr(self, "progress_expanded", False),
             "log": getattr(self, "log_expanded", False),
         }
         for panel_key, panel_label, command in (
@@ -2443,11 +2761,6 @@ class DaisyApp:
                 self.view_panel_menu_entries[panel_key] = int(entry_index)
             if panel_key == "task_toolbar":
                 view_menu.add_separator()
-        view_menu.add_checkbutton(
-            label="显示命令预览", variable=self.command_preview_visible_var,
-            command=lambda: self._set_command_preview_expanded(
-                self.command_preview_visible_var.get()),
-        )
         menu.add_cascade(label="视图", menu=view_menu)
 
         help_menu = tk.Menu(menu, **base_menu_options)
@@ -2497,9 +2810,12 @@ class DaisyApp:
         )
         self.admin_mode_switch.pack(side="right", padx=(0, 12))
         admin_tooltip = (
-            "当前已使用管理员权限；如需恢复普通模式，请关闭后正常启动。"
+            "当前已使用管理员权限。GUI 中目前仅「硬盘信息登记」需要此模式；"
+            "其「检测物理硬盘」准备步骤也使用该权限。如需恢复普通模式，"
+            "请关闭后正常启动。"
             if self.is_administrator else
-            "开启后将确认并通过 Windows UAC 以管理员权限重新启动；"
+            "GUI 中目前仅「硬盘信息登记」需要管理员模式，其「检测物理硬盘」"
+            "准备步骤也使用该权限。开启后将确认并通过 Windows UAC 重新启动；"
             "任务运行期间不可切换。"
         )
         for widget in self.admin_mode_switch.tooltip_widgets:
@@ -2517,7 +2833,7 @@ class DaisyApp:
                 body, text=short_label, bg=_SURFACE,
                 fg=_TASK_TOOLBAR_LABEL_COLOUR,
                 font=("Microsoft YaHei UI", 9, "bold"),
-                width=4, anchor="w",
+                width=8, anchor="w",
             )
         for task_key in _TASK_MENU_ORDER:
             task = TASK_BY_KEY[task_key]
@@ -2530,10 +2846,17 @@ class DaisyApp:
                 self._select_task_from_toolbar(key),
             )
             self.task_toolbar_buttons[task_key] = button
-            attach_tooltip(
-                button,
-                f"{task.nav}：切换到“{task.title}”页面；运行时功能模块会暂时锁定。",
+            tooltip = (
+                f"{task.nav}：切换到「{task_display_title(task_key)}」页面；"
+                "运行时功能模块会暂时锁定。"
             )
+            if task_key in _STG_ADMIN_TASKS:
+                tooltip += (
+                    "此功能需要管理员权限才能完整运行；未提权时请开启顶部"
+                    "管理员模式开关，并按提示重新启动 DAISY。"
+                )
+            attach_tooltip(
+                button, tooltip)
         self.root.after_idle(self._layout_task_toolbar)
 
     def _build_shell(self) -> None:
@@ -2673,12 +2996,12 @@ class DaisyApp:
         )
         self.mini_mode_button = ttk.Button(
             progress_header, text="小窗运行", style="Mini.TButton",
-            command=self._toggle_mini_mode, state="disabled",
+            command=self._toggle_mini_mode, state="normal",
         )
         self.mini_mode_button.pack(side="right", padx=(0, 6))
         attach_tooltip(
             self.mini_mode_button,
-            "任务运行时收起其它区域，只保留进度和停止控制。",
+            "随时切换小窗；只保留进度、停止与返回控制。",
         )
         self.mini_stop_button = ttk.Button(
             progress_header, text="停止", style="MiniStop.TButton",
@@ -2694,66 +3017,83 @@ class DaisyApp:
         progress_body.pack(fill="x", pady=(6, 0))
         progress_body.grid_columnconfigure(1, weight=1)
 
+        tk.Label(
+            progress_body, text="当前目标", bg=_SURFACE, fg=_GREEN_DARK,
+            font=("Microsoft YaHei UI", 8, "bold"), anchor="nw",
+        ).grid(row=0, column=0, sticky="nw", padx=(0, 10), pady=(0, 7))
+        self.progress_target_label = tk.Label(
+            progress_body, text="尚未选择", bg=_SURFACE, fg=_MUTED,
+            font=("Microsoft YaHei UI", 8), anchor="w", justify="left",
+            wraplength=760,
+        )
+        self.progress_target_label.grid(
+            row=0, column=1, columnspan=2, sticky="ew", pady=(0, 7))
+        progress_body.bind(
+            "<Configure>",
+            lambda event: self.progress_target_label.configure(
+                wraplength=max(260, event.width - 90)),
+        )
+
         self.queue_title_label = tk.Label(
             progress_body, text="任务队列", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         )
         self.queue_title_label.grid(
-            row=0, column=0, sticky="w", padx=(0, 10))
+            row=1, column=0, sticky="w", padx=(0, 10))
         self.queue_detail_label = tk.Label(
             progress_body, text="等待队列", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.queue_detail_label.grid(row=0, column=1, sticky="ew")
+        self.queue_detail_label.grid(row=1, column=1, sticky="ew")
         self.queue_percent_label = tk.Label(
             progress_body, text="0%", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Segoe UI", 8, "bold"), anchor="e",
         )
-        self.queue_percent_label.grid(row=0, column=2, sticky="e")
+        self.queue_percent_label.grid(row=1, column=2, sticky="e")
         self.queue_progress_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Queue.Horizontal.TProgressbar",
         )
         self.queue_progress_bar.grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=(4, 7))
+            row=2, column=0, columnspan=3, sticky="ew", pady=(4, 7))
 
         tk.Label(
             progress_body, text="任务阶段", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-        ).grid(row=2, column=0, sticky="w", padx=(0, 10))
+        ).grid(row=3, column=0, sticky="w", padx=(0, 10))
         self.progress_stage_label = tk.Label(
             progress_body, text="等待开始", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
         self.progress_stage_label.grid(
-            row=2, column=1, columnspan=2, sticky="ew")
+            row=3, column=1, columnspan=2, sticky="ew")
         self.progress_stage_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Stage.Horizontal.TProgressbar",
         )
         self.progress_stage_bar.grid(
-            row=3, column=0, columnspan=3, sticky="ew", pady=(4, 6))
+            row=4, column=0, columnspan=3, sticky="ew", pady=(4, 6))
 
         tk.Label(
             progress_body, text="本阶段", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-        ).grid(row=4, column=0, sticky="w", padx=(0, 10))
+        ).grid(row=5, column=0, sticky="w", padx=(0, 10))
         self.progress_detail_label = tk.Label(
             progress_body, text="尚未运行", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.progress_detail_label.grid(row=4, column=1, sticky="ew")
+        self.progress_detail_label.grid(row=5, column=1, sticky="ew")
         self.progress_percent_label = tk.Label(
             progress_body, text="0%", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Segoe UI", 8, "bold"), anchor="e",
         )
-        self.progress_percent_label.grid(row=4, column=2, sticky="e")
+        self.progress_percent_label.grid(row=5, column=2, sticky="e")
         self.progress_work_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Work.Horizontal.TProgressbar",
         )
         self.progress_work_bar.grid(
-            row=5, column=0, columnspan=3, sticky="ew", pady=(4, 5))
+            row=6, column=0, columnspan=3, sticky="ew", pady=(4, 5))
 
         log_panel = tk.Frame(
             content, bg=_LOG_BG, highlightbackground=_BORDER,
@@ -2776,6 +3116,15 @@ class DaisyApp:
         attach_tooltip(
             self.log_toggle_button,
             "展开或收起运行日志；已有日志内容不会被清除。",
+        )
+        self.clear_log_button = ttk.Button(
+            log_header, text="清空日志", style="Mini.TButton",
+            command=self._clear_log,
+        )
+        self.clear_log_button.pack(side="right", padx=(0, 6), pady=5)
+        attach_tooltip(
+            self.clear_log_button,
+            "清空当前窗口的运行日志，不影响任务或正式产物。",
         )
         log_body = tk.Frame(
             log_panel, bg=_LOG_BG,
@@ -2852,17 +3201,12 @@ class DaisyApp:
             style="Secondary.TButton",
             command=self._open_output,
         )
-        self.clear_log_button = ttk.Button(
-            utility_action_area, text="清空日志", style="Secondary.TButton",
-            command=self._clear_log,
-        )
         self.clear_cache_button = ttk.Button(
             utility_action_area, text="清理缓存", style="Secondary.TButton",
             command=self._clear_tool_cache, state="disabled",
         )
         self.utility_buttons = (
             self.open_output_button,
-            self.clear_log_button,
             self.clear_cache_button,
         )
 
@@ -2985,11 +3329,7 @@ class DaisyApp:
             button.grid_forget()
         for button in self.execution_buttons:
             button.grid_forget()
-        visible_utilities = [
-            self.open_output_button,
-            self.clear_log_button,
-            self.clear_cache_button,
-        ]
+        visible_utilities = list(self.utility_buttons)
 
         width = (
             int(event.width) if event is not None
@@ -3082,6 +3422,12 @@ class DaisyApp:
             self.command_preview_body.pack_forget()
         if hasattr(self, "command_preview_visible_var"):
             self.command_preview_visible_var.set(expanded)
+        if hasattr(self, "advanced_menu") and hasattr(
+                self, "command_preview_menu_index"):
+            self.advanced_menu.entryconfigure(
+                self.command_preview_menu_index,
+                label="隐藏命令预览" if expanded else "显示命令预览",
+            )
         if not self.mini_mode:
             self.root.minsize(*self._normal_minimum_size())
 
@@ -3092,10 +3438,7 @@ class DaisyApp:
     def _refresh_mini_action(self) -> None:
         self.mini_mode_button.configure(
             text="返回完整界面" if self.mini_mode else "小窗运行",
-            state=(
-                "normal" if self.mini_mode or self._task_is_active()
-                else "disabled"
-            ),
+            state="normal",
         )
 
     def _set_stop_state(self, state: str) -> None:
@@ -3105,11 +3448,11 @@ class DaisyApp:
     def _toggle_mini_mode(self) -> None:
         if self.mini_mode:
             self._leave_mini_mode()
-        elif self._task_is_active():
+        else:
             self._enter_mini_mode()
 
     def _enter_mini_mode(self) -> None:
-        if self.mini_mode or not self._task_is_active():
+        if self.mini_mode:
             return
         self.root.update_idletasks()
         self._normal_geometry = self.root.geometry()
@@ -3120,6 +3463,12 @@ class DaisyApp:
         if self._normal_window_state != "normal":
             self.root.state("normal")
             self.root.update_idletasks()
+        self._preferred_normal_size = (
+            self.root.winfo_width(), self.root.winfo_height())
+        self._normal_position = (
+            self.root.winfo_x(), self.root.winfo_y())
+        self._normal_monitor_signature = (
+            _monitor_work_area_for_window(self.root).signature)
 
         self.colour_strip.pack_forget()
         self.task_toolbar_panel.pack_forget()
@@ -3136,18 +3485,20 @@ class DaisyApp:
         self._refresh_mini_action()
 
         self.root.update_idletasks()
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        width = max(420, min(680, screen_width - 32))
+        work_area = _monitor_work_area_for_window(self.root)
+        width = max(420, min(680, work_area.width - 32))
         requested_height = self.progress_panel.winfo_reqheight() + 20
-        height = max(190, min(300, requested_height))
-        x = max(
-            0,
-            min(screen_width - width, current_x + current_width - width),
+        height = max(
+            190,
+            min(300, requested_height, work_area.height - 40),
         )
-        y = max(0, min(screen_height - height, current_y))
+        width, height, x, y = fit_window_to_work_area(
+            (width, height),
+            (current_x + current_width - width, current_y),
+            work_area,
+        )
         self.root.minsize(min(520, width), height)
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.geometry(_window_geometry_string(width, height, x, y))
         self.root.title(f"{core.PROJECT_NAME} {_version()} · 运行进度")
 
     def _leave_mini_mode(self) -> None:
@@ -3169,18 +3520,39 @@ class DaisyApp:
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         self.root.title(project_window_title())
-        self.root.minsize(*self._normal_minimum_size())
-        if self._normal_geometry:
-            self.root.geometry(self._normal_geometry)
+        work_area = _monitor_work_area_for_window(self.root)
+        current_monitor = work_area.signature
+        restore_position = (
+            self._normal_position
+            if current_monitor == self._normal_monitor_signature else
+            (self.root.winfo_x(), self.root.winfo_y())
+        )
+        width, height, x, y = fit_window_to_work_area(
+            self._preferred_normal_size, restore_position, work_area)
+        self.normal_width_cap = min(1200, width)
+        self.normal_min_size = (
+            min(760, width), min(640, height))
+        self._sync_task_toolbar_minimum_width()
+        self._monitor_signature = current_monitor
+        self._monitor_applied_size = (
+            (width, height)
+            if (width, height) != self._preferred_normal_size else None
+        )
+        self.root.geometry(
+            _window_geometry_string(width, height, x, y))
         if self._normal_window_state != "normal":
             self.root.after_idle(
                 lambda state=self._normal_window_state:
                 self.root.state(state))
 
     def _scroll_form(self, event: tk.Event) -> str:
-        units = int(-event.delta / 120)
-        if units == 0 and event.delta:
-            units = -1 if event.delta > 0 else 1
+        delta = int(getattr(event, "delta", 0) or 0)
+        units = int(-delta / 120)
+        if units == 0 and delta:
+            units = -1 if delta > 0 else 1
+        if not delta:
+            button = int(getattr(event, "num", 0) or 0)
+            units = -1 if button == 4 else 1 if button == 5 else 0
         if units:
             self.form_canvas.yview_scroll(units, "units")
         return "break"
@@ -3223,14 +3595,15 @@ class DaisyApp:
                        f"{selected_suffix}.TButton"))
 
     def _set_task_navigation_state(self, state: str) -> None:
-        """运行期间统一锁定或恢复顶部任务与工具路径入口。"""
+        """运行期间锁定任务和参数入口，保留命令预览开关。"""
         for task_menu, entry_index in self.task_menu_entries.values():
             task_menu.entryconfigure(entry_index, state=state)
         for task_key, button in self.task_toolbar_buttons.items():
             button.configure(state=state)
-        tool_index = getattr(self, "tool_path_menu_cascade_index", None)
-        if tool_index is not None and hasattr(self, "app_menu"):
-            self.app_menu.entryconfigure(tool_index, state=state)
+        if hasattr(self, "advanced_menu"):
+            for entry_index in getattr(
+                    self, "advanced_locked_menu_entries", ()):
+                self.advanced_menu.entryconfigure(entry_index, state=state)
 
     def _select_task(self, task_key: str, save_current: bool = True) -> None:
         if save_current:
@@ -3239,9 +3612,10 @@ class DaisyApp:
         if hasattr(self, "task_menu_var"):
             self.task_menu_var.set(task_key)
         self._refresh_task_navigation_selection()
-        self.title_label.configure(text=self.task.title)
+        self.title_label.configure(text=task_display_title(self.task.key))
         self.desc_label.configure(text=self.task.description)
         self._build_form()
+        self._refresh_hash_percentage_menu_labels()
         self._refresh_tool_cache_labels()
         active = self._task_is_active()
         missing_tests = (
@@ -3254,9 +3628,16 @@ class DaisyApp:
         )
         self._refresh_environment_actions()
         if self.process is None:
-            self._reset_progress(self.task.title)
+            self._reset_progress(task_display_title(self.task.key))
             if not self.run_jobs:
-                self._set_status("就绪")
+                if (task_key in _STG_ADMIN_TASKS
+                        and not self.is_administrator):
+                    self._set_status(
+                        "此功能需要管理员权限：请开启顶部管理员模式并重新启动 DAISY。",
+                        _WARNING,
+                    )
+                else:
+                    self._set_status("就绪")
 
     def _choice_display(self, spec: FieldSpec, value: object) -> str:
         choices = self._field_choices(spec)
@@ -3272,7 +3653,7 @@ class DaisyApp:
             return spec.choices
         discovered = tuple(getattr(self, "storage_disk_choices", ()))
         if not discovered:
-            return (("请先运行 STG-11 获取可登记硬盘", ""),)
+            return (("请先检测物理硬盘", ""),)
         return (("请选择本次清单中的物理硬盘", ""), *discovered)
 
     def _build_environment_installation(
@@ -3280,8 +3661,8 @@ class DaisyApp:
     ) -> int:
         """在 ENV-01 设置页建立独立的软件安装区。"""
         panel = tk.Frame(
-            self.form_inner, bg=_GREEN_SOFT,
-            highlightbackground=_GREEN, highlightthickness=1,
+            self.form_inner, bg=_SURFACE,
+            highlightbackground=_BORDER, highlightthickness=1,
         )
         panel.grid(
             row=row, column=0, columnspan=2, sticky="ew",
@@ -3289,23 +3670,23 @@ class DaisyApp:
         )
         panel.grid_columnconfigure(0, weight=1)
 
-        header = tk.Frame(panel, bg=_GREEN_SOFT)
+        header = tk.Frame(panel, bg=_SURFACE)
         header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 2))
         tk.Frame(header, bg=_GREEN_DARK, width=4, height=18).pack(
             side="left", fill="y")
         tk.Label(
-            header, text="软件安装", bg=_GREEN_SOFT, fg=_GREEN_DEEP,
+            header, text="软件安装", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         ).pack(side="left", padx=(8, 0))
 
         install_help = tk.Label(
             panel,
             text=(
-                "以下操作分别调用 WinGet。即使已有环境检测结果，仍可单独"
-                "下载、安装或更新；实际安装状态由 WinGet 判断。PowerShell "
-                "由系统提供，不在此安装。"
+                "可按需单独下载、安装或更新下列工具。是否已经安装及是否有"
+                "可用更新由 Windows 包管理器判断；PowerShell 由系统提供，"
+                "不在此安装。"
             ),
-            bg=_GREEN_SOFT, fg=_TEXT,
+            bg=_SURFACE, fg=_TEXT,
             font=("Microsoft YaHei UI", 9), anchor="w",
             justify="left", wraplength=720,
         )
@@ -3317,7 +3698,7 @@ class DaisyApp:
                 wraplength=max(260, event.width - 24)),
         )
 
-        button_grid = tk.Frame(panel, bg=_GREEN_SOFT)
+        button_grid = tk.Frame(panel, bg=_SURFACE)
         button_grid.grid(
             row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         for column in range(2):
@@ -3345,11 +3726,94 @@ class DaisyApp:
             )
         return row + 1
 
+    def _build_admin_requirement_notice(
+        self, row: int, form_pad: int,
+    ) -> int:
+        panel = tk.Frame(
+            self.form_inner, bg=_AMBER_SOFT,
+            highlightbackground=_AMBER, highlightthickness=1,
+        )
+        panel.grid(
+            row=row, column=0, columnspan=2, sticky="ew",
+            padx=form_pad, pady=(15, 5),
+        )
+        tk.Label(
+            panel, text="需要管理员权限", bg=_AMBER_SOFT,
+            fg=_AMBER_DEEP,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+        ).pack(fill="x", padx=12, pady=(10, 3))
+        detail = tk.Label(
+            panel,
+            text=(
+                "此功能需要管理员权限才能完整运行。请开启顶部功能模块标题栏"
+                "的管理员模式开关，确认后由 Windows UAC 重新启动 DAISY。"
+                "未提权继续运行可能只得到不完整诊断或失败。"
+            ),
+            bg=_AMBER_SOFT, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9), anchor="w",
+            justify="left", wraplength=720,
+        )
+        detail.pack(fill="x", padx=12, pady=(0, 11))
+        panel.bind(
+            "<Configure>",
+            lambda event, label=detail: label.configure(
+                wraplength=max(260, event.width - 24)),
+        )
+        return row + 1
+
+    def _build_storage_detection(
+        self, row: int, form_pad: int,
+    ) -> int:
+        panel = tk.Frame(
+            self.form_inner, bg=_SURFACE,
+            highlightbackground=_BORDER, highlightthickness=1,
+        )
+        panel.grid(
+            row=row, column=0, columnspan=2, sticky="ew",
+            padx=form_pad, pady=(15, 5),
+        )
+        found_count = len(self.storage_disk_choices)
+        tk.Label(
+            panel, text="登记准备", bg=_SURFACE, fg=_GREEN_DEEP,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+        ).pack(fill="x", padx=12, pady=(10, 3))
+        detail = tk.Label(
+            panel,
+            text=(
+                f"已找到 {found_count} 块可登记硬盘。请在热插拔后重新检测。"
+                if found_count else
+                "先检测本机物理硬盘，再从本次清单选择登记目标。检测是登记"
+                "流程的准备步骤，不是独立功能模块。"
+            ),
+            bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9), anchor="w",
+            justify="left", wraplength=720,
+        )
+        detail.pack(fill="x", padx=12, pady=(0, 8))
+        self.storage_detect_button = ttk.Button(
+            panel,
+            text="重新检测硬盘" if found_count else "检测物理硬盘",
+            style="Secondary.TButton",
+            command=self._run_storage_inventory,
+        )
+        self.storage_detect_button.pack(anchor="w", padx=12, pady=(0, 11))
+        attach_tooltip(
+            self.storage_detect_button,
+            "运行内部 STG-11 只读列盘步骤，并刷新本页的物理硬盘选择。",
+        )
+        panel.bind(
+            "<Configure>",
+            lambda event, label=detail: label.configure(
+                wraplength=max(260, event.width - 24)),
+        )
+        return row + 1
+
     def _build_form(self, scroll_fraction: float = 0.0) -> None:
         for child in self.form_inner.winfo_children():
             child.destroy()
         self.values = {}
         self.install_tool_buttons = {}
+        self.storage_detect_button = None
         form_pad = 16 if self.compact_layout else 22
         saved = _task_values(
             self.task, self.saved_values.get(self.task.key, {}))
@@ -3357,37 +3821,20 @@ class DaisyApp:
             spec for spec in self.task.fields
             if _field_active(spec, saved) and not spec.top_menu
         ]
-        dropdown_groups = dict(dropdown_field_groups(self.task.key, saved))
-        render_items: list[
-            FieldSpec | tuple[str, tuple[FieldSpec, ...]]
-        ] = []
-        emitted_groups: set[str] = set()
-        for spec in active_specs:
-            if not spec.dropdown:
-                render_items.append(spec)
-                continue
-            if spec.section in emitted_groups:
-                continue
-            emitted_groups.add(spec.section)
-            group_specs = dropdown_groups[spec.section]
-            render_items.append((spec.section, group_specs))
-            if self.dropdown_expanded.get(
-                    (self.task.key, spec.section), False):
-                render_items.extend(group_specs)
         self.form_inner.grid_columnconfigure(1, weight=1)
         row = 0
 
         if self.task.key == _PROJECT_SELF_TEST_KEY:
             info = tk.Frame(
-                self.form_inner, bg=_GREEN_SOFT,
-                highlightbackground=_GREEN, highlightthickness=1,
+                self.form_inner, bg=_SURFACE,
+                highlightbackground=_BORDER, highlightthickness=1,
             )
             info.grid(
                 row=0, column=0, columnspan=2, sticky="ew",
                 padx=form_pad, pady=(18, 8),
             )
             tk.Label(
-                info, text="无需设置", bg=_GREEN_SOFT, fg=_GREEN_DEEP,
+                info, text="无需设置", bg=_SURFACE, fg=_GREEN_DEEP,
                 font=("Microsoft YaHei UI", 10, "bold"), anchor="w",
             ).pack(fill="x", padx=14, pady=(11, 3))
             info_text = tk.Label(
@@ -3396,7 +3843,7 @@ class DaisyApp:
                     "将运行 Script\\Test 中的全部 unittest。测试夹具只写入"
                     "系统临时目录，不读取表单档案，也不生成正式快照。"
                 ),
-                bg=_GREEN_SOFT, fg=_TEXT,
+                bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9), anchor="w",
                 justify="left", wraplength=720,
             )
@@ -3408,56 +3855,16 @@ class DaisyApp:
             )
             row = 1
 
+        if (self.task.key in _STG_ADMIN_TASKS
+                and not self.is_administrator):
+            row = self._build_admin_requirement_notice(row, form_pad)
+        if self.task.key == "storage_collect":
+            row = self._build_storage_detection(row, form_pad)
+
         current_section: str | None = None
         section_colour = _NAV_COLOURS.get(
             self.task.key, (_ACCENT, _ACCENT_DARK))[0]
-        for item in render_items:
-            if isinstance(item, tuple):
-                section_name, group_specs = item
-                expanded = self.dropdown_expanded.get(
-                    (self.task.key, section_name), False)
-                configured = sum(
-                    saved.get(spec.key, spec.default) != spec.default
-                    for spec in group_specs
-                )
-                dropdown_row = tk.Frame(
-                    self.form_inner, bg=_SURFACE,
-                    highlightbackground=_BORDER, highlightthickness=1,
-                )
-                dropdown_row.grid(
-                    row=row, column=0, columnspan=2, sticky="ew",
-                    padx=form_pad, pady=(13, 2),
-                )
-                tk.Frame(
-                    dropdown_row, bg=section_colour, width=4,
-                ).pack(side="left", fill="y")
-                configured_text = (
-                    f" · 已设置 {configured} 项" if configured else ""
-                )
-                tk.Label(
-                    dropdown_row,
-                    text=f"{section_name}{configured_text}",
-                    bg=_SURFACE,
-                    fg=section_colour if configured else _TEXT,
-                    font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
-                ).pack(side="left", padx=(9, 8), pady=8)
-                dropdown_button = ttk.Button(
-                    dropdown_row,
-                    text="收起" if expanded else "展开",
-                    style="Mini.TButton",
-                    command=lambda section=section_name:
-                    self._toggle_dropdown_group(section),
-                )
-                dropdown_button.pack(side="right", padx=7, pady=5)
-                attach_tooltip(
-                    dropdown_button,
-                    f"展开或收起“{section_name}”；已填写内容不会丢失。",
-                )
-                current_section = section_name
-                row += 1
-                continue
-
-            spec = item
+        for spec in active_specs:
             if spec.section != current_section:
                 current_section = spec.section
                 section = tk.Frame(self.form_inner, bg=_SURFACE)
@@ -3491,15 +3898,7 @@ class DaisyApp:
                       pady=(8, 3))
             cell.grid_columnconfigure(0, weight=1)
 
-            if spec.kind in ("bool", "inverse_bool"):
-                var = tk.BooleanVar(value=bool(current))
-                widget = ttk.Checkbutton(
-                    cell, text=spec.toggle_text, variable=var,
-                    command=self._update_preview,
-                )
-                widget.grid(row=0, column=0, sticky="w", pady=3)
-                self.values[spec.key] = var
-            elif spec.kind in ("choice", "choice_flag", "disk_choice"):
+            if spec.kind in ("choice", "choice_flag", "disk_choice"):
                 choices = self._field_choices(spec)
                 var = tk.StringVar(
                     value=self._choice_display(spec, current))
@@ -3511,6 +3910,8 @@ class DaisyApp:
                 widget.bind("<<ComboboxSelected>>",
                             self._choice_changed)
                 widget.bind("<MouseWheel>", self._scroll_form)
+                widget.bind("<Button-4>", self._scroll_form)
+                widget.bind("<Button-5>", self._scroll_form)
                 self.values[spec.key] = var
             elif spec.kind == "multidir":
                 widget = DirectoryListEditor(
@@ -3604,14 +4005,6 @@ class DaisyApp:
     def _choice_changed(self, _event: tk.Event) -> None:
         scroll_fraction = self.form_canvas.yview()[0]
         self.saved_values[self.task.key] = self._collect_values()
-        self._build_form(scroll_fraction)
-
-    def _toggle_dropdown_group(self, section: str) -> None:
-        scroll_fraction = self.form_canvas.yview()[0]
-        self.saved_values[self.task.key] = self._collect_values()
-        key = (self.task.key, section)
-        self.dropdown_expanded[key] = not self.dropdown_expanded.get(
-            key, False)
         self._build_form(scroll_fraction)
 
     def _text_changed(self, event: tk.Event) -> None:
@@ -3713,7 +4106,7 @@ class DaisyApp:
         if self.task.key == _PROJECT_SELF_TEST_KEY:
             self.root.clipboard_clear()
             self.root.clipboard_append(project_self_test_preview())
-            self._set_status("数据库自检命令已复制到剪贴板。")
+            self._set_status("DAISY 功能自检命令已复制到剪贴板。")
             return
         effective, _sources = self._effective_values()
         previews = preview_commands(self.task.key, effective)
@@ -3739,13 +4132,103 @@ class DaisyApp:
         report = str(values.get("report") or "").strip()
         if report:
             return os.path.dirname(_absolute(report))
-        if self.task.key == "storage_verify":
-            archive = str(values.get("archive") or "").strip()
-            if archive:
-                return os.path.dirname(_absolute(archive))
         if self.task.key.startswith("storage_"):
             return _DEFAULT_STORAGE_DIR
         return os.path.join(_BASE, "Output")
+
+    def _hash_percentage_menu_label(
+        self, task_key: str, field_key: str,
+    ) -> str:
+        definition = next(
+            item for item in _HASH_PERCENTAGE_MENU_FIELDS
+            if item[:2] == (task_key, field_key)
+        )
+        task = TASK_BY_KEY[task_key]
+        saved_values = getattr(self, "saved_values", {})
+        values = _task_values(task, saved_values.get(task_key, {}))
+        return f"{definition[2]}：{values[field_key]}%"
+
+    def _refresh_hash_percentage_menu_labels(self) -> None:
+        if not hasattr(self, "hash_percentage_menu_entries"):
+            return
+        for key, entry_index in self.hash_percentage_menu_entries.items():
+            self.hash_percentage_menu.entryconfigure(
+                entry_index,
+                label=self._hash_percentage_menu_label(*key),
+            )
+
+    def _edit_hash_percentage(
+        self, task_key: str, field_key: str,
+    ) -> None:
+        if self._task_is_active():
+            messagebox.showinfo(
+                "任务运行中",
+                "请等待当前任务结束后再修改哈希比例。",
+                parent=self.root,
+            )
+            return
+        definition = next(
+            (item for item in _HASH_PERCENTAGE_MENU_FIELDS
+             if item[:2] == (task_key, field_key)),
+            None,
+        )
+        if definition is None:
+            return
+        task = TASK_BY_KEY[task_key]
+        spec = next(item for item in task.fields if item.key == field_key)
+        current = _task_values(
+            task, self.saved_values.get(task_key, {}))[field_key]
+        allow_zero = definition[3]
+        range_text = (
+            "0 到 100 之间" if allow_zero else "大于 0 且不超过 100")
+        chosen = simpledialog.askstring(
+            "高级 · 哈希比例",
+            f"{definition[2]}\n\n{spec.help}\n\n请输入{range_text}的百分比：",
+            initialvalue=str(current), parent=self.root,
+        )
+        if chosen is None:
+            return
+        text = chosen.strip()
+        try:
+            number = float(text)
+        except ValueError:
+            number = math.nan
+        valid = (
+            math.isfinite(number)
+            and number <= 100.0
+            and (number >= 0.0 if allow_zero else number > 0.0)
+        )
+        if not valid:
+            messagebox.showerror(
+                "哈希比例无效",
+                f"请输入{range_text}的数字。",
+                parent=self.root,
+            )
+            return
+        self._save_current_values()
+        normalized = str(number)
+        self.saved_values.setdefault(task_key, {})[field_key] = normalized
+        self._refresh_hash_percentage_menu_labels()
+        self._update_preview()
+        self._set_status(f"{definition[2]}已设置为 {normalized}%。")
+
+    def _reset_hash_percentages(self) -> None:
+        if self._task_is_active():
+            return
+        self._save_current_values()
+        count = 0
+        for task_key, field_key, _label, _allow_zero in (
+                _HASH_PERCENTAGE_MENU_FIELDS):
+            task_values = self.saved_values.get(task_key, {})
+            if field_key in task_values:
+                del task_values[field_key]
+                count += 1
+        self._refresh_hash_percentage_menu_labels()
+        self._update_preview()
+        self._set_status(
+            f"已恢复 {count} 项哈希比例默认值。"
+            if count else "哈希比例已经使用默认值。"
+        )
 
     def _tool_path_menu_label(self, tool_name: str) -> str:
         display_name = _TOOL_DISPLAY_NAMES[tool_name]
@@ -3767,7 +4250,7 @@ class DaisyApp:
         if self._task_is_active():
             messagebox.showinfo(
                 "任务运行中",
-                "请等待当前任务结束后再指定工具路径。",
+                "请等待当前任务结束后再修改工具路径。",
                 parent=self.root,
             )
             return
@@ -3867,11 +4350,7 @@ class DaisyApp:
     def _show_about(self) -> None:
         messagebox.showinfo(
             "关于 DAISY",
-            f"DAISY {_version()}\n"
-            f"{core.PROJECT_FULL_NAME}\n\n"
-            f"Author: {core.PROJECT_AUTHOR}\n"
-            f"schema_version={core.SCHEMA_VERSION}\n\n"
-            "本地档案清点、登记、核验与对比工具。",
+            about_message(),
             parent=self.root,
         )
 
@@ -3932,7 +4411,6 @@ class DaisyApp:
         self.manual_tool_paths.clear()
         disk = clean_project_caches()
         self.saved_values.clear()
-        self.dropdown_expanded.clear()
         self.storage_disk_choices = ()
         self.environment_missing_names = ()
         self.missing_installable_tools = ()
@@ -3940,7 +4418,7 @@ class DaisyApp:
             self._leave_mini_mode()
         self._set_task_toolbar_expanded(True)
         self._set_settings_expanded(True)
-        self._set_progress_expanded(True)
+        self._set_progress_expanded(False)
         self._set_log_expanded(False)
         self._set_command_preview_expanded(False)
         self._clear_log()
@@ -4005,6 +4483,9 @@ class DaisyApp:
                 text=f"下载并安装 {display_name}",
                 state=action_state,
             )
+        storage_button = getattr(self, "storage_detect_button", None)
+        if storage_button is not None:
+            storage_button.configure(state=action_state)
         if hasattr(self, "admin_mode_switch"):
             already_admin = bool(getattr(self, "is_administrator", False))
             self.admin_mode_switch.set_mode(
@@ -4046,10 +4527,18 @@ class DaisyApp:
     def _apply_storage_inventory(
         self, payload: dict[str, object],
     ) -> None:
+        rebuild_form = (
+            getattr(getattr(self, "task", None), "key", None)
+            == "storage_collect"
+        )
+        if rebuild_form and getattr(self, "values", None):
+            self.saved_values["storage_collect"] = self._collect_values()
         self.storage_disk_choices = storage_target_choices(
             payload.get("targets"))
         self.saved_values.setdefault("storage_collect", {}).pop(
             "disk_number", None)
+        if rebuild_form:
+            self._build_form()
 
     def _cache_detected_tools(self, payload: dict[str, object]) -> None:
         tools = payload.get("tools")
@@ -4108,6 +4597,7 @@ class DaisyApp:
         self._stop_work_progress()
         self.current_stage_index = 0
         self.current_stage_total = 0
+        self.progress_target_label.configure(text="尚未选择", fg=_MUTED)
         self.queue_progress_bar.configure(
             mode="determinate", maximum=100, value=0,
             style="Queue.Horizontal.TProgressbar",
@@ -4182,9 +4672,9 @@ class DaisyApp:
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         title = (
-            "数据库自检" if self_test else
+            "DAISY功能自检" if self_test else
             "安装缺失工具" if installing else
-            self.task.title
+            task_display_title(self.task.key)
         )
         self.progress_stage_bar.configure(
             mode="determinate", maximum=100, value=0,
@@ -4294,7 +4784,7 @@ class DaisyApp:
             style, colour, detail = (
                 "Success", _SUCCESS,
                 (
-                    f"数据库自检通过 · 总用时 {_format_duration(elapsed)}"
+                    f"DAISY 功能自检通过 · 总用时 {_format_duration(elapsed)}"
                     if self_test else
                     f"安装命令完成 · 用时 {_format_duration(elapsed)}"
                     if installing else
@@ -4334,12 +4824,21 @@ class DaisyApp:
                       job_count: int = 1) -> bool:
         warnings: list[str] = []
         active_keys = active_field_keys(self.task.key, values)
+        if (self.task.key in _STG_ADMIN_TASKS
+                and not self.is_administrator):
+            warnings.append(
+                "当前不是管理员模式。此功能需要管理员权限才能完整运行；"
+                "建议取消本次运行，开启顶部管理员模式开关，并按提示重新启动 "
+                "DAISY。若继续，将以非管理员模式运行，可能只得到不完整诊断"
+                "或失败。"
+            )
+        target_summary = root_confirmation_text(self.task.key, values)
+        if target_summary:
+            warnings.append(target_summary)
         if self.task.key == "full_scan":
             warnings.append(
-                "完整扫描可能持续数小时；停止时可能保留可续传的 partial 快照。")
-            if job_count > 1:
-                warnings.append(
-                    f"将按列表顺序分别生成 {job_count} 个独立数据库。")
+                "完整档案扫描可能持续几小时到几天；停止时可能保留可续传的 "
+                "partial 快照。")
             if values.get("start_mode") == "resume":
                 warnings.append("续传会沿用 partial 快照内记录的原扫描配置。")
             else:
@@ -4395,8 +4894,9 @@ class DaisyApp:
         self._prepare_queue_progress()
         self._refresh_mini_action()
         self._set_task_navigation_state("disabled")
+        self._refresh_environment_actions()
         if task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("正在启动数据库自检…")
+            self._set_status("正在启动 DAISY 功能自检…")
         else:
             self._set_status(
                 f"队列已准备：{len(jobs)} 项。" if len(jobs) > 1
@@ -4410,26 +4910,47 @@ class DaisyApp:
         missing = project_self_test_missing_files()
         if missing:
             messagebox.showerror(
-                "数据库自检不可用",
+                "DAISY 功能自检不可用",
                 "缺少正式测试文件：\n"
                 + "\n".join("• " + name for name in missing),
                 parent=self.root,
             )
             return
         confirmed = messagebox.askyesno(
-            "运行数据库自检",
+            "运行 DAISY 功能自检",
             f"将运行 Script\\Test 中的全部 unittest；当前版本 {_version()}。"
             "\n\n"
             "测试不会使用 GUI 表单中的档案目录；夹具在系统临时目录中"
             "创建并清理，也不会访问真实硬盘。部分集成测试会调用 ExifTool、"
             "ffprobe 与 7-Zip，"
-            "建议先完成 ENV-01 环境检测。\n\n确定继续吗？",
+            "建议先完成 ENV-01 运行环境检测。\n\n确定继续吗？",
             icon="question", parent=self.root,
         )
         if not confirmed:
             return
         self._begin_run_jobs(
-            _PROJECT_SELF_TEST_KEY, [RunJob("数据库自检", {})])
+            _PROJECT_SELF_TEST_KEY, [RunJob("DAISY功能自检", {})])
+
+    def _run_storage_inventory(self) -> None:
+        """在硬盘信息登记页运行内部列盘步骤并刷新目标清单。"""
+        if self.process is not None or self.worker_starting or self.run_jobs:
+            return
+        if (not self.is_administrator
+                and not messagebox.askyesno(
+                    "检测硬盘需要管理员权限",
+                    "检测物理硬盘需要管理员权限才能获得完整结果。建议先开启"
+                    "顶部管理员模式开关，并按提示重新启动 DAISY。\n\n"
+                    "若继续，将以非管理员模式运行，可能只得到不完整诊断或"
+                    "失败。确定继续吗？",
+                    icon="warning", parent=self.root)):
+            return
+        self._save_current_values()
+        self.storage_disk_choices = ()
+        self.saved_values.setdefault("storage_collect", {}).pop(
+            "disk_number", None)
+        self._build_form()
+        self._begin_run_jobs(
+            "storage_list", [RunJob("检测物理硬盘", {})])
 
     def _install_tool(self, tool_name: str) -> None:
         """仅安装环境检测页明确选择的一项白名单工具。"""
@@ -4499,6 +5020,8 @@ class DaisyApp:
         self.run_job_index = next_index
         job = self.run_jobs[next_index]
         task_key = self.process_task_key or self.task.key
+        self.progress_target_label.configure(
+            text=run_job_target_text(task_key, job), fg=_TEXT)
         if task_key == _PROJECT_SELF_TEST_KEY:
             effective: dict[str, object] = {}
             tool_sources: dict[str, str] = {}
@@ -4526,7 +5049,7 @@ class DaisyApp:
                 f"队列 {next_index + 1}/{total} · 正在启动 {job.label}…"
             )
         elif task_key == _PROJECT_SELF_TEST_KEY:
-            self._set_status("数据库自检运行中…")
+            self._set_status("DAISY 功能自检运行中…")
         elif task_key == _DEPENDENCY_INSTALL_KEY:
             self._set_status(
                 f"正在下载并安装 {job.label}…")
@@ -4702,7 +5225,7 @@ class DaisyApp:
             if returncode is None:
                 self._set_status(
                     (
-                        "数据库自检未能启动。" if self_test else
+                        "DAISY 功能自检未能启动。" if self_test else
                         "安装命令未能启动。" if installing else
                         "任务未能启动。"
                     ),
@@ -4711,7 +5234,7 @@ class DaisyApp:
             elif self.stop_requested:
                 self._set_status(
                     (
-                        "数据库自检已停止；请检查日志。"
+                        "DAISY 功能自检已停止；请检查日志。"
                         if self_test else
                         "安装已停止；请检查日志与本机软件状态。"
                         if installing else
@@ -4722,7 +5245,7 @@ class DaisyApp:
             elif returncode == 0:
                 self._set_status(
                     (
-                        "数据库自检通过。" if self_test else
+                        "DAISY 功能自检通过。" if self_test else
                         "安装命令完成。" if installing else
                         "任务完成。"
                     ),
@@ -4733,7 +5256,7 @@ class DaisyApp:
             else:
                 self._set_status(
                     (
-                        "数据库自检失败；请查看日志。"
+                        "DAISY 功能自检失败；请查看日志。"
                         if self_test else
                         "安装失败；请查看日志。"
                         if installing else
@@ -4829,7 +5352,7 @@ class DaisyApp:
         item = (
             f"队列 {self.run_job_index + 1}/{total}「{job.label}」"
             if total > 1 and job else
-            ("数据库自检" if self_test else "任务"))
+            ("DAISY 功能自检" if self_test else "任务"))
         if returncode is None:
             if total > 1:
                 self._append_log(f"\n{item}未能启动。\n", "error")
@@ -4865,7 +5388,7 @@ class DaisyApp:
             return
         if self.process_task_key == _PROJECT_SELF_TEST_KEY:
             prompt = (
-                "这会中断当前数据库自检；测试夹具仍会由测试清理流程处理。"
+                "这会中断当前 DAISY 功能自检；测试夹具仍会由测试清理流程处理。"
                 "\n\n确定停止吗？"
             )
         elif self.process_task_key == _DEPENDENCY_INSTALL_KEY:
@@ -4878,9 +5401,9 @@ class DaisyApp:
                 "这会中断当前只读硬盘采集，可能在存储档案目录留下可安全"
                 "删除的 .partial.zip；不会修改硬盘。\n\n确定停止吗？"
             )
-        elif self.process_task_key in ("storage_list", "storage_verify"):
+        elif self.process_task_key == "storage_list":
             prompt = (
-                "这会中断当前只读查询或归档核验；不会修改硬盘或既有归档。"
+                "这会中断当前只读硬盘检测；不会修改硬盘。"
                 "\n\n确定停止吗？"
             )
         else:

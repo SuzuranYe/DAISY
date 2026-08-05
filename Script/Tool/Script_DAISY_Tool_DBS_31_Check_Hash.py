@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_22_Check_Hash：哈希校验——既有快照 vs 当前磁盘的按需核对。
+r"""Script_DAISY_Tool_DBS_31_Check_Hash：内容哈希核验。
 
 ① 全量 stat 核对：快照全部条目的存在性与 size/mtime（枚举级，分钟级）；
 ② 哈希核对：stat 未变者中抽样（默认 1%，至少 100，按大小分层）或 --full 全量，
@@ -152,7 +152,8 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="哈希校验：快照 vs 当前磁盘（只读）")
+    ap = argparse.ArgumentParser(
+        description="DBS-31 内容哈希核验：快照 vs 当前磁盘（只读）")
     ap.add_argument("--snapshot", required=True, help="封存快照 .sqlite 路径")
     ap.add_argument(
         "--root", action="append", required=True,
@@ -166,7 +167,7 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        prog = core.Progress(1, 1, "哈希校验")
+        prog = core.Progress(1, 1, "内容哈希核验")
         rep = patrol(args.snapshot,
                      sample_percent=args.sample_percent, full=args.full,
                      powershell=args.powershell_path, force=args.force,
@@ -199,7 +200,7 @@ def main() -> int:
             ("哈希工具错误", rep["hash_tool_error"]),
         )
         lines = [
-            "# DAISY 哈希校验问题报告", "",
+            "# DAISY 内容哈希核验问题报告", "",
             f"- 快照：`{rep['snapshot']}`",
             f"- 快照 UUID：`{rep['snapshot_uuid']}`",
             f"- 核对时间：`{rep['checked_at_utc']}`",

@@ -33,10 +33,10 @@ class TestGuiArguments(unittest.TestCase):
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
         self.assertEqual(
-            gui.TASK_BY_KEY["env_check"].nav, "ENV-01  环境检测")
+            gui.TASK_BY_KEY["env_check"].nav, "ENV-01  运行环境检测")
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "DBS-91  数据库自检",
+            "DBS-91  DAISY功能自检",
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
@@ -219,7 +219,6 @@ class TestGuiArguments(unittest.TestCase):
                 "--disk-number", "--output-dir", "--summary-txt",
                 "--smartctl-path", "--powershell-path",
             },
-            "storage_verify": set(),
         }
         for task_key, flags in expected.items():
             mapped = {
@@ -264,6 +263,7 @@ class TestGuiArguments(unittest.TestCase):
                 ("生成 ZIP 外部 TXT", True),
             ),
         )
+
         with tempfile.TemporaryDirectory() as output_dir:
             collect = gui.build_tool_args(
                 "storage_collect",
@@ -282,10 +282,16 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("--smartctl-path", collect)
         self.assertIn("--powershell-path", collect)
 
-        archive_path = os.path.abspath("Fixture_PROFILE_12345678.zip")
-        verify = gui.build_tool_args(
-            "storage_verify", {"archive": archive_path})
-        self.assertEqual(verify, ["storage-verify", archive_path])
+    def test_export_report_explains_snapshot_and_diff_outputs(self):
+        source_type = next(
+            spec for spec in gui.TASK_BY_KEY["export_report"].fields
+            if spec.key == "source_type")
+        self.assertIn("清单与诊断 CSV", source_type.choices[0][0])
+        self.assertIn("摘要 Markdown 与变更 CSV", source_type.choices[1][0])
+        for filename in (
+                "Tree", "Summary", "Diff_summary.md",
+                "Diff_details.csv", "Diff_subtrees.csv"):
+            self.assertIn(filename, source_type.help)
 
     def test_storage_collect_requires_a_nonnegative_integer_disk_number(self):
         self.assertIn(
@@ -346,6 +352,37 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(disk_spec.kind, "disk_choice")
         self.assertEqual(
             app._field_choices(disk_spec)[0][1], "")
+
+    def test_storage_detection_is_an_internal_step_of_registration(self):
+        app = object.__new__(gui.DaisyApp)
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.is_administrator = True
+        app.storage_disk_choices = (("PhysicalDrive3", "3"),)
+        app.saved_values = {
+            "storage_collect": {
+                "disk_number": "3",
+                "output_dir": r"C:\Result",
+            },
+        }
+        calls = []
+        app._save_current_values = lambda: calls.append("save")
+        app._build_form = lambda: calls.append("build")
+        app._begin_run_jobs = (
+            lambda task_key, jobs: calls.append((task_key, jobs)))
+
+        app._run_storage_inventory()
+
+        self.assertEqual(app.storage_disk_choices, ())
+        self.assertNotIn(
+            "disk_number", app.saved_values["storage_collect"])
+        self.assertEqual(calls[:2], ["save", "build"])
+        task_key, jobs = calls[2]
+        self.assertEqual(task_key, "storage_list")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].label, "检测物理硬盘")
+        self.assertEqual(jobs[0].values, {})
 
         snapshot_args = gui.build_tool_args(
             "export_report",
@@ -598,11 +635,11 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(2048, 1280), (1920, 1080))
+            gui.window_size_for_screen(2048, 1280), (1280, 720))
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1840, 1020))
+            gui.window_size_for_screen(1920, 1080), (1280, 720))
         self.assertEqual(
-            gui.window_size_for_screen(1366, 768), (1286, 708))
+            gui.window_size_for_screen(1366, 768), (1280, 708))
         self.assertEqual(
             gui.window_size_for_screen(1024, 768), (944, 708))
         self.assertEqual(
@@ -610,6 +647,77 @@ class TestGuiArguments(unittest.TestCase):
         small = gui.window_size_for_screen(800, 600)
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
+
+    def test_window_geometry_fits_positive_and_negative_monitor_work_areas(self):
+        secondary = gui.MonitorWorkArea(
+            2, 1920, 0, 3200, 680, dpi=144)
+        self.assertEqual(
+            gui.fit_window_to_work_area(
+                (1280, 720), (2250, 40), secondary),
+            (1248, 640, 1936, 20),
+        )
+        left_monitor = gui.MonitorWorkArea(
+            3, -1280, 0, 0, 1024, dpi=96)
+        width, height, x, y = gui.fit_window_to_work_area(
+            (1000, 700), (-1500, 900), left_monitor)
+        self.assertEqual((width, height), (1000, 700))
+        self.assertGreaterEqual(x, left_monitor.left)
+        self.assertLessEqual(x + width, left_monitor.right)
+        self.assertGreaterEqual(y, left_monitor.top)
+        self.assertLessEqual(y + height, left_monitor.bottom)
+
+    def test_monitor_change_refits_normal_window_to_target_work_area(self):
+        class RootProbe:
+            def __init__(self):
+                self.width = 1280
+                self.height = 720
+                self.x = 2250
+                self.y = 40
+                self.geometries = []
+
+            def state(self):
+                return "normal"
+
+            def winfo_width(self):
+                return self.width
+
+            def winfo_height(self):
+                return self.height
+
+            def winfo_x(self):
+                return self.x
+
+            def winfo_y(self):
+                return self.y
+
+            def geometry(self, value):
+                self.geometries.append(value)
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.mini_mode = False
+        app._monitor_refresh_after_id = "pending"
+        app._monitor_signature = (1, 0, 0, 1920, 1040, 96)
+        app._monitor_applied_size = None
+        app._preferred_normal_size = (1280, 720)
+        app.normal_width_cap = 1200
+        app.normal_min_size = (760, 640)
+        sync_calls = []
+        app._sync_task_toolbar_minimum_width = lambda: sync_calls.append(True)
+        target = gui.MonitorWorkArea(
+            2, 1920, 0, 3200, 680, dpi=144)
+
+        with patch.object(
+                gui, "_monitor_work_area_for_window", return_value=target):
+            app._refresh_monitor_layout()
+
+        self.assertIsNone(app._monitor_refresh_after_id)
+        self.assertEqual(app._monitor_signature, target.signature)
+        self.assertEqual(app._monitor_applied_size, (1248, 640))
+        self.assertEqual(app.normal_min_size, (760, 640))
+        self.assertEqual(app.normal_width_cap, 1200)
+        self.assertEqual(sync_calls, [True])
+        self.assertEqual(app.root.geometries, ["1248x640+1936+20"])
 
     def test_normal_minimum_width_follows_full_function_modules(self):
         class RootProbe:
@@ -664,13 +772,59 @@ class TestGuiArguments(unittest.TestCase):
             self.assertLessEqual(occupied, 380)
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
 
-    def test_full_hash_independent_sample_is_explained_and_dropdown(self):
+    def test_log_header_button_is_not_reparented_into_utility_grid(self):
+        class ButtonProbe:
+            def __init__(self, width=110):
+                self.width = width
+                self.grid_calls = []
+                self.forgotten = 0
+
+            def winfo_reqwidth(self):
+                return self.width
+
+            def grid_forget(self):
+                self.forgotten += 1
+
+            def grid(self, **options):
+                self.grid_calls.append(options)
+
+        class AreaProbe:
+            @staticmethod
+            def winfo_width():
+                return 360
+
+        app = object.__new__(gui.DaisyApp)
+        output = ButtonProbe()
+        cache = ButtonProbe()
+        stop = ButtonProbe()
+        run = ButtonProbe()
+        clear_log = ButtonProbe()
+        app.utility_buttons = (output, cache)
+        app.execution_buttons = (stop, run)
+        app.open_output_button = output
+        app.clear_cache_button = cache
+        app.clear_log_button = clear_log
+        app.stop_button = stop
+        app.run_button = run
+        app.utility_action_area = AreaProbe()
+        app.content = AreaProbe()
+
+        app._layout_action_buttons()
+
+        self.assertTrue(output.grid_calls)
+        self.assertTrue(cache.grid_calls)
+        self.assertTrue(stop.grid_calls)
+        self.assertTrue(run.grid_calls)
+        self.assertEqual(clear_log.grid_calls, [])
+        self.assertEqual(clear_log.forgotten, 0)
+
+    def test_full_hash_independent_sample_is_explained_and_top_menu(self):
         fields = {
             spec.key: spec for spec in gui.TASK_BY_KEY["full_scan"].fields
         }
         verify = fields["verify_percent"]
-        self.assertTrue(verify.dropdown)
-        self.assertEqual(verify.section, "哈希抽样")
+        self.assertTrue(verify.top_menu)
+        self.assertEqual(verify.section, "哈希比例")
         for phrase in (
                 "PowerShell Get-FileHash", "至少 100 个",
                 "不是主哈希的覆盖比例"):
@@ -680,7 +834,7 @@ class TestGuiArguments(unittest.TestCase):
         index = args.index("--verify-sample-percent")
         self.assertEqual(args[index + 1], "1.0")
 
-    def test_all_hash_sampling_percentages_have_own_dropdown(self):
+    def test_all_hash_sampling_percentages_live_in_advanced_menu(self):
         sampling_fields = {
             (task.key, spec.key): spec
             for task in gui.TASKS
@@ -694,18 +848,67 @@ class TestGuiArguments(unittest.TestCase):
              ("check_hash", "sample_percent")},
         )
         self.assertTrue(all(
-            spec.dropdown and spec.section == "哈希抽样"
+            spec.top_menu and spec.section == "哈希比例"
             for spec in sampling_fields.values()))
+
+    def test_page_parameters_use_dropdowns_without_expand_or_check_controls(self):
+        self.assertFalse(any(
+            spec.kind in ("bool", "inverse_bool")
+            for task in gui.TASKS for spec in task.fields))
+        for task_key in ("check_format", "check_hash", "diff"):
+            force = next(
+                spec for spec in gui.TASK_BY_KEY[task_key].fields
+                if spec.key == "force")
+            self.assertEqual(force.kind, "choice_flag")
+            self.assertEqual(force.default, False)
+            self.assertEqual(force.flag_value, True)
+            self.assertEqual(
+                force.choices,
+                (("不启用（默认）", False), ("启用", True)),
+            )
+
+    def test_hash_percentage_menu_edits_and_resets_original_fields(self):
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.task = gui.TASK_BY_KEY["env_check"]
+        app.values = {}
+        app.saved_values = {}
+        app._refresh_hash_percentage_menu_labels = Mock()
+        app._update_preview = Mock()
+        app._set_status = Mock()
+
         self.assertEqual(
-            tuple(
-                (section, tuple(spec.key for spec in specs))
-                for section, specs in gui.dropdown_field_groups(
-                    "check_hash", {"check_scope": "sample"})
-            ),
-            (
-                ("哈希抽样", ("sample_percent",)),
-                ("故障恢复", ("force",)),
-            ),
+            app._hash_percentage_menu_label(
+                "full_scan", "verify_percent"),
+            "DBS-11 独立哈希抽验：1.0%",
+        )
+        with patch.object(
+                gui.simpledialog, "askstring", return_value="2.5"):
+            app._edit_hash_percentage("full_scan", "verify_percent")
+        self.assertEqual(
+            app.saved_values["full_scan"]["verify_percent"], "2.5")
+        args = gui.build_tool_args(
+            "full_scan", {"roots": r"E:\Archive", **app.saved_values["full_scan"]})
+        index = args.index("--verify-sample-percent")
+        self.assertEqual(args[index + 1], "2.5")
+
+        with (
+            patch.object(gui.simpledialog, "askstring", return_value="0"),
+            patch.object(gui.messagebox, "showerror") as shown,
+        ):
+            app._edit_hash_percentage("check_hash", "sample_percent")
+        shown.assert_called_once()
+        self.assertNotIn("check_hash", app.saved_values)
+
+        app._reset_hash_percentages()
+        self.assertNotIn("verify_percent", app.saved_values["full_scan"])
+        self.assertEqual(
+            app._hash_percentage_menu_label(
+                "full_scan", "verify_percent"),
+            "DBS-11 独立哈希抽验：1.0%",
         )
 
     def test_tool_paths_live_in_top_menu_not_page_dropdowns(self):
@@ -718,18 +921,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             set(tool_fields), set(gui._TOOL_FIELD_BY_NAME.values()))
         self.assertTrue(all(
-            spec.top_menu and not spec.dropdown
-            and spec.section == "指定工具路径"
+            spec.top_menu and spec.section == "工具路径"
             for spec in tool_fields.values()
         ))
-        for task in gui.TASKS:
-            grouped_keys = {
-                spec.key
-                for _section, specs in gui.dropdown_field_groups(
-                    task.key, {})
-                for spec in specs
-            }
-            self.assertTrue(grouped_keys.isdisjoint(tool_fields))
 
     def test_form_mousewheel_scrolls_and_stops_widget_defaults(self):
         class CanvasProbe:
@@ -740,12 +934,18 @@ class TestGuiArguments(unittest.TestCase):
                 self.calls.append((units, mode))
 
         class Event:
-            delta = -60
+            def __init__(self, *, delta=0, num=0):
+                self.delta = delta
+                self.num = num
 
         app = object.__new__(gui.DaisyApp)
         app.form_canvas = CanvasProbe()
-        self.assertEqual(app._scroll_form(Event()), "break")
+        self.assertEqual(
+            app._scroll_form(Event(delta=-60)), "break")
         self.assertEqual(app.form_canvas.calls, [(1, "units")])
+        self.assertEqual(
+            app._scroll_form(Event(num=4)), "break")
+        self.assertEqual(app.form_canvas.calls[-1], (-1, "units"))
 
     def test_technical_spec_declares_powershell_compatibility(self):
         spec_path = os.path.join(
@@ -892,21 +1092,22 @@ class TestGuiArguments(unittest.TestCase):
     def test_top_task_menus_use_theme_grouping(self):
         self.assertEqual(
             [section[0] for section in gui._TASK_MENU_SECTIONS],
-            ["环境", "数据库", "硬盘"],
+            ["环境", "数据", "硬盘"],
         )
         self.assertNotIn("full_scan", gui._TASK_MENU_SECTIONS[0][1])
         self.assertNotIn("quick_scan", gui._TASK_MENU_SECTIONS[0][1])
         self.assertEqual(gui._TASK_MENU_SECTIONS[0][1], ("env_check",))
         self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][:3],
                          ("full_scan", "quick_scan", "diff"))
-        self.assertEqual(
-            gui._TASK_MENU_SECTIONS[1][1][-1],
-            gui._PROJECT_SELF_TEST_KEY,
-        )
+        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][-1], "export_report")
+        self.assertNotIn(
+            gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
         self.assertEqual(
             gui._TASK_MENU_SECTIONS[-1][1],
-            ("storage_list", "storage_collect", "storage_verify"),
+            ("storage_collect",),
         )
+        self.assertNotIn("storage_list", gui._TASK_MENU_ORDER)
+        self.assertNotIn("storage_verify", gui.TASK_BY_KEY)
         self.assertEqual(
             tuple(
                 task_key
@@ -921,7 +1122,7 @@ class TestGuiArguments(unittest.TestCase):
             ("diff", "check_hash", "check_format"),
         )
 
-    def test_standard_menu_builds_three_top_theme_dropdowns(self):
+    def test_standard_menu_groups_panel_and_advanced_entries(self):
         class VariableProbe:
             def __init__(self, value=None, **_options):
                 self.value = value
@@ -986,11 +1187,39 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             top_labels,
             [
-                "文件", "环境", "数据库", "硬盘",
-                "指定工具路径", "视图", "帮助",
+                "文件", "面板", "高级", "视图", "帮助",
             ],
         )
-        self.assertEqual(len("指定工具路径"), 6)
+        file_menu = app.app_menu.entries[0]["menu"]
+        self.assertEqual(
+            [entry["label"] for entry in file_menu.entries
+             if entry["kind"] == "command"],
+            ["打开项目目录", "打开结果目录", "退出 DAISY"],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.panel_menu.entries
+             if entry["kind"] == "cascade"],
+            ["环境", "数据", "硬盘"],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.advanced_menu.entries
+             if entry["kind"] == "cascade"],
+            ["工具路径", "哈希比例"],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.advanced_menu.entries
+             if entry["kind"] == "checkbutton"],
+            [],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.advanced_menu.entries
+             if entry["kind"] == "command"],
+            ["显示命令预览", "DAISY功能自检"],
+        )
+        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 5])
+        self.assertEqual(
+            app.app_menu.options["background"], gui._MENU_BACKGROUND)
+        self.assertEqual(len("工具路径"), 4)
         self.assertEqual(
             [
                 entry["label"]
@@ -1003,6 +1232,15 @@ class TestGuiArguments(unittest.TestCase):
             ] + ["全部恢复自动发现"],
         )
         self.assertEqual(
+            [entry["label"] for entry in app.hash_percentage_menu.entries
+             if entry["kind"] == "command"],
+            [
+                "DBS-11 独立哈希抽验：1.0%",
+                "DBS-31 内容哈希抽样：1.0%",
+                "全部恢复默认比例",
+            ],
+        )
+        self.assertEqual(
             [
                 entry["label"]
                 for entry in app.view_menu.entries
@@ -1010,7 +1248,7 @@ class TestGuiArguments(unittest.TestCase):
             ],
             [
                 "折叠功能模块", "折叠任务设置",
-                "折叠运行进度", "展开运行日志",
+                "展开运行进度", "展开运行日志",
             ],
         )
         self.assertEqual(
@@ -1019,7 +1257,7 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.view_menu.entries
                 if entry["kind"] == "checkbutton"
             ],
-            ["显示命令预览"],
+            [],
         )
         self.assertEqual(
             [
@@ -1027,16 +1265,16 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.task_menus["环境"].entries
                 if entry["kind"] == "radiobutton"
             ],
-            [gui.TASK_BY_KEY[key].nav
+            [gui._TASK_TOOLBAR_LABELS[key]
              for key in gui._TASK_MENU_SECTIONS[0][1]],
         )
         self.assertEqual(
             sum(entry["kind"] == "separator"
-                for entry in app.task_menus["数据库"].entries),
-            4,
+                for entry in app.task_menus["数据"].entries),
+            3,
         )
         self.assertEqual(
-            app.task_menus["数据库"].options["activebackground"],
+            app.task_menus["数据"].options["activebackground"],
             gui._UNIFIED_ACTION_BACKGROUND,
         )
         self.assertEqual(
@@ -1045,13 +1283,13 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.task_menus["硬盘"].entries
                 if entry["kind"] == "radiobutton"
             ],
-            [gui.TASK_BY_KEY[key].nav
+            [gui._TASK_TOOLBAR_LABELS[key]
              for key in gui._TASK_MENU_SECTIONS[2][1]],
         )
         self.assertEqual(
             sum(entry["kind"] == "separator"
                 for entry in app.task_menus["硬盘"].entries),
-            2,
+            0,
         )
 
     def test_view_menu_uses_expand_collapse_actions_except_preview(self):
@@ -1261,18 +1499,49 @@ class TestGuiArguments(unittest.TestCase):
             "full_scan": database_button,
             "storage_list": storage_button,
         }
+        app.advanced_menu = MenuProbe()
+        app.advanced_locked_menu_entries = [0, 1]
         app._set_task_navigation_state("disabled")
         self.assertEqual(environment_menu.states, {0: "disabled"})
         self.assertEqual(database_menu.states, {2: "disabled"})
         self.assertEqual(environment_button.states, ["disabled"])
         self.assertEqual(database_button.states, ["disabled"])
         self.assertEqual(storage_button.states, ["disabled"])
+        self.assertEqual(
+            app.advanced_menu.states, {0: "disabled", 1: "disabled"})
         app._set_task_navigation_state("normal")
         self.assertEqual(environment_menu.states, {0: "normal"})
         self.assertEqual(database_menu.states, {2: "normal"})
         self.assertEqual(environment_button.states[-1], "normal")
         self.assertEqual(database_button.states[-1], "normal")
         self.assertEqual(storage_button.states[-1], "normal")
+        self.assertEqual(
+            app.advanced_menu.states, {0: "normal", 1: "normal"})
+
+    def test_mini_mode_action_is_available_while_idle(self):
+        class ButtonProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        app = object.__new__(gui.DaisyApp)
+        app.mini_mode = False
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.mini_mode_button = ButtonProbe()
+        app._refresh_mini_action()
+        self.assertEqual(
+            app.mini_mode_button.options,
+            {"text": "小窗运行", "state": "normal"},
+        )
+
+        calls = []
+        app._enter_mini_mode = lambda: calls.append("enter")
+        app._toggle_mini_mode()
+        self.assertEqual(calls, ["enter"])
 
     def test_top_task_navigation_selection_uses_theme_highlight(self):
         class MenuProbe:
@@ -1485,7 +1754,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             tuple(short_label for _section, short_label, _keys
                   in gui._TASK_TOOLBAR_ROWS),
-            ("ENV", "DBS", "STG"),
+            ("环境 ENV", "数据 DBS", "硬盘 STG"),
         )
         self.assertEqual(set(gui._TASK_TOOLBAR_LABELS), set(all_keys))
         self.assertTrue(all(
@@ -1615,45 +1884,90 @@ class TestGuiArguments(unittest.TestCase):
         for task in gui.TASKS:
             menu_name = task.nav.split(maxsplit=1)[1]
             self.assertEqual(task.title, menu_name)
+        for task_key in gui._TASK_MENU_ORDER:
+            self.assertEqual(
+                gui.task_display_title(task_key),
+                gui._TASK_TOOLBAR_LABELS[task_key],
+            )
+            self.assertEqual(len(gui.task_display_title(task_key)), 6)
+        self.assertEqual(
+            gui.task_display_title(gui._PROJECT_SELF_TEST_KEY),
+            "DAISY功能自检",
+        )
 
     def test_final_task_numbering_and_menu_order(self):
         self.assertEqual(
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
-                "ENV-01  环境检测",
-                "DBS-11  完整扫描",
-                "DBS-12  快速扫描",
+                "ENV-01  运行环境检测",
+                "DBS-11  完整档案扫描",
+                "DBS-12  快速档案扫描",
                 "DBS-21  快照变更分析",
-                "DBS-31  内容一致性核验",
+                "DBS-31  内容哈希核验",
                 "DBS-32  文件结构核验",
-                "DBS-41  导出报告",
-                "DBS-91  数据库自检",
-                "STG-11  物理硬盘清单",
+                "DBS-41  结果报告导出",
                 "STG-12  硬盘信息登记",
-                "STG-21  硬盘归档核验",
             ],
         )
+        expected = (
+            ("env-check", "env_check", "ENV-01  运行环境检测",
+             "Script_DAISY_Tool_ENV_01_Env_Check"),
+            ("full-scan", "full_scan", "DBS-11  完整档案扫描",
+             "Script_DAISY_Tool_DBS_11_Full_Scan"),
+            ("quick-scan", "quick_scan", "DBS-12  快速档案扫描",
+             "Script_DAISY_Tool_DBS_12_Quick_Scan"),
+            ("diff", "diff", "DBS-21  快照变更分析",
+             "Script_DAISY_Tool_DBS_21_Diff"),
+            ("check-hash", "check_hash", "DBS-31  内容哈希核验",
+             "Script_DAISY_Tool_DBS_31_Check_Hash"),
+            ("check-format", "check_format", "DBS-32  文件结构核验",
+             "Script_DAISY_Tool_DBS_32_Check_Format"),
+            ("export-report", "export_report", "DBS-41  结果报告导出",
+             "Script_DAISY_Tool_DBS_41_Export_Report"),
+            ("storage-list", "storage_list", "STG-11  物理硬盘清单",
+             "Script_DAISY_Tool_STG_11_List_Disks"),
+            ("storage-collect", "storage_collect", "STG-12  硬盘信息登记",
+             "Script_DAISY_Tool_STG_12_Collect"),
+        )
+        for command, task_key, nav, module in expected:
+            task = gui.TASK_BY_KEY[task_key]
+            self.assertEqual(task.command, command)
+            self.assertEqual(task.nav, nav)
+            self.assertEqual(entry.COMMANDS[command][0], module)
+            self.assertTrue(os.path.isfile(
+                os.path.join(_TOOL, module + ".py")))
         self.assertEqual(
-            entry.COMMANDS["diff"][0], "Script_DAISY_Tool_21_Diff")
+            gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
+            "DBS-91  DAISY功能自检",
+        )
+        self.assertNotIn(gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
+        verify_module, verify_description = entry.COMMANDS["storage-verify"]
         self.assertEqual(
-            entry.COMMANDS["check-hash"][0],
-            "Script_DAISY_Tool_22_Check_Hash")
-        self.assertEqual(
-            entry.COMMANDS["check-format"][0],
-            "Script_DAISY_Tool_23_Check_Format")
-        self.assertEqual(
-            entry.COMMANDS["export-report"][0],
-            "Script_DAISY_Tool_31_Export_Report")
-        self.assertEqual(
-            entry.COMMANDS["storage-list"][0],
-            "Script_DAISY_SMART_Tool_11_List_Disks")
-        self.assertEqual(
-            entry.COMMANDS["storage-collect"][0],
-            "Script_DAISY_SMART_Tool_12_Collect")
-        self.assertEqual(
-            entry.COMMANDS["storage-verify"][0],
-            "Script_DAISY_SMART_Tool_21_Verify_Archive")
+            verify_module, "Script_DAISY_Tool_STG_21_Verify_Archive")
+        self.assertIn("STG-21", verify_description)
+        self.assertTrue(os.path.isfile(
+            os.path.join(_TOOL, verify_module + ".py")))
+        self.assertNotIn("storage_verify", gui.TASK_BY_KEY)
         self.assertNotIn("migrate-naming", entry.COMMANDS)
+
+    def test_stg_gui_module_and_internal_detection_require_admin(self):
+        self.assertEqual(
+            gui._STG_ADMIN_TASKS,
+            {"storage_list", "storage_collect"},
+        )
+        for task_key in gui._STG_ADMIN_TASKS:
+            self.assertIn(
+                "管理员权限", gui.TASK_BY_KEY[task_key].description)
+        self.assertEqual(gui._TASK_MENU_SECTIONS[-1][1], ("storage_collect",))
+        for task_key in gui._STG_ADMIN_TASKS:
+            app = object.__new__(gui.DaisyApp)
+            app.root = object()
+            app.task = gui.TASK_BY_KEY[task_key]
+            app.is_administrator = False
+            with patch.object(
+                    gui.messagebox, "askyesno", return_value=False) as ask:
+                self.assertFalse(app._confirmation({}))
+            self.assertIn("顶部管理员模式开关", ask.call_args.args[1])
 
     def test_validation_tasks_require_current_root(self):
         for task_key in ("check_hash", "check_format"):
@@ -1710,6 +2024,16 @@ class TestGuiArguments(unittest.TestCase):
                 core.PROJECT_AUTHOR, core.SCANNER_VERSION):
             self.assertIn(token, title)
         self.assertIn(f"Author: {core.PROJECT_AUTHOR}", title)
+        about = gui.about_message()
+        for token in (
+                "环境：", "数据：", "硬盘：",
+                f"DBS SQLite schema：{core.SCHEMA_VERSION}",
+                f"DBS 元数据 profile：{gui.metadata.PROFILE_VERSION}",
+                f"STG 归档 schema：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
+                f"DBS 完整快照最低读取器：v{core.MIN_READER_VERSION}",
+                "未完成 partial：仅允许相同生成器版本",
+                "DBS 与 STG 数据模型彼此独立"):
+            self.assertIn(token, about)
 
     def test_gui_stream_parser_handles_chunked_events(self):
         prefix = "@@DAISY_GUI@@"
@@ -1744,6 +2068,27 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(fraction, 25.0)
         for token in ("2/4", "ETA", "错误 1"):
             self.assertIn(token, detail)
+
+    def test_progress_target_uses_full_current_root_for_single_and_queue(self):
+        first = r"E:\Archive Project\Original Files"
+        second = r"F:\Second Root\Media"
+        single = gui.RunJob("Archive", {"roots": f"Archive={first}"})
+        combined = gui.RunJob(
+            "合并 2 个目录",
+            {"roots": f"Archive={first}\nMedia={second}"},
+        )
+        self.assertEqual(
+            gui.run_job_target_text("full_scan", single), first)
+        combined_text = gui.run_job_target_text("quick_scan", combined)
+        self.assertEqual(combined_text, f"{first}；{second}")
+        self.assertNotIn("…", combined_text)
+        self.assertEqual(
+            gui.run_job_target_text(
+                "storage_collect",
+                gui.RunJob("硬盘信息登记", {"disk_number": "3"}),
+            ),
+            "PhysicalDrive3",
+        )
 
     def test_session_tool_cache_precedence_and_quick_isolation(self):
         cache = {
@@ -1870,7 +2215,6 @@ class TestGuiArguments(unittest.TestCase):
             "ffprobe": r"C:\Tools\ffprobe.exe",
         }
         app.saved_values = {"full_scan": {"roots": r"E:\Archive"}}
-        app.dropdown_expanded = {("full_scan", "哈希抽样"): True}
         app.storage_disk_choices = (("PhysicalDrive3", "3"),)
         app.environment_missing_names = ("sevenzip",)
         app.missing_installable_tools = ("sevenzip",)
@@ -1910,13 +2254,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.detected_tools, {})
         self.assertEqual(app.manual_tool_paths, {})
         self.assertEqual(app.saved_values, {})
-        self.assertEqual(app.dropdown_expanded, {})
         self.assertEqual(app.storage_disk_choices, ())
         self.assertEqual(app.environment_missing_names, ())
         self.assertEqual(app.missing_installable_tools, ())
         self.assertIn(("toolbar", True), calls)
         self.assertIn(("settings", True), calls)
-        self.assertIn(("progress", True), calls)
+        self.assertIn(("progress", False), calls)
         self.assertIn(("log", False), calls)
         self.assertIn(("preview", False), calls)
         self.assertIn(("clear_log", True), calls)
@@ -1953,6 +2296,43 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(args.count("--root"), 2)
         for root_spec in root_specs:
             self.assertIn(root_spec, args)
+
+    def test_start_confirmation_lists_full_scan_roots_and_duration(self):
+        roots = r"Alpha=E:\Archive A" + "\n" + r"Beta=F:\Archive B"
+        separate = gui.root_confirmation_text(
+            "full_scan", {"roots": roots})
+        self.assertIn(
+            "将对以下文件夹分别运行完整档案扫描并分别生成数据库：",
+            separate,
+        )
+        self.assertIn(os.path.abspath(r"E:\Archive A"), separate)
+        self.assertIn(os.path.abspath(r"F:\Archive B"), separate)
+
+        combined = gui.root_confirmation_text(
+            "full_scan",
+            {
+                "roots": roots,
+                "root_batch_mode": gui._ROOT_BATCH_COMBINED,
+            },
+        )
+        self.assertIn("共同生成一个数据库", combined)
+        self.assertEqual(
+            gui.root_confirmation_text(
+                "full_scan", {"start_mode": "resume", "roots": roots}),
+            "",
+        )
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        app.task = gui.TASK_BY_KEY["full_scan"]
+        app.is_administrator = False
+        values = gui._task_values(app.task, {"roots": roots})
+        with patch.object(
+                gui.messagebox, "askyesno", return_value=False) as ask:
+            self.assertFalse(app._confirmation(values, 2))
+        prompt = ask.call_args.args[1]
+        self.assertIn(separate, prompt)
+        self.assertIn("可能持续几小时到几天", prompt)
 
     def test_multi_root_validation_enforces_limit_and_uniqueness(self):
         with tempfile.TemporaryDirectory() as td:
@@ -3110,11 +3490,11 @@ import importlib                                               # noqa: E402
 import time                                                    # noqa: E402
 
 import Script_DAISY_Lib_03_Hash as dbh                                   # noqa: E402
-import Script_DAISY_Tool_10_Env_Check as envcheck                         # noqa: E402
+import Script_DAISY_Tool_ENV_01_Env_Check as envcheck                    # noqa: E402
 
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
-FullScan = importlib.import_module("Script_DAISY_Tool_11_Full_Scan")
+FullScan = importlib.import_module("Script_DAISY_Tool_DBS_11_Full_Scan")
 
 
 class TestEnvironmentInventory(unittest.TestCase):
@@ -3757,7 +4137,8 @@ class TestVerifyHashPatrol(unittest.TestCase):
         self._td.cleanup()
 
     def test_patrol_ok_then_detects_injection(self):
-        vh = importlib.import_module("Script_DAISY_Tool_22_Check_Hash")
+        vh = importlib.import_module(
+            "Script_DAISY_Tool_DBS_31_Check_Hash")
         rep = vh.patrol(self.final, {"Arch": self.arch},
                         sample_percent=100.0, full=True)
         self.assertTrue(rep["ok"])
@@ -3788,7 +4169,7 @@ class TestVerifyHashPatrol(unittest.TestCase):
         report = os.path.join(
             self._td.name, "new", "nested", "hash_report.json")
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_22_Check_Hash.py")
+            _TOOL, "Script_DAISY_Tool_DBS_31_Check_Hash.py")
         result = subprocess.run(
             [
                 sys.executable, "-B", script,
@@ -3810,7 +4191,7 @@ class TestVerifyHashPatrol(unittest.TestCase):
         os.remove(os.path.join(self.arch, "q.bin"))
         report = os.path.join(self._td.name, "hash_report.json")
         script = os.path.join(
-            _TOOL, "Script_DAISY_Tool_22_Check_Hash.py")
+            _TOOL, "Script_DAISY_Tool_DBS_31_Check_Hash.py")
         result = subprocess.run(
             [
                 sys.executable, "-B", script,
@@ -4455,7 +4836,8 @@ class TestDiffGolden(_DiffFixture):
 
 import csv                                                     # noqa: E402
 
-Export = importlib.import_module("Script_DAISY_Tool_31_Export_Report")
+Export = importlib.import_module(
+    "Script_DAISY_Tool_DBS_41_Export_Report")
 
 
 class TestExportSnapshot(_DiffFixture):
@@ -4603,7 +4985,8 @@ class TestExportDiff(_DiffFixture):
         self.assertIn("不构成独立验证", md)   # propagated 不得表述为已验证一致
 
 
-Validate = importlib.import_module("Script_DAISY_Tool_23_Check_Format")
+Validate = importlib.import_module(
+    "Script_DAISY_Tool_DBS_32_Check_Format")
 
 
 class TestValidators(unittest.TestCase):
@@ -4944,7 +5327,8 @@ class TestQuickScan(unittest.TestCase):
         self._td.cleanup()
 
     def _run_quick(self):
-        script = os.path.join(_TOOL, "Script_DAISY_Tool_12_Quick_Scan.py")
+        script = os.path.join(
+            _TOOL, "Script_DAISY_Tool_DBS_12_Quick_Scan.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--root", f"Q={self.arch}",
                             "--output-dir", self.out, "--quiet"],
@@ -5027,7 +5411,8 @@ class TestQuickScan(unittest.TestCase):
         s1 = tt.build_snapshot(self.arch, self.out, "d1", label="测试库")
         s2 = tt.build_snapshot(self.arch, self.out, "d2", label="测试库")
         diffs = os.path.join(self._td.name, "Diffs")
-        script = os.path.join(_TOOL, "Script_DAISY_Tool_21_Diff.py")
+        script = os.path.join(
+            _TOOL, "Script_DAISY_Tool_DBS_21_Diff.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--old", s1, "--new", s2,
                             "--output-dir", diffs], capture_output=True,
@@ -5052,7 +5437,8 @@ class TestQuickScan(unittest.TestCase):
         legacy = s2[:-len(f"_{token}.sqlite")] + ".sqlite"
         os.rename(s2, legacy)
         diffs = os.path.join(self._td.name, "ForcedDiffs")
-        script = os.path.join(_TOOL, "Script_DAISY_Tool_21_Diff.py")
+        script = os.path.join(
+            _TOOL, "Script_DAISY_Tool_DBS_21_Diff.py")
         result = subprocess.run(
             [sys.executable, "-B", script, "--old", s1, "--new", legacy,
              "--output-dir", diffs, "--force"],

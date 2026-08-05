@@ -25,7 +25,8 @@ sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _TOOL]
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_04_Diff as dbdiff
 
-QUICK = os.path.join(_TOOL, "Script_DAISY_Tool_12_Quick_Scan.py")
+QUICK = os.path.join(
+    _TOOL, "Script_DAISY_Tool_DBS_12_Quick_Scan.py")
 
 
 def snapshot_uuid(db: str) -> str:

@@ -1,4 +1,4 @@
-"""Script_DAISY_Tool_10_Env_Check：正式运行环境检查。
+"""Script_DAISY_Tool_ENV_01_Env_Check：运行环境检测。
 
 只检查 DAISY 所需工具、版本、冒烟样本、只读断言与 SHA-256 自检；不读取
 用户档案，也不执行性能测试。
@@ -17,9 +17,9 @@ _LIB_DIR = os.path.join(os.path.dirname(_TOOL_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_01_Core as core
 import Script_DAISY_Lib_03_Hash as dbh
-import Script_DAISY_SMART_Lib_01_Core as storage_core
-import Script_DAISY_SMART_Lib_02_Windows as storage_windows
-import Script_DAISY_SMART_Lib_03_Smartctl as smartctl
+import Script_DAISY_Lib_STG_01_Core as storage_core
+import Script_DAISY_Lib_STG_02_Windows as storage_windows
+import Script_DAISY_Lib_STG_03_Smartctl as smartctl
 
 
 _TOOL_DISPLAY_NAMES = {
@@ -87,7 +87,7 @@ def inspect_local_tools(
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="DAISY 运行环境检查")
+    ap = argparse.ArgumentParser(description="ENV-01 运行环境检测")
     ap.add_argument("--output-dir", default="Output/Reports")
     ap.add_argument("--exiftool-path")
     ap.add_argument("--ffprobe-path")
@@ -96,8 +96,8 @@ def main() -> int:
     ap.add_argument("--smartctl-path")
     args = ap.parse_args()
 
-    print("== DAISY 运行环境检查 ==")
-    prog = core.Progress(1, 1, "环境检查")
+    print("== DAISY ENV-01 运行环境检测 ==")
+    prog = core.Progress(1, 1, "运行环境检测")
     explicit = {
         "exiftool": args.exiftool_path,
         "ffprobe": args.ffprobe_path,

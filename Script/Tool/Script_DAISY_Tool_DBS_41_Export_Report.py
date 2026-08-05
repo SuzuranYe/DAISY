@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_31_Export_Report：全量报表导出。
+r"""Script_DAISY_Tool_DBS_41_Export_Report：结果报告导出。
 
 快照导出（分组清单＋簿记，多 CSV、UTF-8 无 BOM、LF；规范化字段不剔除）：
   Tree.csv / Tree_dirs.csv                 —— 树
@@ -346,7 +346,8 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="全量报表导出（只读输入）")
+    ap = argparse.ArgumentParser(
+        description="DBS-41 结果报告导出（只读输入）")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--snapshot", help="封存快照 .sqlite")
     g.add_argument("--diff", help="Diff 数据库 .sqlite")

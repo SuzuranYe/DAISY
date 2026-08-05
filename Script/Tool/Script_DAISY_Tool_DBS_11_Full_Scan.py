@@ -1,4 +1,4 @@
-r"""Script_DAISY_Tool_11_Full_Scan：完整扫描——扫描档案生成不可变快照库（树＋元数据＋哈希）。
+r"""Script_DAISY_Tool_DBS_11_Full_Scan：完整档案扫描——扫描档案生成不可变快照库（树＋元数据＋哈希）。
 
 六阶段管线：预检→枚举（可重跑对账）→哈希（full/incremental/none，逐文件续传）
 →元数据（双后端，逐文件续传）→复扫＋独立实现抽验→封存。

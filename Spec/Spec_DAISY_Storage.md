@@ -1,27 +1,36 @@
-# DAISY v1.5.0 存储设备信息登记规格
+# DAISY v1.5.0 STG 物理硬盘信息规格
 
 ## 一、定位与版本
 
-DAISY v1.5.0 的 STG 功能域用于 Windows 单机、单物理盘的只读信息登记与证据
-归档。用户可见任务为 `STG-11 物理硬盘清单`、`STG-12 硬盘信息登记` 和
-`STG-21 硬盘归档核验`；统一 CLI 对应 `storage-list`、`storage-collect` 和
-`storage-verify`。归档类型标识为 `PROFILE`，源码保留 `DAISY_SMART` 命名空间，
-以免与既有数据库库文件重名。
+DAISY v1.5.0 同时包含两个并列的信息域：DBS 获取文件树、文件信息、元数据、
+哈希及其变化并保存为 SQLite；STG 获取物理硬盘、分区、卷和 smartctl 证据并
+保存为 ZIP。两者共用统一 GUI、CLI、环境检测、管理员模式和测试入口，但没有
+共享数据表，也不自动建立 SQLite 条目到某块物理盘的关联。
+
+STG 功能域用于 Windows 单机、单物理盘的只读信息登记与证据归档。GUI 只有一个
+用户可见功能模块：`STG-12 硬盘信息登记`。该页的「检测物理硬盘」按钮调用内部
+`STG-11 物理硬盘清单` 准备步骤并刷新目标选择；`STG-21 硬盘归档核验` 只保留
+CLI 入口，不显示为 GUI 功能模块。统一 CLI 仍对应 `storage-list`、
+`storage-collect` 和 `storage-verify`。归档类型标识为 `PROFILE`，源码统一使用
+`DAISY_Lib_STG` 和 `DAISY_Tool_STG` 命名空间。
 
 `archive_schema_version=3` 只表示 STG ZIP 协议，和快照／Diff 的 SQLite
 `schema_version=3` 没有数据模型关系。STG 不导入 `sqlite3`，不创建、读取或修改
 数据库。默认产物目录为 `Output/Storage`。当前只读取存储归档 schema 3，不兼容
-schema 1／2 或旧 `_SMART_` 文件名；Manifest 中的应用版本为 `1.5.0`。
+早期协议；Manifest 中的应用版本为 `1.5.0`。
 
 代码权威边界：
 
 | 范围 | 文件 |
 |---|---|
-| 数据模型、命名、编码与摘要 | `Script/Lib/Script_DAISY_SMART_Lib_01_Core.py` |
-| Windows 存储清单 | `Script/Lib/Script_DAISY_SMART_Lib_02_Windows.py` |
-| smartctl 命令与解析 | `Script/Lib/Script_DAISY_SMART_Lib_03_Smartctl.py` |
-| 扫描关联、身份确认与报告 | `Script/Lib/Script_DAISY_SMART_Lib_04_Service.py` |
-| ZIP 生成、发布与核验 | `Script/Lib/Script_DAISY_SMART_Lib_05_Archive.py` |
+| 数据模型、命名、编码与摘要 | `Script/Lib/Script_DAISY_Lib_STG_01_Core.py` |
+| Windows 存储清单 | `Script/Lib/Script_DAISY_Lib_STG_02_Windows.py` |
+| smartctl 命令与解析 | `Script/Lib/Script_DAISY_Lib_STG_03_Smartctl.py` |
+| 扫描关联、身份确认与报告 | `Script/Lib/Script_DAISY_Lib_STG_04_Service.py` |
+| ZIP 生成、发布与核验 | `Script/Lib/Script_DAISY_Lib_STG_05_Archive.py` |
+| `STG-11` 入口 | `Script/Tool/Script_DAISY_Tool_STG_11_List_Disks.py` |
+| `STG-12` 入口 | `Script/Tool/Script_DAISY_Tool_STG_12_Collect.py` |
+| `STG-21` 入口 | `Script/Tool/Script_DAISY_Tool_STG_21_Verify_Archive.py` |
 | 统一 GUI／CLI 接入 | `Script/Script_DAISY_GUI.py`、`Script/Script_DAISY_MAIN.py` |
 
 ## 二、系统不变量
@@ -43,8 +52,18 @@ schema 1／2 或旧 `_SMART_` 文件名；Manifest 中的应用版本为 `1.5.0`
 9. **本地运行**：采集、归档和验证不联网、不上传、不遥测。
 10. **完整性显式**：访问或命令层错误必须标为 `incomplete`，不得仅凭 ZIP
     成功生成就宣称登记完整。
+11. **权限显式**：内部 `STG-11` 和可见 `STG-12` 需要管理员权限才能完整运行。
+    GUI 在模块说明、悬停说明、任务设置页和启动确认中显示要求，并提供顶部管理员
+    模式开关，通过 Windows UAC 重启；开关悬停说明明确当前仅「硬盘信息登记」及其
+    检测步骤需要此模式。仅 CLI 的 `STG-21` 只读取 ZIP，不需要管理员权限。
 
 ## 三、只读命令边界
+
+登记页内部 `STG-11` 和可见 `STG-12` 应在管理员模式下运行，以获得完整的 Windows
+存储与 smartctl 资料。GUI 顶部管理员模式开关会先确认，再通过 Windows UAC 重启
+当前应用；任务运行期间不可切换权限。未提权运行不放宽只读边界，只会如实记录
+权限缺口、失败或 `incomplete` 诊断结果。仅 CLI 的 `STG-21` 不访问真实硬盘，
+不要求提权。
 
 smartctl 扫描固定为：
 
@@ -81,8 +100,9 @@ Windows 盘存在而 smartctl 未发现时，`STG-11` 仍列出 Windows 目标�
 `DiskNumber` 时也列出，但不能当作完整目标。
 同一物理盘出现多个 smartctl 项时保留提示并使用扫描顺序中的第一项。
 统一 GUI 只把同时具有 Windows 记录和 smartctl 关联的目标加入 `STG-12`
-下拉框；每次开始 `STG-11` 都先清除上一轮清单与选择。热插拔后必须重新列盘，
-不能沿用旧 DiskNumber。
+下拉框；每次点击「检测物理硬盘」都会先清除上一轮清单与选择，再执行内部
+`STG-11`。热插拔后必须重新检测，不能沿用旧 DiskNumber。目标下拉框未展开时
+忽略滚轮改值，防止滚动设置页时误选其它物理盘。
 
 ## 五、Windows 数据模型
 

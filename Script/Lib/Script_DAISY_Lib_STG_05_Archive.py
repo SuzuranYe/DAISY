@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import Script_DAISY_SMART_Lib_01_Core as core
+import Script_DAISY_Lib_STG_01_Core as core
 
 
 MEMBER_SUFFIXES = {
