@@ -1,22 +1,15 @@
-# Python
+# DAISY runtime output
+/Output/
+
+# Python and test caches
 __pycache__/
-*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and editors
 .venv/
 venv/
-
-# DAISY runtime output
-Output/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-*.sqlite-journal
-*.partial.sqlite.lock
-*.events.jsonl
-
-# Test and editor residue
-.pytest_cache/
-.coverage
-htmlcov/
 .idea/
 .vscode/
 

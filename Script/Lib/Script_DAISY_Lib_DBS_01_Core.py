@@ -1,4 +1,4 @@
-"""DAISY 共享核心模块。
+"""DAISY DBS 核心模块。
 
 现行语义说明：Spec/Spec_DAISY_Technical.md
 硬约束：对档案绝对只读；全 I/O UTF-8；时间戳 UTC 100ns；路径键规则 v1；盘符无关。

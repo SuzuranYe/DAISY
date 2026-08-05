@@ -24,7 +24,7 @@ import sys
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
-import Script_DAISY_Lib_01_Core as core
+import Script_DAISY_Lib_DBS_01_Core as core
 
 STAGES_TOTAL = 4
 MIN_FREE_BYTES = 200 * 1024 * 1024

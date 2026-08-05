@@ -1,4 +1,4 @@
-"""DAISY 哈希模块：三模式＋溯源＋独立实现抽验。
+"""DAISY DBS 哈希模块：三模式＋溯源＋独立实现抽验。
 
 实现 full／incremental／none 三种模式、五项复用条件、计算溯源、
 无固定超时的 stall 观测和 PowerShell Get-FileHash 独立抽验。
@@ -23,7 +23,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import Script_DAISY_Lib_01_Core as core
+import Script_DAISY_Lib_DBS_01_Core as core
 
 HASH_TOOL = "python-hashlib"
 HASH_TOOL_VERSION = platform.python_version()

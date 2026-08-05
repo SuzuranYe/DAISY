@@ -15,8 +15,8 @@ import time
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
-import Script_DAISY_Lib_01_Core as core
-import Script_DAISY_Lib_03_Hash as dbh
+import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_03_Hash as dbh
 import Script_DAISY_Lib_STG_01_Core as storage_core
 import Script_DAISY_Lib_STG_02_Windows as storage_windows
 import Script_DAISY_Lib_STG_03_Smartctl as smartctl

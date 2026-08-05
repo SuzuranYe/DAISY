@@ -1,4 +1,4 @@
-"""DAISY 快照对比引擎。
+"""DAISY DBS 快照对比引擎。
 
 实现快照准入、root 配对、枚举失败传播、状态优先级、证据等级、
 移动／复制／硬链接分组和目录维度对比。精确 DDL 以本文件为准。
@@ -15,7 +15,7 @@ import uuid as uuid_mod
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import Script_DAISY_Lib_01_Core as core
+import Script_DAISY_Lib_DBS_01_Core as core
 
 # Diff 库 DDL（精确定义以本处为准）
 DIFF_DDL = r"""

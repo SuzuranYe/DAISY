@@ -28,8 +28,8 @@ _TEST_DIR = os.path.join(_SCRIPT_DIR, "Test")
 _MAIN = os.path.join(_SCRIPT_DIR, "Script_DAISY_MAIN.py")
 sys.path.insert(0, _LIB_DIR)
 
-import Script_DAISY_Lib_01_Core as core
-import Script_DAISY_Lib_02_Meta as metadata
+import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_02_Meta as metadata
 import Script_DAISY_Lib_STG_01_Core as storage_core
 
 

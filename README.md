@@ -6,8 +6,7 @@
 
 DAISY 是一套纯本地、源数据只读的档案登记与核验工具。它可以把文件目录制作成
 可审计的 SQLite 快照，比较两次快照、复核内容和文件结构、导出报告，也可以只读
-登记物理硬盘的 Windows 存储信息与 smartctl 原始证据。DBS 数据库与 STG 硬盘
-档案是两个独立数据模型，不会彼此混写。
+登记物理硬盘的 Windows 存储信息与 smartctl 原始证据。
 
 ## DAISY 能做什么
 
@@ -181,12 +180,11 @@ DBS-41 对快照会导出文件树、目录、规范化元数据、视频 GPS、
   `v1.4.1`；当前实现只读取 schema 3。
 - 未完成 partial 只能由相同生成器版本续传，所以 v1.4.2 partial 不能由
   v1.5.0 续传；已封存的合格 schema 3 快照仍可按准入规则只读使用。
-- v1.5.0 没有改变数据库 DDL、字段、约束、schema 版本或 DBS 业务语义；数据库
-  代码只更新应用版本与报告身份。STG 的 `archive_schema_version=3` 与 SQLite
-  schema 只是数字相同，数据模型彼此独立。
+- v1.5.0 没有改变数据库 DDL、字段、约束、schema 版本或 DBS 业务语义；代码层
+  只更新应用版本、报告身份，并统一 DBS 库文件名及导入路径。STG 的
+  `archive_schema_version=3` 与 SQLite schema 只是数字相同，数据模型彼此独立。
 
-完整技术语义见[技术规格](Spec/Spec_DAISY_Technical.md)，硬盘协议见
-[STG 规格](Spec/Spec_DAISY_Storage.md)，版本历史见
+DBS 与 STG 的完整技术语义见[技术规格](Spec/Spec_DAISY_Technical.md)，版本历史见
 [版本演化](Spec/Spec_DAISY_Version_Evolution.md)。
 
 ## 项目结构

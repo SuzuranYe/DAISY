@@ -24,7 +24,7 @@ _LIB = os.path.join(_SCRIPT, "Lib")
 _MODULE = os.path.join(_SCRIPT, "Module")
 sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
-import Script_DAISY_Lib_01_Core as core
+import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_GUI as gui
 import Script_DAISY_MAIN as entry
 
@@ -977,6 +977,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("元数据 profile v7", spec)
         self.assertIn("视频、音频和 GIF", spec)
         self.assertIn("schema_version=3", spec)
+        self.assertIn("archive_schema_version=3", spec)
+        self.assertIn("不创建、读取或修改\n数据库", spec)
+        self.assertIn("### 11.8 创建后自动核验准入", spec)
         self.assertIn("不读取旧结构", spec)
         self.assertIn("不提供按 mtime 静默跳过", spec)
         evolution_path = os.path.join(
@@ -987,12 +990,24 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.4.2", evolution)
         self.assertIn("DAISY v1.5.0", evolution)
         self.assertIn("STG-11 硬盘信息登记", evolution)
-        storage_spec_path = os.path.join(
-            gui._BASE, "Spec", "Spec_DAISY_Storage.md")
-        with open(storage_spec_path, "r", encoding="utf-8") as f:
-            storage_spec = f.read()
-        self.assertIn("archive_schema_version=3", storage_spec)
-        self.assertIn("不创建、读取或修改\n数据库", storage_spec)
+        retired_storage_spec = os.path.join(
+            gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
+        self.assertFalse(os.path.exists(retired_storage_spec))
+        lib_dir = os.path.join(gui._BASE, "Script", "Lib")
+        self.assertEqual(
+            {
+                "Script_DAISY_Lib_DBS_01_Core.py",
+                "Script_DAISY_Lib_DBS_02_Meta.py",
+                "Script_DAISY_Lib_DBS_03_Hash.py",
+                "Script_DAISY_Lib_DBS_04_Diff.py",
+                "Script_DAISY_Lib_STG_01_Core.py",
+                "Script_DAISY_Lib_STG_02_Windows.py",
+                "Script_DAISY_Lib_STG_03_Smartctl.py",
+                "Script_DAISY_Lib_STG_04_Service.py",
+                "Script_DAISY_Lib_STG_05_Archive.py",
+            },
+            {name for name in os.listdir(lib_dir) if name.endswith(".py")},
+        )
         self.assertIn("独立队列总进度", evolution)
         self.assertIn("小窗视图", evolution)
         self.assertIn("设计过渡点", evolution)
@@ -2791,7 +2806,7 @@ class TestFinalize(_SnapshotFixture):
             core.finalize_snapshot(self.con, self.partial, hash_coverage="none")
 
 
-import Script_DAISY_Lib_02_Meta as meta                                  # noqa: E402
+import Script_DAISY_Lib_DBS_02_Meta as meta                              # noqa: E402
 
 
 class TestTagIndex(unittest.TestCase):
@@ -3532,7 +3547,7 @@ class TestVideoGpsStage(unittest.TestCase):
 import importlib                                               # noqa: E402
 import time                                                    # noqa: E402
 
-import Script_DAISY_Lib_03_Hash as dbh                                   # noqa: E402
+import Script_DAISY_Lib_DBS_03_Hash as dbh                               # noqa: E402
 import Script_DAISY_Module_ENV_01_Env_Check as envcheck                  # noqa: E402
 
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -4261,7 +4276,7 @@ import hashlib                                                 # noqa: E402
 import shutil                                                  # noqa: E402
 import subprocess                                              # noqa: E402
 
-import Script_DAISY_Lib_04_Diff as dbdiff                                # noqa: E402
+import Script_DAISY_Lib_DBS_04_Diff as dbdiff                            # noqa: E402
 import Script_DAISY_Test_Tree as tt                                           # noqa: E402
 
 

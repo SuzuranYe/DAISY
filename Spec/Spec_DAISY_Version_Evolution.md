@@ -238,7 +238,14 @@
 - 安全：smartctl 命令固定为 `--scan-open --json=c` 和
   `-x --json=ov -d <type> <device>`；禁止自检、SMART 设置及磁盘／分区／卷／
   文件系统／BitLocker 修改命令。默认测试只使用合成设备和系统临时目录。
-- 兼容：数据库实现除 `SCANNER_VERSION` 从 `1.4.2` 更新为 `1.5.0` 外无变化；
-  DDL、字段、约束、SQLite `schema_version=3`、元数据 profile 7、
+- 改进：4 个 DBS 公共库统一改为 `Script_DAISY_Lib_DBS_01`～`DBS_04` 前缀，
+  与 STG 库的功能域命名方式对齐；GUI、CLI、Module 和测试的导入路径同步更新。
+- 改进：原独立 STG 规格完整并入技术规格第十一节；技术规格成为 DBS／STG 唯一
+  现行技术入口，不再维护内容重复的存储规格文件。
+- 维护：`.gitignore` 直接排除根目录 `Output` 及实际会生成的缓存、虚拟环境和
+  编辑器目录，不再重复列举 `Output` 内的数据库、日志与锁文件扩展名。
+- 兼容：数据库 DDL 和业务实现不变；代码层只将 `SCANNER_VERSION` 从 `1.4.2`
+  更新为 `1.5.0`、补充报告身份，并统一 DBS 库文件名和导入路径。字段、约束、
+  SQLite `schema_version=3`、元数据 profile 7、
   `min_reader_version=1.4.1` 以及完整扫描、快速扫描、Diff、核验和导出语义保持
   不变。STG 的 ZIP schema 与 SQLite schema 彼此独立。

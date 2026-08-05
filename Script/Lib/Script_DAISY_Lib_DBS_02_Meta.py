@@ -1,4 +1,4 @@
-"""DAISY 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
+"""DAISY DBS 元数据管线：ExifTool stay_open＋ffprobe 双后端＋压缩包摘要。
 
 实现后端调用、profile v7、规范化映射和元数据汇合状态机。
 ExifTool 仅允许白名单读取参数，任何写语法直接拒绝。
@@ -18,7 +18,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 
-import Script_DAISY_Lib_01_Core as core
+import Script_DAISY_Lib_DBS_01_Core as core
 
 PROFILE_VERSION = 7
 ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
@@ -31,7 +31,7 @@ ET_TIMEOUT_STEP_SECONDS = 90
 FF_TIMEOUT_S = 60
 ET_RESTART_EVERY = 5000
 
-_BANNED_ET = core.EXIFTOOL_BANNED_ARGS   # 与 Lib_01 共享只读参数黑名单
+_BANNED_ET = core.EXIFTOOL_BANNED_ARGS   # 与 DBS_01 共享只读参数黑名单
 
 
 def exiftool_timeout_policy() -> dict:

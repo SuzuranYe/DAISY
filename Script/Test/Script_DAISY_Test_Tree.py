@@ -24,8 +24,8 @@ _SCRIPT_DIR = os.path.dirname(_TEST_DIR)
 _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR]
-import Script_DAISY_Lib_01_Core as core
-import Script_DAISY_Lib_03_Hash as dbh
+import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_03_Hash as dbh
 
 
 def write(tree: str, rel: str, data: bytes, mtime_ns: int | None = None) -> str:

@@ -56,7 +56,7 @@ COMMAND_ARGUMENT_PREFIXES = {
 
 def guide() -> str:
     try:
-        import Script_DAISY_Lib_01_Core as core
+        import Script_DAISY_Lib_DBS_01_Core as core
         ver = "v" + core.SCANNER_VERSION
         project_name = core.PROJECT_NAME
         project_full_name = core.PROJECT_FULL_NAME

@@ -38,9 +38,9 @@ import zlib
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
-import Script_DAISY_Lib_01_Core as core
-import Script_DAISY_Lib_03_Hash as dbh
-import Script_DAISY_Lib_02_Meta as meta
+import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_03_Hash as dbh
+import Script_DAISY_Lib_DBS_02_Meta as meta
 
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _OOXML_EXTS = {"docx", "xlsx", "pptx"}

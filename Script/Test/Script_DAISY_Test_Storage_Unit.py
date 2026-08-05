@@ -133,7 +133,7 @@ def fixture_collection(
 
 class TestCore(unittest.TestCase):
     def test_integrated_version_matches_daisy_release(self):
-        import Script_DAISY_Lib_01_Core as daisy_core
+        import Script_DAISY_Lib_DBS_01_Core as daisy_core
 
         self.assertEqual(core.APP_VERSION, "1.5.0")
         self.assertEqual(core.APP_VERSION, daisy_core.SCANNER_VERSION)
