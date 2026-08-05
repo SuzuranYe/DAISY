@@ -15,6 +15,9 @@ Diff 数据库导出：
   结论、propagated 单列声明、覆盖声明）＋ Diff_details.csv
   ＋ Diff_dirs.csv / Diff_hash_groups.csv / Diff_subtrees.csv
 
+两种输入都保留完整技术 CSV，并额外生成面向人工阅读的 Report_Excel.xlsx：
+中文工作表与字段、冻结表头、筛选、语义列宽；超过 Excel 行上限时自动分表。
+
 用法：
   python .\Script\Script_DAISY_MAIN.py export-report --snapshot .\Output\Snapshots\Scan_x.sqlite
   python .\Script\Script_DAISY_MAIN.py export-report --diff .\Output\Diffs\Diff_x.sqlite
@@ -27,6 +30,9 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
+import zipfile
+from xml.sax.saxutils import escape
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
@@ -34,6 +40,155 @@ sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 
 _LIST_CAP = 50      # 摘要内明细列表上限（超出注明总数，绝不静默截断）
+_EXCEL_WORKBOOK_NAME = "Report_Excel.xlsx"
+_XLSX_MAX_ROWS = 1_048_576
+_XLSX_MAX_CELL_CHARS = 32_767
+_EXCEL_SHEET_NAMES = {
+    "Report_guide.csv": "阅读说明",
+    "Report_info.csv": "报告身份",
+    "Tree.csv": "文件清单",
+    "Tree_dirs.csv": "目录清单",
+    "Exif_inventory_photo.csv": "照片元数据",
+    "Exif_inventory_video.csv": "视频元数据",
+    "GPS_inventory_video.csv": "视频定位",
+    "Exif_inventory_working.csv": "工作文件元数据",
+    "Exif_inventory_document.csv": "文档元数据",
+    "Stream_inventory_video.csv": "视频流",
+    "Stream_inventory_audio.csv": "音频流",
+    "Hash_inventory.csv": "哈希清单",
+    "Archive_inventory.csv": "压缩包清单",
+    "Archive_inventory_members.csv": "压缩包成员",
+    "Metadata_diagnostics.csv": "元数据诊断",
+    "Errors.csv": "错误明细",
+    "Summary.csv": "快照概览",
+    "Diff_details.csv": "文件变化",
+    "Diff_dirs.csv": "目录变化",
+    "Diff_hash_groups.csv": "重复内容变化",
+    "Diff_subtrees.csv": "枚举缺口",
+}
+_EXCEL_HEADER_NAMES = {
+    "key": "项目",
+    "value": "内容",
+    "path": "完整路径",
+    "old_path": "旧完整路径",
+    "new_path": "新完整路径",
+    "root_label": "根标签",
+    "old_root_label": "旧根标签",
+    "new_root_label": "新根标签",
+    "rel_path": "相对路径",
+    "old_rel_path": "旧相对路径",
+    "new_rel_path": "新相对路径",
+    "name": "文件名",
+    "extension": "扩展名",
+    "media_kind": "文件类型",
+    "size_bytes": "大小（字节）",
+    "old_size": "旧大小（字节）",
+    "new_size": "新大小（字节）",
+    "created_at_utc": "创建时间（UTC）",
+    "modified_at_utc": "修改时间（UTC）",
+    "old_mtime_utc": "旧修改时间（UTC）",
+    "new_mtime_utc": "新修改时间（UTC）",
+    "observed_at_utc": "观察时间（UTC）",
+    "parsed_at_utc": "解析时间（UTC）",
+    "started_at_utc": "开始时间（UTC）",
+    "finished_at_utc": "完成时间（UTC）",
+    "enum_status": "枚举状态",
+    "old_enum_status": "旧枚举状态",
+    "new_enum_status": "新枚举状态",
+    "meta_status": "元数据状态",
+    "hash_status": "哈希状态",
+    "status": "状态",
+    "evidence": "证据等级",
+    "reason": "原因",
+    "message": "信息",
+    "error_message": "错误信息",
+    "error_code": "错误码",
+    "diagnostic_code": "诊断码",
+    "severity": "等级",
+    "stage": "阶段",
+    "field_name": "字段",
+    "raw_value": "原始值",
+    "hash_hex": "SHA-256",
+    "old_hash_hex": "旧 SHA-256",
+    "new_hash_hex": "新 SHA-256",
+    "origin": "哈希来源",
+    "old_hash_origin": "旧哈希来源",
+    "new_hash_origin": "新哈希来源",
+    "algorithm": "算法",
+    "failure_reason": "失败原因",
+    "camera_make": "相机品牌",
+    "camera_model": "相机型号",
+    "camera_serial": "相机序列号",
+    "lens_model": "镜头型号",
+    "lens_serial": "镜头序列号",
+    "capture_time_raw": "拍摄时间（原始）",
+    "capture_time_utc": "拍摄时间（UTC）",
+    "capture_time_source": "拍摄时间来源",
+    "width": "宽度",
+    "height": "高度",
+    "duration_seconds": "时长（秒）",
+    "bit_rate": "码率",
+    "codec_name": "编码格式",
+    "stream_index": "流序号",
+    "stream_count": "流数量",
+    "gps_latitude": "纬度",
+    "gps_longitude": "经度",
+    "gps_altitude": "海拔",
+    "point_index": "定位点序号",
+    "timestamp_seconds": "时间点（秒）",
+    "archive_format": "压缩格式",
+    "member_count": "成员数",
+    "member_index": "成员序号",
+    "member_path": "成员路径",
+    "uncompressed_bytes": "解压后字节数",
+    "compressed_bytes": "压缩后字节数",
+    "old_count": "旧数量",
+    "new_count": "新数量",
+    "classification": "分类",
+    "side": "侧别",
+    "affected_estimate": "预计影响数",
+    "tool": "工具",
+    "tool_version": "工具版本",
+    "parser": "解析器",
+    "parser_version": "解析器版本",
+}
+_EXCEL_VALUE_NAMES = {
+    "photo_raw": "RAW 照片",
+    "photo_jpeg": "JPEG 照片",
+    "image_gif": "GIF 图像",
+    "photo_working": "图像工作文件",
+    "video_mp4": "普通视频",
+    "video_crm": "Cinema RAW Light 视频",
+    "audio": "音频",
+    "archive": "压缩包",
+    "document": "文档",
+    "other": "其他文件",
+    "done": "完成",
+    "error": "错误",
+    "timeout": "超时",
+    "unstable": "不稳定",
+    "skipped": "已跳过",
+    "not_applicable": "不适用",
+    "valid": "有效",
+    "failed": "失败",
+    "unchanged": "未变化",
+    "added": "新增",
+    "deleted": "删除",
+    "content_changed": "内容变化",
+    "stat_changed_content_same": "属性变化、内容相同",
+    "metadata_extraction_changed": "元数据提取变化",
+    "moved_or_renamed": "移动或重命名",
+    "copied": "复制",
+    "hash_missing": "缺少哈希",
+    "unknown": "无法判定",
+    "independent_computation": "独立计算",
+    "propagated_single_computation": "同次计算沿用",
+    "heuristic_file_id": "File ID 启发式",
+    "stat_only": "仅文件属性",
+    "insufficient": "证据不足",
+    "computed": "本次计算",
+    "reused": "复用",
+}
 
 
 def _write_csv(path: str, header: list, rows: list) -> None:
@@ -41,6 +196,364 @@ def _write_csv(path: str, header: list, rows: list) -> None:
         w = csv.writer(f, lineterminator="\n")
         w.writerow(header)
         w.writerows(rows)
+
+
+def _write_report_guide(
+    folder: str, source_kind: str, source_path: str,
+) -> str:
+    """建立人读入口；完整技术字段仍保留在各 CSV。"""
+    name = "Report_guide.csv"
+    kind_label = "封存快照" if source_kind == "snapshot" else "Diff 数据库"
+    _write_csv(
+        os.path.join(folder, name),
+        ["key", "value"],
+        [
+            ("报告用途", "供人工浏览、筛选和追溯 DAISY 结果"),
+            ("输入类型", kind_label),
+            ("输入数据库", os.path.basename(source_path)),
+            ("建议打开", f"{_EXCEL_WORKBOOK_NAME}（中文兼容）"),
+            (
+                "完整数据",
+                "同目录 CSV 保留数据库字段名与完整值，适合脚本和审计",
+            ),
+            (
+                "CSV 编码",
+                "UTF-8 无 BOM；Excel 双击可能误判编码，请使用 XLSX",
+            ),
+            (
+                "工作簿说明",
+                "中文工作表与字段用于阅读；括号内保留原数据库字段名；"
+                "超长单元格按 Excel 上限显示，完整值仍在 CSV",
+            ),
+        ],
+    )
+    return name
+
+
+def _xlsx_column_name(index: int) -> str:
+    if index < 1:
+        raise ValueError("Excel 列编号必须从 1 开始")
+    result = ""
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _xlsx_text(value: object) -> str:
+    """清除 XML 1.0 禁止字符并转义；其余 Unicode（含中文）原样保留。"""
+    text = "" if value is None else str(value)
+    cleaned: list[str] = []
+    for character in text:
+        codepoint = ord(character)
+        cleaned.append(
+            character
+            if (
+                codepoint in (9, 10, 13)
+                or 0x20 <= codepoint <= 0xD7FF
+                or 0xE000 <= codepoint <= 0xFFFD
+                or 0x10000 <= codepoint <= 0x10FFFF
+            )
+            else "\uFFFD"
+        )
+    return escape("".join(cleaned))
+
+
+def _xlsx_attribute(value: object) -> str:
+    return escape(
+        "" if value is None else str(value),
+        {'"': "&quot;", "'": "&apos;"},
+    )
+
+
+def _excel_header(field_name: str) -> str:
+    label = _EXCEL_HEADER_NAMES.get(field_name)
+    return f"{label}\n({field_name})" if label else field_name
+
+
+def _excel_row(header: list[str], row: list[str]) -> list[str]:
+    translated = []
+    for index, value in enumerate(row):
+        field_name = header[index] if index < len(header) else ""
+        if field_name in {
+            "media_kind", "meta_status", "hash_status", "status",
+            "evidence", "origin", "old_hash_origin", "new_hash_origin",
+        }:
+            display_value = _EXCEL_VALUE_NAMES.get(value, value)
+        else:
+            display_value = value
+        display_value = str(display_value)
+        if len(display_value) > _XLSX_MAX_CELL_CHARS:
+            display_value = display_value[:_XLSX_MAX_CELL_CHARS - 1] + "…"
+        translated.append(display_value)
+    return translated
+
+
+def _excel_column_width(field_name: str) -> int:
+    lowered = field_name.casefold()
+    if "hash_hex" in lowered:
+        return 68
+    if any(part in lowered for part in (
+            "path", "message", "reason", "raw_value", "config_json")):
+        return 52
+    if lowered.endswith("_utc") or lowered.endswith("_raw"):
+        return 25
+    if lowered.endswith("_id") or lowered.endswith("_pk"):
+        return 14
+    return 22
+
+
+def _write_xlsx_row(
+    stream, values: list[str], row_number: int, *, header: bool = False,
+) -> None:
+    row_options = ' ht="34" customHeight="1"' if header else ""
+    stream.write(
+        f'<row r="{row_number}"{row_options}>'.encode("utf-8"))
+    style = ' s="1"' if header else ""
+    for column_number, raw_value in enumerate(values, start=1):
+        value = "" if raw_value is None else str(raw_value)
+        preserve = (
+            ' xml:space="preserve"'
+            if value[:1].isspace() or value[-1:].isspace() else ""
+        )
+        reference = f"{_xlsx_column_name(column_number)}{row_number}"
+        stream.write(
+            (
+                f'<c r="{reference}" t="inlineStr"{style}><is>'
+                f'<t{preserve}>{_xlsx_text(value)}</t></is></c>'
+            ).encode("utf-8")
+        )
+    stream.write(b"</row>\n")
+
+
+def _xlsx_sheet_name(
+    csv_name: str, part: int, used_names: set[str],
+) -> str:
+    base = _EXCEL_SHEET_NAMES.get(
+        csv_name, os.path.splitext(os.path.basename(csv_name))[0])
+    for character in "[]:*?/\\":
+        base = base.replace(character, "_")
+    suffix = "" if part == 1 else f"_{part}"
+    base = (base or "Sheet")[:31 - len(suffix)] + suffix
+    candidate = base
+    duplicate = 2
+    while candidate.casefold() in used_names:
+        extra = f"_{duplicate}"
+        candidate = base[:31 - len(extra)] + extra
+        duplicate += 1
+    used_names.add(candidate.casefold())
+    return candidate
+
+
+def _write_xlsx_csv_sheets(
+    archive: zipfile.ZipFile,
+    csv_path: str,
+    csv_name: str,
+    sheets: list[str],
+    used_names: set[str],
+) -> None:
+    """把一个 CSV 流式写成一个或多个工作表，不静默截断 Excel 行上限。"""
+    with open(csv_path, encoding="utf-8", newline="") as source:
+        reader = csv.reader(source)
+        header = next(reader, [])
+        display_header = [_excel_header(field) for field in header]
+        pending_row: list[str] | None = None
+        exhausted = False
+        part = 1
+        while not exhausted:
+            sheet_number = len(sheets) + 1
+            sheet_name = _xlsx_sheet_name(
+                csv_name, part, used_names)
+            info = zipfile.ZipInfo(
+                f"xl/worksheets/sheet{sheet_number}.xml")
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with archive.open(info, "w") as stream:
+                stream.write(
+                    (
+                        '<?xml version="1.0" encoding="UTF-8" '
+                        'standalone="yes"?>\n'
+                        '<worksheet xmlns="http://schemas.openxmlformats.org/'
+                        'spreadsheetml/2006/main">\n'
+                        '<sheetViews><sheetView workbookViewId="0">'
+                        '<pane ySplit="1" topLeftCell="A2" '
+                        'activePane="bottomLeft" state="frozen"/>'
+                        '</sheetView></sheetViews>\n'
+                        '<sheetFormatPr defaultRowHeight="18"/>\n'
+                    ).encode("utf-8")
+                )
+                column_count = max(1, len(header))
+                column_definitions = "".join(
+                    f'<col min="{index}" max="{index}" '
+                    f'width="{_excel_column_width(field)}" customWidth="1"/>'
+                    for index, field in enumerate(header, start=1)
+                )
+                if not column_definitions:
+                    column_definitions = (
+                        '<col min="1" max="1" width="22" customWidth="1"/>')
+                stream.write(
+                    (
+                        f'<cols>{column_definitions}</cols>\n<sheetData>\n'
+                    ).encode("utf-8")
+                )
+                row_number = 1
+                _write_xlsx_row(
+                    stream, display_header, row_number, header=True)
+                while row_number < _XLSX_MAX_ROWS:
+                    if pending_row is not None:
+                        row = pending_row
+                        pending_row = None
+                    else:
+                        try:
+                            row = next(reader)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                    row_number += 1
+                    _write_xlsx_row(
+                        stream, _excel_row(header, row), row_number)
+                if not exhausted:
+                    try:
+                        pending_row = next(reader)
+                    except StopIteration:
+                        exhausted = True
+                last_column = _xlsx_column_name(column_count)
+                stream.write(
+                    (
+                        '</sheetData>\n'
+                        f'<autoFilter ref="A1:{last_column}{row_number}"/>\n'
+                        '</worksheet>\n'
+                    ).encode("utf-8")
+                )
+            sheets.append(sheet_name)
+            part += 1
+
+
+def _write_xlsx_package_parts(
+    archive: zipfile.ZipFile, sheets: list[str],
+) -> None:
+    sheet_overrides = "".join(
+        '<Override '
+        f'PartName="/xl/worksheets/sheet{index}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.'
+        'spreadsheetml.worksheet+xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    archive.writestr(
+        "[Content_Types].xml",
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.'
+        'openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/'
+        'vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.'
+        'openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        f'{sheet_overrides}</Types>\n',
+    )
+    archive.writestr(
+        "_rels/.rels",
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/'
+        '2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships/officeDocument" '
+        'Target="xl/workbook.xml"/>'
+        '</Relationships>\n',
+    )
+    workbook_sheets = "".join(
+        f'<sheet name="{_xlsx_attribute(name)}" sheetId="{index}" '
+        f'r:id="rId{index}"/>'
+        for index, name in enumerate(sheets, start=1)
+    )
+    archive.writestr(
+        "xl/workbook.xml",
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/'
+        '2006/main" xmlns:r="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships">'
+        f'<sheets>{workbook_sheets}</sheets></workbook>\n',
+    )
+    worksheet_relationships = "".join(
+        f'<Relationship Id="rId{index}" Type="http://schemas.'
+        'openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    styles_id = len(sheets) + 1
+    archive.writestr(
+        "xl/_rels/workbook.xml.rels",
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/'
+        '2006/relationships">'
+        f'{worksheet_relationships}'
+        f'<Relationship Id="rId{styles_id}" Type="http://schemas.'
+        'openxmlformats.org/officeDocument/2006/relationships/styles" '
+        'Target="styles.xml"/>'
+        '</Relationships>\n',
+    )
+    archive.writestr(
+        "xl/styles.xml",
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/'
+        'spreadsheetml/2006/main">'
+        '<fonts count="2">'
+        '<font><sz val="10"/><name val="Microsoft YaHei UI"/>'
+        '<family val="2"/></font>'
+        '<font><b/><sz val="10"/><name val="Microsoft YaHei UI"/>'
+        '<family val="2"/><color rgb="FFFFFFFF"/></font>'
+        '</fonts>'
+        '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+        '<fill><patternFill patternType="gray125"/></fill>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FF347A68"/>'
+        '<bgColor indexed="64"/></patternFill></fill></fills>'
+        '<borders count="1"><border><left/><right/><top/><bottom/>'
+        '<diagonal/></border></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" '
+        'borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="2">'
+        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" '
+        'applyFont="1" applyAlignment="1"><alignment vertical="top"/>'
+        '</xf>'
+        '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" '
+        'applyFont="1" applyFill="1" applyAlignment="1">'
+        '<alignment vertical="center" wrapText="1"/></xf></cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" '
+        'builtinId="0"/></cellStyles>'
+        '</styleSheet>\n',
+    )
+
+
+def _write_excel_workbook(folder: str, files: list[str]) -> str:
+    """生成原生 Unicode XLSX，供 Excel 直接打开而不猜测 CSV 编码。"""
+    csv_names = [name for name in files if name.casefold().endswith(".csv")]
+    workbook_path = os.path.join(folder, _EXCEL_WORKBOOK_NAME)
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=".Report_Excel_", suffix=".tmp", dir=folder)
+    os.close(descriptor)
+    try:
+        with zipfile.ZipFile(
+                temporary_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            sheets: list[str] = []
+            used_names: set[str] = set()
+            for csv_name in csv_names:
+                _write_xlsx_csv_sheets(
+                    archive,
+                    os.path.join(folder, csv_name),
+                    csv_name,
+                    sheets,
+                    used_names,
+                )
+            _write_xlsx_package_parts(archive, sheets)
+        os.replace(temporary_path, workbook_path)
+    except BaseException:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+        raise
+    return _EXCEL_WORKBOOK_NAME
 
 
 def _write_report_info(folder: str) -> str:
@@ -95,7 +608,10 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
     folder = os.path.join(os.path.abspath(output_dir), stem + "_Report")
     os.makedirs(folder, exist_ok=True)
     con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
-    files = [_write_report_info(folder)]
+    files = [
+        _write_report_guide(folder, "snapshot", snapshot_path),
+        _write_report_info(folder),
+    ]
     try:
         core.require_sealed_snapshot(con)
         # 人读路径一律拼接为「label\rel_path」完整逻辑路径
@@ -150,6 +666,7 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
         files.append("Summary.csv")
     finally:
         con.close()
+    files.append(_write_excel_workbook(folder, files))
     return {"folder": folder, "files": files}
 
 
@@ -176,7 +693,10 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
     folder = os.path.join(os.path.abspath(output_dir), stem + "_Report")
     os.makedirs(folder, exist_ok=True)
     con = sqlite3.connect(f"file:{diff_path}?mode=ro", uri=True)
-    files = [_write_report_info(folder)]
+    files = [
+        _write_report_guide(folder, "diff", diff_path),
+        _write_report_info(folder),
+    ]
     try:
         core.require_sqlite_integrity(con, "Diff 数据库")
         schema_version, = con.execute(
@@ -354,6 +874,7 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
               encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines))
     files.append("Diff_summary.md")
+    files.append(_write_excel_workbook(folder, files))
     return {"folder": folder, "files": files}
 
 

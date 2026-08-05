@@ -1406,6 +1406,20 @@ def snapshot_issue_report_required(counts: dict) -> bool:
 
 ISSUE_REPORT_SUFFIX = "_Issues.md"
 ISSUE_REPORT_ROW_LIMIT = 500
+_NON_ISSUE_FORMAT_MESSAGES = frozenset((
+    "unknown file type",
+    "unrecognized file type",
+    "unsupported file type",
+))
+
+
+def issue_record_is_visible(error_code: object, message: object) -> bool:
+    """Issues.md 忽略单纯格式未识别；数据库原始证据保持不变。"""
+    if str(error_code or "").strip().casefold() != "exiftool_reported_error":
+        return True
+    normalized = " ".join(str(message or "").strip().casefold().split())
+    normalized = normalized.rstrip(".。")
+    return normalized not in _NON_ISSUE_FORMAT_MESSAGES
 
 
 def artifact_issue_report_path(artifact_path: str) -> str:
@@ -1499,9 +1513,11 @@ def _append_markdown_table(lines: list[str], headers: tuple[str, ...],
         lines.append("| " + " | ".join(markdown_cell(v) for v in row) + " |")
 
 
-def render_snapshot_issue_report(snapshot_path: str,
-                                 artifact_filename: str | None = None,
-                                 row_limit: int = ISSUE_REPORT_ROW_LIMIT) -> str:
+def render_snapshot_issue_report(
+    snapshot_path: str,
+    artifact_filename: str | None = None,
+    row_limit: int = ISSUE_REPORT_ROW_LIMIT,
+) -> str | None:
     """从封存前 SQLite 生成可读问题摘要，不修改数据库。"""
     path = os.path.abspath(snapshot_path)
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -1518,24 +1534,26 @@ def render_snapshot_issue_report(snapshot_path: str,
         meta = counts.get("meta_status") or {}
         hashes = counts.get("hash_status") or {}
         diagnostics = counts.get("metadata_diagnostics") or {}
-        summary_rows = [
-            ("数据库完整性", info["database_integrity"]),
-            ("扫描状态", info["scan_status"]),
-            ("存在源文件问题", info["has_file_issues"]),
-            ("存在 unstable 条目", info["has_unstable_entries"]),
-            ("存在枚举缺口", info["has_enumeration_gaps"]),
-            ("失败根目录", counts.get("roots_failed", 0)),
-            ("目录枚举问题", counts.get("dir_errors", 0)),
-            ("元数据 error", meta.get("error", 0)),
-            ("元数据 timeout", meta.get("timeout", 0)),
-            ("元数据 unstable", meta.get("unstable", 0)),
-            ("哈希 error", hashes.get("error", 0)),
-            ("哈希 unstable", hashes.get("unstable", 0)),
-            ("错误记录", counts.get("error_records", 0)),
-            ("元数据 warning", diagnostics.get("warning", 0)),
-            ("元数据 validation", diagnostics.get("validation", 0)),
-        ]
-        error_total, = con.execute("SELECT COUNT(*) FROM errors").fetchone()
+        con.create_function(
+            "daisy_issue_visible", 2,
+            lambda code, message: int(issue_record_is_visible(code, message)),
+        )
+        only_unrecognized_format = (
+            "(e.meta_status='error'"
+            " AND e.hash_status NOT IN ('error','unstable')"
+            " AND EXISTS (SELECT 1 FROM errors ignored"
+            "  WHERE ignored.entry_id=e.entry_id"
+            "  AND daisy_issue_visible(ignored.error_code,ignored.message)=0)"
+            " AND NOT EXISTS (SELECT 1 FROM errors visible"
+            "  WHERE visible.entry_id=e.entry_id"
+            "  AND daisy_issue_visible(visible.error_code,visible.message)=1))"
+        )
+        ignored_format_total, = con.execute(
+            "SELECT COUNT(DISTINCT entry_id) FROM errors"
+            " WHERE daisy_issue_visible(error_code,message)=0").fetchone()
+        error_total, = con.execute(
+            "SELECT COUNT(*) FROM errors"
+            " WHERE daisy_issue_visible(error_code,message)=1").fetchone()
         error_rows = [tuple(row) for row in con.execute(
             "SELECT x.stage,x.error_code,"
             " COALESCE(er.root_label,dr.root_label,''),"
@@ -1545,17 +1563,23 @@ def render_snapshot_issue_report(snapshot_path: str,
             " LEFT JOIN roots er ON er.root_id=e.root_id"
             " LEFT JOIN dirs d ON d.dir_id=x.dir_id"
             " LEFT JOIN roots dr ON dr.root_id=d.root_id"
+            " WHERE daisy_issue_visible(x.error_code,x.message)=1"
             " ORDER BY x.error_pk LIMIT ?", (row_limit,))]
         status_total, = con.execute(
-            "SELECT COUNT(*) FROM entries WHERE"
-            " meta_status IN ('error','timeout','unstable')"
-            " OR hash_status IN ('error','unstable')").fetchone()
+            "SELECT COUNT(*) FROM entries e WHERE ("
+            " e.meta_status IN ('error','timeout','unstable')"
+            " OR e.hash_status IN ('error','unstable'))"
+            f" AND NOT {only_unrecognized_format}").fetchone()
         status_rows = [tuple(row) for row in con.execute(
             "SELECT r.root_label,e.rel_path,e.meta_status,e.hash_status"
             " FROM entries e JOIN roots r ON r.root_id=e.root_id"
-            " WHERE e.meta_status IN ('error','timeout','unstable')"
-            " OR e.hash_status IN ('error','unstable')"
+            " WHERE (e.meta_status IN ('error','timeout','unstable')"
+            " OR e.hash_status IN ('error','unstable'))"
+            f" AND NOT {only_unrecognized_format}"
             " ORDER BY r.root_label,e.path_key LIMIT ?", (row_limit,))]
+        reportable_meta_error, = con.execute(
+            "SELECT COUNT(*) FROM entries e WHERE e.meta_status='error'"
+            f" AND NOT {only_unrecognized_format}").fetchone()
         dir_total, = con.execute(
             "SELECT COUNT(*) FROM dirs WHERE enum_status<>'ok'").fetchone()
         dir_rows = [tuple(row) for row in con.execute(
@@ -1573,6 +1597,8 @@ def render_snapshot_issue_report(snapshot_path: str,
             diagnostic_group_rows = [tuple(row) for row in con.execute(
                 "SELECT severity,diagnostic_code,COALESCE(field_name,''),COUNT(*)"
                 " FROM metadata_diagnostics"
+                " WHERE severity<>'error' OR"
+                " daisy_issue_visible(diagnostic_code,message)=1"
                 " GROUP BY severity,diagnostic_code,field_name"
                 " ORDER BY severity,diagnostic_code,field_name")]
             evidence_gap_total, = con.execute(
@@ -1588,10 +1614,32 @@ def render_snapshot_issue_report(snapshot_path: str,
                 " 'historical_%_payload_unavailable'"
                 " ORDER BY r.root_label,e.path_key,d.diagnostic_code LIMIT ?",
                 (row_limit,))]
+        reportable_source_issues = bool(status_total)
+        summary_rows = [
+            ("数据库完整性", info["database_integrity"]),
+            ("扫描状态", info["scan_status"]),
+            ("本报告存在源文件问题", int(reportable_source_issues)),
+            ("存在 unstable 条目", info["has_unstable_entries"]),
+            ("存在枚举缺口", info["has_enumeration_gaps"]),
+            ("失败根目录", counts.get("roots_failed", 0)),
+            ("目录枚举问题", counts.get("dir_errors", 0)),
+            ("元数据 error（需关注）", reportable_meta_error),
+            ("元数据 timeout", meta.get("timeout", 0)),
+            ("元数据 unstable", meta.get("unstable", 0)),
+            ("哈希 error", hashes.get("error", 0)),
+            ("哈希 unstable", hashes.get("unstable", 0)),
+            ("错误记录（需关注）", error_total),
+            ("未列为问题的格式未识别文件", ignored_format_total),
+            ("元数据 warning", diagnostics.get("warning", 0)),
+            ("元数据 validation", diagnostics.get("validation", 0)),
+        ]
     except (json.JSONDecodeError, sqlite3.Error) as exc:
         raise PreflightError(f"无法生成问题报告：{exc}") from exc
     finally:
         con.close()
+
+    if not (error_total or status_total or dir_total or root_rows):
+        return None
 
     lines = [
         "# DAISY 问题报告",
@@ -1649,6 +1697,8 @@ def render_snapshot_issue_report(snapshot_path: str,
         "",
         "## 说明",
         "",
+        "单纯由 ExifTool 返回“格式未识别”的文件不列为问题；相关状态、诊断和"
+        "错误记录仍完整保留在 SQLite 中。",
         "`warning` 与 `validation` 会在汇总中保留，但它们本身不会让扫描判为失败。",
         "如需完整逐表结果，请从该 SQLite 使用 `export-report` 导出。",
         "",

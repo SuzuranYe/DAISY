@@ -55,7 +55,7 @@ _MAX_ROOT_DIRECTORIES = 9
 _ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
-_DEFAULT_WINDOW_SIZE = (1280, 720)
+_DEFAULT_WINDOW_SIZE = (1920, 1080)
 _WINDOW_WORK_MARGIN = (32, 40)
 _UI_FONT_FAMILY = "Microsoft YaHei UI"
 _COLOUR_STRIP_HEIGHT = 4
@@ -773,9 +773,8 @@ TASKS = (
         "env-check",
         "ENV-01  运行环境检测",
         "运行环境检测",
-        "检查 ExifTool、ffprobe、7-Zip、PowerShell 与 smartctl 的发现、"
-        "版本和只读冒烟结果，并执行 SHA-256 自检。本页不读取档案进行性能"
-        "测试，也不保存全局设置。",
+        "检查 ExifTool、ffprobe、7-Zip、PowerShell 与 smartctl，并执行"
+        "只读冒烟和 SHA-256 自检；不读取档案或保存全局设置。",
         "只读检查 · 不读取档案 · 不保存设置",
         (
             FieldSpec(
@@ -817,10 +816,8 @@ TASKS = (
         "",
         "DBS-91  DAISY功能自检",
         "DAISY功能自检",
-        "运行 Script\\Test 中的全部自动化测试，检测 DAISY 自身的 DBS 功能域、"
-        "SQLite schema、数据库约束、快照、Diff 与关键工作流，同时覆盖 GUI 参数映射。"
-        "同时验证 STG 归档和硬盘只读边界；测试夹具只写入系统临时目录，"
-        "不使用表单中的档案目录、访问真实硬盘或生成正式产物。",
+        "运行 Script\\Test 中的全部自动化测试，覆盖 DBS／STG、GUI 参数和"
+        "硬盘只读边界；夹具只写系统临时目录，不访问真实档案或硬盘。",
         "DBS 功能检测 · 临时夹具 · 不读取私人档案",
         (),
     ),
@@ -881,13 +878,9 @@ TASKS = (
                     ("全量元数据：基础字段＋原始工具输出（默认）", "complete"),
                     ("基础元数据：仅保留规范化常用字段", "normalized"),
                 ),
-                help="基础元数据通过 ExifTool 生成有映射类型的规范化字段，"
-                     "视频和音频还通过 ffprobe 生成容器与流字段；GIF 在"
-                     "基础范围只使用 ExifTool。全量元数据在此基础上，"
-                     "为本地所有文件保留 ExifTool 原文，并为视频、音频"
-                     "和 GIF 保留 ffprobe 原文。基础范围可显著缩小快照，"
-                     "但以后无法重新解释原始输出，也无法判定 "
-                     "metadata_extraction_changed。",
+                help="基础范围保留规范化字段，视频和音频还通过 ffprobe 记录容器"
+                     "与流；GIF 在基础范围只使用 ExifTool。全量范围另存工具原文，"
+                     "便于重释和比较提取变化。",
                 section="快照内容", active_when=_FULL_NEW,
             ),
             FieldSpec(
@@ -1178,10 +1171,9 @@ TASKS = (
         "export-report",
         "DBS-41  结果报告导出",
         "结果报告导出",
-        "从封存快照导出文件树、元数据、哈希与诊断 CSV，或从 Diff 数据库"
-        "导出变更摘要 Markdown 与变更明细 CSV。输入数据库保持只读，报告"
-        "可随时删除并重新生成。",
-        "输入只读 · 生成 CSV/Markdown",
+        "从封存快照或 Diff 数据库导出 CSV／Markdown，并生成可直接用 Excel "
+        "打开的中文兼容工作簿；输入只读，报告可随时重建。",
+        "输入只读 · 生成 CSV/Markdown/XLSX",
         (
             FieldSpec(
                 "source_type", "输入类型", None, "choice", "snapshot",
@@ -1190,10 +1182,9 @@ TASKS = (
                     ("Diff 数据库：导出摘要 Markdown 与变更 CSV", "diff"),
                 ),
                 help=(
-                    "封存快照会导出 Tree、目录、规范化元数据、视频 GPS、媒体流、"
-                    "哈希、压缩包、错误和 Summary 等 CSV；Diff 数据库会导出 "
-                    "Diff_summary.md、Diff_details.csv、Diff_dirs.csv、"
-                    "Diff_hash_groups.csv 与 Diff_subtrees.csv。"
+                    "快照导出 Tree、Summary 等清单与诊断 CSV；Diff 导出 "
+                    "Diff_summary.md、Diff_details.csv、Diff_subtrees.csv 等。"
+                    "两者均附中文兼容 XLSX。"
                 ),
                 section="输入",
             ),
@@ -1214,10 +1205,8 @@ TASKS = (
         "storage-list",
         "内部步骤  检测物理硬盘",
         "检测物理硬盘",
-        "联合 Windows 存储接口与 smartctl 列出物理硬盘、分区卷标和设备"
-        "关联。此功能需要管理员权限才能完整运行；未提权时请开启顶部管理"
-        "员模式开关，并按提示重新启动 DAISY。请先运行本项，再按 "
-        "PhysicalDrive 编号执行信息登记。",
+        "通过 Windows 存储接口与 smartctl 检测物理硬盘及分区；完整结果需要"
+        "管理员权限。检测后可按 PhysicalDrive 编号登记。",
         "需要管理员权限 · 物理盘只读 · 可能唤醒硬盘",
         (
             FieldSpec(
@@ -1239,10 +1228,8 @@ TASKS = (
         "storage-collect",
         "STG-11  硬盘信息登记",
         "硬盘信息登记",
-        "重新确认指定物理盘身份，只读采集完整 Windows 存储资料和 smartctl"
-        " 原始证据，并生成带文件名指纹的独立 ZIP 档案。此功能需要管理员权限"
-        "才能完整运行；未提权时请开启顶部管理员模式开关，并按提示重新启动 "
-        "DAISY。",
+        "确认物理盘身份后，只读采集 Windows 存储资料和 smartctl 原始证据，"
+        "生成独立 ZIP；完整结果需要管理员权限。",
         "需要管理员权限 · 物理盘只读 · 生成 ZIP",
         (
             FieldSpec(
@@ -1354,8 +1341,10 @@ _UNIFIED_ACTION_FOREGROUND = "white"
 _RUN_BUTTON_TEXT = "开始任务"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 _PANEL_HEADER_PADX = 14
-_PANEL_ACTION_BUTTON_WIDTH = 9
+_PANEL_ACTION_BUTTON_WIDTH = 12
 _PANEL_ACTION_BUTTON_GAP = 6
+_PANEL_SPLITTER_MIN_HEIGHT = 42
+_PANEL_SPLITTER_SASH_WIDTH = 9
 _STORAGE_DISK_CHECKBOX_SIZE = 20
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
 
@@ -2236,7 +2225,7 @@ def project_self_test_preview() -> str:
 
 def window_size_for_screen(screen_width: int,
                            screen_height: int) -> tuple[int, int]:
-    """以 1280×720 为目标，并按当前屏幕留出安全边缘。"""
+    """以 1920×1080 为目标，并按当前屏幕留出安全边缘。"""
     target_width, target_height = _DEFAULT_WINDOW_SIZE
     width = min(target_width, max(640, screen_width - 80))
     height = min(target_height, max(480, screen_height - 60))
@@ -2482,6 +2471,8 @@ class DaisyApp:
         self.progress_expanded = False
         self.log_expanded = False
         self.command_preview_expanded = False
+        self._panel_expanded_heights: dict[str, int] = {}
+        self._mini_panel_heights: dict[str, int] = {}
         self._normal_geometry = ""
         self._normal_window_state = "normal"
         self._normal_position = (0, 0)
@@ -2996,6 +2987,10 @@ class DaisyApp:
                 self.view_panel_menu_entries[panel_key] = int(entry_index)
             if panel_key == "task_toolbar":
                 view_menu.add_separator()
+        view_menu.add_separator()
+        view_menu.add_command(
+            label="进入小窗模式", command=self._toggle_mini_mode)
+        self.view_mini_mode_menu_index = int(view_menu.index("end"))
         menu.add_cascade(label="视图", menu=view_menu)
 
         help_menu = tk.Menu(menu, **base_menu_options)
@@ -3124,15 +3119,36 @@ class DaisyApp:
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
 
+        panel_splitter = tk.PanedWindow(
+            content,
+            orient=tk.VERTICAL,
+            bg=_BORDER,
+            bd=0,
+            highlightthickness=0,
+            opaqueresize=True,
+            sashcursor="sb_v_double_arrow",
+            sashpad=0,
+            sashrelief="flat",
+            sashwidth=_PANEL_SPLITTER_SASH_WIDTH,
+            showhandle=False,
+        )
+        self.panel_splitter = panel_splitter
+        panel_splitter.grid(row=0, column=0, sticky="nsew")
+
         self.task_card = tk.Frame(
-            content, bg=_SURFACE, highlightbackground=_BORDER,
+            panel_splitter, bg=_SURFACE, highlightbackground=_BORDER,
             highlightthickness=1,
         )
-        self.task_card.grid(row=0, column=0, sticky="nsew")
+        panel_splitter.add(
+            self.task_card,
+            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
+            stretch="always",
+            sticky="nsew",
+        )
 
         title_row = tk.Frame(self.task_card, bg=_SURFACE)
         self.settings_title_row = title_row
-        title_row.pack(fill="x", padx=22, pady=(14, 10))
+        title_row.pack(fill="x", padx=22, pady=(12, 8))
         self.settings_title_expanded_font = (
             "Microsoft YaHei UI",
             14 if self.compact_layout else 16,
@@ -3160,7 +3176,7 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9), anchor="w", justify="left",
             wraplength=820,
         )
-        self.desc_label.pack(fill="x", padx=22, pady=(0, 12))
+        self.desc_label.pack(fill="x", padx=22, pady=(0, 8))
         self.task_card.bind(
             "<Configure>",
             lambda e: self.desc_label.configure(
@@ -3205,11 +3221,16 @@ class DaisyApp:
         )
 
         progress_panel = tk.Frame(
-            content, bg=_SURFACE, highlightbackground=_BORDER,
+            panel_splitter, bg=_SURFACE, highlightbackground=_BORDER,
             highlightthickness=1,
         )
         self.progress_panel = progress_panel
-        progress_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        panel_splitter.add(
+            progress_panel,
+            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
+            stretch="never",
+            sticky="nsew",
+        )
         progress_inner = tk.Frame(progress_panel, bg=_SURFACE)
         self.progress_inner = progress_inner
         progress_inner.pack(
@@ -3344,11 +3365,16 @@ class DaisyApp:
             row=6, column=0, columnspan=3, sticky="ew", pady=(4, 5))
 
         log_panel = tk.Frame(
-            content, bg=_LOG_BG, highlightbackground=_BORDER,
+            panel_splitter, bg=_LOG_BG, highlightbackground=_BORDER,
             highlightthickness=1,
         )
         self.log_panel = log_panel
-        log_panel.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        panel_splitter.add(
+            log_panel,
+            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
+            stretch="never",
+            sticky="nsew",
+        )
         log_header = tk.Frame(log_panel, bg=_LOG_HEADER)
         log_header.pack(fill="x")
         tk.Label(
@@ -3389,7 +3415,7 @@ class DaisyApp:
             height=100 if self.compact_layout else 120,
         )
         self.log_body = log_body
-        log_body.pack(fill="x")
+        log_body.pack(fill="both", expand=True)
         log_body.pack_propagate(False)
         self.log = tk.Text(
             log_body, bg=_LOG_BG, fg=_LOG_TEXT, insertbackground=_TEXT,
@@ -3411,7 +3437,7 @@ class DaisyApp:
 
         command_panel = tk.Frame(content, bg=_BG)
         self.command_panel = command_panel
-        command_panel.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        command_panel.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         command_preview_body = tk.Frame(command_panel, bg=_BG)
         self.command_preview_body = command_preview_body
         tk.Label(
@@ -3556,6 +3582,13 @@ class DaisyApp:
                 entry_index,
                 label=("折叠" if expanded else "展开") + label,
             )
+        if hasattr(self, "view_mini_mode_menu_index"):
+            self.view_menu.entryconfigure(
+                self.view_mini_mode_menu_index,
+                label=(
+                    "返回完整界面" if self.mini_mode else "进入小窗模式"
+                ),
+            )
 
     def _set_task_toolbar_expanded(self, expanded: bool) -> None:
         self.task_toolbar_expanded = expanded
@@ -3611,22 +3644,134 @@ class DaisyApp:
             row=0, column=1, sticky="e", padx=(0, 8))
         self.run_button.grid(row=0, column=2, sticky="e")
 
+    def _splitter_panel(self, panel_key: str) -> tk.Widget | None:
+        return {
+            "settings": getattr(self, "task_card", None),
+            "progress": getattr(self, "progress_panel", None),
+            "log": getattr(self, "log_panel", None),
+        }.get(panel_key)
+
+    def _splitter_manages(self, panel: tk.Widget | None) -> bool:
+        splitter = getattr(self, "panel_splitter", None)
+        if splitter is None or panel is None:
+            return False
+        try:
+            return str(panel) in {str(item) for item in splitter.panes()}
+        except (AttributeError, tk.TclError):
+            return False
+
+    def _remember_splitter_panel_height(self, panel_key: str) -> None:
+        """折叠前记住用户拖动得到的面板高度。"""
+        if getattr(self, "mini_mode", False):
+            return
+        panel = self._splitter_panel(panel_key)
+        if not self._splitter_manages(panel):
+            return
+        try:
+            height = int(panel.winfo_height())
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return
+        if height > _PANEL_SPLITTER_MIN_HEIGHT:
+            self._panel_expanded_heights[panel_key] = height
+
+    def _apply_splitter_panel_state(
+        self, panel_key: str, expanded: bool,
+    ) -> None:
+        """折叠时收紧面板，重新展开时恢复此前的纵向占比。"""
+        if getattr(self, "mini_mode", False):
+            return
+        splitter = getattr(self, "panel_splitter", None)
+        panel = self._splitter_panel(panel_key)
+        if splitter is None or not self._splitter_manages(panel):
+            return
+        try:
+            requested_height = max(
+                _PANEL_SPLITTER_MIN_HEIGHT,
+                int(panel.winfo_reqheight()),
+            )
+            if expanded:
+                target_height = max(
+                    requested_height,
+                    int(self._panel_expanded_heights.get(
+                        panel_key, requested_height)),
+                )
+                minimum_height = _PANEL_SPLITTER_MIN_HEIGHT
+            else:
+                target_height = requested_height
+                minimum_height = requested_height
+            splitter.paneconfigure(
+                panel,
+                height=target_height,
+                minsize=minimum_height,
+                stretch="always" if expanded else "never",
+            )
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return
+
+    def _schedule_splitter_panel_state(
+        self, panel_key: str, expanded: bool,
+    ) -> None:
+        root = getattr(self, "root", None)
+        if root is None or not hasattr(root, "after_idle"):
+            return
+        root.after_idle(
+            lambda key=panel_key, value=expanded:
+            self._apply_splitter_panel_state(key, value),
+        )
+
+    def _capture_splitter_panel_heights(self) -> dict[str, int]:
+        heights: dict[str, int] = {}
+        for panel_key in ("settings", "progress", "log"):
+            panel = self._splitter_panel(panel_key)
+            if not self._splitter_manages(panel):
+                continue
+            try:
+                heights[panel_key] = max(
+                    _PANEL_SPLITTER_MIN_HEIGHT,
+                    int(panel.winfo_height()),
+                )
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                continue
+        return heights
+
+    def _restore_splitter_panel_heights(
+        self, heights: dict[str, int],
+    ) -> None:
+        if getattr(self, "mini_mode", False):
+            return
+        splitter = getattr(self, "panel_splitter", None)
+        if splitter is None:
+            return
+        for panel_key, height in heights.items():
+            panel = self._splitter_panel(panel_key)
+            if not self._splitter_manages(panel):
+                continue
+            try:
+                splitter.paneconfigure(
+                    panel,
+                    height=max(_PANEL_SPLITTER_MIN_HEIGHT, int(height)),
+                )
+            except (AttributeError, tk.TclError, TypeError, ValueError):
+                continue
+
     def _set_settings_expanded(self, expanded: bool) -> None:
+        was_expanded = getattr(self, "settings_expanded", True)
+        was_visible = bool(self.settings_body.winfo_manager())
+        if was_expanded and not expanded:
+            self._remember_splitter_panel_height("settings")
         self.settings_expanded = expanded
         if expanded:
             if not self.settings_body.winfo_manager():
                 self.settings_body.pack(fill="both", expand=True)
         else:
             self.settings_body.pack_forget()
-        if not self.mini_mode:
-            self.content.grid_rowconfigure(0, weight=1 if expanded else 0)
         self.title_label.configure(font=(
             self.settings_title_expanded_font
             if expanded else _COLLAPSED_PANEL_TITLE_FONT
         ))
         self.settings_title_row.pack_configure(
             padx=(22 if expanded else _PANEL_HEADER_PADX),
-            pady=((14, 10) if expanded
+            pady=((12, 8) if expanded
                   else _COLLAPSED_SETTINGS_HEADER_PADY),
         )
         self.settings_toggle_button.configure(
@@ -3634,11 +3779,17 @@ class DaisyApp:
         if hasattr(self, "settings_visible_var"):
             self.settings_visible_var.set(expanded)
         self._refresh_view_menu_labels()
+        if was_expanded != expanded or was_visible != expanded:
+            self._schedule_splitter_panel_state("settings", expanded)
 
     def _toggle_settings_panel(self) -> None:
         self._set_settings_expanded(not self.settings_expanded)
 
     def _set_progress_expanded(self, expanded: bool) -> None:
+        was_expanded = getattr(self, "progress_expanded", False)
+        was_visible = bool(self.progress_body.winfo_manager())
+        if was_expanded and not expanded:
+            self._remember_splitter_panel_height("progress")
         self.progress_expanded = expanded
         if expanded:
             if not self.progress_body.winfo_manager():
@@ -3650,15 +3801,21 @@ class DaisyApp:
         if hasattr(self, "progress_visible_var"):
             self.progress_visible_var.set(expanded)
         self._refresh_view_menu_labels()
+        if was_expanded != expanded or was_visible != expanded:
+            self._schedule_splitter_panel_state("progress", expanded)
 
     def _toggle_progress_panel(self) -> None:
         self._set_progress_expanded(not self.progress_expanded)
 
     def _set_log_expanded(self, expanded: bool) -> None:
+        was_expanded = getattr(self, "log_expanded", False)
+        was_visible = bool(self.log_body.winfo_manager())
+        if was_expanded and not expanded:
+            self._remember_splitter_panel_height("log")
         self.log_expanded = expanded
         if expanded:
             if not self.log_body.winfo_manager():
-                self.log_body.pack(fill="x")
+                self.log_body.pack(fill="both", expand=True)
         else:
             self.log_body.pack_forget()
         self.log_toggle_button.configure(
@@ -3666,6 +3823,8 @@ class DaisyApp:
         if hasattr(self, "log_visible_var"):
             self.log_visible_var.set(expanded)
         self._refresh_view_menu_labels()
+        if was_expanded != expanded or was_visible != expanded:
+            self._schedule_splitter_panel_state("log", expanded)
 
     def _toggle_log_panel(self) -> None:
         self._set_log_expanded(not self.log_expanded)
@@ -3698,6 +3857,7 @@ class DaisyApp:
             text="返回完整界面" if self.mini_mode else "小窗运行",
             state="normal",
         )
+        self._refresh_view_menu_labels()
 
     def _set_stop_state(self, state: str) -> None:
         self.stop_button.configure(state=state)
@@ -3730,16 +3890,16 @@ class DaisyApp:
 
         self.colour_strip.pack_forget()
         self.task_toolbar_panel.pack_forget()
+        self._mini_panel_heights = (
+            self._capture_splitter_panel_heights())
         self._mini_progress_was_expanded = self.progress_expanded
+        self.mini_mode = True
         self._set_progress_expanded(True)
-        self.task_card.grid_remove()
-        self.log_panel.grid_remove()
+        self.panel_splitter.forget(self.task_card)
+        self.panel_splitter.forget(self.log_panel)
         self.command_panel.grid_remove()
-        self.progress_panel.grid_configure(row=0, pady=0)
-        self.content.grid_rowconfigure(0, weight=0)
         self.content.pack_configure(padx=10, pady=10)
         self.mini_stop_button.pack(side="right", padx=(0, 6))
-        self.mini_mode = True
         self._refresh_mini_action()
 
         self.root.update_idletasks()
@@ -3763,9 +3923,20 @@ class DaisyApp:
         if not self.mini_mode:
             return
         self.mini_stop_button.pack_forget()
-        self.progress_panel.grid_configure(row=1, pady=(10, 0))
-        self.task_card.grid()
-        self.log_panel.grid()
+        self.panel_splitter.add(
+            self.task_card,
+            before=self.progress_panel,
+            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
+            stretch="always" if self.settings_expanded else "never",
+            sticky="nsew",
+        )
+        self.panel_splitter.add(
+            self.log_panel,
+            after=self.progress_panel,
+            minsize=_PANEL_SPLITTER_MIN_HEIGHT,
+            stretch="always" if self.log_expanded else "never",
+            sticky="nsew",
+        )
         self.command_panel.grid()
         self._set_settings_expanded(self.settings_expanded)
         self._set_progress_expanded(self._mini_progress_was_expanded)
@@ -3798,6 +3969,10 @@ class DaisyApp:
         )
         self.root.geometry(
             _window_geometry_string(width, height, x, y))
+        self.root.after_idle(
+            lambda heights=dict(self._mini_panel_heights):
+            self._restore_splitter_panel_heights(heights),
+        )
         if self._normal_window_state != "normal":
             self.root.after_idle(
                 lambda state=self._normal_window_state:
@@ -3812,8 +3987,44 @@ class DaisyApp:
             button = int(getattr(event, "num", 0) or 0)
             units = -1 if button == 4 else 1 if button == 5 else 0
         if units:
-            self.form_canvas.yview_scroll(units, "units")
+            if self._form_content_fits_viewport():
+                self.form_canvas.yview_moveto(0.0)
+            else:
+                try:
+                    first_fraction = float(self.form_canvas.yview()[0])
+                except (AttributeError, tk.TclError, TypeError, ValueError):
+                    first_fraction = 1.0
+                if units < 0 and first_fraction <= 0.0:
+                    self.form_canvas.yview_moveto(0.0)
+                else:
+                    self.form_canvas.yview_scroll(units, "units")
+                    if units < 0:
+                        try:
+                            if float(self.form_canvas.yview()[0]) < 0.0:
+                                self.form_canvas.yview_moveto(0.0)
+                        except (
+                            AttributeError, tk.TclError,
+                            TypeError, ValueError,
+                        ):
+                            pass
         return "break"
+
+    def _form_content_fits_viewport(self) -> bool:
+        """内容未溢出时禁止 Canvas 产生顶部或底部空白。"""
+        try:
+            bounds = self.form_canvas.bbox("all")
+            if bounds is None:
+                return True
+            content_height = max(0, int(bounds[3]) - int(bounds[1]))
+            viewport_height = max(1, int(self.form_canvas.winfo_height()))
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return False
+        return content_height <= viewport_height
+
+    def _position_form_scroll(self, fraction: float) -> None:
+        target = 0.0 if self._form_content_fits_viewport() else max(
+            0.0, min(1.0, float(fraction)))
+        self.form_canvas.yview_moveto(target)
 
     def _save_current_values(self) -> None:
         if self.values:
@@ -4131,7 +4342,7 @@ class DaisyApp:
                 section = tk.Frame(self.form_inner, bg=_SURFACE)
                 section.grid(
                     row=row, column=0, columnspan=2, sticky="ew",
-                    padx=form_pad, pady=(13, 1),
+                    padx=form_pad, pady=(9, 1),
                 )
                 tk.Frame(
                     section, bg=section_colour, width=4, height=18,
@@ -4151,12 +4362,12 @@ class DaisyApp:
             ).grid(
                 row=row, column=0, sticky="ne",
                 padx=(form_pad, 11 if self.compact_layout else 14),
-                pady=(10, 0),
+                pady=(7, 0),
             )
 
             cell = tk.Frame(self.form_inner, bg=_SURFACE)
             cell.grid(row=row, column=1, sticky="ew", padx=(0, form_pad),
-                      pady=(8, 3))
+                      pady=(5, 2))
             cell.grid_columnconfigure(0, weight=1)
 
             if spec.kind == "disk_pool":
@@ -4248,7 +4459,7 @@ class DaisyApp:
                 )
                 help_label.grid(
                     row=1, column=0, columnspan=2, sticky="w",
-                    pady=(4, 1),
+                    pady=(2, 0),
                 )
                 cell.bind(
                     "<Configure>",
@@ -4260,13 +4471,13 @@ class DaisyApp:
         if self.task.key == "env_check":
             row = self._build_environment_installation(row, form_pad)
 
-        self.form_inner.grid_rowconfigure(row, minsize=10)
+        self.form_inner.grid_rowconfigure(row, minsize=6)
         self.form_canvas.update_idletasks()
-        self.form_canvas.yview_moveto(scroll_fraction)
+        self._position_form_scroll(scroll_fraction)
         task_key = self.task.key
         self.root.after_idle(
             lambda key=task_key, fraction=scroll_fraction:
-            self.form_canvas.yview_moveto(fraction)
+            self._position_form_scroll(fraction)
             if self.task.key == key else None
         )
         self._update_preview()
@@ -5174,6 +5385,8 @@ class DaisyApp:
         self.admin_mode_switch.set_mode(
             value=self.is_administrator, enabled=False)
         self._set_stop_state("disabled")
+        self._set_progress_expanded(True)
+        self._set_log_expanded(True)
         self._prepare_queue_progress()
         self._refresh_mini_action()
         self._set_task_navigation_state("disabled")

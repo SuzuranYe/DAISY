@@ -21,7 +21,7 @@ CLI 子命令：
 | DBS-21 | 快照变更分析 | 比较两份封存快照，区分增删、变化、移动和证据不足 | Diff SQLite；必要时 Issues Markdown |
 | DBS-31 | 内容哈希核验 | 对照快照重新读取当前文件并复算 SHA-256 | JSON；必要时 Issues Markdown |
 | DBS-32 | 文件结构核验 | 独立检查媒体、压缩包和文档结构是否可解析 | JSON、CSV、Markdown、Info CSV |
-| DBS-41 | 结果报告导出 | 把快照或 Diff 转为便于查看和分析的表格 | 多份 CSV；Diff 另含 Markdown |
+| DBS-41 | 结果报告导出 | 把快照或 Diff 转为便于查看和分析的表格 | 完整 CSV、中文 XLSX；Diff 另含 Markdown |
 | STG-11 | 硬盘信息登记 | 只读采集物理盘、分区、卷、Windows 属性和 SMART 证据 | 每盘独立 PROFILE ZIP；可选 TXT |
 
 `DBS-91 DAISY功能自检` 位于顶部「高级」菜单，只用于运行项目自身测试，不是第
@@ -45,7 +45,8 @@ CLI 子命令：
 - 已有两份快照：使用「DBS-21 快照变更分析」。
 - 只有一份基准快照，想直接检查当前目录：使用「DBS-31 内容哈希核验」。
 - 只关心容器／文件是否还能解析：使用「DBS-32 文件结构核验」。
-- 需要 Excel、脚本或人工阅读的表格：使用「DBS-41 结果报告导出」。
+- 需要 Excel 或人工阅读：使用「DBS-41 结果报告导出」后打开
+  `Report_Excel.xlsx`；脚本和审计仍可读取同目录完整 CSV。
 
 ### 快速记录一次目录状态
 
@@ -68,6 +69,12 @@ STG 只使用 Windows 查询接口以及固定的 smartctl 只读命令；不会
 不会修改 SMART 设置、磁盘、分区、卷、文件系统或 BitLocker。最终 ZIP 发布后会
 自动完成文件名指纹、安全路径、成员集合、Manifest、时间、字节数与 CRC 核验。
 
+每个 ZIP 内固定包含三份职责不同的 JSON：`*_Manifest.json` 是归档索引与采集溯源，
+记录版本、设备身份、命令、状态、告警和成员声明；`*_Smartctl.json` 原样保留
+`smartctl -x` 的 JSON 证据；`*_Storage.json` 保存 Windows 查询得到的物理盘、分区、
+卷、挂载点、BitLocker 和可靠性数据。前者说明「这包是什么、如何采得」，后两者分别
+保存 smartctl 与 Windows 两条证据链。
+
 ## 快速开始
 
 ### 图形界面
@@ -84,10 +91,11 @@ Start_DAISY_GUI.pyw
 python .\Script\Script_DAISY_MAIN.py gui
 ```
 
-窗口在工作区允许时默认以 `1280×720` 打开，并支持 Per-Monitor V2 DPI 适配。功能
-模块、任务设置、运行进度和运行日志都可折叠；进度和日志默认折叠。小窗运行在空闲
-和任务执行期间都可进入。标题栏使用小雏菊图标，不再显示 DAISY 花体字标；全界面
-统一请求 `Microsoft YaHei UI`，不依赖第三方字体。
+窗口以 `1920×1080` 为目标尺寸，并在较小工作区内自动收缩；1080p 默认布局会压缩
+说明与表单间距，常规设置无需向下滚动。任务设置、运行进度和运行日志之间可上下拖动
+分隔条调整纵向占比，也都可折叠；点击「开始任务」后进度和日志会自动展开。「视图」
+菜单可直接进入／返回小窗模式。标题栏使用小雏菊图标；全界面统一请求
+`Microsoft YaHei UI`，不依赖第三方字体。
 
 DAISY 可以同时打开多个窗口。每个窗口的表单、队列、日志、进度和子进程句柄彼此
 独立，也可同时运行相同或不同模块；但多个窗口仍共享物理磁盘、外部工具和用户指定的
@@ -164,7 +172,13 @@ STG ZIP 的 Manifest、Storage JSON 和外部 TXT 同样包含生成器身份。
 DBS-41 对快照会导出文件树、目录、规范化元数据、视频 GPS、媒体流、哈希、压缩
 包、错误、诊断和 Summary CSV；对 Diff 会导出 `Diff_summary.md`、
 `Diff_details.csv`、`Diff_dirs.csv`、`Diff_hash_groups.csv` 和
-`Diff_subtrees.csv`。
+`Diff_subtrees.csv`。CSV 始终为 UTF-8（无 BOM）、LF，并保留数据库字段名；另附
+`Report_Excel.xlsx` 作为人读入口，使用中文工作表和中英字段、冻结表头、筛选及按
+内容调整的列宽，Excel 直接打开时不再依赖本地代码页猜测中文编码。
+
+DBS-11 的 `_Issues.md` 只呈现需要关注的问题。ExifTool 单纯返回「格式未识别」时，
+对应状态、诊断和错误记录仍完整保留在 SQLite，但不会单独触发或列入 Issues 报告；
+读取失败、超时、unstable、哈希错误和枚举缺口仍照常报告。
 
 ## 安全与兼容边界
 

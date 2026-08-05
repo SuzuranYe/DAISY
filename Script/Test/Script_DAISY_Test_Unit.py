@@ -655,11 +655,11 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(2048, 1280), (1280, 720))
+            gui.window_size_for_screen(2048, 1280), (1920, 1080))
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1280, 720))
+            gui.window_size_for_screen(1920, 1080), (1840, 1020))
         self.assertEqual(
-            gui.window_size_for_screen(1366, 768), (1280, 708))
+            gui.window_size_for_screen(1366, 768), (1286, 708))
         self.assertEqual(
             gui.window_size_for_screen(1024, 768), (944, 708))
         self.assertEqual(
@@ -966,6 +966,27 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app._scroll_form(Event(num=4)), "break")
         self.assertEqual(app.form_canvas.calls[-1], (-1, "units"))
+
+        class FittingCanvasProbe(CanvasProbe):
+            def __init__(self):
+                super().__init__()
+                self.positions = []
+
+            @staticmethod
+            def bbox(_item):
+                return (0, 0, 900, 320)
+
+            @staticmethod
+            def winfo_height():
+                return 540
+
+            def yview_moveto(self, fraction):
+                self.positions.append(fraction)
+
+        app.form_canvas = FittingCanvasProbe()
+        self.assertEqual(app._scroll_form(Event(delta=120)), "break")
+        self.assertEqual(app.form_canvas.calls, [])
+        self.assertEqual(app.form_canvas.positions, [0.0])
 
     def test_technical_spec_declares_powershell_compatibility(self):
         spec_path = os.path.join(
@@ -1283,7 +1304,7 @@ class TestGuiArguments(unittest.TestCase):
             ],
             [
                 "折叠功能模块", "折叠任务设置",
-                "展开运行进度", "展开运行日志",
+                "展开运行进度", "展开运行日志", "进入小窗模式",
             ],
         )
         self.assertEqual(
@@ -1349,10 +1370,12 @@ class TestGuiArguments(unittest.TestCase):
             "progress": 3,
             "log": 4,
         }
+        app.view_mini_mode_menu_index = 6
         app.task_toolbar_expanded = True
         app.settings_expanded = False
         app.progress_expanded = True
         app.log_expanded = False
+        app.mini_mode = False
         app._refresh_view_menu_labels()
         self.assertEqual(
             app.view_menu.labels,
@@ -1361,8 +1384,12 @@ class TestGuiArguments(unittest.TestCase):
                 2: "展开任务设置",
                 3: "折叠运行进度",
                 4: "展开运行日志",
+                6: "进入小窗模式",
             },
         )
+        app.mini_mode = True
+        app._refresh_view_menu_labels()
+        self.assertEqual(app.view_menu.labels[6], "返回完整界面")
 
     def test_idle_close_requires_confirmation(self):
         class RootProbe:
@@ -1708,19 +1735,12 @@ class TestGuiArguments(unittest.TestCase):
             def pack_configure(self, **options):
                 self.options.update(options)
 
-        class ContentProbe:
-            def __init__(self):
-                self.weight = None
-
-            def grid_rowconfigure(self, _row, *, weight):
-                self.weight = weight
-
         app = object.__new__(gui.DaisyApp)
         app.settings_body = BodyProbe()
         app.title_label = WidgetProbe()
         app.settings_title_row = RowProbe()
         app.settings_toggle_button = WidgetProbe()
-        app.content = ContentProbe()
+        app.settings_expanded = True
         app.settings_title_expanded_font = (
             "Microsoft YaHei UI", 16, "bold")
         app.mini_mode = False
@@ -1737,8 +1757,6 @@ class TestGuiArguments(unittest.TestCase):
                 "pady": gui._COLLAPSED_SETTINGS_HEADER_PADY,
             },
         )
-        self.assertEqual(app.content.weight, 0)
-
         app._set_settings_expanded(True)
         self.assertEqual(
             app.title_label.options["font"],
@@ -1746,9 +1764,8 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app.settings_title_row.options,
-            {"padx": 22, "pady": (14, 10)},
+            {"padx": 22, "pady": (12, 8)},
         )
-        self.assertEqual(app.content.weight, 1)
 
     def test_top_task_toolbar_keeps_fixed_theme_rows(self):
         class WidgetProbe:
@@ -1878,6 +1895,91 @@ class TestGuiArguments(unittest.TestCase):
         app._prepare_queue_progress()
         self.assertEqual(
             app.queue_detail_label.options["text"], "0/3 · 队列已准备")
+
+    def test_splitter_restores_height_after_panel_collapse(self):
+        class PanelProbe:
+            @staticmethod
+            def winfo_height():
+                return 320
+
+            @staticmethod
+            def winfo_reqheight():
+                return 48
+
+        class SplitterProbe:
+            def __init__(self, panel):
+                self.panel = panel
+                self.options = []
+
+            def panes(self):
+                return (self.panel,)
+
+            def paneconfigure(self, panel, **options):
+                self.options.append((panel, options))
+
+        panel = PanelProbe()
+        app = object.__new__(gui.DaisyApp)
+        app.task_card = panel
+        app.panel_splitter = SplitterProbe(panel)
+        app._panel_expanded_heights = {}
+        app.mini_mode = False
+        app._remember_splitter_panel_height("settings")
+        app._apply_splitter_panel_state("settings", False)
+        app._apply_splitter_panel_state("settings", True)
+        self.assertEqual(app._panel_expanded_heights["settings"], 320)
+        self.assertEqual(
+            app.panel_splitter.options[0][1],
+            {"height": 48, "minsize": 48, "stretch": "never"},
+        )
+        self.assertEqual(
+            app.panel_splitter.options[1][1],
+            {
+                "height": 320,
+                "minsize": gui._PANEL_SPLITTER_MIN_HEIGHT,
+                "stretch": "always",
+            },
+        )
+
+    def test_starting_jobs_expands_progress_and_log(self):
+        class WidgetProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        class AdminProbe:
+            def set_mode(self, **_options):
+                pass
+
+        app = object.__new__(gui.DaisyApp)
+        app.storage_disk_choices = ()
+        app.storage_disk_options = ()
+        app.saved_values = {}
+        app.process_task_key = None
+        app.stop_requested = False
+        app.run_jobs = []
+        app.run_button = WidgetProbe()
+        app.install_tool_buttons = {}
+        app.admin_mode_switch = AdminProbe()
+        app.is_administrator = False
+        calls = []
+        app._set_stop_state = lambda state: calls.append(("stop", state))
+        app._set_progress_expanded = (
+            lambda value: calls.append(("progress", value)))
+        app._set_log_expanded = lambda value: calls.append(("log", value))
+        app._prepare_queue_progress = lambda: calls.append(("queue", True))
+        app._refresh_mini_action = lambda: None
+        app._set_task_navigation_state = lambda _state: None
+        app._refresh_environment_actions = lambda: None
+        app._set_status = lambda _text: None
+        app._start_next_job = lambda: calls.append(("start", True))
+        app._begin_run_jobs(
+            "full_scan", [gui.RunJob("档案", {"roots": r"E:\档案"})])
+        self.assertIn(("progress", True), calls)
+        self.assertIn(("log", True), calls)
+        self.assertLess(
+            calls.index(("log", True)), calls.index(("start", True)))
 
     def test_status_badge_uses_task_or_semantic_colour(self):
         self.assertEqual(
@@ -2799,6 +2901,62 @@ class TestFinalize(_SnapshotFixture):
             report = handle.read()
         self.assertIn("数据库完整性正常", report)
         self.assertIn("源文件或扫描证据问题", report)
+
+    def test_unrecognized_format_stays_in_database_but_not_issues_md(self):
+        core.enumerate_and_reconcile(self.con)
+        self.con.execute("UPDATE entries SET meta_status='skipped',"
+                         " hash_status='skipped'")
+        entry_id, = self.con.execute(
+            "SELECT entry_id FROM entries WHERE rel_path='b.txt'").fetchone()
+        self.con.execute(
+            "UPDATE entries SET meta_status='error' WHERE entry_id=?",
+            (entry_id,),
+        )
+        observed = core.now_utc_iso()
+        self.con.execute(
+            "INSERT INTO metadata_diagnostics"
+            " (entry_id,provider,severity,diagnostic_code,field_name,message,"
+            " raw_value,observed_at_utc) VALUES (?,?,?,?,?,?,?,?)",
+            (entry_id, "exiftool", "error", "exiftool_reported_error",
+             "ExifTool:Error", "Unknown file type", None, observed),
+        )
+        self.con.execute(
+            "INSERT INTO errors"
+            " (entry_id,stage,error_code,message,occurred_at_utc)"
+            " VALUES (?,?,?,?,?)",
+            (entry_id, "metadata", "exiftool_reported_error",
+             "Unknown file type", observed),
+        )
+        self.con.commit()
+
+        final = core.finalize_snapshot(
+            self.con, self.partial, hash_coverage="none")
+        issue = core.artifact_issue_report_path(final)
+        self.assertFalse(os.path.exists(issue))
+        con = sqlite3.connect(final)
+        self.assertEqual(
+            con.execute("SELECT COUNT(*) FROM errors").fetchone()[0], 1)
+        self.assertEqual(
+            con.execute(
+                "SELECT COUNT(*) FROM metadata_diagnostics").fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            con.execute(
+                "SELECT has_file_issues FROM snapshot_info").fetchone()[0],
+            1,
+        )
+        con.close()
+
+    def test_unrecognized_format_issue_filter_is_deliberately_narrow(self):
+        self.assertFalse(core.issue_record_is_visible(
+            " EXIFTOOL_REPORTED_ERROR ", " Unknown   file type。 "))
+        self.assertFalse(core.issue_record_is_visible(
+            "exiftool_reported_error", "Unsupported file type."))
+        self.assertTrue(core.issue_record_is_visible(
+            "exiftool_reported_error", "File format error"))
+        self.assertTrue(core.issue_record_is_visible(
+            "metadata_read_failed", "Unknown file type"))
 
     def test_finalize_rejects_pending(self):
         core.enumerate_and_reconcile(self.con)   # 状态仍为 pending
@@ -4912,8 +5070,16 @@ class TestExportSnapshot(_DiffFixture):
         with open(path, encoding="utf-8", newline="") as f:
             return list(csv.reader(f))
 
+    def test_excel_display_caps_cells_without_changing_csv_contract(self):
+        value = "中" * (Export._XLSX_MAX_CELL_CHARS + 10)
+        display, = Export._excel_row(["message"], [value])
+        self.assertEqual(len(display), Export._XLSX_MAX_CELL_CHARS)
+        self.assertTrue(display.endswith("…"))
+        self.assertEqual(len(value), Export._XLSX_MAX_CELL_CHARS + 10)
+
     def test_snapshot_export_pages(self):
         import zipfile as _zf
+        import xml.etree.ElementTree as _et
         tt.write(self.old_tree, "照片.bin", b"photo-like")
         tt.write(self.old_tree, "a,b'c.txt", b"comma,quote")
         with _zf.ZipFile(os.path.join(self.old_tree, "pack.zip"), "w",
@@ -4926,7 +5092,8 @@ class TestExportSnapshot(_DiffFixture):
         folder = res["folder"]
         for page in ("Tree.csv", "Tree_dirs.csv", "Hash_inventory.csv",
                      "GPS_inventory_video.csv", "Summary.csv", "Errors.csv",
-                     "Report_info.csv"):
+                     "Report_guide.csv", "Report_info.csv",
+                     "Report_Excel.xlsx"):
             self.assertTrue(os.path.isfile(os.path.join(folder, page)), page)
         report_info = self._read_csv(os.path.join(folder, "Report_info.csv"))
         self.assertIn(["tool_author", core.PROJECT_AUTHOR], report_info)
@@ -4946,6 +5113,18 @@ class TestExportSnapshot(_DiffFixture):
         self.assertIn("origin", hashes[0])
         summary = self._read_csv(os.path.join(folder, "Summary.csv"))
         self.assertGreater(len(summary), 5)             # 键值对簿记
+        with _zf.ZipFile(os.path.join(folder, "Report_Excel.xlsx")) as book:
+            self.assertIn("xl/workbook.xml", book.namelist())
+            for member in book.namelist():
+                if member.endswith((".xml", ".rels")):
+                    _et.fromstring(book.read(member))
+            workbook_xml = book.read("xl/workbook.xml").decode("utf-8")
+            self.assertIn("阅读说明", workbook_xml)
+            self.assertIn("文件清单", workbook_xml)
+            tree_sheet = book.read(
+                "xl/worksheets/sheet3.xml").decode("utf-8")
+            self.assertIn("完整路径", tree_sheet)
+            self.assertIn("照片.bin", tree_sheet)
 
     def test_snapshot_export_video_gps_points(self):
         tt.write(self.old_tree, "clip.mp4", b"video-like")
@@ -5037,6 +5216,8 @@ class TestExportDiff(_DiffFixture):
         self.assertIn(core.PROJECT_AUTHOR, md)
         self.assertTrue(os.path.isfile(
             os.path.join(folder, "Report_info.csv")))
+        self.assertTrue(os.path.isfile(
+            os.path.join(folder, "Report_Excel.xlsx")))
         for extra in ("Diff_dirs.csv", "Diff_hash_groups.csv"):
             self.assertTrue(os.path.isfile(os.path.join(folder, extra)))
 
