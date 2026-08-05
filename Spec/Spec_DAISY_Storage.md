@@ -145,7 +145,8 @@ used_percent = used_bytes / size * 100
 `<前缀>` 为 `<卷标或回退>_PROFILE_YYYY-MM-DD_HH-MM-SS`。3 个文件全部位于 ZIP
 根目录；成员名不含最终 ZIP 指纹，避免哈希自引用。内部不保存逐文件 SHA-256。
 
-GUI 勾选“同时输出简化报告”或 CLI 使用 `--summary-txt` 时，在 ZIP 同目录生成
+GUI 在“外部简化 TXT”下拉项选择“生成 ZIP 外部 TXT”，或 CLI 使用
+`--summary-txt` 时，在 ZIP 同目录生成
 `<完整ZIP基名>_Report.txt`。该文件不属于归档，记录人类可读的硬盘身份、SMART
 总体结论、关键 SMART 属性、分区、空间、可靠性和警告；不记录温度、关联 ZIP
 文件名或 SHA-256，默认不生成。缺失值显示为“未提供”，布尔值显示为“是／否”；

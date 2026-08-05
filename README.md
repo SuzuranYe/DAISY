@@ -44,7 +44,7 @@ ExifTool、FFmpeg、7-Zip 和 smartmontools 由用户通过 WinGet 独立安装�
 
 DAISY 兼容 Windows PowerShell 5.1 与 PowerShell 7.x。自动发现顺序为：
 手动路径、当前进程的 `PATH`、两个系列的 Windows 常规安装位置。便携版或
-自定义目录仍可在 GUI 高级选项中选择，也可通过 CLI 的
+自定义目录可在 GUI 顶部“指定工具路径”菜单中统一指定，也可通过 CLI 的
 `--powershell-path` 指定。
 
 ### 自动安装依赖
@@ -62,9 +62,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Script\Script_DAISY_In
 请重新打开 DAISY。
 
 Python 已可用时，进入「ENV-01 环境检测」运行检测。页面会显示本机实际发现的
-版本；若缺少 ExifTool、ffprobe、7-Zip 或 smartctl，会为每个缺失项分别显示对应的
-“下载并安装”按钮。用户点击其中一项并再次确认后，GUI 才会通过 WinGet 的
-固定白名单安装所选工具：
+版本；无论工具是否已经发现，页面都会常驻显示 ExifTool、ffprobe、7-Zip 和
+smartctl 四个彼此独立的“下载并安装”按钮。用户点击其中一项并再次确认后，
+GUI 才会通过 WinGet 的固定白名单处理所选工具；已安装状态和可用更新由
+WinGet 判断：
 
 - `OliverBetz.ExifTool`：读取照片／视频元数据并参与文件结构核验；
 - `Gyan.FFmpeg`：提供 ffprobe，用于读取音视频流、校验媒体容器，并在
@@ -103,7 +104,8 @@ Get-Command powershell.exe,pwsh.exe -ErrorAction SilentlyContinue |
     Select-Object Name,Source
 ```
 
-随后在「ENV-01 环境检测」或「DBS-11 完整扫描」的高级选项中选择对应的 `.exe`。CLI
+随后在顶部“指定工具路径”菜单中选择对应的 `.exe`。该菜单统一管理 ExifTool、
+ffprobe、7-Zip、PowerShell 和 smartctl，并可恢复全部自动发现。CLI
 也可以运行 `env-check --powershell-path "完整路径"`；验证成功后，GUI 会在
 当前窗口中缓存该路径。
 
@@ -126,7 +128,7 @@ python .\Script\Script_DAISY_MAIN.py <子命令> --help
 - NTFS File ID：采集；
 - 多目录：按添加顺序分别生成。
 
-“独立哈希抽验比例”位于高级设置。它是在主 SHA-256 完成后，使用
+“独立哈希抽验比例”位于独立的“哈希抽样”下拉分组。它是在主 SHA-256 完成后，使用
 PowerShell `Get-FileHash` 对本次实际计算的条目独立复算；默认 1%，至少
 100 个，候选不足时全验。它不是主哈希的覆盖比例。
 
@@ -244,7 +246,7 @@ v1.4.2 只调整 GUI：队列总进度固定显示在任务阶段与本阶段进
 统一使用深绿色；选中后统一切换为深绿色底和白字，不再按分区切换颜色。功能块
 不随窗口宽度重排，普通窗口也不能缩得比
 完整功能模块更窄；完整编号与名称保留在悬停说明中。各任务中的
-哈希抽样比例统一归入高级设置。
+哈希抽样比例在 v1.4.2 当时统一归入高级设置；v1.5.0 已改为独立用途下拉分组。
 标准菜单还提供项目目录、
 结果目录、带关闭确认的退出、面板显示、关于信息与 GitHub 主页入口；命令预览默认关闭并可由“视图”
 菜单打开。右侧滚动条使用低对比度米黄色滑块，不再跟随任务主题变色。按钮悬停
@@ -274,6 +276,14 @@ STG 归档使用独立 ZIP `archive_schema_version=3`，与 SQLite
 `1.5.0`；DDL、字段、约束、schema 版本、元数据 profile、扫描／Diff／核验／导出
 逻辑均保持 v1.4.2 行为。由于 partial 继续要求精确匹配生成器版本，v1.4.2 的
 未完成 partial 不能由 v1.5.0 续传；既有完整 schema 3 快照仍可只读使用。
+
+同版 GUI 把所有手动工具路径移到顶部“指定工具路径”下拉菜单；原低频参数不再统称
+“高级设置”，而是按“哈希抽样”“故障恢复”“根标签配对”等用途独立下拉。
+STG-12 的外部简化 TXT 改为“生成／不生成”下拉选择，默认不生成。运行日志默认
+折叠；“视图”菜单对功能模块、任务设置、运行进度和运行日志显示下一步的“展开”
+或“折叠”动作，命令预览仍使用“显示命令预览”。普通窗口允许缩入 1280×720
+屏幕的可用工作区。辅助操作区新增“管理员模式重启”，空闲时可通过 Windows UAC
+重新启动；任务运行中不可使用。
 
 增量扫描只复用满足当前 schema 的完整封存库。文件名指纹不符、SQLite 损坏、
 扫描未完成、目录枚举缺口、哈希失败或 unstable 条目会拒绝作为增量来源；
@@ -410,11 +420,11 @@ python -B .\Script\Test\Script_DAISY_Test_Tree.py --list
 默认不会读取真实硬盘。测试层可以独立移除而不影响 DAISY
 业务功能；缺少测试文件时，“DBS-91 数据库自检”页的运行按钮会禁用。
 
-GUI 左下角的“清理缓存”只删除项目目录内可安全重建的 `__pycache__`、
+GUI 的“清理缓存”会先确认，然后删除项目目录内可安全重建的 `__pycache__`、
 `.pytest_cache`、`.mypy_cache`、`.ruff_cache` 和独立 `.pyc`／`.pyo`
-文件，并清空当前窗口缓存的工具路径。每个实际删除的目录或文件都会写入
-运行日志。它不会跟随链接，不会进入 `.git`、虚拟环境、`node_modules`
-或 `Output`，也不会删除快照、Diff、报告、运行日志或未完成数据库。
+文件，并把所有页面的参数、目录队列、硬盘选择、工具路径、日志与三条进度恢复
+为首次启动状态。它不会跟随链接，不会进入 `.git`、虚拟环境、`node_modules`
+或 `Output`，也不会删除快照、Diff、报告或未完成数据库。
 
 ## 问题反馈
 
@@ -425,5 +435,5 @@ GUI 左下角的“清理缓存”只删除项目目录内可安全重建的 `__
 ## 许可证
 
 DAISY 以 [MIT License](LICENSE) 开源。该许可证适用于本仓库中的 DAISY
-代码与文档；独立安装的 ExifTool、FFmpeg 和 7-Zip 不属于本仓库内容，仍
+代码与文档；独立安装的 ExifTool、FFmpeg、7-Zip 和 smartmontools 不属于本仓库内容，仍
 分别遵循各自的许可证。

@@ -66,6 +66,9 @@ _TOOL_DISPLAY_NAMES = {
     "powershell": "PowerShell",
     "smartctl": "smartctl",
 }
+_TOOL_PATH_MENU_ORDER = (
+    "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl",
+)
 _INSTALLABLE_TOOL_PACKAGES = {
     "exiftool": ("ExifTool", "OliverBetz.ExifTool"),
     "ffprobe": ("ffprobe（FFmpeg）", "Gyan.FFmpeg"),
@@ -378,13 +381,20 @@ def progress_detail(payload: dict[str, object]) -> tuple[str, float | None]:
 def merge_session_tool_paths(
     task_key: str, values: dict[str, object],
     cache: dict[str, dict[str, object]], *,
+    manual_paths: dict[str, str] | None = None,
     path_exists=os.path.isfile,
 ) -> tuple[dict[str, object], dict[str, str]]:
-    """按手动覆盖→本窗口缓存→运行时自动发现合并工具路径。"""
+    """按顶部手动指定→本窗口缓存→运行时自动发现合并工具路径。"""
     effective = dict(values)
     sources: dict[str, str] = {}
+    selected_paths = manual_paths or {}
     for name in _TASK_TOOL_NAMES.get(task_key, ()):
         field = _TOOL_FIELD_BY_NAME[name]
+        selected = str(selected_paths.get(name) or "").strip()
+        if selected:
+            effective[field] = selected
+            sources[name] = "manual_menu"
+            continue
         manual = str(values.get(field) or "").strip()
         if manual:
             sources[name] = "manual"
@@ -592,7 +602,8 @@ class FieldSpec:
     filetypes: tuple[tuple[str, str], ...] = ()
     toggle_text: str = "启用"
     section: str = "任务参数"
-    advanced: bool = False
+    dropdown: bool = False
+    top_menu: bool = False
     active_when: tuple[tuple[str, tuple[object, ...]], ...] = ()
     flag_value: object | None = None
 
@@ -666,28 +677,28 @@ TASKS = (
             FieldSpec(
                 "exiftool_path", "ExifTool 路径覆盖", "--exiftool-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "ffprobe_path", "ffprobe 路径覆盖", "--ffprobe-path", "file",
                 help="通常留空；手动指定成功后也会更新本窗口缓存。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径覆盖", "--sevenzip-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径覆盖",
                 "--powershell-path", "file",
                 help="通常留空；会依次检查 PATH 与 Windows 常规安装位置。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "smartctl_path", "smartctl 路径覆盖", "--smartctl-path",
                 "file", help="通常留空；用于 STG 物理硬盘登记与只读核验。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
             ),
         ),
     ),
@@ -805,38 +816,38 @@ TASKS = (
                     "再由 PowerShell Get-FileHash 独立重算；默认 1%，至少 "
                     "100 个（不足则全验）。这不是主哈希的覆盖比例。"
                 ),
-                section="扫描稳定性", advanced=True,
+                section="哈希抽样", dropdown=True,
                 active_when=_FULL_HASHED,
             ),
             FieldSpec(
                 "map_root", "增量根标签映射", "--map-root", "multiline",
                 help="可选；每行“旧label=新label”。",
-                section="增量复用", advanced=True,
+                section="增量复用", dropdown=True,
                 active_when=_FULL_INCREMENTAL,
             ),
             FieldSpec(
                 "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "ffprobe_path", "ffprobe 路径", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file",
                 help="独立哈希抽验使用；留空时优先继承已验证路径，其次自动发现。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
                 active_when=_FULL_POWERSHELL,
             ),
         ),
@@ -932,24 +943,24 @@ TASKS = (
                 "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "ffprobe_path", "ffprobe 路径", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "sevenzip_path", "7-Zip 路径", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "force", "文件名指纹缺失时降级继续", "--force", "bool",
                 help="仅允许指纹缺失；指纹与实际字节不符仍会拒绝。",
-                section="故障恢复", advanced=True,
+                section="故障恢复", dropdown=True,
             ),
         ),
     ),
@@ -986,19 +997,19 @@ TASKS = (
             FieldSpec(
                 "sample_percent", "哈希抽样比例（%）", "--sample-percent",
                 default="1.0", help="默认抽查 1% 的可哈希文件。",
-                section="巡检范围", advanced=True,
+                section="哈希抽样", dropdown=True,
                 active_when=_HASH_SAMPLE,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file",
                 help="留空时优先继承 11／31 已验证路径，其次自动发现；填写则手动覆盖。",
-                filetypes=_EXE_TYPES, section="工具路径覆盖", advanced=True,
+                filetypes=_EXE_TYPES, section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "force", "文件名指纹缺失时降级继续", "--force", "bool",
                 help="仅允许指纹缺失；指纹与实际字节不符仍会拒绝。",
-                section="故障恢复", advanced=True,
+                section="故障恢复", dropdown=True,
             ),
             FieldSpec(
                 "report", "报告 JSON 路径", "--report", "save",
@@ -1034,12 +1045,12 @@ TASKS = (
             FieldSpec(
                 "map_root", "根标签映射", "--map-root", "multiline",
                 help="可选；每行“旧label=新label”。单根异名通常可自动配对。",
-                section="根标签配对", advanced=True,
+                section="根标签配对", dropdown=True,
             ),
             FieldSpec(
                 "force", "文件名指纹缺失时降级继续", "--force", "bool",
                 help="降级结果会生成同目录 Issues.md；指纹不符仍会拒绝。",
-                section="故障恢复", advanced=True,
+                section="故障恢复", dropdown=True,
             ),
         ),
     ),
@@ -1085,13 +1096,13 @@ TASKS = (
                 "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
         ),
     ),
@@ -1118,22 +1129,27 @@ TASKS = (
                 section="输出",
             ),
             FieldSpec(
-                "summary_txt", "同时输出简化报告", "--summary-txt", "bool",
-                False, toggle_text="生成 ZIP 外部 TXT",
-                help="默认关闭；完整结构化资料始终保存在 ZIP 的 JSON 成员中。",
+                "summary_txt", "外部简化 TXT", "--summary-txt",
+                "choice_flag", False,
+                choices=(
+                    ("不生成（默认）", False),
+                    ("生成 ZIP 外部 TXT", True),
+                ),
+                flag_value=True,
+                help="完整结构化资料始终保存在 ZIP 的 JSON 成员中。",
                 section="输出",
             ),
             FieldSpec(
                 "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
             FieldSpec(
                 "powershell_path", "PowerShell 路径", "--powershell-path",
                 "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
-                section="工具路径覆盖", advanced=True,
+                section="指定工具路径", top_menu=True,
             ),
         ),
     ),
@@ -1279,6 +1295,21 @@ def active_field_keys(task_key: str,
     task = TASK_BY_KEY[task_key]
     merged = _task_values(task, values)
     return {spec.key for spec in task.fields if _field_active(spec, merged)}
+
+
+def dropdown_field_groups(
+    task_key: str, values: dict[str, object],
+) -> tuple[tuple[str, tuple[FieldSpec, ...]], ...]:
+    """按表单顺序返回当前生效的独立下拉分组。"""
+    task = TASK_BY_KEY[task_key]
+    merged = _task_values(task, values)
+    groups: dict[str, list[FieldSpec]] = {}
+    for spec in task.fields:
+        if spec.dropdown and _field_active(spec, merged):
+            groups.setdefault(spec.section, []).append(spec)
+    return tuple(
+        (section, tuple(specs)) for section, specs in groups.items()
+    )
 
 
 def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
@@ -1728,6 +1759,57 @@ def _console_python() -> str:
     return executable
 
 
+def is_windows_administrator() -> bool:
+    """返回当前进程是否具有 Windows 管理员权限。"""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def administrator_restart_parts(
+    *, executable: str | None = None,
+    argv: list[str] | tuple[str, ...] | None = None,
+    frozen: bool | None = None,
+) -> tuple[str, str, str]:
+    """返回 ShellExecuteW 所需的程序、参数和工作目录。"""
+    program = os.path.abspath(executable or sys.executable)
+    source_argv = list(sys.argv if argv is None else argv)
+    is_frozen = (
+        bool(getattr(sys, "frozen", False))
+        if frozen is None else bool(frozen)
+    )
+    if is_frozen:
+        arguments = source_argv[1:]
+    else:
+        arguments = [os.path.abspath(__file__), *source_argv[1:]]
+    return program, subprocess.list2cmdline(arguments), _BASE
+
+
+def restart_as_windows_administrator() -> None:
+    """通过 Windows UAC 启动新的管理员 GUI 进程。"""
+    if os.name != "nt":
+        raise OSError("管理员模式重启仅适用于 Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    program, parameters, directory = administrator_restart_parts()
+    shell_execute = ctypes.windll.shell32.ShellExecuteW
+    shell_execute.argtypes = (
+        wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+        wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int,
+    )
+    shell_execute.restype = ctypes.c_ssize_t
+    result = int(shell_execute(
+        None, "runas", program, parameters, directory, 1,
+    ))
+    if result <= 32:
+        raise OSError(f"Windows 未能启动管理员进程（代码 {result}）")
+
+
 def project_self_test_missing_files() -> list[str]:
     """返回数据库自检缺少的正式测试文件名，不读取任何档案目录。"""
     return [
@@ -1857,13 +1939,15 @@ class DaisyApp:
         self.values: dict[
             str, tk.Variable | tk.Text | DirectoryListEditor] = {}
         self.saved_values: dict[str, dict[str, object]] = {}
-        self.advanced_visible: dict[str, bool] = {}
+        self.dropdown_expanded: dict[tuple[str, str], bool] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
         self._task_toolbar_layout_ready = False
         self.detected_tools: dict[str, dict[str, object]] = {}
+        self.manual_tool_paths: dict[str, str] = {}
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
+        self.is_administrator = is_windows_administrator()
         self.storage_disk_choices: tuple[tuple[str, str], ...] = ()
         self._work_progress_indeterminate = False
         self.current_stage_index = 0
@@ -1872,7 +1956,7 @@ class DaisyApp:
         self.task_toolbar_expanded = True
         self.settings_expanded = True
         self.progress_expanded = True
-        self.log_expanded = True
+        self.log_expanded = False
         self.command_preview_expanded = False
         self._normal_geometry = ""
         self._normal_window_state = "normal"
@@ -1891,6 +1975,7 @@ class DaisyApp:
         self._configure_styles()
         self._build_shell()
         self._build_menu()
+        self._set_log_expanded(False)
         self._select_task(self.task.key, save_current=False)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(80, self._poll_events)
@@ -1906,7 +1991,8 @@ class DaisyApp:
         y = max(0, (screen_height - height) // 2)
         self.compact_layout = width < 1080 or height < 700
         self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.normal_min_size = (min(760, width), min(680, height))
+        self.normal_width_cap = min(1200, width)
+        self.normal_min_size = (min(760, width), min(640, height))
         self.root.minsize(*self.normal_min_size)
         self.root.configure(bg=_BG)
         self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
@@ -2188,34 +2274,62 @@ class DaisyApp:
                     task_menu.add_separator()
             menu.add_cascade(label=section_label, menu=task_menu)
 
+        tool_path_menu = tk.Menu(menu, **base_menu_options)
+        self.tool_path_menu = tool_path_menu
+        self.tool_path_menu_entries: dict[str, int] = {}
+        for tool_name in _TOOL_PATH_MENU_ORDER:
+            tool_path_menu.add_command(
+                label=self._tool_path_menu_label(tool_name),
+                command=lambda name=tool_name:
+                self._select_tool_path(name),
+            )
+            entry_index = tool_path_menu.index("end")
+            if entry_index is not None:
+                self.tool_path_menu_entries[tool_name] = int(entry_index)
+        tool_path_menu.add_separator()
+        tool_path_menu.add_command(
+            label="全部恢复自动发现",
+            command=self._clear_manual_tool_paths,
+        )
+        menu.add_cascade(label="指定工具路径", menu=tool_path_menu)
+        tool_cascade_index = menu.index("end")
+        self.tool_path_menu_cascade_index = (
+            int(tool_cascade_index)
+            if tool_cascade_index is not None else None
+        )
+
         self.task_toolbar_visible_var = tk.BooleanVar(value=True)
         self.settings_visible_var = tk.BooleanVar(value=True)
         self.progress_visible_var = tk.BooleanVar(value=True)
-        self.log_visible_var = tk.BooleanVar(value=True)
+        self.log_visible_var = tk.BooleanVar(value=False)
         self.command_preview_visible_var = tk.BooleanVar(value=False)
         view_menu = tk.Menu(menu, **base_menu_options)
-        view_menu.add_checkbutton(
-            label="显示功能模块",
-            variable=self.task_toolbar_visible_var,
-            command=lambda: self._set_task_toolbar_expanded(
-                self.task_toolbar_visible_var.get()),
-        )
-        view_menu.add_separator()
-        view_menu.add_checkbutton(
-            label="显示任务设置", variable=self.settings_visible_var,
-            command=lambda: self._set_settings_expanded(
-                self.settings_visible_var.get()),
-        )
-        view_menu.add_checkbutton(
-            label="显示运行进度", variable=self.progress_visible_var,
-            command=lambda: self._set_progress_expanded(
-                self.progress_visible_var.get()),
-        )
-        view_menu.add_checkbutton(
-            label="显示运行日志", variable=self.log_visible_var,
-            command=lambda: self._set_log_expanded(
-                self.log_visible_var.get()),
-        )
+        self.view_menu = view_menu
+        self.view_panel_menu_entries: dict[str, int] = {}
+        panel_states = {
+            "task_toolbar": getattr(self, "task_toolbar_expanded", True),
+            "settings": getattr(self, "settings_expanded", True),
+            "progress": getattr(self, "progress_expanded", True),
+            "log": getattr(self, "log_expanded", False),
+        }
+        for panel_key, panel_label, command in (
+            ("task_toolbar", "功能模块", self._toggle_task_toolbar),
+            ("settings", "任务设置", self._toggle_settings_panel),
+            ("progress", "运行进度", self._toggle_progress_panel),
+            ("log", "运行日志", self._toggle_log_panel),
+        ):
+            view_menu.add_command(
+                label=(
+                    ("折叠" if panel_states[panel_key] else "展开")
+                    + panel_label
+                ),
+                command=command,
+            )
+            entry_index = view_menu.index("end")
+            if entry_index is not None:
+                self.view_panel_menu_entries[panel_key] = int(entry_index)
+            if panel_key == "task_toolbar":
+                view_menu.add_separator()
         view_menu.add_checkbutton(
             label="显示命令预览", variable=self.command_preview_visible_var,
             command=lambda: self._set_command_preview_expanded(
@@ -2618,6 +2732,11 @@ class DaisyApp:
             utility_action_area, text="清理缓存", style="Secondary.TButton",
             command=self._clear_tool_cache, state="disabled",
         )
+        self.admin_restart_button = ttk.Button(
+            utility_action_area, text="管理员模式重启",
+            style="Secondary.TButton",
+            command=self._restart_as_admin,
+        )
         self.install_tool_buttons: dict[str, ttk.Button] = {}
         for tool_name, (display_name, _package_id) in (
                 _INSTALLABLE_TOOL_PACKAGES.items()):
@@ -2626,13 +2745,14 @@ class DaisyApp:
                 text=f"下载并安装 {display_name}",
                 style="Secondary.TButton",
                 command=lambda name=tool_name:
-                self._install_missing_tool(name),
+                self._install_tool(name),
             )
             self.install_tool_buttons[tool_name] = button
         self.utility_buttons = (
             self.open_output_button,
             self.clear_log_button,
             self.clear_cache_button,
+            self.admin_restart_button,
             *self.install_tool_buttons.values(),
         )
 
@@ -2658,7 +2778,10 @@ class DaisyApp:
             (self.stop_button,
              "请求停止当前任务；多项队列中尚未开始的项目也会取消。"),
             (self.clear_cache_button,
-             "清除项目内可重建缓存和本窗口工具路径缓存，不触碰正式产物。"),
+             "清除可重建缓存，并把参数、队列、日志和进度恢复为首次启动状态；"
+             "不触碰正式产物。"),
+            (self.admin_restart_button,
+             "关闭当前空闲窗口，并通过 Windows UAC 以管理员权限重新启动。"),
             (self.clear_log_button,
              "清空当前窗口的运行日志。"),
             (self.open_output_button,
@@ -2702,13 +2825,34 @@ class DaisyApp:
         self._sync_task_toolbar_minimum_width()
 
     def _sync_task_toolbar_minimum_width(self) -> None:
-        """普通窗口不能缩得比完整功能模块区更窄。"""
+        """优先容纳功能模块，但允许窗口缩入 720p 工作区。"""
         self.root.update_idletasks()
         toolbar_width = self.task_toolbar_panel.winfo_reqwidth()
         base_width, base_height = self.normal_min_size
-        self.normal_min_size = (max(base_width, toolbar_width), base_height)
+        width_cap = int(getattr(self, "normal_width_cap", 1200))
+        self.normal_min_size = (
+            min(max(base_width, toolbar_width), width_cap),
+            base_height,
+        )
         if not self.mini_mode:
             self.root.minsize(*self._normal_minimum_size())
+
+    def _refresh_view_menu_labels(self) -> None:
+        """让可折叠面板菜单显示下一步会执行的动作。"""
+        if not hasattr(self, "view_panel_menu_entries"):
+            return
+        states = {
+            "task_toolbar": (self.task_toolbar_expanded, "功能模块"),
+            "settings": (self.settings_expanded, "任务设置"),
+            "progress": (self.progress_expanded, "运行进度"),
+            "log": (self.log_expanded, "运行日志"),
+        }
+        for panel_key, entry_index in self.view_panel_menu_entries.items():
+            expanded, label = states[panel_key]
+            self.view_menu.entryconfigure(
+                entry_index,
+                label=("折叠" if expanded else "展开") + label,
+            )
 
     def _set_task_toolbar_expanded(self, expanded: bool) -> None:
         self.task_toolbar_expanded = expanded
@@ -2724,16 +2868,13 @@ class DaisyApp:
             text="收起模块" if expanded else "展开模块")
         if hasattr(self, "task_toolbar_visible_var"):
             self.task_toolbar_visible_var.set(expanded)
+        self._refresh_view_menu_labels()
 
     def _toggle_task_toolbar(self) -> None:
         self._set_task_toolbar_expanded(not self.task_toolbar_expanded)
 
     def _normal_minimum_size(self) -> tuple[int, int]:
-        width, height = self.normal_min_size
-        if (self.command_preview_expanded
-                and hasattr(self, "command_preview_body")):
-            height += self.command_preview_body.winfo_reqheight()
-        return width, height
+        return self.normal_min_size
 
     def _layout_action_buttons(
         self, event: tk.Event | None = None,
@@ -2747,13 +2888,10 @@ class DaisyApp:
             self.open_output_button,
             self.clear_log_button,
             self.clear_cache_button,
+            self.admin_restart_button,
         ]
         if self.task.key == "env_check":
-            visible_utilities.extend(
-                self.install_tool_buttons[name]
-                for name in self.missing_installable_tools
-                if name in self.install_tool_buttons
-            )
+            visible_utilities.extend(self.install_tool_buttons.values())
 
         width = (
             int(event.width) if event is not None
@@ -2799,6 +2937,7 @@ class DaisyApp:
             text="收起设置" if expanded else "展开设置")
         if hasattr(self, "settings_visible_var"):
             self.settings_visible_var.set(expanded)
+        self._refresh_view_menu_labels()
 
     def _toggle_settings_panel(self) -> None:
         self._set_settings_expanded(not self.settings_expanded)
@@ -2814,6 +2953,7 @@ class DaisyApp:
             text="收起进度" if expanded else "展开进度")
         if hasattr(self, "progress_visible_var"):
             self.progress_visible_var.set(expanded)
+        self._refresh_view_menu_labels()
 
     def _toggle_progress_panel(self) -> None:
         self._set_progress_expanded(not self.progress_expanded)
@@ -2829,6 +2969,7 @@ class DaisyApp:
             text="收起日志" if expanded else "展开日志")
         if hasattr(self, "log_visible_var"):
             self.log_visible_var.set(expanded)
+        self._refresh_view_menu_labels()
 
     def _toggle_log_panel(self) -> None:
         self._set_log_expanded(not self.log_expanded)
@@ -2984,11 +3125,14 @@ class DaisyApp:
                        f"{selected_suffix}.TButton"))
 
     def _set_task_navigation_state(self, state: str) -> None:
-        """运行期间统一锁定或恢复两套顶部任务入口。"""
+        """运行期间统一锁定或恢复顶部任务与工具路径入口。"""
         for task_menu, entry_index in self.task_menu_entries.values():
             task_menu.entryconfigure(entry_index, state=state)
         for task_key, button in self.task_toolbar_buttons.items():
             button.configure(state=state)
+        tool_index = getattr(self, "tool_path_menu_cascade_index", None)
+        if tool_index is not None and hasattr(self, "app_menu"):
+            self.app_menu.entryconfigure(tool_index, state=state)
 
     def _select_task(self, task_key: str, save_current: bool = True) -> None:
         if save_current:
@@ -3040,14 +3184,27 @@ class DaisyApp:
         form_pad = 16 if self.compact_layout else 22
         saved = _task_values(
             self.task, self.saved_values.get(self.task.key, {}))
-        advanced_visible = self.advanced_visible.get(self.task.key, False)
         active_specs = [
-            spec for spec in self.task.fields if _field_active(spec, saved)
+            spec for spec in self.task.fields
+            if _field_active(spec, saved) and not spec.top_menu
         ]
-        visible_specs = [
-            spec for spec in active_specs
-            if advanced_visible or not spec.advanced
-        ]
+        dropdown_groups = dict(dropdown_field_groups(self.task.key, saved))
+        render_items: list[
+            FieldSpec | tuple[str, tuple[FieldSpec, ...]]
+        ] = []
+        emitted_groups: set[str] = set()
+        for spec in active_specs:
+            if not spec.dropdown:
+                render_items.append(spec)
+                continue
+            if spec.section in emitted_groups:
+                continue
+            emitted_groups.add(spec.section)
+            group_specs = dropdown_groups[spec.section]
+            render_items.append((spec.section, group_specs))
+            if self.dropdown_expanded.get(
+                    (self.task.key, spec.section), False):
+                render_items.extend(group_specs)
         self.form_inner.grid_columnconfigure(1, weight=1)
         row = 0
 
@@ -3082,11 +3239,56 @@ class DaisyApp:
             )
             row = 1
 
-        advanced_specs = [spec for spec in active_specs if spec.advanced]
         current_section: str | None = None
         section_colour = _NAV_COLOURS.get(
             self.task.key, (_ACCENT, _ACCENT_DARK))[0]
-        for spec in visible_specs:
+        for item in render_items:
+            if isinstance(item, tuple):
+                section_name, group_specs = item
+                expanded = self.dropdown_expanded.get(
+                    (self.task.key, section_name), False)
+                configured = sum(
+                    saved.get(spec.key, spec.default) != spec.default
+                    for spec in group_specs
+                )
+                dropdown_row = tk.Frame(
+                    self.form_inner, bg=_SURFACE,
+                    highlightbackground=_BORDER, highlightthickness=1,
+                )
+                dropdown_row.grid(
+                    row=row, column=0, columnspan=2, sticky="ew",
+                    padx=form_pad, pady=(13, 2),
+                )
+                tk.Frame(
+                    dropdown_row, bg=section_colour, width=4,
+                ).pack(side="left", fill="y")
+                configured_text = (
+                    f" · 已设置 {configured} 项" if configured else ""
+                )
+                tk.Label(
+                    dropdown_row,
+                    text=f"{section_name}{configured_text}",
+                    bg=_SURFACE,
+                    fg=section_colour if configured else _TEXT,
+                    font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+                ).pack(side="left", padx=(9, 8), pady=8)
+                dropdown_button = ttk.Button(
+                    dropdown_row,
+                    text="收起" if expanded else "展开",
+                    style="Mini.TButton",
+                    command=lambda section=section_name:
+                    self._toggle_dropdown_group(section),
+                )
+                dropdown_button.pack(side="right", padx=7, pady=5)
+                attach_tooltip(
+                    dropdown_button,
+                    f"展开或收起“{section_name}”；已填写内容不会丢失。",
+                )
+                current_section = section_name
+                row += 1
+                continue
+
+            spec = item
             if spec.section != current_section:
                 current_section = spec.section
                 section = tk.Frame(self.form_inner, bg=_SURFACE)
@@ -3216,43 +3418,6 @@ class DaisyApp:
                 )
             row += 1
 
-        if advanced_specs:
-            configured_advanced = sum(
-                saved.get(spec.key, spec.default) != spec.default
-                for spec in advanced_specs
-            )
-            advanced_names = "、".join(dict.fromkeys(
-                spec.section for spec in advanced_specs))
-            action = "收起" if advanced_visible else "显示"
-            configured_text = (
-                f" · 已设置 {configured_advanced} 项"
-                if configured_advanced else "")
-            advanced_row = tk.Frame(self.form_inner, bg=_SURFACE)
-            advanced_row.grid(
-                row=row, column=0, columnspan=2, sticky="ew",
-                padx=form_pad, pady=(14, 5),
-            )
-            tk.Label(
-                advanced_row,
-                text=f"高级选项：{advanced_names}",
-                bg=_SURFACE,
-                fg=_GREEN_DEEP if configured_advanced else _MUTED,
-                font=("Microsoft YaHei UI", 8), anchor="center",
-                justify="center",
-            ).pack(anchor="center", pady=(0, 5))
-            self.advanced_button = ttk.Button(
-                advanced_row,
-                text=f"{action}高级选项{configured_text}",
-                style="Browse.TButton",
-                command=self._toggle_advanced,
-            )
-            self.advanced_button.pack(anchor="center")
-            attach_tooltip(
-                self.advanced_button,
-                "显示或收起低频参数；已经设置的高级值不会因收起而丢失。",
-            )
-            row += 1
-
         self.form_inner.grid_rowconfigure(row, minsize=10)
         self.form_canvas.update_idletasks()
         self.form_canvas.yview_moveto(scroll_fraction)
@@ -3269,11 +3434,12 @@ class DaisyApp:
         self.saved_values[self.task.key] = self._collect_values()
         self._build_form(scroll_fraction)
 
-    def _toggle_advanced(self) -> None:
+    def _toggle_dropdown_group(self, section: str) -> None:
         scroll_fraction = self.form_canvas.yview()[0]
         self.saved_values[self.task.key] = self._collect_values()
-        self.advanced_visible[self.task.key] = not self.advanced_visible.get(
-            self.task.key, False)
+        key = (self.task.key, section)
+        self.dropdown_expanded[key] = not self.dropdown_expanded.get(
+            key, False)
         self._build_form(scroll_fraction)
 
     def _text_changed(self, event: tk.Event) -> None:
@@ -3354,7 +3520,9 @@ class DaisyApp:
     ) -> tuple[dict[str, object], dict[str, str]]:
         raw = values if values is not None else self._collect_values()
         return merge_session_tool_paths(
-            self.task.key, raw, self.detected_tools)
+            self.task.key, raw, self.detected_tools,
+            manual_paths=self.manual_tool_paths,
+        )
 
     def _update_preview(self) -> None:
         if self.task.key == _PROJECT_SELF_TEST_KEY:
@@ -3406,6 +3574,101 @@ class DaisyApp:
         if self.task.key.startswith("storage_"):
             return _DEFAULT_STORAGE_DIR
         return os.path.join(_BASE, "Output")
+
+    def _tool_path_menu_label(self, tool_name: str) -> str:
+        display_name = _TOOL_DISPLAY_NAMES[tool_name]
+        manual_paths = getattr(self, "manual_tool_paths", {})
+        selected = str(manual_paths.get(tool_name) or "").strip()
+        status = os.path.basename(selected) if selected else "自动发现"
+        return f"{display_name} 路径：{status}"
+
+    def _refresh_tool_path_menu_labels(self) -> None:
+        if not hasattr(self, "tool_path_menu_entries"):
+            return
+        for tool_name, entry_index in self.tool_path_menu_entries.items():
+            self.tool_path_menu.entryconfigure(
+                entry_index,
+                label=self._tool_path_menu_label(tool_name),
+            )
+
+    def _select_tool_path(self, tool_name: str) -> None:
+        if self._task_is_active():
+            messagebox.showinfo(
+                "任务运行中",
+                "请等待当前任务结束后再指定工具路径。",
+                parent=self.root,
+            )
+            return
+        if tool_name not in _TOOL_DISPLAY_NAMES:
+            return
+        selected = str(self.manual_tool_paths.get(tool_name) or "").strip()
+        initial_dir = (
+            os.path.dirname(selected)
+            if selected and os.path.isdir(os.path.dirname(selected))
+            else _BASE
+        )
+        display_name = _TOOL_DISPLAY_NAMES[tool_name]
+        chosen = filedialog.askopenfilename(
+            parent=self.root,
+            initialdir=initial_dir,
+            title=f"指定 {display_name} 可执行文件",
+            filetypes=_EXE_TYPES,
+        )
+        if not chosen:
+            return
+        self.manual_tool_paths[tool_name] = os.path.abspath(chosen)
+        self._refresh_tool_path_menu_labels()
+        self._update_preview()
+        self._set_status(
+            f"已指定 {display_name} 路径；任务启动时会验证。")
+
+    def _clear_manual_tool_paths(self) -> None:
+        if self._task_is_active():
+            return
+        count = len(self.manual_tool_paths)
+        self.manual_tool_paths.clear()
+        self._refresh_tool_path_menu_labels()
+        self._update_preview()
+        self._set_status(
+            f"已恢复 {count} 项工具路径的自动发现。"
+            if count else "工具路径已经使用自动发现。"
+        )
+
+    def _restart_as_admin(self) -> None:
+        if self._task_is_active():
+            messagebox.showinfo(
+                "任务运行中",
+                "请先等待任务结束或停止任务，再切换管理员模式。",
+                parent=self.root,
+            )
+            return
+        if getattr(self, "is_administrator", False):
+            messagebox.showinfo(
+                "已是管理员模式",
+                "当前 DAISY 已具有管理员权限，无需重新启动。",
+                parent=self.root,
+            )
+            return
+        if os.name != "nt":
+            messagebox.showerror(
+                "无法切换管理员模式",
+                "管理员模式重启仅适用于 Windows。",
+                parent=self.root,
+            )
+            return
+        if not messagebox.askyesno(
+                "以管理员模式重新启动",
+                "当前窗口将关闭，并触发 Windows UAC 确认。尚未运行的"
+                "表单内容和本窗口日志不会保留。\n\n确定继续吗？",
+                icon="question", parent=self.root):
+            return
+        try:
+            restart_as_windows_administrator()
+        except OSError as exc:
+            messagebox.showerror(
+                "管理员模式启动失败", str(exc), parent=self.root)
+            return
+        self.root.destroy()
 
     def _open_project_directory(self) -> None:
         try:
@@ -3471,40 +3734,56 @@ class DaisyApp:
         if self.process is not None or self.worker_starting or self.run_jobs:
             messagebox.showinfo(
                 "暂不能清理缓存",
-                "任务队列运行期间不能清理工具路径缓存。",
+                "任务队列运行期间不能重置当前工具会话。",
                 parent=self.root,
             )
             return
-        tool_names = tuple(
-            _TOOL_DISPLAY_NAMES.get(name, name)
-            for name in self.detected_tools)
-        count = clear_session_tool_cache(self.detected_tools)
+        if not messagebox.askyesno(
+                "重置工具会话",
+                "清理缓存会同时清空所有页面已填写的目录和参数、硬盘清单、"
+                "运行日志与三条进度，并返回 ENV-01 初始页面。\n\n"
+                "正式数据库、存储 ZIP 和报告不会被删除。确定继续吗？",
+                icon="warning", parent=self.root):
+            return
+        session_count = (
+            clear_session_tool_cache(self.detected_tools)
+            + len(self.manual_tool_paths)
+        )
+        self.manual_tool_paths.clear()
         disk = clean_project_caches()
-        self._refresh_tool_cache_labels()
-        self._update_preview()
-        lines = ["", "缓存清理结果："]
-        if count:
-            lines.append(
-                f"  本窗口工具路径：{count} 项"
-                f"（{'、'.join(tool_names)}）")
-        for path in disk.directories:
-            lines.append(f"  缓存目录：{path}")
-        for path in disk.files:
-            lines.append(f"  缓存文件：{path}")
-        for error in disk.errors:
-            lines.append(f"  未清理：{error}")
-        removed = count + len(disk.directories) + len(disk.files)
-        if not removed and not disk.errors:
-            lines.append("  未发现可清理的缓存。")
-        lines.append("")
-        self._append_log("\n".join(lines), "meta")
+        self.saved_values.clear()
+        self.dropdown_expanded.clear()
+        self.storage_disk_choices = ()
+        self.environment_missing_names = ()
+        self.missing_installable_tools = ()
+        if self.mini_mode:
+            self._leave_mini_mode()
+        self._set_task_toolbar_expanded(True)
+        self._set_settings_expanded(True)
+        self._set_progress_expanded(True)
+        self._set_log_expanded(False)
+        self._set_command_preview_expanded(False)
+        self._clear_log()
+        self._refresh_tool_path_menu_labels()
+        self._select_task("env_check", save_current=False)
+        self._set_status("就绪")
+
+        removed = (
+            session_count + len(disk.directories) + len(disk.files)
+        )
+        summary = (
+            "工具界面已恢复为首次启动状态。\n"
+            f"已清理 {removed} 项可重建缓存。"
+        )
         if disk.errors:
-            self._set_status(
-                f"缓存清理完成，{len(disk.errors)} 项未清理", _WARNING)
-        elif removed:
-            self._set_status(f"已清理 {removed} 项缓存", _SUCCESS)
+            messagebox.showwarning(
+                "工具已重置，部分缓存未清理",
+                summary + "\n\n" + "\n".join(disk.errors),
+                parent=self.root,
+            )
         else:
-            self._set_status("没有可清理的缓存", _SUCCESS)
+            messagebox.showinfo(
+                "工具已重置", summary, parent=self.root)
 
     def _append_log(self, text: str, tag: str | None = None) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -3540,12 +3819,26 @@ class DaisyApp:
             and not self.run_jobs
             else "disabled"
         )
-        missing = set(self.missing_installable_tools)
         for tool_name, button in self.install_tool_buttons.items():
             display_name = _INSTALLABLE_TOOL_PACKAGES[tool_name][0]
             button.configure(
                 text=f"下载并安装 {display_name}",
-                state=action_state if tool_name in missing else "disabled",
+                state=action_state,
+            )
+        if hasattr(self, "admin_restart_button"):
+            already_admin = bool(getattr(self, "is_administrator", False))
+            self.admin_restart_button.configure(
+                text=(
+                    "已是管理员模式"
+                    if already_admin else "管理员模式重启"
+                ),
+                state=(
+                    "normal"
+                    if action_state == "normal"
+                    and os.name == "nt"
+                    and not already_admin
+                    else "disabled"
+                ),
             )
         self.root.after_idle(self._layout_action_buttons)
 
@@ -3921,6 +4214,7 @@ class DaisyApp:
         self.run_button.configure(state="disabled")
         for button in self.install_tool_buttons.values():
             button.configure(state="disabled")
+        self.admin_restart_button.configure(state="disabled")
         self._set_stop_state("disabled")
         self._prepare_queue_progress()
         self._refresh_mini_action()
@@ -3961,16 +4255,14 @@ class DaisyApp:
         self._begin_run_jobs(
             _PROJECT_SELF_TEST_KEY, [RunJob("数据库自检", {})])
 
-    def _install_missing_tool(self, tool_name: str) -> None:
+    def _install_tool(self, tool_name: str) -> None:
         """仅安装环境检测页明确选择的一项白名单工具。"""
         if self.process is not None or self.run_jobs or self.worker_starting:
             return
-        if (tool_name not in _INSTALLABLE_TOOL_PACKAGES
-                or tool_name not in self.missing_installable_tools):
+        if tool_name not in _INSTALLABLE_TOOL_PACKAGES:
             messagebox.showinfo(
                 "没有可安装项",
-                "请先运行环境检测；当前没有检测到该工具缺失，或该工具"
-                "不在 GUI 安装白名单中。",
+                "该工具不在 GUI 安装白名单中。",
                 parent=self.root,
             )
             return
@@ -3988,7 +4280,9 @@ class DaisyApp:
             f"下载并安装 {display_name}",
             f"将只通过 WinGet 的 winget 源下载并安装：\n"
             f"• {display_name}（{package_id}）"
-            "\n\n此操作会修改本机软件安装状态，并接受对应的"
+            "\n\n即使已经检测到该工具，也可以独立执行；当前是否已安装"
+            "及是否存在可用更新由 WinGet 判断。此操作会修改本机软件安装"
+            "状态，并接受对应的"
             "源协议与软件包协议。安装输出会显示在运行日志中；"
             "完成后 DAISY 将自动重新检测环境。\n\n确定继续吗？",
             icon="question", parent=self.root,
@@ -4044,7 +4338,9 @@ class DaisyApp:
             command_text = subprocess.list2cmdline(command)
         else:
             effective, tool_sources = merge_session_tool_paths(
-                task_key, job.values, self.detected_tools)
+                task_key, job.values, self.detected_tools,
+                manual_paths=self.manual_tool_paths,
+            )
             tool_args = build_tool_args(task_key, effective)
             command = [_console_python(), "-u", _MAIN] + tool_args
             command_text = preview_commands(task_key, effective)[0][1]

@@ -250,6 +250,20 @@ class TestGuiArguments(unittest.TestCase):
                 os.path.commonpath((gui._BASE, spec.default)), gui._BASE)
 
     def test_storage_tasks_build_exact_cli_arguments(self):
+        summary_spec = next(
+            spec for spec in gui.TASK_BY_KEY["storage_collect"].fields
+            if spec.key == "summary_txt"
+        )
+        self.assertEqual(summary_spec.kind, "choice_flag")
+        self.assertEqual(summary_spec.default, False)
+        self.assertEqual(summary_spec.flag_value, True)
+        self.assertEqual(
+            summary_spec.choices,
+            (
+                ("不生成（默认）", False),
+                ("生成 ZIP 外部 TXT", True),
+            ),
+        )
         with tempfile.TemporaryDirectory() as output_dir:
             collect = gui.build_tool_args(
                 "storage_collect",
@@ -450,6 +464,7 @@ class TestGuiArguments(unittest.TestCase):
             "exiftool": "OliverBetz.ExifTool",
             "ffprobe": "Gyan.FFmpeg",
             "sevenzip": "7zip.7zip",
+            "smartctl": "smartmontools.smartmontools",
         }
         for name, package_id in expected.items():
             command = gui.dependency_install_command(name, winget)
@@ -463,14 +478,12 @@ class TestGuiArguments(unittest.TestCase):
         with self.assertRaises(ValueError):
             gui.dependency_install_command("arbitrary")
 
-    def test_gui_dependency_install_targets_only_selected_missing_tool(
+    def test_gui_dependency_install_targets_only_selected_allowlisted_tool(
             self):
         app = object.__new__(gui.DaisyApp)
         app.process = None
         app.run_jobs = []
         app.worker_starting = False
-        app.missing_installable_tools = (
-            "exiftool", "ffprobe", "arbitrary")
         app.root = object()
         started = []
         app._begin_run_jobs = lambda key, jobs: started.append((key, jobs))
@@ -480,7 +493,7 @@ class TestGuiArguments(unittest.TestCase):
                 return_value=r"C:\WindowsApps\winget.exe"), \
                 patch.object(
                     gui.messagebox, "askyesno", return_value=True):
-            app._install_missing_tool("ffprobe")
+            app._install_tool("ffprobe")
 
         self.assertEqual(started[0][0], gui._DEPENDENCY_INSTALL_KEY)
         jobs = started[0][1]
@@ -498,7 +511,7 @@ class TestGuiArguments(unittest.TestCase):
                 return_value=r"C:\WindowsApps\winget.exe"), \
                 patch.object(
                     gui.messagebox, "askyesno", return_value=False):
-            app._install_missing_tool("exiftool")
+            app._install_tool("exiftool")
         self.assertEqual(started, [])
 
     def test_environment_install_buttons_are_independent(self):
@@ -519,24 +532,27 @@ class TestGuiArguments(unittest.TestCase):
         app.process = None
         app.worker_starting = False
         app.run_jobs = []
-        app.missing_installable_tools = ("ffprobe", "sevenzip")
         app.install_tool_buttons = {
             name: ButtonProbe()
             for name in gui._INSTALLABLE_TOOL_PACKAGES
         }
+        app.admin_restart_button = ButtonProbe()
+        app.is_administrator = False
 
         app._refresh_environment_actions()
 
-        self.assertEqual(
-            app.install_tool_buttons["exiftool"].options["state"],
-            "disabled",
-        )
-        for name in ("ffprobe", "sevenzip"):
+        for name in gui._INSTALLABLE_TOOL_PACKAGES:
             button = app.install_tool_buttons[name]
             display = gui._INSTALLABLE_TOOL_PACKAGES[name][0]
             self.assertEqual(button.options["state"], "normal")
             self.assertEqual(
                 button.options["text"], f"下载并安装 {display}")
+        self.assertEqual(
+            app.admin_restart_button.options["state"],
+            "normal" if os.name == "nt" else "disabled",
+        )
+        self.assertEqual(
+            app.admin_restart_button.options["text"], "管理员模式重启")
 
         app.process = object()
         app._refresh_environment_actions()
@@ -544,6 +560,8 @@ class TestGuiArguments(unittest.TestCase):
             button.options["state"] == "disabled"
             for button in app.install_tool_buttons.values()
         ))
+        self.assertEqual(
+            app.admin_restart_button.options["state"], "disabled")
 
     def test_environment_summary_displays_local_versions(self):
         cache = {
@@ -574,6 +592,8 @@ class TestGuiArguments(unittest.TestCase):
             gui.window_size_for_screen(1366, 768), (1286, 708))
         self.assertEqual(
             gui.window_size_for_screen(1024, 768), (944, 708))
+        self.assertEqual(
+            gui.window_size_for_screen(1280, 720), (1200, 660))
         small = gui.window_size_for_screen(800, 600)
         self.assertLessEqual(small[0], 800)
         self.assertLessEqual(small[1], 600)
@@ -612,6 +632,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.normal_min_size, (936, 680))
         self.assertEqual(app.root.minimum_sizes[-1], (936, 680))
 
+        app.task_toolbar_panel.width = 1400
+        app.normal_width_cap = 1200
+        app._sync_task_toolbar_minimum_width()
+        self.assertEqual(app.normal_min_size, (1200, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1200, 680))
+
     def test_utility_buttons_wrap_without_reordering(self):
         widths = (118, 118, 118, 181)
         rows = gui.action_button_row_indexes(widths, 380)
@@ -625,13 +651,13 @@ class TestGuiArguments(unittest.TestCase):
             self.assertLessEqual(occupied, 380)
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
 
-    def test_full_hash_independent_sample_is_explained_and_advanced(self):
+    def test_full_hash_independent_sample_is_explained_and_dropdown(self):
         fields = {
             spec.key: spec for spec in gui.TASK_BY_KEY["full_scan"].fields
         }
         verify = fields["verify_percent"]
-        self.assertTrue(verify.advanced)
-        self.assertEqual(verify.section, "扫描稳定性")
+        self.assertTrue(verify.dropdown)
+        self.assertEqual(verify.section, "哈希抽样")
         for phrase in (
                 "PowerShell Get-FileHash", "至少 100 个",
                 "不是主哈希的覆盖比例"):
@@ -641,7 +667,7 @@ class TestGuiArguments(unittest.TestCase):
         index = args.index("--verify-sample-percent")
         self.assertEqual(args[index + 1], "1.0")
 
-    def test_all_hash_sampling_percentages_are_advanced(self):
+    def test_all_hash_sampling_percentages_have_own_dropdown(self):
         sampling_fields = {
             (task.key, spec.key): spec
             for task in gui.TASKS
@@ -655,7 +681,42 @@ class TestGuiArguments(unittest.TestCase):
              ("check_hash", "sample_percent")},
         )
         self.assertTrue(all(
-            spec.advanced for spec in sampling_fields.values()))
+            spec.dropdown and spec.section == "哈希抽样"
+            for spec in sampling_fields.values()))
+        self.assertEqual(
+            tuple(
+                (section, tuple(spec.key for spec in specs))
+                for section, specs in gui.dropdown_field_groups(
+                    "check_hash", {"check_scope": "sample"})
+            ),
+            (
+                ("哈希抽样", ("sample_percent",)),
+                ("故障恢复", ("force",)),
+            ),
+        )
+
+    def test_tool_paths_live_in_top_menu_not_page_dropdowns(self):
+        tool_fields = {
+            spec.key: spec
+            for task in gui.TASKS
+            for spec in task.fields
+            if spec.key in gui._TOOL_FIELD_BY_NAME.values()
+        }
+        self.assertEqual(
+            set(tool_fields), set(gui._TOOL_FIELD_BY_NAME.values()))
+        self.assertTrue(all(
+            spec.top_menu and not spec.dropdown
+            and spec.section == "指定工具路径"
+            for spec in tool_fields.values()
+        ))
+        for task in gui.TASKS:
+            grouped_keys = {
+                spec.key
+                for _section, specs in gui.dropdown_field_groups(
+                    task.key, {})
+                for spec in specs
+            }
+            self.assertTrue(grouped_keys.isdisjoint(tool_fields))
 
     def test_form_mousewheel_scrolls_and_stops_widget_defaults(self):
         class CanvasProbe:
@@ -911,7 +972,41 @@ class TestGuiArguments(unittest.TestCase):
         ]
         self.assertEqual(
             top_labels,
-            ["文件", "环境", "数据库", "硬盘", "视图", "帮助"],
+            [
+                "文件", "环境", "数据库", "硬盘",
+                "指定工具路径", "视图", "帮助",
+            ],
+        )
+        self.assertEqual(len("指定工具路径"), 6)
+        self.assertEqual(
+            [
+                entry["label"]
+                for entry in app.tool_path_menu.entries
+                if entry["kind"] == "command"
+            ],
+            [
+                f"{gui._TOOL_DISPLAY_NAMES[name]} 路径：自动发现"
+                for name in gui._TOOL_PATH_MENU_ORDER
+            ] + ["全部恢复自动发现"],
+        )
+        self.assertEqual(
+            [
+                entry["label"]
+                for entry in app.view_menu.entries
+                if entry["kind"] == "command"
+            ],
+            [
+                "折叠功能模块", "折叠任务设置",
+                "折叠运行进度", "展开运行日志",
+            ],
+        )
+        self.assertEqual(
+            [
+                entry["label"]
+                for entry in app.view_menu.entries
+                if entry["kind"] == "checkbutton"
+            ],
+            ["显示命令预览"],
         )
         self.assertEqual(
             [
@@ -946,6 +1041,37 @@ class TestGuiArguments(unittest.TestCase):
             2,
         )
 
+    def test_view_menu_uses_expand_collapse_actions_except_preview(self):
+        class MenuProbe:
+            def __init__(self):
+                self.labels = {}
+
+            def entryconfigure(self, index, **options):
+                self.labels[index] = options["label"]
+
+        app = object.__new__(gui.DaisyApp)
+        app.view_menu = MenuProbe()
+        app.view_panel_menu_entries = {
+            "task_toolbar": 0,
+            "settings": 2,
+            "progress": 3,
+            "log": 4,
+        }
+        app.task_toolbar_expanded = True
+        app.settings_expanded = False
+        app.progress_expanded = True
+        app.log_expanded = False
+        app._refresh_view_menu_labels()
+        self.assertEqual(
+            app.view_menu.labels,
+            {
+                0: "折叠功能模块",
+                2: "展开任务设置",
+                3: "折叠运行进度",
+                4: "展开运行日志",
+            },
+        )
+
     def test_idle_close_requires_confirmation(self):
         class RootProbe:
             def __init__(self):
@@ -971,6 +1097,69 @@ class TestGuiArguments(unittest.TestCase):
         self.assertTrue(all(
             call.args[0] == "确认退出" for call in confirm.call_args_list
         ))
+
+    def test_administrator_restart_uses_current_python_and_canonical_gui(self):
+        executable = os.path.abspath(r"C:\Python\pythonw.exe")
+        program, parameters, directory = gui.administrator_restart_parts(
+            executable=executable,
+            argv=["ignored-launcher.pyw", "--fixture", "two words"],
+            frozen=False,
+        )
+        self.assertEqual(program, executable)
+        self.assertEqual(directory, gui._BASE)
+        self.assertEqual(
+            parameters,
+            subprocess.list2cmdline([
+                os.path.abspath(gui.__file__), "--fixture", "two words",
+            ]),
+        )
+        frozen_program, frozen_parameters, _directory = (
+            gui.administrator_restart_parts(
+                executable=executable,
+                argv=["DAISY.exe", "--fixture"],
+                frozen=True,
+            )
+        )
+        self.assertEqual(frozen_program, executable)
+        self.assertEqual(
+            frozen_parameters, subprocess.list2cmdline(["--fixture"]))
+
+    def test_administrator_restart_closes_only_after_elevated_launch(self):
+        class RootProbe:
+            def __init__(self):
+                self.destroy_calls = 0
+
+            def destroy(self):
+                self.destroy_calls += 1
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.is_administrator = False
+        with (
+            patch.object(gui.os, "name", "nt"),
+            patch.object(gui.messagebox, "askyesno", return_value=True),
+            patch.object(gui, "restart_as_windows_administrator") as restart,
+        ):
+            app._restart_as_admin()
+        restart.assert_called_once_with()
+        self.assertEqual(app.root.destroy_calls, 1)
+
+        app.root.destroy_calls = 0
+        with (
+            patch.object(gui.os, "name", "nt"),
+            patch.object(gui.messagebox, "askyesno", return_value=True),
+            patch.object(
+                gui, "restart_as_windows_administrator",
+                side_effect=OSError("UAC cancelled"),
+            ),
+            patch.object(gui.messagebox, "showerror") as shown,
+        ):
+            app._restart_as_admin()
+        self.assertEqual(app.root.destroy_calls, 0)
+        shown.assert_called_once()
 
     def test_active_close_requires_second_confirmation(self):
         class RootProbe:
@@ -1544,6 +1733,22 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(effective["powershell_path"],
                          r"C:\Windows\pwsh.exe")
         self.assertEqual(sources["powershell"], "session_cache")
+        menu_effective, menu_sources = gui.merge_session_tool_paths(
+            "full_scan", values, cache,
+            manual_paths={
+                "ffprobe": r"E:\TopMenu\ffprobe.exe",
+                "sevenzip": r"E:\TopMenu\7z.exe",
+            },
+            path_exists=lambda _path: True,
+        )
+        self.assertEqual(
+            menu_effective["ffprobe_path"],
+            r"E:\TopMenu\ffprobe.exe",
+        )
+        self.assertEqual(
+            menu_effective["sevenzip_path"], r"E:\TopMenu\7z.exe")
+        self.assertEqual(menu_sources["ffprobe"], "manual_menu")
+        self.assertEqual(menu_sources["sevenzip"], "manual_menu")
         quick, quick_sources = gui.merge_session_tool_paths(
             "quick_scan", {"roots": "X"}, cache,
             path_exists=lambda _path: True)
@@ -1617,8 +1822,9 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(os.path.isfile(ordinary))
             self.assertTrue(os.path.isdir(excluded))
 
-    def test_gui_cache_button_logs_each_removed_directory_and_file(self):
+    def test_gui_cache_button_restores_cold_start_session_state(self):
         app = object.__new__(gui.DaisyApp)
+        app.root = object()
         app.process = None
         app.worker_starting = False
         app.run_jobs = []
@@ -1627,31 +1833,64 @@ class TestGuiArguments(unittest.TestCase):
                 "path": r"C:\Tools\exiftool.exe", "verified": True,
             },
         }
-        logs = []
-        statuses = []
-        app._refresh_tool_cache_labels = lambda: None
-        app._update_preview = lambda: None
-        app._append_log = lambda text, tag=None: logs.append((text, tag))
-        app._set_status = lambda text, colour=None: (
-            statuses.append((text, colour)))
+        app.manual_tool_paths = {
+            "ffprobe": r"C:\Tools\ffprobe.exe",
+        }
+        app.saved_values = {"full_scan": {"roots": r"E:\Archive"}}
+        app.dropdown_expanded = {("full_scan", "哈希抽样"): True}
+        app.storage_disk_choices = (("PhysicalDrive3", "3"),)
+        app.environment_missing_names = ("sevenzip",)
+        app.missing_installable_tools = ("sevenzip",)
+        app.mini_mode = False
+        calls = []
+        app._set_task_toolbar_expanded = (
+            lambda value: calls.append(("toolbar", value)))
+        app._set_settings_expanded = (
+            lambda value: calls.append(("settings", value)))
+        app._set_progress_expanded = (
+            lambda value: calls.append(("progress", value)))
+        app._set_log_expanded = (
+            lambda value: calls.append(("log", value)))
+        app._set_command_preview_expanded = (
+            lambda value: calls.append(("preview", value)))
+        app._clear_log = lambda: calls.append(("clear_log", True))
+        app._refresh_tool_path_menu_labels = (
+            lambda: calls.append(("tool_menu", True)))
+        app._select_task = (
+            lambda key, save_current=False:
+            calls.append(("task", key, save_current)))
+        app._set_status = (
+            lambda text, colour=None: calls.append(("status", text)))
         cleanup = gui.ProjectCacheCleanup(
             directories=(os.path.join("Script", "__pycache__"),),
             files=(os.path.join("Script", "orphan.pyc"),),
             errors=(),
         )
 
-        with patch.object(
-                gui, "clean_project_caches", return_value=cleanup):
+        with (
+            patch.object(gui, "clean_project_caches", return_value=cleanup),
+            patch.object(gui.messagebox, "askyesno", return_value=True),
+            patch.object(gui.messagebox, "showinfo") as shown,
+        ):
             app._clear_tool_cache()
 
         self.assertEqual(app.detected_tools, {})
-        text = logs[0][0]
-        self.assertIn("本窗口工具路径：1 项（ExifTool）", text)
-        self.assertIn(
-            "缓存目录：" + os.path.join("Script", "__pycache__"), text)
-        self.assertIn(
-            "缓存文件：" + os.path.join("Script", "orphan.pyc"), text)
-        self.assertEqual(statuses[0][0], "已清理 3 项缓存")
+        self.assertEqual(app.manual_tool_paths, {})
+        self.assertEqual(app.saved_values, {})
+        self.assertEqual(app.dropdown_expanded, {})
+        self.assertEqual(app.storage_disk_choices, ())
+        self.assertEqual(app.environment_missing_names, ())
+        self.assertEqual(app.missing_installable_tools, ())
+        self.assertIn(("toolbar", True), calls)
+        self.assertIn(("settings", True), calls)
+        self.assertIn(("progress", True), calls)
+        self.assertIn(("log", False), calls)
+        self.assertIn(("preview", False), calls)
+        self.assertIn(("clear_log", True), calls)
+        self.assertIn(("task", "env_check", False), calls)
+        self.assertIn(("status", "就绪"), calls)
+        shown.assert_called_once()
+        self.assertIn("已清理 4 项可重建缓存", shown.call_args.args[1])
 
     def test_multi_root_default_separates_and_preserves_order(self):
         root_specs = [r"Alpha=E:\Archive A", r"Beta=F:\Archive B"]
