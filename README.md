@@ -55,7 +55,7 @@ schema、元数据 profile、必要表和原 root，然后重新枚举并对账�
 逐字段相等；在源目录、工具和环境未变化时，文件清单、内容哈希、规范化元数据、统计
 和完成状态才应语义等价。哈希连续 30 秒没有数据块进展时目前只记录 stall，不会自动
 超时或跳过。完整边界见[技术规格](Spec/Spec_DAISY_Technical.md)第 7.4 节；计划改进见
-[v1.5.2 续传与哈希可靠性待办](Spec/Spec_DAISY_V1_5_2_Backlog.md)。
+[v1.6.0 可靠性、兼容与报告重构待办](Spec/Spec_DAISY_V1_6_0_Backlog.md)。
 
 ### 日后检查档案有没有变化
 
@@ -238,16 +238,22 @@ DBS-11 的 `_Issues.md` 只呈现需要关注的问题。ExifTool 单纯返回�
   PNP Device ID 或 BitLocker 状态；公开分享前必须人工检查。
 - 当前 DBS `schema_version=3`、元数据 profile 7、最低完整快照读取器
   `v1.4.1`；当前实现只读取 schema 3。
+- 项目长期兼容规则：未来所有接受封存 DBS 数据库的功能，至少必须只读支持
+  v1.4.1／schema 3；旧库不得原地迁移，缺少未来字段时必须显示“不可用”而不是伪造
+  结果。该保证指新程序读取旧封存库，不反向承诺旧程序读取未来新 schema；未完成
+  partial 另按恢复契约处理。
 - 未完成 partial 只能由相同生成器版本续传，所以 v1.5.0 及更早版本的 partial
   不能由 v1.5.1 续传；已封存的合格 schema 3 快照仍可按准入规则只读使用。
 - v1.5.1 没有改变数据库 DDL、字段、约束、schema 版本或 DBS 扫描／Diff／生成
   语义；代码层只更新应用版本和报告身份，并优化 UI 与人读输出。STG 的
   `archive_schema_version=3` 与 SQLite schema 只是数字相同，数据模型彼此独立。
-- v1.5.2 的续传状态机、失败重试、工具溯源、哈希超时和事后速度诊断仍是计划项，
-  不应把待办文档解释为 v1.5.1 已具备这些能力。
+- v1.6.0 的续传状态机、失败重试、工具溯源、哈希超时、旧库兼容、核验审计和报告重构
+  仍是计划项，不应把规划文档解释为 v1.5.1 已具备这些能力。
 
 DBS 与 STG 的完整技术语义见[技术规格](Spec/Spec_DAISY_Technical.md)，版本历史见
-[版本演化](Spec/Spec_DAISY_Version_Evolution.md)。
+[版本演化](Spec/Spec_DAISY_Version_Evolution.md)。v1.6.0 的已确认需求、实施顺序和完整
+验证矩阵见[v1.6.0 实施计划](Spec/Spec_DAISY_V1_6_0_Implementation_Plan.md)，数据库解析
+的交互与导出契约见[数据库解析设计](Spec/Spec_DAISY_V1_6_0_Database_Parsing_Design.md)。
 
 ## 项目结构
 
