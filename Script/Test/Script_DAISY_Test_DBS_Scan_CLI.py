@@ -83,6 +83,25 @@ class TestScanCliConfig(unittest.TestCase):
                 with self.assertRaisesRegex(Exception, message):
                     scan_cli._new_config(args, "quick")
 
+    def test_metadata_finish_reports_not_applicable_separately_from_errors(
+        self,
+    ) -> None:
+        reporter = scan_cli.ScanReporter(
+            "", quiet=True, event_log_active=False)
+        with mock.patch.object(scan_cli.core, "emit_gui_event") as emit:
+            reporter.event("stage_started", stage="metadata")
+            reporter.event(
+                "stage_finished", stage="metadata", processed=12,
+                error=1, not_applicable=8, skipped=2,
+            )
+        finish = next(
+            call for call in emit.call_args_list
+            if call.args and call.args[0] == "progress_finish"
+        )
+        self.assertIn("错误 1", finish.kwargs["summary"])
+        self.assertIn("不适用 8", finish.kwargs["summary"])
+        self.assertIn("跳过 2", finish.kwargs["summary"])
+
     def test_active_owner_is_rejected_before_source_or_tool_preflight(
         self,
     ) -> None:

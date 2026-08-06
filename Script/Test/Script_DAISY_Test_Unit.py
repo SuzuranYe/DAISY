@@ -38,7 +38,7 @@ class TestGuiArguments(unittest.TestCase):
             "font_family": "Segoe UI",
             "font_size_delta": 1,
             "confirm_close_when_idle": False,
-            "last_task_key": "check_hash",
+            "last_task_key": "verify",
         })
         with tempfile.TemporaryDirectory() as temporary:
             path = os.path.join(temporary, "GUI_Settings.json")
@@ -64,6 +64,23 @@ class TestGuiArguments(unittest.TestCase):
             loaded = gui.load_gui_preferences(path)
         self.assertEqual(loaded, gui.default_gui_preferences())
 
+    def test_legacy_page_preferences_migrate_to_unified_pages(self):
+        expected = {
+            "full_scan": "scan",
+            "quick_scan": "scan",
+            "check_hash": "verify",
+            "check_format": "verify",
+            "export_report": "parse_db",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = os.path.join(temporary, "GUI_Settings.json")
+            for legacy, unified in expected.items():
+                preferences = gui.default_gui_preferences()
+                preferences["last_task_key"] = legacy
+                gui.save_gui_preferences(preferences, path)
+                self.assertEqual(
+                    gui.load_gui_preferences(path)["last_task_key"], unified)
+
     def test_page_preference_never_contains_form_values(self):
         app = object.__new__(gui.DaisyApp)
         app.gui_preferences = gui.default_gui_preferences()
@@ -71,9 +88,9 @@ class TestGuiArguments(unittest.TestCase):
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
         app.confirm_close_when_idle = True
-        app.task = gui.TASK_BY_KEY["check_hash"]
+        app.task = gui.TASK_BY_KEY["verify"]
         app.saved_values = {
-            "check_hash": {
+            "verify": {
                 "snapshot": r"E:\私人档案\snapshot.sqlite",
                 "root_map": r"E:\私人档案",
             },
@@ -83,7 +100,7 @@ class TestGuiArguments(unittest.TestCase):
             app._save_gui_preferences()
 
         payload = save.call_args.args[0]
-        self.assertEqual(payload["last_task_key"], "check_hash")
+        self.assertEqual(payload["last_task_key"], "verify")
         self.assertNotIn("saved_values", payload)
         self.assertNotIn("snapshot", payload)
         self.assertNotIn("root_map", payload)
@@ -297,6 +314,50 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("--sample-percent", sampled_format)
         self.assertIn("12.5", sampled_format)
 
+    def test_unified_scan_verify_and_parse_argument_mapping(self):
+        full = gui.build_tool_args("scan", {
+            "scan_mode": "full", "roots": r"E:\Archive",
+            "format_validation": "sample",
+            "format_sample_percent": "12.5",
+        })
+        self.assertEqual(full[full.index("--mode") + 1], "full")
+        self.assertEqual(
+            full[full.index("--format-validation") + 1], "sample")
+        self.assertIn("--hash", full)
+        self.assertIn("--control-stdin", full)
+
+        quick = gui.build_tool_args("scan", {
+            "scan_mode": "quick", "roots": r"E:\Archive",
+            "metadata_storage": "complete", "hash_mode": "full",
+        })
+        self.assertEqual(quick[quick.index("--mode") + 1], "quick")
+        self.assertNotIn("--metadata-storage", quick)
+        self.assertNotIn("--hash", quick)
+
+        verify = gui.build_tool_args("verify", {
+            "snapshot": r"E:\Runs\A.sqlite",
+            "root_map": r"archive=E:\Archive",
+            "hash_scope": "all", "format_scope": "sample",
+            "format_sample_percent": "8.5",
+            "raw_deep_validation": True,
+        })
+        self.assertEqual(verify[verify.index("--hash") + 1], "all")
+        self.assertEqual(verify[verify.index("--format") + 1], "sample")
+        self.assertIn("--raw-deep-validation", verify)
+        self.assertIn("--control-stdin", verify)
+
+        parsed = gui.build_tool_args("parse_db", {
+            "database": r"E:\Runs\A.sqlite", "preset": "custom",
+            "parse_modules": "overview\nhashes",
+            "formats": "html\nxlsx",
+            "output_dir": r"E:\Reports",
+        })
+        self.assertEqual(parsed[0], "parse-db")
+        self.assertEqual(parsed.count("--include"), 2)
+        self.assertEqual(parsed.count("--format"), 2)
+        self.assertIn("overview", parsed)
+        self.assertIn("hashes", parsed)
+
     def test_every_supported_cli_setting_has_a_gui_mapping(self):
         expected = {
             "env_check": {
@@ -315,6 +376,15 @@ class TestGuiArguments(unittest.TestCase):
             },
             "quick_scan": {
                 "--root", "--output-dir", "--no-file-id", "--resume"},
+            "scan": {
+                "--root", "--output-dir", "--hash", "--previous-snapshot",
+                "--map-root", "--verify-sample-percent", "--metadata-storage",
+                "--no-file-id", "--resume", "--exiftool-path",
+                "--ffprobe-path", "--sevenzip-path", "--powershell-path",
+                "--format-validation", "--format-sample-percent",
+                "--raw-deep-validation", "--timeout-action", "--retry-mode",
+                "--show-current-file",
+            },
             "check_format": {
                 "--snapshot", "--root", "--sample-percent", "--report-dir",
                 "--exiftool-path", "--ffprobe-path", "--sevenzip-path",
@@ -324,10 +394,20 @@ class TestGuiArguments(unittest.TestCase):
                 "--snapshot", "--root", "--sample-percent", "--full",
                 "--powershell-path", "--force", "--report",
             },
+            "verify": {
+                "--snapshot", "--root", "--hash", "--hash-sample-percent",
+                "--format", "--format-sample-percent",
+                "--raw-deep-validation", "--timeout-action",
+                "--show-current-file", "--report-dir", "--powershell-path",
+                "--exiftool-path", "--ffprobe-path", "--sevenzip-path",
+                "--force",
+            },
             "diff": {
                 "--old", "--new", "--output-dir", "--map-root", "--force",
             },
             "export_report": {"--output-dir"},
+            "parse_db": {"--database", "--preset", "--include",
+                         "--format", "--output-dir"},
             "storage_list": {"--smartctl-path", "--powershell-path"},
             "storage_collect": {
                 "--disk-number", "--output-dir", "--summary-txt",
@@ -346,10 +426,13 @@ class TestGuiArguments(unittest.TestCase):
             ("env_check", "output_dir"): gui._DEFAULT_REPORTS_DIR,
             ("full_scan", "output_dir"): gui._DEFAULT_SNAPSHOTS_DIR,
             ("quick_scan", "output_dir"): gui._DEFAULT_SNAPSHOTS_DIR,
+            ("scan", "output_dir"): gui._DEFAULT_SNAPSHOTS_DIR,
             ("check_format", "report_dir"): gui._DEFAULT_REPORTS_DIR,
             ("check_hash", "report"): gui._DEFAULT_REPORTS_DIR,
             ("diff", "output_dir"): gui._DEFAULT_DIFFS_DIR,
             ("export_report", "output_dir"): gui._DEFAULT_REPORTS_DIR,
+            ("verify", "report_dir"): gui._DEFAULT_REPORTS_DIR,
+            ("parse_db", "output_dir"): gui._DEFAULT_REPORTS_DIR,
             ("storage_collect", "output_dir"): gui._DEFAULT_STORAGE_DIR,
         }
         for (task_key, field_key), expected_dir in (
@@ -971,17 +1054,16 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(args[index + 1], "1.0")
 
     def test_all_hash_sampling_percentages_live_in_advanced_menu(self):
-        sampling_fields = {
-            (task.key, spec.key): spec
-            for task in gui.TASKS
-            for spec in task.fields
-            if "哈希" in spec.label and (
-                "抽样" in spec.label or "抽验" in spec.label)
-        }
+        sampling_fields = {}
+        for task_key, field_key, _label, _allow_zero in (
+                gui._HASH_PERCENTAGE_MENU_FIELDS):
+            sampling_fields[(task_key, field_key)] = next(
+                spec for spec in gui.TASK_BY_KEY[task_key].fields
+                if spec.key == field_key)
         self.assertEqual(
             set(sampling_fields),
-            {("full_scan", "verify_percent"),
-             ("check_hash", "sample_percent")},
+            {("scan", "verify_percent"),
+             ("verify", "hash_sample_percent")},
         )
         self.assertTrue(all(
             spec.top_menu and spec.section == "哈希比例"
@@ -1018,16 +1100,16 @@ class TestGuiArguments(unittest.TestCase):
 
         self.assertEqual(
             app._hash_percentage_menu_label(
-                "full_scan", "verify_percent"),
-            "DBS-11 独立哈希抽验：1.0%",
+                "scan", "verify_percent"),
+            "完整扫描独立抽验：1.0%",
         )
         with patch.object(
                 gui.simpledialog, "askstring", return_value="2.5"):
-            app._edit_hash_percentage("full_scan", "verify_percent")
+            app._edit_hash_percentage("scan", "verify_percent")
         self.assertEqual(
-            app.saved_values["full_scan"]["verify_percent"], "2.5")
+            app.saved_values["scan"]["verify_percent"], "2.5")
         args = gui.build_tool_args(
-            "full_scan", {"roots": r"E:\Archive", **app.saved_values["full_scan"]})
+            "scan", {"roots": r"E:\Archive", **app.saved_values["scan"]})
         index = args.index("--verify-sample-percent")
         self.assertEqual(args[index + 1], "2.5")
 
@@ -1035,16 +1117,16 @@ class TestGuiArguments(unittest.TestCase):
             patch.object(gui.simpledialog, "askstring", return_value="0"),
             patch.object(gui.messagebox, "showerror") as shown,
         ):
-            app._edit_hash_percentage("check_hash", "sample_percent")
+            app._edit_hash_percentage("verify", "hash_sample_percent")
         shown.assert_called_once()
-        self.assertNotIn("check_hash", app.saved_values)
+        self.assertNotIn("verify", app.saved_values)
 
         app._reset_hash_percentages()
-        self.assertNotIn("verify_percent", app.saved_values["full_scan"])
+        self.assertNotIn("verify_percent", app.saved_values["scan"])
         self.assertEqual(
             app._hash_percentage_menu_label(
-                "full_scan", "verify_percent"),
-            "DBS-11 独立哈希抽验：1.0%",
+                "scan", "verify_percent"),
+            "完整扫描独立抽验：1.0%",
         )
 
     def test_tool_paths_live_in_top_menu_not_page_dropdowns(self):
@@ -1291,9 +1373,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertNotIn("full_scan", gui._TASK_MENU_SECTIONS[0][1])
         self.assertNotIn("quick_scan", gui._TASK_MENU_SECTIONS[0][1])
         self.assertEqual(gui._TASK_MENU_SECTIONS[0][1], ("env_check",))
-        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][:3],
-                         ("full_scan", "quick_scan", "diff"))
-        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1][-1], "export_report")
+        self.assertEqual(
+            gui._TASK_MENU_SECTIONS[1][1],
+            ("scan", "diff", "verify", "parse_db"),
+        )
         self.assertNotIn(
             gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
         self.assertEqual(
@@ -1313,7 +1396,7 @@ class TestGuiArguments(unittest.TestCase):
         analysis_index = gui._TASK_MENU_ORDER.index("diff")
         self.assertEqual(
             gui._TASK_MENU_ORDER[analysis_index:analysis_index + 3],
-            ("diff", "check_hash", "check_format"),
+            ("diff", "verify", "parse_db"),
         )
 
     def test_standard_menu_groups_panel_and_advanced_entries(self):
@@ -1405,7 +1488,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "cascade"],
-            ["工具路径", "哈希比例", "扫描行为"],
+            ["工具路径", "哈希比例", "扫描行为", "核验行为"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
@@ -1417,7 +1500,7 @@ class TestGuiArguments(unittest.TestCase):
              if entry["kind"] == "command"],
             ["显示命令预览", "DAISY功能自检"],
         )
-        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 6])
+        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 3, 7])
         self.assertEqual(
             app.app_menu.options["background"], gui._MENU_BACKGROUND)
         self.assertEqual(len("工具路径"), 4)
@@ -1434,10 +1517,10 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             [entry["label"] for entry in app.hash_percentage_menu.entries
-             if entry["kind"] == "command"],
+            if entry["kind"] == "command"],
             [
-                "DBS-11 独立哈希抽验：1.0%",
-                "DBS-31 内容哈希抽样：1.0%",
+                "完整扫描独立抽验：1.0%",
+                "数据核验哈希抽样：1.0%",
                 "全部恢复默认比例",
             ],
         )
@@ -2010,7 +2093,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(set(gui._TASK_TOOLBAR_LABELS), set(all_keys))
         self.assertTrue(all(
-            len(label) == 6
+            len(label) <= gui._FORM_FIELD_TITLE_MAX_CHARS
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
         self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 12)
@@ -2248,15 +2331,15 @@ class TestGuiArguments(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_reopens_last_page_without_form_values(self):
         preferences = gui.default_gui_preferences()
-        preferences["last_task_key"] = "check_hash"
+        preferences["last_task_key"] = "verify"
         root, app = self._real_tk_app(preferences)
 
-        self.assertEqual(app.task.key, "check_hash")
+        self.assertEqual(app.task.key, "verify")
         self.assertEqual(app.saved_values, {})
         self.assertEqual(app.values["snapshot"].get(), "")
         self.assertEqual(app.values["root_map"].get("1.0", "end-1c"), "")
         self.assertEqual(
-            app.gui_preferences["last_task_key"], "check_hash")
+            app.gui_preferences["last_task_key"], "verify")
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_1080p_default_forms_fit_without_scrolling(self):
@@ -2663,6 +2746,30 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(checked, len(expected_specs))
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_binary_scan_setting_uses_amber_green_button(self):
+        root, app = self._real_tk_app()
+        app._select_task("scan", save_current=False)
+        root.update()
+        toggle = next(
+            widget for widget in self._tk_descendants(app.form_inner)
+            if (isinstance(widget, gui.BooleanToggleButton)
+                and getattr(widget, "_daisy_field_key", None)
+                == "collect_file_id")
+        )
+        self.assertTrue(toggle.get())
+        self.assertEqual(toggle.button.cget("background"), gui._GREEN_DARK)
+        toggle.button.invoke()
+        root.update()
+        self.assertFalse(toggle.get())
+        self.assertEqual(toggle.button.cget("background"), gui._AMBER)
+        self.assertIn("--no-file-id", app.preview_var.get())
+        toggle.button.invoke()
+        root.update()
+        self.assertTrue(toggle.get())
+        self.assertEqual(toggle.button.cget("background"), gui._GREEN_DARK)
+        self.assertNotIn("--no-file-id", app.preview_var.get())
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_reselecting_same_choice_keeps_visible_text(self):
         root, app = self._real_tk_app()
         app._select_task("full_scan", save_current=False)
@@ -2861,6 +2968,11 @@ class TestGuiArguments(unittest.TestCase):
             for task in gui.TASKS
             for spec in task.fields
             if spec.kind in choice_kinds and not spec.top_menu
+            and not (
+                spec.kind == "choice_flag"
+                and {value for _label, value in spec.choices}
+                == {False, True}
+            )
         ]
         checked = 0
         for task, spec in expected_specs:
@@ -3099,7 +3211,10 @@ class TestGuiArguments(unittest.TestCase):
                 gui.task_display_title(task_key),
                 gui._TASK_TOOLBAR_LABELS[task_key],
             )
-            self.assertEqual(len(gui.task_display_title(task_key)), 6)
+            self.assertLessEqual(
+                len(gui.task_display_title(task_key)),
+                gui._FORM_FIELD_TITLE_MAX_CHARS,
+            )
         self.assertEqual(
             gui.task_display_title(gui._PROJECT_SELF_TEST_KEY),
             "DAISY功能自检",
@@ -3110,12 +3225,10 @@ class TestGuiArguments(unittest.TestCase):
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
                 "ENV-01  运行环境检测",
-                "DBS-11  完整档案扫描",
-                "DBS-12  快速档案扫描",
+                "DBS-10  档案扫描",
                 "DBS-21  快照变更分析",
-                "DBS-31  内容哈希核验",
-                "DBS-32  文件结构核验",
-                "DBS-41  结果报告导出",
+                "DBS-30  数据核验",
+                "DBS-41  数据库解析",
                 "STG-11  硬盘信息登记",
             ],
         )
@@ -3154,7 +3267,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(entry.COMMANDS["verify"][0], verify_module)
         self.assertTrue(os.path.isfile(os.path.join(
             _MODULE, verify_module + ".py")))
-        self.assertEqual(len(gui._TASK_MENU_ORDER), 8)
+        self.assertEqual(len(gui._TASK_MENU_ORDER), 6)
+        self.assertEqual(gui.TASK_BY_KEY["scan"].command, "scan")
+        self.assertEqual(gui.TASK_BY_KEY["verify"].command, "verify")
+        self.assertEqual(gui.TASK_BY_KEY["parse_db"].command, "parse-db")
         self.assertEqual(
             sorted(
                 name for name in os.listdir(_MODULE)
@@ -3302,10 +3418,11 @@ class TestGuiArguments(unittest.TestCase):
         detail, fraction = gui.progress_detail({
             "done": 2, "total": 4, "bytes_done": 1024,
             "bytes_total": 4096, "elapsed": 5, "eta": 10,
-            "errors": 1,
+            "errors": 1, "not_applicable": 7, "skipped": 3,
         })
         self.assertEqual(fraction, 25.0)
-        for token in ("2/4", "ETA", "错误 1"):
+        for token in (
+                "2/4", "ETA", "错误 1", "不适用 7", "跳过 3"):
             self.assertIn(token, detail)
 
     def test_progress_target_uses_full_current_root_for_single_and_queue(self):

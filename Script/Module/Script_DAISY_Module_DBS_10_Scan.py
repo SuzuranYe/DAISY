@@ -187,6 +187,7 @@ class ScanReporter:
                     ("processed", "处理"), ("files", "文件"),
                     ("matched", "一致"), ("mismatched", "不一致"),
                     ("error", "错误"), ("timeout", "超时"),
+                    ("not_applicable", "不适用"), ("skipped", "跳过"),
                 ):
                     if clean.get(key) is not None:
                         summary_parts.append(f"{label} {clean[key]}")

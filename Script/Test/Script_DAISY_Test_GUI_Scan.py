@@ -28,6 +28,7 @@ sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR]
 import Script_DAISY_GUI as gui
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_09_Run as dbrun
+import Script_DAISY_Test_Tree as tree_fixture
 
 
 _RUNTIME_ROOT = os.path.join(
@@ -273,6 +274,23 @@ class TestScanControlProtocol(unittest.TestCase):
         app._refresh_scan_controls()
         self.assertEqual(app.save_scan_button.options["state"], "normal")
         self.assertEqual(app.stop_button.options["state"], "normal")
+
+    def test_verify_can_pause_and_stop_but_cannot_save_resume_state(self) \
+            -> None:
+        app = object.__new__(gui.DaisyApp)
+        app.process = object()
+        app.process_task_key = "verify"
+        app.pause_scan_button = _ButtonProbe()
+        app.mini_pause_button = _ButtonProbe()
+        app.save_scan_button = _ButtonProbe()
+        app.mini_save_button = _ButtonProbe()
+        app.stop_button = _ButtonProbe()
+        app.mini_stop_button = _ButtonProbe()
+        app.scan_control_state = "running"
+        app._refresh_scan_controls()
+        self.assertEqual(app.pause_scan_button.options["state"], "normal")
+        self.assertEqual(app.stop_button.options["state"], "normal")
+        self.assertEqual(app.save_scan_button.options["state"], "disabled")
 
     def test_terminal_event_closes_owned_control_pipe(self) -> None:
         app, process = self._control_app()
@@ -673,11 +691,13 @@ class TestRealTkScanControls(unittest.TestCase):
             patch.object(gui, "save_gui_preferences"),
         ):
             self.app._prepare_latest_recovery()
-        self.assertEqual(self.app.task.key, "full_scan")
+        self.assertEqual(self.app.task.key, "scan")
         self.assertEqual(
-            self.app.saved_values["full_scan"]["start_mode"], "resume")
+            self.app.saved_values["scan"]["scan_mode"], "full")
         self.assertEqual(
-            self.app.saved_values["full_scan"]["resume"],
+            self.app.saved_values["scan"]["start_mode"], "resume")
+        self.assertEqual(
+            self.app.saved_values["scan"]["resume"],
             os.path.abspath(partial),
         )
 
@@ -711,6 +731,156 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertEqual(
             float(self.app.queue_progress_bar.cget("value")), 50.0)
 
+    def test_database_parse_detection_populates_modules_and_refits_1080p(
+        self,
+    ) -> None:
+        temporary = tempfile.TemporaryDirectory(
+            prefix="parse_gui_", dir=_RUNTIME_ROOT)
+        self.addCleanup(temporary.cleanup)
+        tree = os.path.join(temporary.name, "Tree")
+        snapshots = os.path.join(temporary.name, "Snapshots")
+        os.makedirs(tree)
+        os.makedirs(snapshots)
+        tree_fixture.write(tree, "中文目录/样本.txt", b"gui-parse")
+        snapshot = tree_fixture.build_snapshot(
+            tree, snapshots, "GuiParse", label="解析夹具",
+            hash_mode="none",
+        )
+
+        self.app._select_task("parse_db", save_current=False)
+        self.app.values["database"].set(snapshot)
+        self.app._detect_parse_database()
+        deadline = time.monotonic() + 10
+        while self.app.parse_detection_active \
+                and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(0.01)
+        self.root.update()
+
+        self.assertFalse(self.app.parse_detection_active)
+        self.assertIsNotNone(self.app.parse_inspection)
+        self.assertEqual(
+            self.app.parse_inspection.compatibility_mode,
+            "v1.4.1-compatible",
+        )
+        self.assertTrue(self.app.settings_expanded)
+        self.assertFalse(self.app.progress_expanded)
+        self.assertFalse(self.app.log_expanded)
+        pool = self.app.values["parse_modules"]
+        self.assertIsInstance(pool, gui.ParseModulePool)
+        self.assertFalse(pool.editable)
+        self.assertIn("--preset human-summary", self.app.preview_var.get())
+        self.assertIn("--format html", self.app.preview_var.get())
+        self.assertIn("--format xlsx", self.app.preview_var.get())
+        bounds = self.app.form_canvas.bbox("all")
+        content_height = 0 if bounds is None else int(bounds[3] - bounds[1])
+        self.assertLessEqual(
+            content_height, int(self.app.form_canvas.winfo_height()))
+
+        values = self.app._collect_values()
+        self.assertEqual(
+            gui.validate_values(
+                "parse_db", values,
+                parse_inspection=self.app.parse_inspection,
+            ),
+            [],
+        )
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        preset = next(
+            widget for widget in descendants(self.app.form_inner)
+            if (isinstance(widget, gui.ttk.Combobox)
+                and getattr(widget, "_daisy_field_key", None) == "preset")
+        )
+        preset.current(2)
+        preset.event_generate("<<ComboboxSelected>>")
+        self.root.update()
+        pool = self.app.values["parse_modules"]
+        self.assertTrue(pool.editable)
+        pool.clear_selection()
+        self.assertTrue(gui.validate_values(
+            "parse_db", self.app._collect_values(),
+            parse_inspection=self.app.parse_inspection,
+        ))
+        pool.select_all()
+        self.assertEqual(gui.validate_values(
+            "parse_db", self.app._collect_values(),
+            parse_inspection=self.app.parse_inspection,
+        ), [])
+        self.assertIn("--include", self.app.preview_var.get())
+
+        base_scaling = float(self.root.tk.call("tk", "scaling"))
+        families = self.app._available_ui_font_families()[:2]
+        geometries = ((1840, 1020), (1440, 900), (1280, 720), (1100, 850))
+        combinations = 0
+        try:
+            for scaling in (1.0, 1.25, 1.5):
+                self.root.tk.call("tk", "scaling", base_scaling * scaling)
+                for family in families:
+                    for _label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
+                        self.app._set_ui_font(
+                            family=family, size_delta=size_delta,
+                            persist=False,
+                        )
+                        for width, height in geometries:
+                            self.root.geometry(f"{width}x{height}+0+0")
+                            self.root.update()
+                            context = (
+                                f"scale={scaling} family={family} "
+                                f"size={size_delta} geometry={width}x{height}"
+                            )
+                            content_height = self.app._form_content_height()
+                            viewport_height = self.app.form_canvas.winfo_height()
+                            if content_height <= viewport_height:
+                                self.assertFalse(
+                                    self.app.form_scroll.winfo_manager(), context)
+                            else:
+                                self.assertEqual(
+                                    self.app.form_scroll.winfo_manager(),
+                                    "pack", context,
+                                )
+                                self.app.form_canvas.yview_moveto(1.0)
+                                self.root.update_idletasks()
+                                self.assertGreater(
+                                    float(self.app.form_canvas.yview()[0]),
+                                    0.0, context,
+                                )
+                                self.app.form_canvas.yview_moveto(0.0)
+                            pool = self.app.values["parse_modules"]
+                            host_left = pool.card_host.winfo_rootx()
+                            host_right = host_left + pool.card_host.winfo_width()
+                            for card in pool.cards:
+                                self.assertGreaterEqual(
+                                    card.winfo_rootx(), host_left, context)
+                                self.assertLessEqual(
+                                    card.winfo_rootx() + card.winfo_width(),
+                                    host_right + 1, context,
+                                )
+                                checkbox = next(
+                                    child for child in card.winfo_children()
+                                    if isinstance(child, gui.tk.Checkbutton)
+                                )
+                                self.assertGreaterEqual(
+                                    checkbox.winfo_width() + 1,
+                                    checkbox.winfo_reqwidth(), context,
+                                )
+                            combinations += 1
+        finally:
+            self.root.tk.call("tk", "scaling", base_scaling)
+            self.app._set_ui_font(
+                family=gui._UI_FONT_FAMILY, size_delta=0,
+                persist=False,
+            )
+        self.assertEqual(
+            combinations,
+            3 * len(families) * len(gui._UI_FONT_SIZE_OPTIONS)
+            * len(geometries),
+        )
+
 
 class TestRecoveryPreferences(unittest.TestCase):
     def test_recovery_pointer_round_trip_does_not_persist_form_values(self) \
@@ -726,7 +896,9 @@ class TestRecoveryPreferences(unittest.TestCase):
             gui.save_gui_preferences(preferences, path)
             loaded = gui.load_gui_preferences(path)
         self.assertEqual(loaded["recovery_scans"], [{
-            "task_key": "full_scan", "partial": partial}])
+            "task_key": "scan", "scan_mode": "full",
+            "partial": partial,
+        }])
         self.assertNotIn("saved_values", loaded)
         self.assertNotIn("roots", loaded)
 

@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 _TCL_RUNTIME_HANDLE: object | None = None
@@ -113,6 +113,7 @@ sys.path.insert(0, _LIB_DIR)
 
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as metadata
+import Script_DAISY_Lib_DBS_07_Parse as dbparse
 import Script_DAISY_Lib_DBS_09_Run as dbrun
 import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 import Script_DAISY_Lib_STG_01_Core as storage_core
@@ -160,8 +161,17 @@ _PROJECT_TEST_FILES = (
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
 _PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 _MAX_ROOT_DIRECTORIES = 9
-_ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))
-_SCAN_TASK_KEYS = frozenset(("full_scan", "quick_scan"))
+_LEGACY_SCAN_TASK_KEYS = frozenset(("full_scan", "quick_scan"))
+_SCAN_TASK_KEYS = frozenset((*_LEGACY_SCAN_TASK_KEYS, "scan"))
+_ROOT_BATCH_TASKS = _SCAN_TASK_KEYS
+_CONTROL_TASK_KEYS = frozenset((*_SCAN_TASK_KEYS, "verify"))
+_LEGACY_TASK_PAGE_MAP = {
+    "full_scan": "scan",
+    "quick_scan": "scan",
+    "check_hash": "verify",
+    "check_format": "verify",
+    "export_report": "parse_db",
+}
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
 _DEFAULT_WINDOW_SIZE = (1920, 1080)
@@ -208,14 +218,17 @@ _TASK_TOOL_NAMES = {
     "env_check": (
         "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl"),
     "full_scan": ("exiftool", "ffprobe", "sevenzip", "powershell"),
+    "scan": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "check_format": ("exiftool", "ffprobe", "sevenzip"),
     "check_hash": ("powershell",),
+    "verify": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "storage_list": ("smartctl", "powershell"),
     "storage_collect": ("smartctl", "powershell"),
 }
 _RESULT_DIRECTORY_TASKS = frozenset((
     "env_check", "full_scan", "quick_scan", "diff", "check_hash",
-    "check_format", "export_report", "storage_collect",
+    "check_format", "export_report", "scan", "verify", "parse_db",
+    "storage_collect",
 ))
 _STG_ADMIN_TASKS = frozenset(("storage_list", "storage_collect"))
 _PROJECT_CACHE_DIR_NAMES = frozenset((
@@ -303,6 +316,9 @@ def load_gui_preferences(
         preferences["confirm_close_when_idle"] = confirm_close
 
     last_task_key = loaded.get("last_task_key")
+    if isinstance(last_task_key, str):
+        last_task_key = _LEGACY_TASK_PAGE_MAP.get(
+            last_task_key, last_task_key)
     if (isinstance(last_task_key, str)
             and last_task_key in _RESTORABLE_TASK_KEYS):
         preferences["last_task_key"] = last_task_key
@@ -318,12 +334,23 @@ def load_gui_preferences(
             partial = item.get("partial")
             if task_key not in _SCAN_TASK_KEYS or not isinstance(partial, str):
                 continue
+            scan_mode = str(item.get("scan_mode") or "").strip().casefold()
+            if task_key == "full_scan":
+                scan_mode = "full"
+            elif task_key == "quick_scan":
+                scan_mode = "quick"
+            if scan_mode not in ("full", "quick"):
+                scan_mode = "full"
             partial = partial.strip()
             canonical = os.path.normcase(os.path.abspath(partial))
             if (not partial.lower().endswith(".partial.sqlite")
                     or not partial or canonical in seen_paths):
                 continue
-            validated.append({"task_key": task_key, "partial": partial})
+            validated.append({
+                "task_key": "scan",
+                "scan_mode": scan_mode,
+                "partial": partial,
+            })
             seen_paths.add(canonical)
         preferences["recovery_scans"] = validated
     return preferences
@@ -388,6 +415,9 @@ _TASK_ACCENTS = {
     "check_hash": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "diff": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "export_report": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "scan": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "verify": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
+    "parse_db": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "storage_list": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
     "storage_collect": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
 }
@@ -667,6 +697,12 @@ def progress_detail(payload: dict[str, object]) -> tuple[str, float | None]:
     errors = int(payload.get("errors") or 0)
     if errors:
         parts.append(f"错误 {errors:,}")
+    not_applicable = int(payload.get("not_applicable") or 0)
+    if not_applicable:
+        parts.append(f"不适用 {not_applicable:,}")
+    skipped = int(payload.get("skipped") or 0)
+    if skipped:
+        parts.append(f"跳过 {skipped:,}")
     return " · ".join(parts) or "正在处理…", fraction
 
 
@@ -919,8 +955,10 @@ def run_job_target_text(task_key: str, job: RunJob) -> str:
     field_key = {
         "full_scan": "roots",
         "quick_scan": "roots",
+        "scan": "roots",
         "check_hash": "root_map",
         "check_format": "root_map",
+        "verify": "root_map",
         "diff": "map_root",
     }.get(task_key)
     if field_key:
@@ -933,11 +971,7 @@ def run_job_target_text(task_key: str, job: RunJob) -> str:
             paths.append(str(root_path))
         if paths:
             return "；".join(paths)
-    if task_key == "full_scan":
-        resume = str(job.values.get("resume") or "").strip()
-        if resume:
-            return f"续传快照：{_absolute(resume)}"
-    if task_key == "quick_scan":
+    if task_key in _SCAN_TASK_KEYS:
         resume = str(job.values.get("resume") or "").strip()
         if resume:
             return f"续传快照：{_absolute(resume)}"
@@ -947,7 +981,8 @@ def run_job_target_text(task_key: str, job: RunJob) -> str:
             return f"PhysicalDrive{disk_number}"
     if task_key == "storage_list":
         return "本机物理硬盘"
-    for field in ("source_path", "snapshot", "old", "archive"):
+    for field in (
+            "database", "source_path", "snapshot", "old", "archive"):
         value = str(job.values.get(field) or "").strip()
         if value:
             return _absolute(value)
@@ -1602,12 +1637,219 @@ TASKS = (
     ),
 )
 
+
+def _task_definition(task_key: str) -> TaskSpec:
+    return next(task for task in TASKS if task.key == task_key)
+
+
+_UNIFIED_SCAN_FULL_ONLY = frozenset((
+    "metadata_storage", "format_validation", "format_sample_percent",
+    "raw_deep_validation", "hash_mode", "previous_snapshot",
+    "verify_percent", "map_root", "exiftool_path", "ffprobe_path",
+    "sevenzip_path", "powershell_path", "timeout_action", "retry_mode",
+    "show_current_file",
+))
+
+
+def _unified_scan_fields() -> tuple[FieldSpec, ...]:
+    fields: list[FieldSpec] = [FieldSpec(
+        "scan_mode", "扫描模式", None, "choice", "full",
+        choices=(("完整扫描（默认）", "full"), ("快速扫描", "quick")),
+        help="完整扫描可采集元数据、哈希并选配格式校验；快速扫描只登记目录与文件属性。",
+        section="扫描方式",
+    )]
+    for original in _task_definition("full_scan").fields:
+        spec = original
+        if spec.key == "start_mode":
+            spec = replace(
+                spec,
+                choices=(("新建扫描（默认）", "new"),
+                         ("续传未完成的 partial 快照", "resume")),
+                help="续传以 partial 快照中的冻结配置为准；页面模式必须与原扫描一致。",
+                section="扫描方式",
+            )
+        if spec.key == "output_dir":
+            spec = replace(spec, section="任务输入")
+        if spec.key in _UNIFIED_SCAN_FULL_ONLY:
+            spec = replace(
+                spec,
+                active_when=(("scan_mode", ("full",)), *spec.active_when),
+            )
+        fields.append(spec)
+    return tuple(fields)
+
+
+_VERIFY_HASH_SAMPLE = (("hash_scope", ("sample",)),)
+_VERIFY_HASH_ENABLED = (("hash_scope", ("sample", "all")),)
+_VERIFY_FORMAT_SAMPLE = (("format_scope", ("sample",)),)
+_VERIFY_FORMAT_ENABLED = (("format_scope", ("sample", "all")),)
+
+
+TASKS = (*TASKS,
+    TaskSpec(
+        "scan", "scan", "DBS-10  档案扫描", "档案扫描",
+        "先选择完整或快速模式，再设置本次扫描需要的功能。",
+        "档案只读 · 可续传 · 生成快照",
+        _unified_scan_fields(),
+    ),
+    TaskSpec(
+        "verify", "verify", "DBS-30  数据核验", "数据核验",
+        "对一个封存快照执行可组合的哈希、格式与 RAW 深度核验。",
+        "快照只读 · 可暂停 · 分板块报告",
+        (
+            FieldSpec(
+                "snapshot", "封存快照", "--snapshot", "file",
+                required=True, filetypes=_SQLITE_TYPES, section="核验输入",
+            ),
+            FieldSpec(
+                "root_map", "档案根目录", "--root", "multimapdir",
+                required=True,
+                help="单根快照可直接添加当前目录；多根快照逐项填写 label=当前路径。",
+                section="核验输入",
+            ),
+            FieldSpec(
+                "hash_scope", "哈希核验", "--hash", "choice", "sample",
+                choices=(("按比例抽样（默认）", "sample"),
+                         ("全量重新计算", "all"), ("关闭", "off")),
+                help="全量会读取所有有基准哈希的文件；关闭后仍可单独进行格式核验。",
+                section="核验内容",
+            ),
+            FieldSpec(
+                "hash_sample_percent", "哈希比例",
+                "--hash-sample-percent", default="1.0",
+                help="哈希抽样比例必须大于 0 且不超过 100。",
+                section="哈希比例", top_menu=True,
+                active_when=_VERIFY_HASH_SAMPLE,
+            ),
+            FieldSpec(
+                "format_scope", "格式校验", "--format", "choice", "off",
+                choices=(("关闭（默认）", "off"),
+                         ("按比例抽样", "sample"), ("全部校验", "all")),
+                help="未识别或不支持的类型只计数，不作为文件问题。",
+                section="核验内容",
+            ),
+            FieldSpec(
+                "format_sample_percent", "格式比例",
+                "--format-sample-percent", default="10.0",
+                help="格式抽样比例必须大于 0 且不超过 100。",
+                section="格式比例", top_menu=True,
+                active_when=_VERIFY_FORMAT_SAMPLE,
+            ),
+            FieldSpec(
+                "raw_deep_validation", "RAW深检",
+                "--raw-deep-validation", "choice_flag", False,
+                choices=(("关闭（默认）", False),
+                         ("启用隔离深度解码", True)),
+                flag_value=True,
+                help="仅在格式校验范围内用独立 rawpy／LibRaw 子进程解码；默认关闭。",
+                section="格式设置", active_when=_VERIFY_FORMAT_ENABLED,
+            ),
+            FieldSpec(
+                "timeout_action", "超时默认", "--timeout-action",
+                "choice", "continue_waiting",
+                choices=(("继续等待（默认）", "continue_waiting"),
+                         ("跳过并记录", "skip_and_record"),
+                         ("停止并保留报告", "stop_and_resume")),
+                help="达到动态阈值后的默认处置；未选择时继续等待。",
+                section="高级设置", top_menu=True,
+            ),
+            FieldSpec(
+                "show_current_file", "当前文件", "--show-current-file",
+                "choice_flag", False,
+                choices=(("关闭（默认）", False), ("显示", True)),
+                flag_value=True,
+                help="在进度区显示正在核验的相对路径。",
+                section="高级设置", top_menu=True,
+            ),
+            FieldSpec(
+                "report_dir", "报告目录", "--report-dir", "dir",
+                _DEFAULT_REPORTS_DIR,
+                help="生成面向人工阅读、按核验类型分板块的报告。",
+                section="结果输出",
+            ),
+            FieldSpec(
+                "powershell_path", "系统工具", "--powershell-path", "file",
+                help="哈希核验使用；通常留空并自动发现。",
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
+                active_when=_VERIFY_HASH_ENABLED,
+            ),
+            FieldSpec(
+                "exiftool_path", "Exif工具", "--exiftool-path", "file",
+                help="格式核验使用；通常留空并自动发现。",
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
+                active_when=_VERIFY_FORMAT_ENABLED,
+            ),
+            FieldSpec(
+                "ffprobe_path", "视频工具", "--ffprobe-path", "file",
+                help="格式核验使用；通常留空并自动发现。",
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
+                active_when=_VERIFY_FORMAT_ENABLED,
+            ),
+            FieldSpec(
+                "sevenzip_path", "压缩工具", "--sevenzip-path", "file",
+                help="格式核验使用；通常留空并自动发现。",
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
+                active_when=_VERIFY_FORMAT_ENABLED,
+            ),
+            FieldSpec(
+                "force", "指纹降级", "--force", "choice_flag", False,
+                choices=(("不启用（默认）", False), ("启用", True)),
+                flag_value=True,
+                help="只放宽文件名指纹缺失；指纹不符仍拒绝。",
+                section="高级设置", top_menu=True,
+            ),
+        ),
+    ),
+    TaskSpec(
+        "parse_db", "parse-db", "DBS-41  数据库解析", "数据库解析",
+        "识别快照或 Diff 数据库，再选择需要的人读内容与输出格式。",
+        "数据库只读 · 模块选择 · HTML/XLSX/CSV/JSONL",
+        (
+            FieldSpec(
+                "database", "输入数据库", "--database", "parse_database",
+                required=True, filetypes=_SQLITE_TYPES, section="解析输入",
+                help="选择 v1.4.1 或更新版本的封存快照／Diff 数据库；只读识别。",
+            ),
+            FieldSpec(
+                "preset", "内容预设", "--preset", "choice",
+                "human-summary",
+                choices=(("人工摘要（默认）", "human-summary"),
+                         ("完整审计", "full-audit"),
+                         ("自定义模块", "custom")),
+                help="预设自动选择可用模块；自定义时可逐项勾选。",
+                section="解析内容",
+            ),
+            FieldSpec(
+                "parse_modules", "内容模块", "--include", "parse_modules",
+                help="只有状态为可用且有记录的模块可以导出；NULL／未执行不伪装成结果。",
+                section="解析内容",
+            ),
+            FieldSpec(
+                "formats", "输出格式", "--format", "multi_choice",
+                "html\nxlsx", required=True,
+                choices=(("HTML 阅读报告", "html"),
+                         ("Excel 工作簿", "xlsx"),
+                         ("CSV 技术表", "csv"),
+                         ("JSONL 原始流", "jsonl")),
+                help="HTML 与 XLSX 面向阅读；CSV／JSONL 面向筛选、脚本和审计。",
+                section="输出设置",
+            ),
+            FieldSpec(
+                "output_dir", "报告目录", "--output-dir", "dir",
+                _DEFAULT_REPORTS_DIR,
+                help="默认写入项目 Output\\Reports；正式报告采用临时目录后原子发布。",
+                section="结果输出",
+            ),
+        ),
+    ),
+)
+
 TASK_BY_KEY = {task.key: task for task in TASKS}
 _RESTORABLE_TASK_KEYS = frozenset(
     task.key for task in TASKS if task.key != "storage_list")
 _HASH_PERCENTAGE_MENU_FIELDS = (
-    ("full_scan", "verify_percent", "DBS-11 独立哈希抽验", True),
-    ("check_hash", "sample_percent", "DBS-31 内容哈希抽样", False),
+    ("scan", "verify_percent", "完整扫描独立抽验", True),
+    ("verify", "hash_sample_percent", "数据核验哈希抽样", False),
 )
 _TASK_MENU_SECTIONS = (
     (
@@ -1616,10 +1858,7 @@ _TASK_MENU_SECTIONS = (
     ),
     (
         "数据",
-        (
-            "full_scan", "quick_scan", "diff",
-            "check_hash", "check_format", "export_report",
-        ),
+        ("scan", "diff", "verify", "parse_db"),
     ),
     ("硬盘", ("storage_collect",)),
 )
@@ -1628,9 +1867,7 @@ _TASK_MENU_SECTION_COLOURS = {
     "数据": ("Data", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
     "硬盘": ("Storage", _RED, _RED_DEEP, _RED_SOFT),
 }
-_TASK_MENU_SEPARATOR_AFTER = frozenset((
-    "env_check", "quick_scan", "diff", "check_format", "export_report",
-))
+_TASK_MENU_SEPARATOR_AFTER = frozenset(("env_check", "scan", "diff", "verify"))
 _TASK_MENU_ORDER = tuple(
     task_key
     for _label, task_keys in _TASK_MENU_SECTIONS
@@ -1648,12 +1885,10 @@ _TASK_TOOLBAR_ROWS = (
 )
 _TASK_TOOLBAR_LABELS = {
     "env_check": "运行环境检测",
-    "full_scan": "完整档案扫描",
-    "quick_scan": "快速档案扫描",
-    "diff": "快照变更分析",
-    "check_hash": "内容哈希核验",
-    "check_format": "文件结构核验",
-    "export_report": "结果报告导出",
+    "scan": "档案扫描",
+    "diff": "快照对比",
+    "verify": "数据核验",
+    "parse_db": "数据库解析",
     "storage_collect": "硬盘信息登记",
 }
 
@@ -1746,12 +1981,16 @@ def _field_active(spec: FieldSpec, values: dict[str, object]) -> bool:
     if not active:
         return False
     if spec.key == "timeout_action":
+        hash_mode = values.get("hash_scope", values.get("hash_mode"))
+        format_mode = values.get(
+            "format_scope", values.get("format_validation"))
         return (
-            values.get("hash_mode") in ("incremental", "full")
+            hash_mode in ("sample", "all", "incremental", "full")
             or (
                 bool(values.get("raw_deep_validation"))
-                and values.get("format_validation") in ("sample", "all")
+                and format_mode in ("sample", "all")
             )
+            or format_mode in ("sample", "all")
         )
     return True
 
@@ -1770,20 +2009,39 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
     values = _task_values(task, values)
     args = [task.command]
     if task_key in _SCAN_TASK_KEYS:
-        mode = "full" if task_key == "full_scan" else "quick"
+        mode = (
+            str(values.get("scan_mode") or "full")
+            if task_key == "scan" else
+            "full" if task_key == "full_scan" else "quick"
+        )
         args += ["--mode", mode]
         if values.get("start_mode") == "resume":
             resume = str(values.get("resume") or "").strip()
             if resume:
                 args += ["--resume", _absolute(resume), "--manual-resume"]
             retry_mode = str(values.get("retry_mode") or "").strip()
-            if task_key == "full_scan" and retry_mode:
+            if mode == "full" and retry_mode:
                 args += ["--retry-mode", retry_mode]
-            if (task_key == "full_scan"
-                    and bool(values.get("show_current_file"))):
+            if mode == "full" and bool(values.get("show_current_file")):
                 args.append("--show-current-file")
             args.append("--control-stdin")
             return args
+    if task_key == "parse_db":
+        database = str(values.get("database") or "").strip()
+        if database:
+            args += ["--database", _absolute(database)]
+        preset = str(values.get("preset") or "human-summary").strip()
+        if preset:
+            args += ["--preset", preset]
+        if preset == "custom":
+            for module_id in _lines(values.get("parse_modules")):
+                args += ["--include", module_id]
+        for format_id in _lines(values.get("formats")):
+            args += ["--format", format_id]
+        output_dir = str(values.get("output_dir") or "").strip()
+        if output_dir:
+            args += ["--output-dir", _absolute(output_dir)]
+        return args
     if task_key == "export_report":
         source_type = str(values.get("source_type") or "snapshot")
         source_path = str(values.get("source_path") or "").strip()
@@ -1822,7 +2080,8 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
                     if separator else current_path
                 )
                 args += [spec.flag, root_arg]
-        elif spec.kind in ("multidir", "multiline"):
+        elif spec.kind in (
+                "multidir", "multiline", "multi_choice", "parse_modules"):
             for item in _lines(value):
                 args += [spec.flag, item]
         else:
@@ -1835,7 +2094,7 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
                 continue
             if text:
                 args += [spec.flag, text]
-    if task_key in _SCAN_TASK_KEYS:
+    if task_key in _CONTROL_TASK_KEYS:
         args.append("--control-stdin")
     return args
 
@@ -1900,7 +2159,12 @@ def root_confirmation_text(
     return heading + "\n" + "\n".join(f"• {path}" for path in roots)
 
 
-def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
+def validate_values(
+    task_key: str,
+    values: dict[str, object],
+    *,
+    parse_inspection: dbparse.ParseDatabaseInspection | None = None,
+) -> list[str]:
     """返回适合直接展示给用户的参数问题。"""
     issues: list[str] = []
     task = TASK_BY_KEY[task_key]
@@ -1920,10 +2184,14 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
         if (values.get("start_mode") == "resume" and resume
                 and not resume.lower().endswith(".partial.sqlite")):
             issues.append("续传文件必须以 .partial.sqlite 结尾。")
-    if task_key == "full_scan" \
+    if task_key in ("full_scan", "scan") \
             and values.get("start_mode") == "new" \
             and bool(values.get("raw_deep_validation")) \
             and values.get("format_validation") not in ("sample", "all"):
+        issues.append("RAW 深度校验必须先启用抽样或全部格式校验。")
+    if task_key == "verify" \
+            and bool(values.get("raw_deep_validation")) \
+            and values.get("format_scope") not in ("sample", "all"):
         issues.append("RAW 深度校验必须先启用抽样或全部格式校验。")
     if task_key == "storage_collect":
         disk_numbers = _lines(values.get("disk_number"))
@@ -1936,6 +2204,13 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
             0.0, 100.0, False, False),
         ("check_format", "sample_percent"): (0.0, 100.0, False, False),
         ("check_hash", "sample_percent"): (0.0, 100.0, False, False),
+        ("scan", "verify_percent"): (0.0, 100.0, True, False),
+        ("scan", "format_sample_percent"): (
+            0.0, 100.0, False, False),
+        ("verify", "hash_sample_percent"): (
+            0.0, 100.0, False, False),
+        ("verify", "format_sample_percent"): (
+            0.0, 100.0, False, False),
     }
     for (rule_task, key), rule in numeric_rules.items():
         if rule_task != task_key or key not in active_keys:
@@ -2032,7 +2307,8 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
 
     input_files = {
         "previous_snapshot", "resume", "snapshot", "old", "new",
-        "source_path", "exiftool_path", "ffprobe_path", "sevenzip_path",
+        "source_path", "database", "exiftool_path", "ffprobe_path",
+        "sevenzip_path",
         "powershell_path", "smartctl_path", "archive",
     }
     for key in input_files:
@@ -2041,6 +2317,32 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
         raw = str(values.get(key) or "").strip()
         if raw and not os.path.isfile(_absolute(raw)):
             issues.append(f"文件不存在：{raw}")
+
+    if task_key == "parse_db" and not issues:
+        database = _absolute(str(values.get("database") or ""))
+        inspected_path = (
+            os.path.abspath(parse_inspection.descriptor.path)
+            if parse_inspection is not None else ""
+        )
+        if (parse_inspection is None
+                or os.path.normcase(inspected_path)
+                != os.path.normcase(database)):
+            issues.append("请先识别当前输入数据库，再选择解析内容。")
+        else:
+            preset = str(values.get("preset") or "human-summary")
+            include = (
+                _lines(values.get("parse_modules"))
+                if preset == "custom" else ()
+            )
+            try:
+                dbparse.plan_parse_export(
+                    parse_inspection,
+                    preset=preset,
+                    include=include,
+                    formats=_lines(values.get("formats")),
+                )
+            except core.PreflightError as exc:
+                issues.append(str(exc))
     return issues
 
 
@@ -2534,6 +2836,284 @@ class StorageDiskPool(tk.Frame):
         )
 
 
+class BooleanToggleButton(tk.Frame):
+    """用黄色关闭态与绿色启用态呈现真正的二元设置。"""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        choices: tuple[tuple[str, object], ...],
+        initial: object = False,
+        on_change=None,
+        enabled: bool = True,
+    ) -> None:
+        super().__init__(master, bg=_SURFACE)
+        by_value = {bool(value): label for label, value in choices}
+        self.false_label = by_value.get(False, "关闭")
+        self.true_label = by_value.get(True, "启用")
+        self.variable = tk.BooleanVar(value=bool(initial))
+        self.on_change = on_change
+        self.enabled = bool(enabled)
+        self.button = tk.Button(
+            self, relief="flat", bd=0, highlightthickness=1,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            anchor="center", padx=12, pady=5,
+            command=self._toggle,
+        )
+        self.button.pack(anchor="w")
+        self._refresh()
+
+    def _toggle(self) -> None:
+        if not self.enabled:
+            return
+        self.variable.set(not self.variable.get())
+        self._refresh()
+        if callable(self.on_change):
+            self.on_change()
+
+    def _refresh(self) -> None:
+        selected = bool(self.variable.get())
+        if not self.enabled:
+            background, foreground = _CONTROL, _MUTED
+            state = "disabled"
+        elif selected:
+            background, foreground = _GREEN_DARK, "white"
+            state = "normal"
+        else:
+            background, foreground = _AMBER, _AMBER_DEEP
+            state = "normal"
+        self.button.configure(
+            text=self.true_label if selected else self.false_label,
+            state=state,
+            bg=background,
+            fg=foreground,
+            activebackground=(
+                _GREEN_DEEP if selected else _AMBER_SOFT),
+            activeforeground=foreground,
+            disabledforeground=foreground,
+            highlightbackground=background,
+            highlightcolor=background,
+        )
+
+    def get(self) -> bool:
+        return bool(self.variable.get())
+
+
+class MultiChoicePool(tk.Frame):
+    """紧凑显示一组可同时勾选的稳定值。"""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        choices: tuple[tuple[str, object], ...],
+        initial: object = "",
+        on_change=None,
+    ) -> None:
+        super().__init__(master, bg=_SURFACE)
+        selected = set(_lines(initial))
+        self.choices = choices
+        self.on_change = on_change
+        self.variables: dict[str, tk.BooleanVar] = {}
+        self._images = {
+            "off": StorageDiskPool._checkbox_image(self, selected=False),
+            "on": StorageDiskPool._checkbox_image(self, selected=True),
+        }
+        for column, (label, raw_value) in enumerate(choices):
+            value = str(raw_value)
+            variable = tk.BooleanVar(value=value in selected)
+            self.variables[value] = variable
+            button = tk.Checkbutton(
+                self, text=label, variable=variable, command=self._notify,
+                image=self._images["off"], selectimage=self._images["on"],
+                indicatoron=False, compound="left",
+                bg=_SURFACE, activebackground=_GREEN_SOFT,
+                fg=_TEXT, activeforeground=_GREEN_DEEP,
+                selectcolor=_FIELD, font=("Microsoft YaHei UI", 9),
+                anchor="w", highlightthickness=0, bd=0,
+                relief="flat", offrelief="flat", overrelief="flat",
+                padx=5, pady=4,
+            )
+            button.grid(
+                row=0, column=column, sticky="ew",
+                padx=(0, 6 if column < len(choices) - 1 else 0),
+            )
+            self.grid_columnconfigure(column, weight=1, uniform="format")
+
+    def _notify(self) -> None:
+        if callable(self.on_change):
+            self.on_change()
+
+    def get(self) -> str:
+        return "\n".join(
+            str(value) for _label, value in self.choices
+            if self.variables[str(value)].get()
+        )
+
+
+class ParseModulePool(tk.Frame):
+    """按 Reader 能力状态展示数据库解析模块；不可用项不可伪选。"""
+
+    _STATE_LABELS = {
+        "available": "可用",
+        "empty": "无记录",
+        "unavailable": "不可用",
+        "incompatible": "不兼容",
+        "invalid": "无效",
+    }
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        inspection: dbparse.ParseDatabaseInspection | None,
+        preset: str,
+        initial: object = "",
+        on_change=None,
+    ) -> None:
+        super().__init__(
+            master, bg=_SURFACE, highlightbackground=_BORDER,
+            highlightthickness=1,
+        )
+        self.inspection = inspection
+        self.preset = str(preset or "human-summary")
+        self.editable = self.preset == "custom"
+        self.on_change = on_change
+        self.variables: dict[str, tk.BooleanVar] = {}
+        self.cards: list[tk.Frame] = []
+        self._images = {
+            "off": StorageDiskPool._checkbox_image(self, selected=False),
+            "on": StorageDiskPool._checkbox_image(self, selected=True),
+            "disabled": StorageDiskPool._checkbox_image(
+                self, selected=False, disabled=True),
+        }
+        if inspection is None:
+            tk.Label(
+                self, text="请先选择并识别输入数据库。",
+                bg=_SURFACE, fg=_MUTED, anchor="w",
+                font=("Microsoft YaHei UI", 9),
+            ).pack(fill="x", padx=10, pady=9)
+            return
+
+        requested = set(_lines(initial))
+        if not self.editable:
+            requested = {
+                module.spec.module_id for module in inspection.modules
+                if module.selectable and self.preset in module.spec.presets
+            }
+
+        actions = tk.Frame(self, bg=_SURFACE)
+        actions.pack(fill="x", padx=7, pady=(4, 2))
+        counts = inspection.module_state_counts
+        tk.Label(
+            actions,
+            text=(f"可选 {counts.get('available', 0)} · "
+                  f"无记录 {counts.get('empty', 0)} · "
+                  f"受限 {sum(counts.get(key, 0) for key in ('unavailable', 'incompatible', 'invalid'))}"),
+            bg=_SURFACE, fg=_MUTED, font=("Microsoft YaHei UI", 8),
+            anchor="e",
+        ).pack(side="right")
+        if self.editable:
+            all_button = ttk.Button(
+                actions, text="全选", style="FormAction.TButton",
+                width=_FORM_ACTION_BUTTON_WIDTH, command=self.select_all,
+            )
+            all_button.pack(side="left", padx=(0, 6))
+            clear_button = ttk.Button(
+                actions, text="取消选择", style="FormAction.TButton",
+                width=_FORM_ACTION_BUTTON_WIDTH, command=self.clear_selection,
+            )
+            clear_button.pack(side="left")
+
+        self.card_host = tk.Frame(self, bg=_SURFACE)
+        self.card_host.pack(fill="x", padx=8, pady=(0, 6))
+        for module in inspection.modules:
+            module_id = module.spec.module_id
+            selected = module.selectable and module_id in requested
+            variable = tk.BooleanVar(value=selected)
+            self.variables[module_id] = variable
+            card = tk.Frame(
+                self.card_host, bg=_SURFACE,
+                highlightbackground=_BORDER, highlightthickness=1,
+            )
+            card._daisy_module = module  # type: ignore[attr-defined]
+            selectable = module.selectable and self.editable
+            state_text = self._STATE_LABELS.get(module.state, module.state)
+            if module.row_count is not None:
+                state_text += f" · {module.row_count:,} 条"
+            checkbox = tk.Checkbutton(
+                card,
+                text=f"{module.spec.title} · {state_text}",
+                variable=variable, command=self._notify,
+                state="normal" if selectable else "disabled",
+                image=self._images["off"] if module.selectable
+                else self._images["disabled"],
+                selectimage=self._images["on"],
+                indicatoron=False, compound="left",
+                bg=_SURFACE, activebackground=_GREEN_SOFT,
+                fg=_TEXT, activeforeground=_GREEN_DEEP,
+                disabledforeground=_TEXT if module.selectable else _MUTED,
+                selectcolor=_FIELD, font=("Microsoft YaHei UI", 8),
+                anchor="w", justify="left",
+                highlightthickness=0, bd=0, relief="flat",
+                offrelief="flat", overrelief="flat", padx=4, pady=4,
+            )
+            checkbox.pack(fill="x")
+            detail = module.spec.description
+            if module.reason:
+                detail += "\n" + module.reason
+            attach_tooltip(card, detail)
+            attach_tooltip(checkbox, detail)
+            self.cards.append(card)
+        self.card_host.bind("<Configure>", self._layout_cards)
+        self.after_idle(self._layout_cards)
+
+    def _layout_cards(self, event: tk.Event | None = None) -> None:
+        width = int(event.width) if event is not None else self.card_host.winfo_width()
+        required = max(
+            (card.winfo_reqwidth() for card in self.cards), default=160)
+        columns = max(1, min(4, max(1, width) // max(1, required + 4)))
+        for column in range(4):
+            self.card_host.grid_columnconfigure(
+                column, weight=1 if column < columns else 0,
+                uniform="parse_module" if column < columns else "",
+            )
+        for index, card in enumerate(self.cards):
+            card.grid_forget()
+            card.grid(
+                row=index // columns, column=index % columns, sticky="nsew",
+                padx=(0, 4 if index % columns < columns - 1 else 0),
+                pady=(0, 4),
+            )
+
+    def _notify(self) -> None:
+        if callable(self.on_change):
+            self.on_change()
+
+    def select_all(self) -> None:
+        if self.inspection is None or not self.editable:
+            return
+        for module in self.inspection.modules:
+            self.variables[module.spec.module_id].set(module.selectable)
+        self._notify()
+
+    def clear_selection(self) -> None:
+        if not self.editable:
+            return
+        for variable in self.variables.values():
+            variable.set(False)
+        self._notify()
+
+    def get(self) -> str:
+        if self.inspection is None:
+            return ""
+        return "\n".join(
+            module.spec.module_id for module in self.inspection.modules
+            if self.variables[module.spec.module_id].get()
+        )
+
+
 def _console_python() -> str:
     executable = os.path.abspath(sys.executable)
     if os.path.basename(executable).lower() == "pythonw.exe":
@@ -2875,7 +3455,8 @@ class DaisyApp:
             self.gui_preferences["last_task_key"])]
         self.values: dict[
             str, tk.Variable | tk.Text | DirectoryListEditor
-            | StorageDiskPool] = {}
+            | StorageDiskPool | BooleanToggleButton | MultiChoicePool
+            | ParseModulePool] = {}
         self.saved_values: dict[str, dict[str, object]] = {}
         self.task_menu_entries: dict[str, tuple[tk.Menu, int]] = {}
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
@@ -2892,6 +3473,11 @@ class DaisyApp:
         self.is_administrator = is_windows_administrator()
         self.storage_disk_choices: tuple[tuple[str, str], ...] = ()
         self.storage_disk_options: tuple[StorageDiskOption, ...] = ()
+        self.parse_inspection: dbparse.ParseDatabaseInspection | None = None
+        self.parse_inspection_path = ""
+        self.parse_detection_generation = 0
+        self.parse_detection_active = False
+        self.parse_detect_button: ttk.Button | None = None
         self._work_progress_indeterminate = False
         self.current_stage_index = 0
         self.current_stage_total = 0
@@ -3237,9 +3823,24 @@ class DaisyApp:
         self.recovery_use_button.configure(state=state)
         self.recovery_ignore_button.configure(state=state)
 
-    def _add_recovery_scan(self, task_key: str, partial: str) -> None:
+    def _add_recovery_scan(
+        self, task_key: str, partial: str, scan_mode: str | None = None,
+    ) -> None:
         if task_key not in _SCAN_TASK_KEYS or not partial:
             return
+        if task_key == "full_scan":
+            scan_mode = "full"
+        elif task_key == "quick_scan":
+            scan_mode = "quick"
+        elif scan_mode not in ("full", "quick"):
+            if self.run_jobs and self.run_job_index >= 0:
+                scan_mode = str(self.run_jobs[
+                    self.run_job_index].values.get("scan_mode") or "full")
+            else:
+                scan_mode = str(self.saved_values.get(
+                    "scan", {}).get("scan_mode") or "full")
+        if scan_mode not in ("full", "quick"):
+            scan_mode = "full"
         normalized = os.path.abspath(partial)
         self.recovery_scans = [
             record for record in self.recovery_scans
@@ -3247,7 +3848,8 @@ class DaisyApp:
                 str(record.get("partial") or ""), normalized)
         ]
         self.recovery_scans.append({
-            "task_key": task_key,
+            "task_key": "scan",
+            "scan_mode": scan_mode,
             "partial": normalized,
         })
         self.recovery_scans = self.recovery_scans[-20:]
@@ -3269,7 +3871,10 @@ class DaisyApp:
         if not self.recovery_scans or self._task_is_active():
             return
         record = self.recovery_scans[-1]
-        task_key = str(record["task_key"])
+        task_key = "scan"
+        scan_mode = str(record.get("scan_mode") or "full")
+        if scan_mode not in ("full", "quick"):
+            scan_mode = "full"
         partial = str(record["partial"])
         if not messagebox.askyesno(
                 "准备恢复扫描",
@@ -3278,6 +3883,7 @@ class DaisyApp:
                 icon="question", parent=self.root):
             return
         self.saved_values[task_key] = {
+            "scan_mode": scan_mode,
             "start_mode": "resume",
             "resume": partial,
         }
@@ -3806,13 +4412,66 @@ class DaisyApp:
         )
         self.scan_raw_menu_index = int(format_menu.index("end"))
         scan_behavior_menu.add_cascade(
-            label="Full 格式校验", menu=format_menu)
+            label="完整扫描格式校验", menu=format_menu)
         advanced_menu.add_cascade(
             label="扫描行为", menu=scan_behavior_menu)
         scan_behavior_index = advanced_menu.index("end")
         if scan_behavior_index is not None:
             self.advanced_locked_menu_entries.append(
                 int(scan_behavior_index))
+
+        verify_behavior_menu = tk.Menu(
+            advanced_menu, **base_menu_options)
+        self.verify_behavior_menu = verify_behavior_menu
+        verify_timeout_menu = tk.Menu(
+            verify_behavior_menu, **base_menu_options)
+        self.verify_timeout_action_var = tk.StringVar(
+            value="continue_waiting")
+        for label, value in (
+                ("继续等待（默认）", "continue_waiting"),
+                ("跳过并记录", "skip_and_record"),
+                ("停止并保留记录", "stop_and_resume")):
+            verify_timeout_menu.add_radiobutton(
+                label=label,
+                variable=self.verify_timeout_action_var,
+                value=value,
+                command=lambda selected=value:
+                self._set_verify_advanced_value(
+                    "timeout_action", selected),
+                selectcolor=_UNIFIED_ACTION_BACKGROUND,
+            )
+        verify_behavior_menu.add_cascade(
+            label="超时默认处置", menu=verify_timeout_menu)
+        verify_behavior_menu.add_command(
+            label="设置格式抽样比例（10.0%）…",
+            command=self._edit_verify_format_sample_percent,
+        )
+        self.verify_format_sample_menu_index = int(
+            verify_behavior_menu.index("end"))
+        self.verify_show_current_file_var = tk.BooleanVar(value=False)
+        verify_behavior_menu.add_checkbutton(
+            label="在进度区显示当前文件",
+            variable=self.verify_show_current_file_var,
+            command=lambda: self._set_verify_advanced_value(
+                "show_current_file",
+                bool(self.verify_show_current_file_var.get()),
+            ),
+            selectcolor=_UNIFIED_ACTION_BACKGROUND,
+        )
+        self.verify_force_var = tk.BooleanVar(value=False)
+        verify_behavior_menu.add_checkbutton(
+            label="允许文件名指纹缺失",
+            variable=self.verify_force_var,
+            command=lambda: self._set_verify_advanced_value(
+                "force", bool(self.verify_force_var.get())),
+            selectcolor=_UNIFIED_ACTION_BACKGROUND,
+        )
+        advanced_menu.add_cascade(
+            label="核验行为", menu=verify_behavior_menu)
+        verify_behavior_index = advanced_menu.index("end")
+        if verify_behavior_index is not None:
+            self.advanced_locked_menu_entries.append(
+                int(verify_behavior_index))
         advanced_menu.add_separator()
         advanced_menu.add_command(
             label="显示命令预览",
@@ -4624,9 +5283,15 @@ class DaisyApp:
                 )
         controls = [self.stop_button, self.run_button]
         task = getattr(self, "task", None)
-        if (getattr(task, "key", None) in _SCAN_TASK_KEYS
-                or getattr(self, "process_task_key", None)
-                in _SCAN_TASK_KEYS):
+        control_key = (
+            getattr(self, "process_task_key", None)
+            or getattr(task, "key", None)
+        )
+        if control_key in _CONTROL_TASK_KEYS:
+            controls = [
+                self.pause_scan_button, self.stop_button, self.run_button,
+            ]
+        if control_key in _SCAN_TASK_KEYS:
             controls = [
                 self.pause_scan_button, self.save_scan_button,
                 self.stop_button, self.run_button,
@@ -4727,8 +5392,11 @@ class DaisyApp:
             self.root.minsize(*self._normal_minimum_size())
 
     def _task_is_active(self) -> bool:
-        return bool(self.process is not None or self.worker_starting
-                    or self.run_jobs)
+        return bool(
+            self.process is not None or self.worker_starting
+            or self.run_jobs
+            or bool(getattr(self, "parse_detection_active", False))
+        )
 
     def _refresh_mini_action(self) -> None:
         self.mini_mode_button.configure(
@@ -4742,17 +5410,19 @@ class DaisyApp:
         self.mini_stop_button.configure(state=state)
 
     def _refresh_scan_controls(self) -> None:
-        """按统一扫描状态同步主窗口与小窗控制按钮。"""
+        """按统一可控任务状态同步主窗口与小窗控制按钮。"""
         if not hasattr(self, "pause_scan_button"):
             return
-        scan_active = (
-            getattr(self, "process_task_key", None) in _SCAN_TASK_KEYS
+        task_key = getattr(self, "process_task_key", None)
+        control_active = (
+            task_key in _CONTROL_TASK_KEYS
             and getattr(self, "process", None) is not None
         )
+        scan_active = control_active and task_key in _SCAN_TASK_KEYS
         state = self.scan_control_state
         pause_text = "继续" if state == "paused" else "暂停"
         pause_state = (
-            "normal" if scan_active and state in ("running", "paused")
+            "normal" if control_active and state in ("running", "paused")
             else "disabled"
         )
         save_state = (
@@ -4760,15 +5430,24 @@ class DaisyApp:
             else "disabled"
         )
         stop_state = (
-            "normal" if scan_active and state in ("running", "paused")
+            "normal" if control_active and state in ("running", "paused")
             else "disabled"
         )
         for button in (self.pause_scan_button, self.mini_pause_button):
             button.configure(text=pause_text, state=pause_state)
         for button in (self.save_scan_button, self.mini_save_button):
             button.configure(state=save_state)
-        if getattr(self, "process_task_key", None) in _SCAN_TASK_KEYS:
+        if task_key in _CONTROL_TASK_KEYS:
             self._set_stop_state(stop_state)
+        if getattr(self, "mini_mode", False):
+            if task_key in _SCAN_TASK_KEYS:
+                if not self.mini_save_button.winfo_manager():
+                    self.mini_save_button.pack(
+                        side="right", padx=(0, 6),
+                        before=self.mini_stop_button,
+                    )
+            else:
+                self.mini_save_button.pack_forget()
 
     def _toggle_mini_mode(self) -> None:
         if self.mini_mode:
@@ -4994,13 +5673,18 @@ class DaisyApp:
         if self.values:
             self.saved_values[self.task.key] = self._collect_values()
 
+    def _scan_settings_task_key(self) -> str:
+        """旧完整扫描页保留原设置槽；新界面统一写入 scan。"""
+        return "full_scan" if self.task.key == "full_scan" else "scan"
+
     def _set_scan_advanced_value(self, key: str, value: object) -> None:
         if self._task_is_active() or key not in (
                 "timeout_action", "show_current_file",
                 "format_validation", "raw_deep_validation"):
             self._refresh_scan_advanced_values()
             return
-        saved = self.saved_values.setdefault("full_scan", {})
+        settings_task_key = self._scan_settings_task_key()
+        saved = self.saved_values.setdefault(settings_task_key, {})
         if key == "raw_deep_validation" and bool(value):
             available, reason = raw_runtime_capability_status(
                 getattr(self, "runtime_capabilities", {}))
@@ -5018,15 +5702,15 @@ class DaisyApp:
         if key == "format_validation" and value == "off":
             saved["raw_deep_validation"] = False
         self._refresh_scan_advanced_values()
-        if self.task.key == "full_scan":
+        if self.task.key in ("scan", "full_scan"):
             self._update_preview()
 
     def _edit_scan_format_sample_percent(self) -> None:
         if self._task_is_active():
             return
         current = _task_values(
-            TASK_BY_KEY["full_scan"],
-            self.saved_values.get("full_scan", {}),
+            TASK_BY_KEY[self._scan_settings_task_key()],
+            self.saved_values.get(self._scan_settings_task_key(), {}),
         )
         entered = simpledialog.askstring(
             "Full 格式抽样比例",
@@ -5039,26 +5723,27 @@ class DaisyApp:
         candidate = dict(current)
         candidate["format_validation"] = "sample"
         candidate["format_sample_percent"] = entered.strip()
-        issues = validate_values("full_scan", candidate)
+        issues = validate_values(self._scan_settings_task_key(), candidate)
         numeric_issue = next((
             issue for issue in issues if "格式抽样" in issue), None)
         if numeric_issue:
             messagebox.showerror(
                 "比例无效", numeric_issue, parent=self.root)
             return
-        saved = self.saved_values.setdefault("full_scan", {})
+        settings_task_key = self._scan_settings_task_key()
+        saved = self.saved_values.setdefault(settings_task_key, {})
         saved["format_validation"] = "sample"
         saved["format_sample_percent"] = entered.strip()
         self._refresh_scan_advanced_values()
-        if self.task.key == "full_scan":
+        if self.task.key in ("scan", "full_scan"):
             self._update_preview()
 
     def _refresh_scan_advanced_values(self) -> None:
         if not hasattr(self, "scan_timeout_action_var"):
             return
         values = _task_values(
-            TASK_BY_KEY["full_scan"],
-            self.saved_values.get("full_scan", {}),
+            TASK_BY_KEY[self._scan_settings_task_key()],
+            self.saved_values.get(self._scan_settings_task_key(), {}),
         )
         self.scan_timeout_action_var.set(str(
             values.get("timeout_action") or "continue_waiting"))
@@ -5071,11 +5756,14 @@ class DaisyApp:
         raw_allowed = raw_available and format_mode in ("sample", "all")
         raw_enabled = bool(
             values.get("raw_deep_validation", False)) and raw_allowed
+        cleared_raw = False
         if not raw_allowed:
-            saved_full = self.saved_values.get("full_scan")
+            saved_full = self.saved_values.get(
+                self._scan_settings_task_key())
             if isinstance(saved_full, dict) \
                     and saved_full.get("raw_deep_validation") is True:
                 saved_full["raw_deep_validation"] = False
+                cleared_raw = True
         self.scan_raw_deep_validation_var.set(raw_enabled)
         compact_reason = " ".join(raw_reason.split())
         if len(compact_reason) > 72:
@@ -5095,12 +5783,72 @@ class DaisyApp:
                 else "disabled"
             ),
         )
+        if (cleared_raw and self.task.key
+                == self._scan_settings_task_key()):
+            self._update_preview()
         self.scan_format_sample_menu.entryconfigure(
             self.scan_format_sample_menu_index,
             label=(
                 "设置抽样比例（"
                 f"{values.get('format_sample_percent') or '10.0'}%）…"
             ),
+        )
+
+    def _set_verify_advanced_value(self, key: str, value: object) -> None:
+        if self._task_is_active() or key not in (
+                "timeout_action", "show_current_file", "force"):
+            self._refresh_verify_advanced_values()
+            return
+        self.saved_values.setdefault("verify", {})[key] = value
+        self._refresh_verify_advanced_values()
+        if self.task.key == "verify":
+            self._update_preview()
+
+    def _edit_verify_format_sample_percent(self) -> None:
+        if self._task_is_active():
+            return
+        current = _task_values(
+            TASK_BY_KEY["verify"], self.saved_values.get("verify", {}))
+        entered = simpledialog.askstring(
+            "核验格式抽样比例",
+            "请输入大于 0 且不超过 100 的百分比：",
+            initialvalue=str(current.get("format_sample_percent") or "10.0"),
+            parent=self.root,
+        )
+        if entered is None:
+            return
+        candidate = dict(current)
+        candidate["format_scope"] = "sample"
+        candidate["format_sample_percent"] = entered.strip()
+        numeric_issue = next((
+            issue for issue in validate_values("verify", candidate)
+            if "格式比例" in issue
+        ), None)
+        if numeric_issue:
+            messagebox.showerror(
+                "比例无效", numeric_issue, parent=self.root)
+            return
+        saved = self.saved_values.setdefault("verify", {})
+        saved["format_scope"] = "sample"
+        saved["format_sample_percent"] = entered.strip()
+        self._refresh_verify_advanced_values()
+        if self.task.key == "verify":
+            self._build_form()
+
+    def _refresh_verify_advanced_values(self) -> None:
+        if not hasattr(self, "verify_timeout_action_var"):
+            return
+        values = _task_values(
+            TASK_BY_KEY["verify"], self.saved_values.get("verify", {}))
+        self.verify_timeout_action_var.set(str(
+            values.get("timeout_action") or "continue_waiting"))
+        self.verify_show_current_file_var.set(bool(
+            values.get("show_current_file", False)))
+        self.verify_force_var.set(bool(values.get("force", False)))
+        self.verify_behavior_menu.entryconfigure(
+            self.verify_format_sample_menu_index,
+            label=("设置格式抽样比例（"
+                   f"{values.get('format_sample_percent') or '10.0'}%）…"),
         )
 
     def _select_task_from_toolbar(self, task_key: str) -> None:
@@ -5158,6 +5906,7 @@ class DaisyApp:
         self._build_form()
         self._refresh_hash_percentage_menu_labels()
         self._refresh_scan_advanced_values()
+        self._refresh_verify_advanced_values()
         self._refresh_tool_cache_labels()
         active = self._task_is_active()
         missing_tests = (
@@ -5435,6 +6184,7 @@ class DaisyApp:
         self.install_tool_buttons = {}
         self.environment_capability_label = None
         self.storage_detect_button = None
+        self.parse_detect_button = None
         form_pad = 16 if self.compact_layout else 22
         saved = _task_values(
             self.task, self.saved_values.get(self.task.key, {}))
@@ -5526,6 +6276,45 @@ class DaisyApp:
                 )
                 widget.grid(row=0, column=0, columnspan=2, sticky="ew")
                 self.values[spec.key] = widget
+            elif spec.kind == "parse_modules":
+                widget = ParseModulePool(
+                    cell,
+                    inspection=self._matching_parse_inspection(
+                        saved.get("database")),
+                    preset=str(saved.get("preset") or "human-summary"),
+                    initial=current,
+                    on_change=self._update_preview,
+                )
+                widget.grid(row=0, column=0, columnspan=3, sticky="ew")
+                self.values[spec.key] = widget
+            elif spec.kind == "multi_choice":
+                widget = MultiChoicePool(
+                    cell, choices=spec.choices, initial=current,
+                    on_change=self._update_preview,
+                )
+                widget.grid(row=0, column=0, columnspan=3, sticky="ew")
+                self.values[spec.key] = widget
+            elif (spec.kind == "choice_flag"
+                  and {value for _label, value in self._field_choices(spec)}
+                  == {False, True}):
+                toggle_enabled = True
+                toggle_help = spec.help
+                if spec.key == "raw_deep_validation":
+                    toggle_enabled, raw_reason = raw_runtime_capability_status(
+                        self.runtime_capabilities)
+                    if not toggle_enabled:
+                        toggle_help = f"{spec.help} 当前不可用：{raw_reason}"
+                widget = BooleanToggleButton(
+                    cell, choices=self._field_choices(spec),
+                    initial=current, on_change=self._update_preview,
+                    enabled=toggle_enabled,
+                )
+                widget._daisy_field_key = spec.key  # type: ignore[attr-defined]
+                widget.grid(row=0, column=0, columnspan=3, sticky="ew")
+                self.values[spec.key] = widget
+                if toggle_help:
+                    attach_tooltip(widget, toggle_help)
+                    attach_tooltip(widget.button, toggle_help)
             elif spec.kind in ("choice", "choice_flag", "disk_choice"):
                 choices = self._field_choices(spec)
                 var = tk.StringVar(
@@ -5589,9 +6378,15 @@ class DaisyApp:
                         lambda _event, variable=var:
                         self._normalize_directory_variable(variable),
                     )
-                if spec.kind in ("dir", "file", "save"):
+                if spec.kind == "parse_database":
+                    widget.bind(
+                        "<FocusOut>", self._parse_database_focus_out)
+                if spec.kind in ("dir", "file", "save", "parse_database"):
                     browse_button = ttk.Button(
-                        cell, text="浏览", style="FormAction.TButton",
+                        cell,
+                        text=("选择数据库"
+                              if spec.kind == "parse_database" else "浏览"),
+                        style="FormAction.TButton",
                         width=_FORM_ACTION_BUTTON_WIDTH,
                         command=lambda s=spec, v=var: self._browse(s, v),
                     )
@@ -5605,6 +6400,19 @@ class DaisyApp:
                             f"选择“{spec.label}”。"
                         ),
                     )
+                    if spec.kind == "parse_database":
+                        detect_button = ttk.Button(
+                            cell, text="识别内容", style="FormAction.TButton",
+                            width=_FORM_ACTION_BUTTON_WIDTH,
+                            command=self._detect_parse_database,
+                        )
+                        detect_button.grid(
+                            row=0, column=2, sticky="e", padx=(8, 0))
+                        self.parse_detect_button = detect_button
+                        attach_tooltip(
+                            detect_button,
+                            "以只读方式识别数据库版本、类型与可导出模块。",
+                        )
 
             if spec.help:
                 attach_tooltip(field_label, spec.help)
@@ -5663,6 +6471,163 @@ class DaisyApp:
         if absolute != raw:
             variable.set(absolute)
 
+    def _matching_parse_inspection(
+        self, database: object,
+    ) -> dbparse.ParseDatabaseInspection | None:
+        inspection = getattr(self, "parse_inspection", None)
+        raw = str(database or "").strip()
+        if inspection is None or not raw:
+            return None
+        return inspection if os.path.normcase(
+            os.path.abspath(inspection.descriptor.path)
+        ) == os.path.normcase(_absolute(raw)) else None
+
+    def _parse_database_focus_out(self, _event: tk.Event) -> None:
+        if self.task.key != "parse_db" or self.parse_detection_active:
+            return
+        source = self.values.get("database")
+        if source is None:
+            return
+        raw = str(source.get() or "").strip()
+        if not raw:
+            return
+        if self._matching_parse_inspection(raw) is not None:
+            return
+        if os.path.isfile(_absolute(raw)):
+            self.root.after_idle(self._detect_parse_database)
+
+    def _detect_parse_database(self) -> None:
+        """在后台只读识别数据库，绝不在 Tk 主线程执行 SQLite 探测。"""
+        if self.task.key != "parse_db" or self._task_is_active():
+            return
+        values = self._collect_values()
+        raw = str(values.get("database") or "").strip()
+        if not raw:
+            messagebox.showerror(
+                "尚未选择数据库", "请先选择需要解析的 SQLite 数据库。",
+                parent=self.root,
+            )
+            return
+        database = _absolute(raw)
+        if not os.path.isfile(database):
+            messagebox.showerror(
+                "数据库不存在", f"找不到输入数据库：\n{database}",
+                parent=self.root,
+            )
+            return
+
+        previous_path = str(getattr(self, "parse_inspection_path", ""))
+        self.saved_values["parse_db"] = values
+        if (previous_path and os.path.normcase(previous_path)
+                != os.path.normcase(database)):
+            self.saved_values["parse_db"].pop("parse_modules", None)
+        self.parse_inspection = None
+        self.parse_inspection_path = ""
+        self.parse_detection_generation += 1
+        generation = self.parse_detection_generation
+        self.parse_detection_active = True
+        if self.parse_detect_button is not None:
+            self.parse_detect_button.configure(state="disabled")
+        self.run_button.configure(state="disabled")
+        self._set_task_navigation_state("disabled")
+        self._set_settings_expanded(False)
+        self._set_progress_expanded(True)
+        self._set_log_expanded(True)
+        self._reset_progress("数据库识别")
+        self.progress_target_label.configure(text=database, fg=_TEXT)
+        self.progress_stage_label.configure(
+            text="数据库识别 · 正在只读探测", fg=_GREEN_DARK)
+        self.progress_detail_label.configure(
+            text="正在识别类型、版本与模块能力…", fg=_MUTED)
+        self._set_work_indeterminate()
+        self._set_status("正在只读识别数据库内容…")
+        self._append_log(
+            f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"开始只读识别数据库：{database}\n",
+            "meta",
+        )
+
+        def inspect() -> None:
+            try:
+                result = dbparse.inspect_parse_database(
+                    database, verify_integrity=False)
+            except Exception as exc:
+                self.events.put((
+                    "parse_detection_done", generation, database,
+                    None, f"{type(exc).__name__}：{exc}",
+                ))
+            else:
+                self.events.put((
+                    "parse_detection_done", generation, database,
+                    result, None,
+                ))
+
+        threading.Thread(target=inspect, daemon=True).start()
+
+    def _finish_parse_database_detection(
+        self,
+        generation: int,
+        database: str,
+        inspection: dbparse.ParseDatabaseInspection | None,
+        error: str | None,
+    ) -> None:
+        if generation != self.parse_detection_generation:
+            return
+        self.parse_detection_active = False
+        self._stop_work_progress()
+        self._set_task_navigation_state("normal")
+        if error is not None or inspection is None:
+            self.parse_inspection = None
+            self.parse_inspection_path = ""
+            self._set_work_fraction(100, style="Danger")
+            self.progress_stage_bar.configure(
+                value=100, style="Danger.Horizontal.TProgressbar")
+            self.progress_stage_label.configure(
+                text="数据库识别失败", fg=_DANGER)
+            self.progress_detail_label.configure(
+                text=self._short_progress_text(error or "未知错误"),
+                fg=_DANGER,
+            )
+            self._append_log(
+                f"数据库识别失败：{error or '未知错误'}\n", "error")
+            self._set_settings_expanded(True)
+            self._set_progress_expanded(True)
+            self._set_log_expanded(True)
+            self._set_status("数据库识别失败；请检查文件与日志。", _DANGER)
+            self.run_button.configure(state="normal")
+            if self.parse_detect_button is not None:
+                self.parse_detect_button.configure(state="normal")
+            messagebox.showerror(
+                "无法识别数据库", error or "未知错误", parent=self.root)
+            return
+
+        self.parse_inspection = inspection
+        self.parse_inspection_path = database
+        descriptor = inspection.descriptor
+        type_label = (
+            "封存快照" if descriptor.database_type == "snapshot"
+            else "Diff 数据库"
+        )
+        counts = inspection.module_state_counts
+        summary = (
+            f"{type_label} · schema {descriptor.schema_version} · "
+            f"可选模块 {counts.get('available', 0)}"
+        )
+        self._set_work_fraction(100, style="Success")
+        self.progress_stage_bar.configure(
+            value=100, style="Success.Horizontal.TProgressbar")
+        self.progress_stage_label.configure(text="数据库识别完成", fg=_SUCCESS)
+        self.progress_detail_label.configure(text=summary, fg=_SUCCESS)
+        self._append_log(f"数据库识别完成：{summary}\n", "success")
+        if self.task.key == "parse_db":
+            self._build_form()
+        self._set_settings_expanded(True)
+        self._set_progress_expanded(False)
+        self._set_log_expanded(False)
+        self._set_status(f"已识别 {summary}；请选择解析内容。", _SUCCESS)
+        self.run_button.configure(state="normal")
+        self._position_form_scroll(0.0)
+
     def _browse(self, spec: FieldSpec, variable: tk.StringVar) -> None:
         initial = variable.get().strip()
         initial_dir = _BASE
@@ -5688,6 +6653,9 @@ class DaisyApp:
             )
         if chosen:
             variable.set(os.path.normpath(chosen))
+            if (self.task.key == "parse_db"
+                    and spec.kind == "parse_database"):
+                self.root.after_idle(self._detect_parse_database)
 
     def _append_directory(self, spec: FieldSpec, widget: tk.Text) -> None:
         chosen = filedialog.askdirectory(
@@ -5707,7 +6675,9 @@ class DaisyApp:
         specs = {spec.key: spec for spec in self.task.fields}
         for key, source in self.values.items():
             spec = specs[key]
-            if isinstance(source, (DirectoryListEditor, StorageDiskPool)):
+            if isinstance(source, (
+                    DirectoryListEditor, StorageDiskPool,
+                    BooleanToggleButton, MultiChoicePool, ParseModulePool)):
                 result[key] = source.get()
             elif isinstance(source, tk.Text):
                 result[key] = source.get("1.0", "end-1c")
@@ -5761,7 +6731,7 @@ class DaisyApp:
 
     def _output_path(self) -> str:
         values = self._collect_values()
-        if (self.task.key == "full_scan"
+        if (self.task.key in _SCAN_TASK_KEYS
                 and values.get("start_mode") == "resume"):
             resume = str(values.get("resume") or "").strip()
             if resume:
@@ -6173,7 +7143,7 @@ class DaisyApp:
         self.storage_disk_options = ()
         self.environment_missing_names = ()
         self.missing_installable_tools = ()
-        if self.mini_mode:
+        if getattr(self, "mini_mode", False):
             self._leave_mini_mode()
         self._set_task_toolbar_expanded(True)
         self._set_settings_expanded(True)
@@ -6318,7 +7288,8 @@ class DaisyApp:
                 ),
                 fg=_SUCCESS if available else _WARNING,
             )
-        if getattr(getattr(self, "task", None), "key", None) == "full_scan":
+        if getattr(getattr(self, "task", None), "key", None) in (
+                "scan", "full_scan", "verify"):
             self._update_preview()
 
     def _apply_storage_inventory(
@@ -6587,9 +7558,9 @@ class DaisyApp:
         worker_pid: int | None = None,
         decision: str | None = None,
     ) -> int | None:
-        """只向当前 GUI 精确持有的扫描子进程 stdin 写入控制消息。"""
+        """只向当前 GUI 精确持有的可控子进程 stdin 写入控制消息。"""
         process = self.process
-        if (self.process_task_key not in _SCAN_TASK_KEYS
+        if (self.process_task_key not in _CONTROL_TASK_KEYS
                 or process is None or process.stdin is None
                 or process.stdin.closed):
             return None
@@ -6605,13 +7576,13 @@ class DaisyApp:
             process.stdin.flush()
         except (BrokenPipeError, OSError, ValueError) as exc:
             self._append_log(f"控制请求发送失败：{exc}\n", "error")
-            self._set_status("无法向当前扫描发送控制请求；任务仍保持原状态。", _DANGER)
+            self._set_status("无法向当前任务发送控制请求；任务仍保持原状态。", _DANGER)
             return None
         self.scan_control_sequence = sequence
         return sequence
 
     def _close_scan_control_input(self) -> None:
-        """关闭父端持有的当前扫描 stdin，使终态子进程可立即退出。"""
+        """关闭父端持有的控制 stdin，使终态子进程可立即退出。"""
         process = self.process
         if process is None or process.stdin is None or process.stdin.closed:
             return
@@ -6770,7 +7741,7 @@ class DaisyApp:
             return
         reason = str(payload.get("reason") or "rejected")
         self._append_log(
-            f"扫描控制未被接受：{action}（{reason}）。\n", "warning")
+            f"任务控制未被接受：{action}（{reason}）。\n", "warning")
         if action in ("pause", "continue"):
             self.scan_control_state = self.scan_control_previous_state
         elif action == "save_exit":
@@ -6790,19 +7761,19 @@ class DaisyApp:
             return
         if event_name == "control_rejected":
             self._append_log(
-                "扫描控制消息被拒绝："
+                "任务控制消息被拒绝："
                 f"{payload.get('detail') or payload.get('code') or '未知原因'}\n",
                 "warning",
             )
             return
         if event_name == "run_paused":
             self.scan_control_state = "paused"
-            self._set_status("扫描已在安全边界暂停。", _WARNING)
+            self._set_status("任务已在安全边界暂停。", _WARNING)
             self._refresh_scan_controls()
             return
         if event_name == "run_resumed":
             self.scan_control_state = "running"
-            self._set_status(f"{self._queue_prefix()}扫描已继续运行。")
+            self._set_status(f"{self._queue_prefix()}任务已继续运行。")
             self._refresh_scan_controls()
             return
         if event_name == "run_saved":
@@ -6815,7 +7786,7 @@ class DaisyApp:
         if event_name == "run_stopped":
             self.stop_requested = True
             self.scan_control_state = "stopped"
-            self._set_status("扫描已安全停止，正在结束本任务进程。", _WARNING)
+            self._set_status("任务已安全停止，正在结束本任务进程。", _WARNING)
             self._close_scan_control_input()
             self._refresh_scan_controls()
             return
@@ -6838,8 +7809,7 @@ class DaisyApp:
                 self._close_timeout_dialog()
             return
         if event_name in ("stage_finished", "stage_skipped"):
-            if payload.get("stage") == "hash":
-                self._close_timeout_dialog()
+            self._close_timeout_dialog()
             return
         if event_name == "run_result":
             self._close_scan_control_input()
@@ -6850,7 +7820,8 @@ class DaisyApp:
                 partial = str(payload.get("partial") or "")
                 self.save_exit_requested = True
                 self.scan_control_state = "saved"
-                self._add_recovery_scan(task_key, partial)
+                if task_key in _SCAN_TASK_KEYS:
+                    self._add_recovery_scan(task_key, partial)
             elif state == "stopped":
                 self.stop_requested = True
                 self.scan_control_state = "stopped"
@@ -7006,7 +7977,12 @@ class DaisyApp:
         target_summary = root_confirmation_text(self.task.key, values)
         if target_summary:
             warnings.append(target_summary)
-        if self.task.key == "full_scan":
+        full_scan_selected = (
+            self.task.key == "full_scan"
+            or (self.task.key == "scan"
+                and values.get("scan_mode", "full") == "full")
+        )
+        if full_scan_selected:
             warnings.append(
                 "完整档案扫描可能持续几小时到几天；停止时可能保留可续传的 "
                 "partial 快照。")
@@ -7022,9 +7998,26 @@ class DaisyApp:
                 if not values.get("collect_file_id", True):
                     warnings.append(
                         "已关闭 NTFS File ID 采集；移动／重命名判定证据会减少。")
-        if (self.task.key == "check_hash"
-                and values.get("check_scope") == "full"):
+        if ((self.task.key == "check_hash"
+             and values.get("check_scope") == "full")
+                or (self.task.key == "verify"
+                    and values.get("hash_scope") == "all")):
             warnings.append("全量哈希核对会读取所有有基准哈希的文件。")
+        if self.task.key == "parse_db":
+            inspection = self._matching_parse_inspection(
+                values.get("database"))
+            if inspection is not None:
+                preset = str(values.get("preset") or "human-summary")
+                include = (_lines(values.get("parse_modules"))
+                           if preset == "custom" else ())
+                try:
+                    plan = dbparse.plan_parse_export(
+                        inspection, preset=preset, include=include,
+                        formats=_lines(values.get("formats")))
+                except core.PreflightError:
+                    plan = None
+                if plan is not None:
+                    warnings.extend(plan.privacy_notices)
         if self.task.key == "storage_collect":
             disk_numbers = _lines(values.get("disk_number"))
             disk_list = "\n".join(
@@ -7058,7 +8051,7 @@ class DaisyApp:
         self.stop_requested = False
         self.save_exit_requested = False
         self.scan_control_state = (
-            "starting" if task_key in _SCAN_TASK_KEYS else "idle")
+            "starting" if task_key in _CONTROL_TASK_KEYS else "idle")
         self.scan_control_sequence = 0
         self.scan_run_result = None
         self.scan_control_previous_state = "idle"
@@ -7185,7 +8178,20 @@ class DaisyApp:
             return
         values = self._collect_values()
         effective, _tool_sources = self._effective_values(values)
-        issues = validate_values(self.task.key, effective)
+        issues = validate_values(
+            self.task.key,
+            effective,
+            parse_inspection=(
+                self._matching_parse_inspection(effective.get("database"))
+                if self.task.key == "parse_db" else None
+            ),
+        )
+        if (self.task.key in ("scan", "verify")
+                and bool(effective.get("raw_deep_validation"))):
+            raw_available, raw_reason = raw_runtime_capability_status(
+                self.runtime_capabilities)
+            if not raw_available:
+                issues.append(f"RAW 深度校验不可用：{raw_reason}")
         if issues:
             messagebox.showerror(
                 "参数需要修正", "\n".join("• " + issue for issue in issues),
@@ -7212,7 +8218,7 @@ class DaisyApp:
         self._close_timeout_dialog()
         self.scan_control_sequence = 0
         self.scan_run_result = None
-        if task_key in _SCAN_TASK_KEYS:
+        if task_key in _CONTROL_TASK_KEYS:
             self.scan_control_state = "starting"
             self.scan_control_previous_state = "starting"
             self._refresh_scan_controls()
@@ -7257,7 +8263,7 @@ class DaisyApp:
         self.worker_starting = True
         worker = threading.Thread(
             target=self._worker,
-            args=(command, tool_sources, task_key in _SCAN_TASK_KEYS),
+            args=(command, tool_sources, task_key in _CONTROL_TASK_KEYS),
             daemon=True,
         )
         worker.start()
@@ -7338,16 +8344,19 @@ class DaisyApp:
                     self.worker_starting = False
                     self.process = event[1]
                     self.process_started = event[2]
-                    if self.process_task_key in _SCAN_TASK_KEYS:
+                    if self.process_task_key in _CONTROL_TASK_KEYS:
                         self.scan_control_state = "running"
                         self._refresh_scan_controls()
-                        if self.close_after_stop or self.save_exit_requested:
+                        if ((self.close_after_stop or self.save_exit_requested)
+                                and self.process_task_key in _SCAN_TASK_KEYS):
                             if not self._request_save_scan_progress():
                                 self.close_after_stop = False
                                 self.save_exit_requested = False
-                        elif self.stop_requested:
+                        elif self.close_after_stop or self.stop_requested:
+                            self.stop_requested = True
                             if self._send_scan_control("stop") is None:
                                 self.stop_requested = False
+                                self.close_after_stop = False
                                 self.scan_control_state = "running"
                                 self._refresh_scan_controls()
                         else:
@@ -7367,6 +8376,9 @@ class DaisyApp:
                     self._append_log(event[1])
                 elif kind == "gui_event":
                     self._apply_gui_event(event[1])
+                elif kind == "parse_detection_done":
+                    self._finish_parse_database_detection(
+                        int(event[1]), str(event[2]), event[3], event[4])
                 elif kind == "start_error":
                     self.worker_starting = False
                     self.save_exit_requested = False
@@ -7668,6 +8680,11 @@ class DaisyApp:
                 "这会中断当前只读硬盘检测；不会修改硬盘。"
                 "\n\n确定停止吗？"
             )
+        elif self.process_task_key == "verify":
+            prompt = (
+                "这会在安全边界停止当前只读核验；已经完成的检查会保留在"
+                "伴随报告中，未开始的检查不会伪装成通过。\n\n确定停止吗？"
+            )
         else:
             prompt = (
                 "停止可能留下 partial、WAL、lock 或未完成报告；完整扫描通常可从 "
@@ -7683,7 +8700,7 @@ class DaisyApp:
             icon="warning", parent=self.root,
         ):
             return
-        if self.process_task_key in _SCAN_TASK_KEYS:
+        if self.process_task_key in _CONTROL_TASK_KEYS:
             previous = self.scan_control_state
             if self._send_scan_control("stop") is None:
                 return
@@ -7694,7 +8711,7 @@ class DaisyApp:
             status = (
                 "正在安全停止当前目录并取消剩余队列…"
                 if len(self.run_jobs) > 1 else
-                "正在安全停止并保留审计证据…"
+                "正在安全停止并保留已完成证据…"
             )
             self._set_status(status, _WARNING)
             self._refresh_scan_controls()
@@ -7735,6 +8752,7 @@ class DaisyApp:
             process is not None
             or bool(self.run_jobs)
             or bool(getattr(self, "worker_starting", False))
+            or bool(getattr(self, "parse_detection_active", False))
         )
         if (active or getattr(
                 self, "confirm_close_when_idle", True)) and not (
@@ -7751,10 +8769,15 @@ class DaisyApp:
 
         scan_active = getattr(
             self, "process_task_key", None) in _SCAN_TASK_KEYS
+        control_active = getattr(
+            self, "process_task_key", None) in _CONTROL_TASK_KEYS
         detail = (
             "关闭界面前会安全保存当前扫描进度、结束本任务进程并释放锁；"
             "下次启动会显示恢复入口。确定继续吗？"
             if scan_active else
+            "关闭界面前会在安全边界停止当前核验并保留已完成证据；"
+            "未执行项目不会显示为通过。确定继续吗？"
+            if control_active else
             "关闭界面会停止当前任务，并可能留下未完成产物。确定继续吗？"
         )
         if len(self.run_jobs) > 1:
@@ -7762,6 +8785,9 @@ class DaisyApp:
                 ("关闭界面前会保存当前扫描进度，并取消队列中尚未启动的"
                  "目录；下次启动会显示当前 partial 的恢复入口。确定继续吗？")
                 if scan_active else
+                ("关闭界面会安全停止当前核验，并取消队列中尚未启动的"
+                 "项目；已完成证据仍会保留。确定继续吗？")
+                if control_active else
                 ("关闭界面会停止当前目录，并取消队列中尚未启动的目录；"
                  "也可能留下未完成产物。确定继续吗？")
             )
@@ -7778,6 +8804,17 @@ class DaisyApp:
                 if not self._request_save_scan_progress():
                     self.close_after_stop = False
                 return
+            if control_active:
+                previous = self.scan_control_state
+                if self._send_scan_control("stop") is None:
+                    self.close_after_stop = False
+                    return
+                self.scan_control_previous_state = previous
+                self.stop_requested = True
+                self.scan_control_state = "stop_requested"
+                self._set_status("正在安全停止任务，随后关闭窗口…", _WARNING)
+                self._refresh_scan_controls()
+                return
             self.stop_requested = True
             self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
             threading.Thread(
@@ -7789,6 +8826,9 @@ class DaisyApp:
             if scan_active:
                 self.save_exit_requested = True
                 self._set_status("任务启动后将立即保存进度并关闭窗口…", _WARNING)
+            elif control_active:
+                self.stop_requested = True
+                self._set_status("任务启动后将立即安全停止并关闭窗口…", _WARNING)
             else:
                 self.stop_requested = True
                 self._set_status("正在取消启动，随后关闭窗口…", _WARNING)
