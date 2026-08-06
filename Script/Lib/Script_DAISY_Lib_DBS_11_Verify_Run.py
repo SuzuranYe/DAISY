@@ -21,6 +21,7 @@ from typing import Callable, Mapping
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as legacy
+import Script_DAISY_Lib_DBS_12_Verify_Tools as verifytools
 
 
 VERIFICATION_CONTRACT = "daisy-verification-v1"
@@ -764,6 +765,50 @@ def run_format_worker(
     )
 
 
+def run_format_validator(
+    path: str,
+    media_kind: str,
+    spec: legacy.FormatValidatorSpec,
+    tools: Mapping[str, object],
+    *,
+    expected_size: int,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    display_name: str | None = None,
+    control: dbhash.HashWorkerControl | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[..., None] | None = None,
+) -> FormatWorkerOutcome | verifytools.ExternalFormatOutcome:
+    """把内置判据与直接外部工具路由到各自的精确监督器。"""
+    if spec.validator in ("zip", "pdf"):
+        return run_format_worker(
+            path,
+            media_kind,
+            spec,
+            tools,
+            expected_size=expected_size,
+            timeout_seconds=timeout_seconds,
+            default_decision=default_decision,
+            display_name=display_name,
+            control=control,
+            on_event=on_event,
+            on_threshold=on_threshold,
+        )
+    return verifytools.run_external_format_validator(
+        path,
+        media_kind,
+        spec,
+        tools,
+        expected_size=expected_size,
+        timeout_seconds=timeout_seconds,
+        default_decision=default_decision,
+        display_name=display_name,
+        control=control,
+        on_event=on_event,
+        on_threshold=on_threshold,
+    )
+
+
 def _resolve_tool(
     name: str,
     supplied: Mapping[str, str | None],
@@ -1135,7 +1180,7 @@ def _run_format_stage(
     valid = 0
     unsupported = 0
     processed = 0
-    runner = format_runner or run_format_worker
+    runner = format_runner or run_format_validator
 
     for entry in selected:
         while True:

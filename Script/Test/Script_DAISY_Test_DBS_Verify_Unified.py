@@ -25,6 +25,7 @@ import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as legacy
 import Script_DAISY_Lib_DBS_11_Verify_Run as verifyrun
+import Script_DAISY_Lib_DBS_12_Verify_Tools as verifytools
 
 
 _RUNTIME_ROOT = os.path.join(
@@ -343,6 +344,49 @@ class TestFormatWorkerAndControl(_Fixture):
         self.assertEqual(formatted["counts"].get("invalid"), 1)
         self.assertEqual(formatted["problems"][0]["path"], "夹具\\bad.zip")
         self.assertEqual(report["conclusion"], "issues_found")
+
+    def test_default_dispatcher_routes_media_to_external_supervisor(self) \
+            -> None:
+        snapshot = self.snapshot({"image.jpg": (b"jpeg", "photo_jpeg")})
+        baseline = _identity(snapshot)
+        supervised = verifytools.ExternalFormatOutcome(
+            outcome="completed",
+            status="valid",
+            detail=None,
+            decision="none",
+            decision_source="none",
+            size_bytes=4,
+            elapsed_seconds=0.01,
+            threshold_count=0,
+            worker_pid=12345,
+            worker_exitcode=0,
+            worker_reaped=True,
+            events=(),
+        )
+
+        def resolver(name, _explicit):
+            self.assertEqual(name, "exiftool")
+            return {
+                "path": "X:/Synthetic/exiftool.exe",
+                "version": "fixture",
+            }
+
+        with mock.patch.object(
+            verifytools,
+            "run_external_format_validator",
+            return_value=supervised,
+        ) as supervisor:
+            report = self.verify(
+                snapshot,
+                options=verifyrun.VerificationOptions(
+                    hash_mode="off", format_mode="all"),
+                _tool_resolver=resolver,
+            )
+        self.assertEqual(_identity(snapshot), baseline)
+        self.assertEqual(report["sections"]["format"]["valid"], 1)
+        self.assertEqual(report["sections"]["format"]["problems"], [])
+        self.assertEqual(report["conclusion"], "passed")
+        supervisor.assert_called_once()
 
     def test_format_timeout_reaps_only_owned_worker(self) -> None:
         path = os.path.join(self.current, "slow.pdf")
