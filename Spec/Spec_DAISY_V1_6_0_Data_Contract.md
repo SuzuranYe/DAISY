@@ -194,6 +194,9 @@ lease ID 释放锁。下次只显示恢复卡片，不自动读取。
 
 确认旧 lease 无效后，在一个恢复事务中：
 
+同会话 `paused` 但 active session 没有结束，也属于突然终止；它不同于已完成“保存进度
+并退出”的 `paused + saved session`，必须先执行以下恢复事务，不能直接创建并行 session。
+
 1. 把 `entry_attempts.status=running` 改为 `abandoned`；
 2. 把对应 `entries.hash_status/meta_status=processing` 还原为 `pending`；
 3. 把 `format_checks.status=processing` 还原为 `pending`；
@@ -208,6 +211,12 @@ lease ID 释放锁。下次只显示恢复卡片，不自动读取。
 
 锁文件和数据库 session 使用相同 `lease_id`。锁文件写入 host、PID、进程启动 token、
 session、获取／心跳／过期时间。
+
+schema 4 的锁文件固定为 `<partial 绝对路径>.lease`。冻结的 partial、publish stem 和
+event log 必须是输出目录内三个互不相同的绝对路径；仅位于同一目录不足以证明身份安全。
+恢复与心跳以 SQLite URI `mode=rw` 打开既有 partial；文件在预览后消失时必须失败，禁止
+普通 `sqlite3.connect(path)` 意外创建一个同名空库。损坏 lease 在预览中标为 `invalid`，
+但只有用户明确进入恢复流程时才允许原子接管。
 
 - 同 host、PID 存活且启动 token 相同：始终视为活 owner，即使心跳暂时过期也拒绝接管；
 - 同 host、PID 存活但 token 不同：PID 已复用，旧 lease 可在明确恢复时接管；

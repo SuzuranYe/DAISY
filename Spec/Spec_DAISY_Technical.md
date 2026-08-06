@@ -47,6 +47,7 @@ STG-11 在底层自动执行同等完整核验。
 |---|---|
 | schema 3 快照 SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_01_Core.py` 中的 `SNAPSHOT_DDL` |
 | schema 4 DDL、session、attempt、lease、恢复与发布 | `Script\Lib\Script_DAISY_Lib_DBS_08_State.py` 及 `Spec\Spec_DAISY_V1_6_0_Data_Contract.md` |
+| schema 4 partial 创建、恢复预览、lease 心跳与运行编排 | `Script\Lib\Script_DAISY_Lib_DBS_09_Run.py` |
 | Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_04_Diff.py` 中的 `DIFF_DDL` |
 | 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_DBS_02_Meta.py` |
 | 哈希、schema 4 隔离 worker、timeout、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
@@ -806,6 +807,12 @@ BitLocker 状态；不得未经检查公开分享。
   attempt 与低频性能摘要。schema 4 哈希当前结果与历史 attempt 在同一 SQLite 事务提交；
   暂停或停止中的当前文件不保存 `hashlib` 内部状态，恢复时从文件起点重做。该内核尚未
   接入 DBS-11 生产编排和 GUI，因此现行 schema 3 扫描语义及版本常量仍未改变。
+- `DBS_09_Run.py` 进一步封装 schema 4 partial 的 no-clobber 预留、只读恢复预览、
+  `<partial>.lease` 明确接管和数据库／lease 双端心跳。partial、publish stem 与 event log
+  必须互不相同；同会话暂停后进程消失时，旧 session 先转为 abandoned，再创建 resume
+  session。恢复与心跳只以 `mode=rw` 打开现有数据库，损坏 lease 仅能由明确恢复接管，
+  且接管后重新核对 session／状态／配置。该层只操作调用方给出的精确路径与 PID，不枚举
+  或终止其它进程。
 
 ### 12.2 信息架构与字段命名
 

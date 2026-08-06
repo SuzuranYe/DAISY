@@ -475,6 +475,7 @@ Diff 和数据库解析不直接以物理表结构作为业务接口。建立版
 | `DBS_02_Meta.py` | 元数据／格式工具调用共享 timeout、尝试和 unsupported 分类；不让报告规则反向污染原始采集 |
 | `DBS_03_Hash.py` | 独立读取工作进程、动态无进展策略、暂停／停止、前后 stat 和性能摘要 |
 | `DBS_04_Diff.py` | 消费规范化投影，支持旧旧／旧新／新旧／新新，重审证据与缺口传播 |
+| `DBS_09_Run.py` | schema 4 partial 独占创建、恢复预览、lease 生命周期和生产阶段编排 |
 | 新只读 Reader Lib | 数据库类型／schema／能力识别及 v1.4.1 fallback，供所有消费者复用 |
 | 新 Verify Lib／Module | 合并 stat、哈希和格式编排；31／32 旧脚本成为兼容包装或调用共享服务 |
 | 新 Parse Lib／Module | 模块注册表、流式 SQL 投影、HTML／XLSX／CSV／JSONL writer 和 manifest |
@@ -572,6 +573,14 @@ timeout 分离。继续等待会重置本轮 timeout 窗口，不会静默跳过
 和无结果均先回收本次 worker，再原子提交当前状态与历史 attempt。哈希阶段按文件游标处理，
 支持仅 pending、瞬时失败和全部未成功三种集合，当前文件事件默认关闭并按 100 ms 限频，
 数值进度按 500 ms 限频。
+
+运行生命周期的第二个子检查点也已实现：`DBS_09_Run.py` 以 no-clobber 创建 schema 4
+partial 和 `<partial>.lease`，提供不写库的恢复预览、活 owner 拒绝、失效 owner 明确
+接管、新 resume session、精确 lease／数据库双端心跳及失败清理。同会话 `paused` 后进程
+突然退出的缺口已补齐：确认旧 lease 失效后，旧 session 先记为 abandoned，再创建新
+session；不会卡在“旧 session 未结束但 paused 不可恢复”的状态。恢复和心跳严格以
+`mode=rw` 打开既有数据库，不会在路径竞态中创建空库；损坏 lease 可见但只允许明确接管，
+接管后再次读取 active session、状态和配置，不能把接管前预览当作写入依据。
 
 本检查点尚未把现行 DBS-11 生产编排切换到 schema 4，也尚未实现 GUI timeout 决策框、
 恢复卡片和完整扫描各阶段的暂停衔接。因此 `SCANNER_VERSION=1.5.1`、

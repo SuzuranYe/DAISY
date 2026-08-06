@@ -67,6 +67,7 @@ class _StateFixture(unittest.TestCase):
         con: sqlite3.Connection,
         *,
         roots: list[tuple[str, str]] | None = None,
+        event_log_path: str | None = None,
     ) -> state.RuntimeSnapshot:
         return state.initialize_v4_connection(
             con,
@@ -80,7 +81,7 @@ class _StateFixture(unittest.TestCase):
             output_dir=self.base,
             partial_path=self.partial_path,
             publish_stem_path=self.publish_stem,
-            event_log_path=self.event_path,
+            event_log_path=event_log_path or self.event_path,
             tool_versions={"exiftool": "fixture"},
             snapshot_uuid=_SNAPSHOT_ID,
             session_id=_SESSION_ID,
@@ -218,6 +219,12 @@ class TestSchema4Contract(_StateFixture):
                 publish_stem_path=self.publish_stem,
                 snapshot_uuid="NOT-A-UUID",
             )
+        con.close()
+
+        con = sqlite3.connect(":memory:")
+        with self.assertRaisesRegex(
+                core.PreflightError, "必须是三个不同路径"):
+            self.initialize(con, event_log_path=self.partial_path)
         con.close()
 
     def test_schema3_is_rejected_without_mutation(self) -> None:

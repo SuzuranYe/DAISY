@@ -464,6 +464,14 @@ def _validate_output_identity(
         if os.path.normcase(os.path.dirname(path)) != os.path.normcase(output):
             raise core.PreflightError(
                 f"{label} 不在冻结输出目录内：{path}；输出目录：{output}")
+    identities = {
+        os.path.normcase(partial),
+        os.path.normcase(publish),
+        os.path.normcase(event_log),
+    }
+    if len(identities) != 3:
+        raise core.PreflightError(
+            "partial、publish stem 与 event log 必须是三个不同路径")
     return output, partial, publish, event_log
 
 
@@ -1262,7 +1270,8 @@ def recover_interrupted(
     """把未提交的当前工作还原到文件边界，保留历史 attempt。"""
     runtime = load_runtime(con)
     if runtime.run_state not in (
-        "running", "pause_requested", "sealing", "sealed_unpublished",
+        "running", "pause_requested", "paused", "sealing",
+        "sealed_unpublished",
     ):
         raise core.PreflightError(
             f"状态 {runtime.run_state} 不需要异常终止恢复")
@@ -1290,7 +1299,7 @@ def recover_interrupted(
         stages_reset = con.execute(
             "UPDATE stage_checkpoints SET state='failed_recoverable',"
             " current_entry_id=NULL,updated_at_utc=?,finished_at_utc=?"
-            " WHERE state IN ('running','pause_requested')",
+            " WHERE state IN ('running','pause_requested','paused')",
             (now, now),
         ).rowcount
         con.execute(
