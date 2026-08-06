@@ -188,7 +188,11 @@ class TestRawEvidenceJournal(_EvidenceFixture):
 
     def test_pause_and_stop_are_not_terminal_evidence(self) -> None:
         journal = self.journal()
-        for action, outcome_name in (("pause", "paused"), ("stop", "stopped")):
+        for action, outcome_name in (
+            ("pause", "paused"),
+            ("save_exit", "save_exit"),
+            ("stop", "stopped"),
+        ):
             outcome = _outcome("error")
             paused = dbraw.RawDecodeOutcome(
                 **{

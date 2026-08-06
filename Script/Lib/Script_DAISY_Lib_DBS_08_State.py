@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import platform
 import socket
 import sqlite3
 import sys
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 import uuid
 
 import Script_DAISY_Lib_DBS_01_Core as core
@@ -394,6 +395,7 @@ class PublicationResult:
     lease_released: bool
     warnings: tuple[str, ...]
     issue_report_path: str | None = None
+    artifact_paths: tuple[str, ...] = ()
 
 
 _UNSET = object()
@@ -2510,36 +2512,143 @@ def _write_issue_text_exclusive(path: str, content: str) -> None:
         raise
 
 
+def _write_binary_exclusive(path: str, content: bytes) -> None:
+    descriptor = None
+    created = False
+    try:
+        descriptor = os.open(
+            path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            | getattr(os, "O_BINARY", 0),
+        )
+        created = True
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("伴随产物写入未取得进展")
+            view = view[written:]
+        os.fsync(descriptor)
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+            descriptor = None
+        if created:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _publish_with_artifacts_no_clobber(
+    working_path: str,
+    final_path: str,
+    issue_markdown: str | None,
+    additional_artifacts: Mapping[str, bytes],
+) -> tuple[str | None, tuple[str, ...]]:
+    """协调发布数据库、Issues 与额外伴随文件；失败回收本次精确目标。"""
+    final = _normalized(final_path)
+    working = _normalized(working_path)
+    directory = os.path.dirname(final)
+    issue_path = (
+        core.artifact_issue_report_path(final)
+        if issue_markdown is not None else None
+    )
+    normalized_artifacts: list[tuple[str, bytes]] = []
+    occupied = {os.path.normcase(final), os.path.normcase(working)}
+    if issue_path is not None:
+        occupied.add(os.path.normcase(_normalized(issue_path)))
+    for raw_path, payload in additional_artifacts.items():
+        if not isinstance(raw_path, str) or not os.path.isabs(raw_path):
+            raise core.PreflightError("额外伴随产物路径必须是绝对路径")
+        path = _normalized(raw_path)
+        if os.path.normcase(os.path.dirname(path)) != os.path.normcase(
+                directory):
+            raise core.PreflightError("额外伴随产物必须与最终数据库同目录")
+        key = os.path.normcase(path)
+        if key in occupied:
+            raise core.PreflightError(f"额外伴随产物路径冲突：{path}")
+        if not isinstance(payload, bytes):
+            raise TypeError("额外伴随产物内容必须是 bytes")
+        occupied.add(key)
+        normalized_artifacts.append((path, payload))
+
+    targets = [path for path, _payload in normalized_artifacts]
+    if issue_path is not None:
+        targets.append(_normalized(issue_path))
+    targets.append(final)
+    normalized_issue = _normalized(issue_path) if issue_path is not None else None
+    conflict = next((path for path in targets if os.path.exists(path)), None)
+    if conflict is not None:
+        if normalized_issue is not None \
+                and os.path.normcase(conflict) == os.path.normcase(
+                    normalized_issue):
+            raise core.PreflightError(
+                "发布冲突：问题报告已存在且不会覆盖："
+                f"{normalized_issue}")
+        raise core.PreflightError(
+            f"发布冲突：目标已存在且不会覆盖：{conflict}")
+
+    created: list[str] = []
+    staging_paths: list[str] = []
+    try:
+        for path, payload in normalized_artifacts:
+            staging = os.path.join(
+                directory,
+                f".{os.path.basename(path)}.{uuid.uuid4().hex}.publishing",
+            )
+            staging_paths.append(staging)
+            _write_binary_exclusive(staging, payload)
+            expected_digest = hashlib.sha256(payload).hexdigest()
+            if core.sha256_file(staging) != expected_digest:
+                raise core.PreflightError(
+                    f"额外伴随产物 staging 摘要校验失败：{path}")
+            _publish_no_clobber(staging, path)
+            staging_paths.remove(staging)
+            created.append(path)
+        if issue_path is not None:
+            try:
+                _write_issue_text_exclusive(issue_path, issue_markdown)
+            except FileExistsError as exc:
+                raise core.PreflightError(
+                    "发布冲突：问题报告已存在且不会覆盖："
+                    f"{issue_path}") from exc
+            except OSError as exc:
+                raise core.PreflightError(
+                    f"问题报告无法创建：{issue_path}：{exc}") from exc
+            created.append(_normalized(issue_path))
+        _publish_no_clobber(working, final)
+    except Exception:
+        for path in reversed(created):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+    finally:
+        for staging in staging_paths:
+            try:
+                os.remove(staging)
+            except OSError:
+                pass
+    return issue_path, tuple(path for path, _payload in normalized_artifacts)
+
+
 def _publish_with_issue_no_clobber(
     working_path: str,
     final_path: str,
     issue_markdown: str | None,
 ) -> str | None:
-    issue_path = (
-        core.artifact_issue_report_path(final_path)
-        if issue_markdown is not None else None
+    issue_path, _artifact_paths = _publish_with_artifacts_no_clobber(
+        working_path,
+        final_path,
+        issue_markdown,
+        {},
     )
-    report_created = False
-    if issue_path is not None:
-        try:
-            _write_issue_text_exclusive(issue_path, issue_markdown)
-            report_created = True
-        except FileExistsError as exc:
-            raise core.PreflightError(
-                f"发布冲突：问题报告已存在且不会覆盖：{issue_path}"
-            ) from exc
-        except OSError as exc:
-            raise core.PreflightError(
-                f"问题报告无法创建：{issue_path}：{exc}") from exc
-    try:
-        _publish_no_clobber(working_path, final_path)
-    except Exception:
-        if report_created:
-            try:
-                os.remove(issue_path)
-            except OSError:
-                pass
-        raise
     return issue_path
 
 
@@ -2552,6 +2661,9 @@ def publish_sealed_snapshot(
     now_utc: str | None = None,
     issue_report_builder: Callable[
         [sqlite3.Connection, str], str | None
+    ] | None = None,
+    additional_artifact_builder: Callable[
+        [sqlite3.Connection, str, str], Mapping[str, bytes]
     ] | None = None,
 ) -> PublicationResult:
     """复制并发布 sealed partial，可在发布前联动创建只读 Issues。"""
@@ -2571,6 +2683,7 @@ def publish_sealed_snapshot(
     destination = None
     staging_created = False
     issue_report_path = None
+    artifact_paths: tuple[str, ...] = ()
     try:
         source_uri = Path(partial).resolve(strict=True).as_uri() + "?mode=ro"
         source = sqlite3.connect(source_uri, uri=True)
@@ -2621,18 +2734,28 @@ def publish_sealed_snapshot(
             + f"_{digest[:8].upper()}.sqlite"
         )
         issue_markdown = None
-        if issue_report_builder is not None:
+        additional_artifacts: Mapping[str, bytes] = {}
+        if issue_report_builder is not None \
+                or additional_artifact_builder is not None:
             report_source = None
             try:
                 report_uri = (
                     Path(staging).resolve(strict=True).as_uri() + "?mode=ro")
                 report_source = sqlite3.connect(report_uri, uri=True)
-                issue_markdown = issue_report_builder(
-                    report_source, os.path.basename(final_path))
-                if issue_markdown is not None \
-                        and not isinstance(issue_markdown, str):
-                    raise TypeError(
-                        "issue_report_builder 必须返回 str 或 None")
+                if additional_artifact_builder is not None:
+                    built = additional_artifact_builder(
+                        report_source, final_path, digest)
+                    if not isinstance(built, Mapping):
+                        raise TypeError(
+                            "additional_artifact_builder 必须返回 Mapping")
+                    additional_artifacts = built
+                if issue_report_builder is not None:
+                    issue_markdown = issue_report_builder(
+                        report_source, os.path.basename(final_path))
+                    if issue_markdown is not None \
+                            and not isinstance(issue_markdown, str):
+                        raise TypeError(
+                            "issue_report_builder 必须返回 str 或 None")
             finally:
                 if report_source is not None:
                     report_source.close()
@@ -2640,8 +2763,13 @@ def publish_sealed_snapshot(
             if digest_after_report != digest:
                 raise core.PreflightError(
                     "Issues 只读分析改变了发布副本，已拒绝发布")
-        issue_report_path = _publish_with_issue_no_clobber(
-            staging, final_path, issue_markdown)
+        issue_report_path, artifact_paths = \
+            _publish_with_artifacts_no_clobber(
+                staging,
+                final_path,
+                issue_markdown,
+                additional_artifacts,
+            )
         staging_created = False
     except Exception:
         if destination is not None:
@@ -2676,4 +2804,5 @@ def publish_sealed_snapshot(
         lease_released=lease_released,
         warnings=tuple(warnings),
         issue_report_path=issue_report_path,
+        artifact_paths=artifact_paths,
     )

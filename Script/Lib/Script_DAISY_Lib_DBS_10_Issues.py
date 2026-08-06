@@ -16,6 +16,7 @@ ISSUE_SECTIONS = (
     ("hash", "哈希问题"),
     ("metadata", "Exif／元数据问题"),
     ("format", "格式校验问题"),
+    ("raw", "RAW 深度校验问题"),
     ("performance", "读取性能异常候选"),
     ("runtime", "运行／证据问题"),
 )
@@ -45,6 +46,10 @@ _INFORMATION_LABELS = {
     "folded_validation_records": "折叠 validation",
     "high_density_warning_files": "高密度 warning 候选文件",
     "unsupported_files": "unsupported 文件（仅统计）",
+    "raw_candidate_files": "RAW 候选文件",
+    "raw_selected_files": "RAW 选中文件",
+    "raw_processed_files": "RAW 已处理文件",
+    "raw_unsupported_files": "RAW unsupported 文件（仅统计）",
     "high_confidence_records": "高置信度候选记录",
     "low_confidence_files": "低置信度候选（仅留库）",
     "failed_or_abandoned_sessions": "失败／异常结束 session",
@@ -859,6 +864,11 @@ def _analyze_snapshot_connection(
             _hash_section(con, descriptor, row_limit),
             _metadata_section(con, descriptor, row_limit),
             _format_section(con, descriptor, row_limit),
+            _null_section(
+                "raw",
+                "RAW 深度校验问题",
+                "本次未启用、未提供伴随证据或旧库未记录",
+            ),
             _performance_section(con, descriptor, row_limit),
             _runtime_section(con, descriptor, row_limit),
         )
@@ -936,15 +946,62 @@ def render_snapshot_issues(
     *,
     artifact_filename: str | None = None,
     include_clean: bool = False,
+    section_overrides: dict[str, dict[str, object]] | None = None,
 ) -> str | None:
-    """渲染固定六板块；只有 unsupported／低置信度时不生成 Issues。"""
-    if not include_clean and not bool(analysis.get("has_reportable_issues")):
-        return None
+    """渲染固定板块；只有 unsupported／低置信度时不生成 Issues。"""
     sections = list(analysis.get("sections") or [])
     by_id = {
-        str(section.get("id")): section
+        str(section.get("id")): dict(section)
         for section in sections if isinstance(section, dict)
     }
+    overrides = dict(section_overrides or {})
+    unknown = sorted(set(overrides) - {item[0] for item in ISSUE_SECTIONS})
+    if unknown:
+        raise ValueError(f"未知 Issues 板块覆盖：{unknown}")
+    for section_id, override in overrides.items():
+        if not isinstance(override, dict):
+            raise ValueError(f"Issues 板块覆盖必须是对象：{section_id}")
+        execution = str(override.get("execution") or "")
+        if execution not in ("executed", "null"):
+            raise ValueError(
+                f"Issues 板块覆盖执行状态无效：{section_id}")
+        issue_files = override.get("issue_files")
+        issue_records = override.get("issue_records")
+        if execution == "null" and (
+                issue_files is not None or issue_records is not None):
+            raise ValueError(f"NULL 板块覆盖不能伪造 0：{section_id}")
+        if execution == "executed":
+            try:
+                issue_files = int(issue_files or 0)
+                issue_records = int(issue_records or 0)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Issues 板块覆盖计数无效：{section_id}") from exc
+            if issue_files < 0 or issue_records < 0:
+                raise ValueError(
+                    f"Issues 板块覆盖计数不能为负：{section_id}")
+        details = override.get("details") or []
+        information = override.get("information") or {}
+        if not isinstance(details, list) or not isinstance(information, dict):
+            raise ValueError(
+                f"Issues 板块覆盖明细或信息无效：{section_id}")
+        title = dict(ISSUE_SECTIONS)[section_id]
+        by_id[section_id] = {
+            **override,
+            "id": section_id,
+            "title": title,
+            "issue_files": issue_files,
+            "issue_records": issue_records,
+            "details": list(details),
+            "information": dict(information),
+        }
+    reportable = any(
+        section.get("execution") == "executed"
+        and bool(section.get("issue_files") or section.get("issue_records"))
+        for section in by_id.values()
+    )
+    if not include_clean and not reportable:
+        return None
     lines = [
         "# DAISY 问题报告",
         "",
@@ -1068,6 +1125,7 @@ def build_snapshot_issue_report(
     require_sealed: bool = True,
     row_limit: int = DETAIL_LIMIT,
     include_clean: bool = False,
+    section_overrides: dict[str, dict[str, object]] | None = None,
 ) -> str | None:
     analysis = analyze_snapshot_issues(
         snapshot_path,
@@ -1078,6 +1136,7 @@ def build_snapshot_issue_report(
         analysis,
         artifact_filename=artifact_filename,
         include_clean=include_clean,
+        section_overrides=section_overrides,
     )
 
 
@@ -1087,6 +1146,7 @@ def build_snapshot_issue_report_from_connection(
     *,
     row_limit: int = DETAIL_LIMIT,
     include_clean: bool = False,
+    section_overrides: dict[str, dict[str, object]] | None = None,
 ) -> str | None:
     """供 schema 4 发布事务在只读副本上生成最终命名的人读报告。"""
     analysis = analyze_snapshot_issue_connection(
@@ -1098,4 +1158,5 @@ def build_snapshot_issue_report_from_connection(
         analysis,
         artifact_filename=artifact_filename,
         include_clean=include_clean,
+        section_overrides=section_overrides,
     )

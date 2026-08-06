@@ -7,6 +7,7 @@ session、lease、worker 与发布编排。
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import math
 import os
@@ -28,6 +29,9 @@ import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_08_State as dbstate
 import Script_DAISY_Lib_DBS_09_Run as dbrun
 import Script_DAISY_Lib_DBS_10_Issues as dbissues
+import Script_DAISY_Lib_DBS_13_Raw as dbraw
+import Script_DAISY_Lib_DBS_14_Raw_Evidence as rawevidence
+import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 
 
 STAGES_TOTAL = 9
@@ -259,6 +263,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--format-validation", choices=("off", "sample", "all"),
     )
     parser.add_argument("--format-sample-percent", type=float)
+    parser.add_argument(
+        "--raw-deep-validation",
+        action="store_true",
+        default=None,
+        help="在格式校验选中范围内使用隔离 rawpy worker 实际解码 RAW",
+    )
+    parser.add_argument(
+        "--raw-timeout-seconds",
+        type=float,
+        help="RAW 单文件无进展阈值覆盖；默认使用 90s／9 GiB 阶梯",
+    )
     parser.add_argument("--no-file-id", action="store_true", default=None)
     parser.add_argument(
         "--timeout-action", choices=_TIMEOUT_ACTIONS,
@@ -306,7 +321,12 @@ def _quick_preflight(output_dir: str) -> dict[str, object]:
     return {}
 
 
-def _full_preflight(args: argparse.Namespace, output_dir: str) \
+def _full_preflight(
+    args: argparse.Namespace,
+    output_dir: str,
+    *,
+    raw_capability: dict[str, object] | None = None,
+) \
         -> dict[str, object]:
     tools = core.run_preflight(
         {
@@ -327,7 +347,30 @@ def _full_preflight(args: argparse.Namespace, output_dir: str) \
         )
         core.emit_gui_event(
             "tools_detected", tools={"powershell": tools["powershell"]})
+    if raw_capability is not None:
+        tools[envcap.RAW_CAPABILITY_ID] = dict(raw_capability)
+        core.emit_gui_event(
+            "runtime_capabilities",
+            capabilities={
+                envcap.RAW_CAPABILITY_ID: dict(raw_capability),
+            },
+        )
     return tools
+
+
+def _requested_raw_capability() -> dict[str, object]:
+    capability = envcap.probe_rawpy_capability()
+    payload = capability.as_dict()
+    details = payload.get("details")
+    worker_reaped = bool(
+        isinstance(details, dict) and details.get("worker_reaped") is True)
+    if not capability.available or not capability.isolated or not worker_reaped:
+        reason = capability.reason or "隔离能力证据不完整"
+        raise core.PreflightError(
+            "RAW 深度校验不可用："
+            f"state={capability.state}；{reason}"
+        )
+    return payload
 
 
 def _format_tokens(mode: str) -> list[str]:
@@ -346,6 +389,7 @@ def _new_config(
     metadata_storage = args.metadata_storage or (
         "complete" if mode == "full" else "normalized")
     format_mode = args.format_validation or "off"
+    raw_enabled = bool(args.raw_deep_validation)
     if mode == "quick":
         if hash_mode != "none":
             raise core.PreflightError("Quick 不能启用内容哈希")
@@ -359,6 +403,8 @@ def _new_config(
             raise core.PreflightError("Quick 不接受独立哈希抽验比例")
         if args.format_sample_percent is not None:
             raise core.PreflightError("Quick 不接受格式校验抽样比例")
+        if raw_enabled or args.raw_timeout_seconds is not None:
+            raise core.PreflightError("Quick 不能启用 RAW 深度校验")
         if args.timeout_action is not None:
             raise core.PreflightError("Quick 不接受哈希 timeout 处置")
         if any((
@@ -376,12 +422,23 @@ def _new_config(
     if hash_mode == "none" and args.powershell_path:
         raise core.PreflightError(
             "哈希关闭时不接受 --powershell-path")
-    if hash_mode == "none" and args.timeout_action is not None:
+    if hash_mode == "none" and not raw_enabled \
+            and args.timeout_action is not None:
         raise core.PreflightError(
-            "哈希关闭时不接受 --timeout-action")
+            "哈希与 RAW 深检均关闭时不接受 --timeout-action")
     if format_mode != "sample" and args.format_sample_percent is not None:
         raise core.PreflightError(
             "--format-sample-percent 仅用于 --format-validation sample")
+    if raw_enabled and format_mode == "off":
+        raise core.PreflightError("RAW 深度校验必须依附格式校验")
+    if args.raw_timeout_seconds is not None and not raw_enabled:
+        raise core.PreflightError(
+            "--raw-timeout-seconds 只能与 --raw-deep-validation 一起使用")
+    raw_timeout_seconds = None
+    if args.raw_timeout_seconds is not None:
+        raw_timeout_seconds = float(args.raw_timeout_seconds)
+        if not math.isfinite(raw_timeout_seconds) or raw_timeout_seconds <= 0:
+            raise core.PreflightError("RAW timeout 必须是大于 0 的有限秒数")
     verify_percent = _finite_percent(
         1.0 if args.verify_sample_percent is None
         else args.verify_sample_percent,
@@ -407,6 +464,13 @@ def _new_config(
         "metadata_storage": metadata_storage,
         "format_validation": format_mode,
         "format_sample_percent": format_percent,
+        "raw_deep_validation": raw_enabled,
+        "raw_timeout_policy": {
+            **dbraw.raw_timeout_policy(),
+            "kind": "no_progress",
+            "override_seconds": raw_timeout_seconds,
+            "default_decision": args.timeout_action or "continue_waiting",
+        },
         "no_file_id": bool(args.no_file_id),
         "profile_version": dbmeta.PROFILE_VERSION,
         "path_key_rule": core.PATH_KEY_RULE,
@@ -427,14 +491,22 @@ def _create_new_run(
     args: argparse.Namespace,
 ) -> tuple[dbrun.RunHandle, dict[str, object]]:
     mode = args.mode or "full"
-    roots = _parse_roots(args.root)
     output_dir = os.path.abspath(args.output_dir or "Output/Snapshots")
     config = _new_config(args, mode)
+    raw_capability = (
+        _requested_raw_capability()
+        if bool(config.get("raw_deep_validation")) else None
+    )
+    roots = _parse_roots(args.root)
     args.hash = str(config["hash"])
     preflight = core.Progress(1, STAGES_TOTAL, "预检", args.quiet)
     tools = (
         _quick_preflight(output_dir)
-        if mode == "quick" else _full_preflight(args, output_dir)
+        if mode == "quick" else _full_preflight(
+            args,
+            output_dir,
+            raw_capability=raw_capability,
+        )
     )
     preflight.finish(
         "输出目录与空间通过（Quick 无工具依赖）"
@@ -500,6 +572,37 @@ def _same_tool(
         )
 
 
+def _same_raw_capability(
+    frozen_tools: dict[str, object],
+    current: dict[str, object],
+) -> None:
+    frozen = frozen_tools.get(envcap.RAW_CAPABILITY_ID)
+    if not isinstance(frozen, dict):
+        raise core.PreflightError("partial 缺少冻结的 rawpy／LibRaw 能力")
+    frozen_details = frozen.get("details")
+    current_details = current.get("details")
+    if not isinstance(frozen_details, dict) \
+            or not isinstance(current_details, dict):
+        raise core.PreflightError("rawpy／LibRaw 能力明细不完整")
+    frozen_identity = (
+        frozen.get("state"),
+        frozen.get("version"),
+        frozen.get("provider"),
+        frozen_details.get("libraw_version"),
+    )
+    current_identity = (
+        current.get("state"),
+        current.get("version"),
+        current.get("provider"),
+        current_details.get("libraw_version"),
+    )
+    if frozen_identity != current_identity:
+        raise core.PreflightError(
+            "恢复前 rawpy／LibRaw 版本或能力发生变化："
+            f"冻结={frozen_identity!r}；当前={current_identity!r}"
+        )
+
+
 def _resume_preflight(
     args: argparse.Namespace,
     preview: dbrun.ResumePreview,
@@ -521,6 +624,8 @@ def _resume_preflight(
         "--metadata-storage": args.metadata_storage is not None,
         "--format-validation": args.format_validation is not None,
         "--format-sample-percent": args.format_sample_percent is not None,
+        "--raw-deep-validation": args.raw_deep_validation is not None,
+        "--raw-timeout-seconds": args.raw_timeout_seconds is not None,
         "--no-file-id": args.no_file_id is not None,
         "--timeout-action": args.timeout_action is not None,
         "--exiftool-path": args.exiftool_path is not None,
@@ -546,6 +651,11 @@ def _resume_preflight(
             1, STAGES_TOTAL, "发布恢复预检", args.quiet)
         preflight.finish("sealed 身份与 lease 状态可接管；不访问源目录或工具")
         return config
+    if bool(config.get("raw_deep_validation")):
+        _same_raw_capability(
+            preview.tools,
+            _requested_raw_capability(),
+        )
     for _label, root in preview.roots:
         core.validate_root(root)
     preflight = core.Progress(1, STAGES_TOTAL, "恢复预检", args.quiet)
@@ -620,6 +730,475 @@ def _close_open_handle(handle: dbrun.RunHandle) -> None:
             pass
 
 
+def _raw_problem_outcome(
+    binding: rawevidence.RawEvidenceBinding,
+    *,
+    size_bytes: int,
+    code: str,
+    detail: str,
+) -> dbraw.RawDecodeOutcome:
+    return dbraw.RawDecodeOutcome(
+        outcome="crashed",
+        status="error",
+        code=code,
+        detail=str(detail)[:2048],
+        decision="none",
+        decision_source="none",
+        control_action=None,
+        size_bytes=int(size_bytes),
+        elapsed_seconds=0.0,
+        threshold_seconds=float(dbraw.raw_timeout_for_size(size_bytes)),
+        threshold_count=0,
+        worker_pid=0,
+        worker_exitcode=None,
+        worker_reaped=True,
+        rawpy_version=binding.rawpy_version,
+        libraw_version=binding.libraw_version,
+        width=None,
+        height=None,
+        channels=None,
+        pixel_count=None,
+        decoded_bytes=None,
+        events=(),
+        events_truncated=False,
+    )
+
+
+class RawScanIntegration:
+    """Full 格式校验的外部 RAW 从属阶段与联合发布上下文。"""
+
+    def __init__(
+        self,
+        handle: dbrun.RunHandle,
+        config: dict[str, object],
+        *,
+        create_journal: bool,
+    ) -> None:
+        if not bool(config.get("raw_deep_validation")):
+            raise ValueError("RAW 扫描上下文只能用于已启用配置")
+        mode = str(config.get("format_validation") or "off")
+        if mode not in ("sample", "all"):
+            raise core.PreflightError("RAW 深检冻结配置没有有效格式范围")
+        runtime = dbstate.load_runtime(handle.connection)
+        tools_row = handle.connection.execute(
+            "SELECT tools_json FROM run_sessions WHERE session_id=?",
+            (runtime.active_session_id,),
+        ).fetchone()
+        if tools_row is None:
+            raise core.PreflightError("RAW 深检缺少当前 session 工具证据")
+        try:
+            tools = json.loads(str(tools_row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise core.PreflightError("RAW 深检工具证据无法解析") from exc
+        capability = (
+            tools.get(envcap.RAW_CAPABILITY_ID)
+            if isinstance(tools, dict) else None
+        )
+        if not isinstance(capability, dict):
+            raise core.PreflightError("RAW 深检缺少冻结能力")
+        details = capability.get("details")
+        if not isinstance(details, dict) \
+                or capability.get("state") != "available" \
+                or capability.get("isolated") is not True \
+                or details.get("worker_reaped") is not True \
+                or not capability.get("version"):
+            raise core.PreflightError("RAW 深检冻结能力不完整或不是隔离可用状态")
+        snapshot_row = handle.connection.execute(
+            "SELECT snapshot_uuid FROM snapshot_info WHERE id=1"
+        ).fetchone()
+        if snapshot_row is None:
+            raise core.PreflightError("RAW 深检缺少 snapshot UUID")
+        percent = (
+            100.0 if mode == "all"
+            else float(config.get("format_sample_percent", 10.0))
+        )
+        self.config = dict(config)
+        self.binding = rawevidence.RawEvidenceBinding(
+            snapshot_uuid=str(snapshot_row[0]),
+            format_mode=mode,
+            format_sample_percent=percent,
+            rawpy_version=str(capability["version"]),
+            libraw_version=(
+                str(details["libraw_version"])
+                if details.get("libraw_version") is not None else None
+            ),
+        )
+        self.journal = rawevidence.RawEvidenceJournal(
+            rawevidence.raw_working_evidence_path(handle.partial_path),
+            self.binding,
+            create=create_journal,
+        )
+        self._report_cache: dict[str, object] = {}
+
+    @staticmethod
+    def _selection(
+        con: sqlite3.Connection,
+    ) -> tuple[int, list[dict[str, object]]]:
+        raw_candidate_total = sum(
+            1 for (extension,) in con.execute(
+                "SELECT extension FROM entries WHERE is_placeholder=0")
+            if dbraw.is_raw_candidate(str(extension or ""))
+        )
+        rows = []
+        for row in con.execute(
+            "SELECT f.entry_id,r.root_label,r.root_path,e.rel_path,"
+            " e.extension,e.size_bytes,e.modified_at_utc"
+            " FROM format_checks f"
+            " JOIN entries e ON e.entry_id=f.entry_id"
+            " JOIN roots r ON r.root_id=e.root_id"
+            " WHERE e.is_placeholder=0"
+            " ORDER BY e.root_id,e.path_key,e.rel_path"
+        ):
+            if not dbraw.is_raw_candidate(str(row[4] or "")):
+                continue
+            rows.append({
+                "entry_id": int(row[0]),
+                "root_label": str(row[1]),
+                "root_path": str(row[2]),
+                "rel_path": str(row[3]),
+                "extension": str(row[4]),
+                "size_bytes": int(row[5]),
+                "modified_at_utc": str(row[6]),
+            })
+        return raw_candidate_total, rows
+
+    def _stats(
+        self,
+        rows: list[dict[str, object]],
+    ) -> dict[str, int]:
+        counts = {status: 0 for status in rawevidence.RAW_RESULT_STATUSES}
+        latest = self.journal.latest_by_entry()
+        for row in rows:
+            entry_id = int(row["entry_id"])
+            record = latest.get(entry_id)
+            if record is None or not self.journal.matches_terminal(
+                    entry_id,
+                    size_bytes=int(row["size_bytes"]),
+                    modified_at_utc=str(row["modified_at_utc"])):
+                continue
+            counts[str(record["status"])] += 1
+        counts["processed"] = sum(counts.values())
+        return counts
+
+    @staticmethod
+    def _stop_after_timeout(
+        con: sqlite3.Connection,
+        router: dbrun.RunCommandRouter,
+        on_event: Callable[..., None] | None,
+    ) -> str:
+        dbstate.update_stage_checkpoint(
+            con,
+            "format",
+            "failed_recoverable",
+            current_entry_id=None,
+            checkpoint={"reason": "raw_timeout_stop_and_resume"},
+        )
+        dbstate.stop_run(con, reason="raw_timeout_stop_and_resume")
+        router.end()
+        if on_event is not None:
+            on_event(
+                "run_stopped",
+                stage="format",
+                substage="raw",
+                state="stopped",
+            )
+        return "stopped"
+
+    def run(
+        self,
+        con: sqlite3.Connection,
+        router: dbrun.RunCommandRouter,
+        *,
+        show_current_file: bool,
+        on_progress: Callable[[dict[str, object]], None] | None,
+        on_event: Callable[..., None] | None,
+        paused_wait_seconds: float = 0.25,
+        raw_runner=None,
+    ) -> dict[str, object]:
+        raw_candidate_total, rows = self._selection(con)
+        selected_ids = [int(row["entry_id"]) for row in rows]
+        timeout_policy = self.config.get("raw_timeout_policy")
+        if not isinstance(timeout_policy, dict):
+            timeout_policy = {}
+        timeout_value = timeout_policy.get("override_seconds")
+        timeout_seconds = (
+            float(timeout_value) if timeout_value is not None else None)
+        default_decision = str(
+            timeout_policy.get("default_decision") or "continue_waiting")
+        runner = raw_runner or dbraw.run_raw_decode_worker
+        if on_event is not None:
+            on_event(
+                "raw_stage_started",
+                stage="format",
+                substage="raw",
+                raw_candidate_total=raw_candidate_total,
+                selected=len(rows),
+            )
+
+        index = 0
+        while index < len(rows):
+            row = rows[index]
+            entry_id = int(row["entry_id"])
+            if self.journal.matches_terminal(
+                    entry_id,
+                    size_bytes=int(row["size_bytes"]),
+                    modified_at_utc=str(row["modified_at_utc"])):
+                index += 1
+                continue
+            boundary = dbrun.settle_pending_stage_control(
+                con,
+                "format",
+                router,
+                on_event=on_event,
+                paused_wait_seconds=paused_wait_seconds,
+            )
+            if boundary != "running":
+                return {
+                    "state": boundary,
+                    "selected": len(rows),
+                    **self._stats(rows),
+                }
+            rel_path = str(row["rel_path"])
+            logical_path = os.path.join(
+                str(row["root_label"]), rel_path)
+            source_path = os.path.join(
+                str(row["root_path"]), rel_path)
+            dbstate.update_stage_checkpoint(
+                con,
+                "format",
+                "running",
+                current_entry_id=entry_id,
+                checkpoint={
+                    "primary_completed": True,
+                    "substage": "raw",
+                },
+            )
+            if show_current_file and on_event is not None:
+                on_event(
+                    "current_item",
+                    stage="format",
+                    substage="raw",
+                    item=logical_path,
+                )
+            expected_size = int(row["size_bytes"])
+            expected_mtime = str(row["modified_at_utc"])
+            extended = core.to_extended_path(source_path)
+            try:
+                before = os.stat(extended, follow_symlinks=False)
+            except OSError as exc:
+                outcome = _raw_problem_outcome(
+                    self.binding,
+                    size_bytes=expected_size,
+                    code="source_unreadable",
+                    detail=f"RAW 解码前文件不可读取：{exc}",
+                )
+            else:
+                before_matches = (
+                    int(before.st_size) == expected_size
+                    and core.ns_to_utc_iso(before.st_mtime_ns)
+                    == expected_mtime
+                )
+                if not before_matches:
+                    outcome = _raw_problem_outcome(
+                        self.binding,
+                        size_bytes=expected_size,
+                        code="source_identity_changed",
+                        detail="RAW 解码前 size／mtime 已改变",
+                    )
+                else:
+                    def worker_event(event: str, **payload: object) -> None:
+                        if on_event is not None:
+                            on_event(
+                                event,
+                                stage="format",
+                                substage="raw",
+                                **payload,
+                            )
+
+                    try:
+                        outcome = runner(
+                            source_path,
+                            expected_size=expected_size,
+                            timeout_seconds=timeout_seconds,
+                            default_decision=default_decision,
+                            display_name=logical_path,
+                            control=router.hash_control,
+                            on_event=worker_event,
+                        )
+                    except Exception as exc:
+                        outcome = _raw_problem_outcome(
+                            self.binding,
+                            size_bytes=expected_size,
+                            code="worker_start_failed",
+                            detail=(
+                                "RAW worker 无法启动："
+                                f"{type(exc).__name__}: {exc}"
+                            ),
+                        )
+                    if outcome.outcome in (
+                            "paused", "save_exit", "stopped"):
+                        if router.hash_control.current() is not None:
+                            boundary = dbrun.settle_pending_stage_control(
+                                con,
+                                "format",
+                                router,
+                                on_event=on_event,
+                                paused_wait_seconds=paused_wait_seconds,
+                            )
+                            if boundary == "running":
+                                continue
+                        else:
+                            boundary = self._stop_after_timeout(
+                                con, router, on_event)
+                        return {
+                            "state": boundary,
+                            "selected": len(rows),
+                            **self._stats(rows),
+                        }
+                    try:
+                        after = os.stat(extended, follow_symlinks=False)
+                    except OSError as exc:
+                        outcome = _raw_problem_outcome(
+                            self.binding,
+                            size_bytes=expected_size,
+                            code="source_unreadable_after_decode",
+                            detail=f"RAW 解码后文件不可读取：{exc}",
+                        )
+                    else:
+                        after_matches = (
+                            int(after.st_size) == expected_size
+                            and core.ns_to_utc_iso(after.st_mtime_ns)
+                            == expected_mtime
+                        )
+                        if not after_matches:
+                            outcome = replace(
+                                _raw_problem_outcome(
+                                    self.binding,
+                                    size_bytes=expected_size,
+                                    code="source_changed_during_decode",
+                                    detail="RAW 解码期间 size／mtime 已改变",
+                                ),
+                                elapsed_seconds=outcome.elapsed_seconds,
+                                threshold_seconds=outcome.threshold_seconds,
+                                threshold_count=outcome.threshold_count,
+                                worker_pid=outcome.worker_pid,
+                                worker_exitcode=outcome.worker_exitcode,
+                                worker_reaped=outcome.worker_reaped,
+                            )
+            self.journal.append_result(
+                entry_id=entry_id,
+                logical_path=logical_path,
+                size_bytes=expected_size,
+                modified_at_utc=expected_mtime,
+                outcome=outcome,
+            )
+            stats = self._stats(rows)
+            dbstate.update_stage_checkpoint(
+                con,
+                "format",
+                "running",
+                items_done=int(stats["processed"]),
+                items_total=len(rows),
+                error_count=sum(
+                    int(stats[key])
+                    for key in ("invalid", "timeout", "error")),
+                current_entry_id=None,
+                checkpoint={
+                    "primary_completed": True,
+                    "substage": "raw",
+                    "raw_candidate_total": raw_candidate_total,
+                    "raw_selected": len(rows),
+                },
+            )
+            if on_progress is not None:
+                on_progress({
+                    "substage": "raw",
+                    "total": len(rows),
+                    **stats,
+                })
+            index += 1
+
+        report = rawevidence.build_raw_report(
+            self.journal,
+            selected_ids,
+            raw_candidate_total=raw_candidate_total,
+        )
+        if report.get("state") != "executed":
+            raise core.PreflightError("RAW 工作证据未形成完整终态")
+        stats = self._stats(rows)
+        result: dict[str, object] = {
+            "state": "completed",
+            "raw_candidate_total": raw_candidate_total,
+            "selected": len(rows),
+            **stats,
+        }
+        if on_event is not None:
+            on_event(
+                "raw_stage_finished",
+                stage="format",
+                substage="raw",
+                **result,
+            )
+        return result
+
+    def additional_artifact_builder(
+        self,
+        con: sqlite3.Connection,
+        final_path: str,
+        database_sha256: str,
+    ) -> dict[str, bytes]:
+        raw_candidate_total, rows = self._selection(con)
+        report = rawevidence.build_raw_report(
+            self.journal,
+            [int(row["entry_id"]) for row in rows],
+            raw_candidate_total=raw_candidate_total,
+            snapshot_filename=os.path.basename(final_path),
+            database_identity={
+                "sha256": str(database_sha256),
+                "schema_version": dbstate.SCHEMA_VERSION,
+                "snapshot_uuid": self.binding.snapshot_uuid,
+            },
+        )
+        if report.get("state") != "executed":
+            raise core.PreflightError(
+                "RAW 工作证据不完整，拒绝联合发布数据库")
+        self._report_cache = dict(report)
+        return {
+            rawevidence.raw_report_path(final_path):
+                rawevidence.raw_report_payload(report),
+        }
+
+    def issue_report_builder(
+        self,
+        con: sqlite3.Connection,
+        artifact_filename: str,
+    ) -> str | None:
+        if not self._report_cache:
+            raise core.PreflightError("RAW 伴随报告尚未构建，拒绝生成 Issues")
+        section = rawevidence.raw_issue_section_payload(self._report_cache)
+        return dbissues.build_snapshot_issue_report_from_connection(
+            con,
+            artifact_filename,
+            section_overrides={"raw": section},
+        )
+
+    def cleanup_after_publication(
+        self,
+        publication: dbstate.PublicationResult,
+    ) -> dbstate.PublicationResult:
+        warnings = list(publication.warnings)
+        if os.path.exists(self.journal.path):
+            try:
+                os.remove(self.journal.path)
+            except OSError as exc:
+                warnings.append(
+                    "最终快照与 RAW 报告已发布，但 RAW 工作证据未删除："
+                    f"{exc}")
+        if warnings == list(publication.warnings):
+            return publication
+        return replace(publication, warnings=tuple(warnings))
+
+
 def _record_publish_retry_failure(
     handle: dbrun.RunHandle,
     error: BaseException,
@@ -634,6 +1213,9 @@ def _publish_sealed_only(
     handle: dbrun.RunHandle,
     reporter: ScanReporter,
     before_publish: Callable[[], None],
+    *,
+    issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    additional_artifact_builder=None,
 ) -> dict[str, object]:
     runtime = dbstate.load_runtime(handle.connection)
     reporter.event(
@@ -647,8 +1229,8 @@ def _publish_sealed_only(
         runtime.publish_stem_path + ".publishing.sqlite",
         lease_path=handle.lease_path,
         lease_id=handle.lease.lease_id,
-        issue_report_builder=(
-            dbissues.build_snapshot_issue_report_from_connection),
+        issue_report_builder=issue_report_builder,
+        additional_artifact_builder=additional_artifact_builder,
     )
     warnings = list(publication.warnings)
     if os.path.exists(runtime.event_log_path):
@@ -665,6 +1247,7 @@ def _publish_sealed_only(
             lease_released=publication.lease_released,
             warnings=tuple(warnings),
             issue_report_path=publication.issue_report_path,
+            artifact_paths=publication.artifact_paths,
         )
     reporter.event(
         "stage_finished",
@@ -709,6 +1292,14 @@ def _run_handle(
             file=sys.stderr,
         )
         return 1
+    raw_integration = (
+        RawScanIntegration(
+            handle,
+            config,
+            create_journal=not publish_only,
+        )
+        if bool(config.get("raw_deep_validation")) else None
+    )
     router = dbrun.RunCommandRouter(on_receipt=reporter.control_receipt)
     inbox = None
     heartbeat_errors: list[BaseException] = []
@@ -768,9 +1359,39 @@ def _run_handle(
     if isinstance(timeout_policy, dict):
         default_decision = str(
             timeout_policy.get("default_decision") or default_decision)
+    issue_builder = (
+        raw_integration.issue_report_builder
+        if raw_integration is not None
+        else dbissues.build_snapshot_issue_report_from_connection
+    )
+    artifact_builder = (
+        raw_integration.additional_artifact_builder
+        if raw_integration is not None else None
+    )
+
+    def raw_substage(
+        con: sqlite3.Connection,
+        current_router: dbrun.RunCommandRouter,
+    ) -> dict[str, object]:
+        if raw_integration is None:
+            raise core.PreflightError("RAW 从属阶段缺少运行上下文")
+        return raw_integration.run(
+            con,
+            current_router,
+            show_current_file=args.show_current_file,
+            on_progress=lambda payload: reporter.progress("format", payload),
+            on_event=reporter.event,
+        )
+
     try:
         result = (
-            _publish_sealed_only(handle, reporter, before_seal)
+            _publish_sealed_only(
+                handle,
+                reporter,
+                before_seal,
+                issue_report_builder=issue_builder,
+                additional_artifact_builder=artifact_builder,
+            )
             if publish_only else
             dbrun.run_scan_to_publication(
                 handle,
@@ -780,6 +1401,10 @@ def _run_handle(
                 hash_retry_mode=retry_mode,
                 on_progress=reporter.progress,
                 on_event=reporter.event,
+                issue_report_builder=issue_builder,
+                additional_artifact_builder=artifact_builder,
+                format_substage=(
+                    raw_substage if raw_integration is not None else None),
                 before_seal=before_seal,
             )
         )
@@ -821,11 +1446,16 @@ def _run_handle(
         return 1
     if state == "published":
         publication = result["publication"]
+        if raw_integration is not None:
+            publication = raw_integration.cleanup_after_publication(
+                publication)
+            result["publication"] = publication
         reporter.event(
             "run_result",
             state=state,
             final_path=publication.final_path,
             issue_report_path=publication.issue_report_path,
+            artifact_paths=list(publication.artifact_paths),
         )
         print(
             f"\n快照：{publication.final_path}"
@@ -837,6 +1467,8 @@ def _run_handle(
                 f"{publication.issue_report_path}",
                 file=sys.stderr,
             )
+        for artifact_path in publication.artifact_paths:
+            print(f"RAW 伴随报告：{artifact_path}")
         for warning in publication.warnings:
             print(f"!! {warning}", file=sys.stderr)
         return 0

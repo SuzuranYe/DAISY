@@ -737,8 +737,10 @@ UUID／冻结配置绑定再修复末尾半行，每条终态 flush＋fsync；va
 24／24 通过。统一核验现已增加 RAW 从属阶段和 CLI 参数：隔离能力在数据库／源文件读取前
 预检，RAW 选择严格继承格式 sample／all；valid／unsupported 只汇总，invalid／timeout／
 error 进入同一 JSON／Markdown 的固定板块，schema 3 输入身份不变。专项连续 3 轮共 15／15，
-既有统一核验／CLI／兼容联合 22／22。Full／ENV／GUI 接线、与 SQLite 发布的联动事务，以及
-许可明确的真实 RAW 夹具尚未完成；因此阶段 5 仍为进行中。
+既有统一核验／CLI／兼容联合 22／22。Full 扫描现也完成 CLI 参数、能力前置拒绝、从属阶段、
+JSONL 跨 session 续接和数据库／Issues／伴随 JSON 联合发布；扫描相关联合回归 120／120，
+RAW 三层专项连续 3 轮共 81／81。ENV／GUI 接线和许可明确的真实 RAW 夹具尚未完成；因此
+阶段 5 仍为进行中。
 
 ### 阶段 6：跨版本对比
 
@@ -1236,7 +1238,7 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 0～2 | 完成 | 需求／兼容基线、统一只读 Reader、Verify／Parse 行为保持重构已有提交和回归 |
 | 3 | 完成 | schema 4、session、attempt、lease、恢复状态机和数据契约已落地 |
 | 4 | 完成 | worker、暂停／保存退出／停止、动态 timeout、扫描发布链、scan CLI 和现有扫描 GUI 接线已落地 |
-| 5 | 进行中 | 统一核验核心已提交；外部工具监管、verify CLI、旧入口投影对照、最终 GUI 合并和新增 RAW 深检未完成 |
+| 5 | 进行中 | 统一核验、旧入口投影及 RAW 核验／Full 扫描链已提交或完成实现；ENV／GUI 接线和真实 RAW 夹具仍未完成 |
 | 6～9 | 未开始完成性实施 | 跨版本 Diff、数据库解析、四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
 
 最近一次完整发现式回归是在扫描 GUI 检查点后执行，结果为 465／465；同一阶段的 State、
@@ -1355,6 +1357,31 @@ RAW 阶段用与格式核验完全相同的 `:validate` seed 和 sample／all �
 字段断言后连续 3 轮共 15／15。既有统一核验 11／11、CLI 7／7、兼容投影 4／4 同批通过。
 所有用例使用注入能力／worker，schema 3 SQLite 的 SHA-256、大小和 mtime 不变；没有导入
 真实 rawpy。统一核验结果直接进入主 Markdown／JSON，不生成扫描专用恢复伴随文件。
+
+### 17.12 Full 扫描 RAW 从属阶段与联合发布检查点
+
+统一 `scan` CLI 增加 `--raw-deep-validation` 和可选的
+`--raw-timeout-seconds`。RAW 只能在 Full 的格式 sample／all 下启用；Quick、格式关闭或单独
+提供 timeout 参数均在配置预检拒绝。显式请求 RAW 时，隔离能力探测先于根目录解析；恢复时
+比较冻结与当前 rawpy／LibRaw 身份，`sealed_unpublished` 只发布恢复则不重新访问源目录或工具。
+
+RAW 阶段使用 `format_checks` 的既有确定性选择作为唯一选中集合，继续归属于 `format` 检查点，
+没有增加数据库阶段、表或列。每文件 worker 串行运行，暂停／保存退出／停止均先回收当前精确
+worker；暂停或保存退出不写终态，下一 session 从该文件重新解码。终态以
+`entry_id + size + mtime` 复用；工作 JSONL 的 valid／unsupported 不保存路径，只有真实问题
+保留路径。保存退出专项证明新 session 能加载同一绑定并只补做未完成文件。
+
+发布器新增受约束的额外伴随产物接口。RAW JSON 先写同目录唯一 staging、校验 SHA-256，再以
+no-clobber 发布；随后生成使用同一报告投影的固定 RAW Issues 板块，最后发布 SQLite。任一步
+失败会删除本次精确创建的伴随目标和 staging，不覆盖既有文件。成功报告绑定最终数据库文件名、
+SHA-256、schema 和 snapshot UUID；工作 JSONL 仅在数据库、Issues 和 RAW JSON 都发布成功后
+删除。SQLite 发布前后的完整 `sqlite_master` DDL 逐项相同，原有 `raw_payloads` 只是元数据
+原始载荷表，不能误判为 RAW 深检结构。
+
+定向联合回归为 120／120；RAW worker、证据和扫描接线三组连续 3 轮共 81／81；GUI scan、
+no-clobber 和既有发布联合 37／37。测试均使用工作区合成文件和注入 worker，没有导入真实
+rawpy、读取真实 RAW、扫描硬盘、读取用户 `TEMP\` 或枚举／影响其它进程。RAW-05 的真实
+LibRaw 解码、ENV-01 展示和 GUI 开关仍是未完成项，不能据此宣布 RAW 功能发布就绪。
 
 ## 十八、完成定义
 

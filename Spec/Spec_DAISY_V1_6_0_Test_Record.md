@@ -853,3 +853,36 @@ RAW 新专项首轮 4／5；失败来自测试用 `assertNotIn("valid.dng", ...)
 全部把 `ResourceWarning` 视为错误，未调用真实 rawpy、ExifTool、FFprobe 或 7-Zip，未读取
 用户 `TEMP\`，也未枚举或影响其它进程。真实 RAW 解码、Full 恢复伴随证据、ENV-01 和 GUI
 仍未完成。
+
+## 十八、阶段 5：Full 扫描 RAW 从属阶段与联合发布（第八检查点）
+
+Full 扫描现已接入 RAW 深检，但仍保持默认关闭。实现和测试确认：
+
+- CLI 层级约束拒绝 Quick、格式关闭时的 RAW、孤立 RAW timeout 和非正有限 timeout；
+- rawpy／LibRaw 隔离能力失败发生在根目录解析之前，未先访问源目录；正常恢复比较冻结版本，
+  `sealed_unpublished` 发布重试不重新探测工具或访问源目录；
+- RAW 选中集合直接来自本次 `format_checks`，没有第二套抽样；仍使用 `format` 检查点，不新增
+  SQLite 阶段、表或列；
+- 每个终态写入绑定 JSONL；valid／unsupported 不留路径，invalid／timeout／error 才留路径；
+- `save_exit` 与进程内 `pause` 已在 worker 结果中分开；保存退出不写当前文件终态，新 session
+  重新执行该文件并复用此前完整终态；
+- 最终 RAW JSON、RAW Issues 板块和 SQLite 由同一发布流程协调，RAW JSON staging 回读摘要
+  正确，数据库失败会回滚本次精确伴随目标且不留下 `.publishing`；
+- RAW JSON 内记录最终数据库 SHA-256；最终 SQLite 的完整 `sqlite_master` DDL 与执行前相同。
+
+首轮联合发布专项 5／6；唯一失败是测试使用 `LIKE '%raw%'`，错误地把既有 schema 的
+`raw_payloads` 元数据原始载荷表当成新增 RAW 深检表。实现的完整 DDL 前后相等断言当时已通过，
+因此删除了概念错误的名称断言，没有修改生产 schema 来迎合测试。修正后结果：
+
+| 批次 | 结果 | 覆盖 |
+|---|---:|---|
+| Full 扫描 RAW 新专项 | 6／6 | 配置／预检顺序、隐私、保存退出续接、联合发布、DDL、失败回滚 |
+| 扫描／状态／RAW／Issues 联合 | 120／120 | 既有状态机与默认关闭回归 |
+| RAW worker＋证据＋扫描接线连续 3 轮 | 3×27／27 | worker 回收、JSONL、发布稳定性 |
+| GUI scan＋no-clobber＋既有发布 | 37／37 | GUI 命令兼容和原发布路径 |
+| `scan --help` | 通过 | 新参数可发现且默认语义明确 |
+
+所有 Python 测试均使用 `-B -W error`；测试只写工作区 `.test_runtime\v1_6_0`，没有读取用户
+`TEMP\`、没有枚举或终止其它进程、没有扫描真实硬盘／档案。当前仍没有许可与 SHA-256 冻结
+的真实 RAW 夹具，也没有执行真实 rawpy／LibRaw；RAW-05 继续是发布阻断。ENV-01 和 GUI 的
+能力禁用原因／开关接线亦未完成。

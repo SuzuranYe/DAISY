@@ -160,6 +160,7 @@ class TestScanCliProduction(unittest.TestCase):
             if path.name.endswith((
                 ".partial.sqlite", ".lease", ".events.jsonl",
                 ".publishing.sqlite",
+                ".raw_verification.jsonl",
             ))
         ]
         self.assertEqual([], residue)
@@ -182,6 +183,8 @@ class TestScanCliProduction(unittest.TestCase):
         final = self.published()
         self.assertEqual(source_digest, _sha256(source))
         self.assert_clean_runtime_files()
+        self.assertEqual([], list(Path(self.output_dir).glob(
+            "*_Raw_Verification.json")))
         con = sqlite3.connect(
             Path(final).resolve(strict=True).as_uri() + "?mode=ro",
             uri=True,

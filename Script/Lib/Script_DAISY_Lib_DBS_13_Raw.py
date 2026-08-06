@@ -345,8 +345,11 @@ def run_raw_decode_worker(
             action = owned_control.current()
             if action is not None:
                 control_action, action_source = action
-                outcome = (
-                    "stopped" if control_action == "stop" else "paused")
+                outcome = {
+                    "pause": "paused",
+                    "save_exit": "save_exit",
+                    "stop": "stopped",
+                }.get(control_action, "stopped")
                 decision = "stop_and_resume"
                 decision_source = action_source
                 detail = control_action

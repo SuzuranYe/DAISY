@@ -469,6 +469,75 @@ def validate_raw_report(report: Mapping[str, object]) -> None:
             raise core.PreflightError("RAW unsupported 不得包含路径")
 
 
+def raw_report_payload(report: Mapping[str, object]) -> bytes:
+    """生成已验证的 UTF-8 无 BOM／LF 最终 JSON 字节。"""
+    validate_raw_report(report)
+    payload = (
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+    if payload.startswith(b"\xef\xbb\xbf") or b"\r" in payload:
+        raise core.PreflightError("RAW 伴随 JSON 编码／换行不符合契约")
+    return payload
+
+
+def raw_issue_section_payload(
+    report: Mapping[str, object],
+) -> dict[str, object]:
+    """把伴随报告投影为 DBS-10 可消费的通用 Issues 板块。"""
+    validate_raw_report(report)
+    if report.get("state") != "executed":
+        return {
+            "id": "raw",
+            "title": "RAW 深度校验问题",
+            "execution": "null",
+            "reason": "RAW 深度校验尚未完成",
+            "issue_files": None,
+            "issue_records": None,
+            "details": [],
+            "information": {},
+        }
+    problems = list(report.get("problems") or [])
+    selection = dict(report.get("selection") or {})
+    counts = dict(report.get("counts") or {})
+    details = []
+    for row in problems:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "error")
+        details.append({
+            "root_label": "",
+            "relative_path": str(row.get("path") or ""),
+            "status": status,
+            "detail": str(row.get("detail") or row.get("code") or "")[:2000],
+            "level": "need_action",
+            "statuses": f"RAW={status}",
+            "advice": "检查文件完整性；必要时重新复制后再次执行 RAW 深度校验",
+        })
+    unique_paths = {
+        str(row.get("path")) for row in problems
+        if isinstance(row, dict) and row.get("path")
+    }
+    return {
+        "id": "raw",
+        "title": "RAW 深度校验问题",
+        "execution": "executed",
+        "reason": None,
+        "issue_files": len(unique_paths),
+        "issue_records": len(problems),
+        "details": details,
+        "information": {
+            "detail_total": len(problems),
+            "evidence_tables": "RAW 伴随 JSON",
+            "raw_candidate_files": int(
+                selection.get("raw_candidate_total") or 0),
+            "raw_selected_files": int(
+                selection.get("raw_selected_total") or 0),
+            "raw_processed_files": int(selection.get("processed") or 0),
+            "raw_unsupported_files": int(counts.get("unsupported") or 0),
+        },
+    }
+
+
 def _markdown_cell(value: object) -> str:
     return str(value if value is not None else "").replace("|", "\\|") \
         .replace("\r", " ").replace("\n", " ")
@@ -532,9 +601,7 @@ def publish_raw_report(
     name = os.path.basename(target)
     staging = os.path.join(
         directory, f".{name}.{uuid.uuid4().hex}.partial")
-    payload = (
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    ).encode("utf-8")
+    payload = raw_report_payload(report)
     descriptor = None
     created = False
     try:
@@ -551,8 +618,6 @@ def publish_raw_report(
         with open(staging, encoding="utf-8", newline="") as handle:
             verified = json.load(handle)
         validate_raw_report(verified)
-        if b"\r" in payload or payload.startswith(b"\xef\xbb\xbf"):
-            raise core.PreflightError("RAW 伴随 JSON 编码／换行不符合契约")
         try:
             if os.name == "nt":
                 os.rename(staging, target)

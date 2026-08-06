@@ -368,6 +368,18 @@ class TestRawWorker(unittest.TestCase):
         self.assertEqual(outcome.control_action, "pause")
         self.assertTrue(outcome.worker_reaped)
 
+    def test_save_exit_is_distinct_from_in_process_pause(self) -> None:
+        control = dbhash.HashWorkerControl()
+        self.assertTrue(control.request_save_exit("user"))
+        outcome = self.run_worker(
+            _worker_slow,
+            timeout_seconds=5.0,
+            control=control,
+        )
+        self.assertEqual(outcome.outcome, "save_exit")
+        self.assertEqual(outcome.control_action, "save_exit")
+        self.assertTrue(outcome.worker_reaped)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

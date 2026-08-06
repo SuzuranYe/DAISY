@@ -15,7 +15,7 @@ import queue
 import sqlite3
 import threading
 import time
-from typing import Callable
+from typing import Callable, Mapping
 import uuid
 
 import Script_DAISY_Lib_DBS_01_Core as core
@@ -1349,11 +1349,14 @@ def run_format_stage_controlled(
     on_progress: Callable[[int, dict[str, object]], None] | None = None,
     on_event: Callable[..., None] | None = None,
     paused_wait_seconds: float = 0.25,
+    defer_completion: bool = False,
     _session_factory=None,
 ) -> dict[str, object]:
     """运行 Full 可选格式校验；unsupported 只统计，不写为错误。"""
     if mode not in ("off", "sample", "all"):
         raise core.PreflightError(f"格式校验模式无效：{mode!r}")
+    if defer_completion and mode == "off":
+        raise core.PreflightError("格式校验关闭时不能运行从属阶段")
     if router.state != "running":
         raise core.PreflightError(
             f"格式校验要求 running 控制器，实际为 {router.state}")
@@ -1623,7 +1626,7 @@ def run_format_stage_controlled(
     dbstate.update_stage_checkpoint(
         con,
         "format",
-        "completed",
+        "running" if defer_completion else "completed",
         items_done=int(stats["processed"]),
         items_total=int(stats["selected"]),
         error_count=failures,
@@ -1634,10 +1637,18 @@ def run_format_stage_controlled(
             "eligible": int(stats["eligible"]),
             "selected": int(stats["selected"]),
             "unsupported": int(stats["unsupported"]),
+            **({
+                "primary_completed": True,
+                "substage_pending": True,
+            } if defer_completion else {}),
         },
     )
     _emit_control_event(
-        on_event, "stage_finished", stage="format", **stats)
+        on_event,
+        "format_primary_finished" if defer_completion else "stage_finished",
+        stage="format",
+        **stats,
+    )
     return stats
 
 
@@ -2538,6 +2549,9 @@ def run_scan_evidence_stages(
     hash_default_decision: str = "continue_waiting",
     hash_retry_mode: str = "pending",
     hash_poll_seconds: float = 0.05,
+    format_substage: Callable[
+        [sqlite3.Connection, RunCommandRouter], dict[str, object]
+    ] | None = None,
     _hash_worker_target=None,
 ) -> dict[str, object]:
     """运行扫描证据阶段；包含可选格式校验，不执行抽验、封存或发布。"""
@@ -2715,6 +2729,7 @@ def run_scan_evidence_stages(
         on_progress=lambda _index, payload: progress("format", payload),
         on_event=on_event,
         paused_wait_seconds=paused_wait_seconds,
+        defer_completion=format_substage is not None,
     )
     stages["format"] = formatted
     if formatted["state"] != "completed":
@@ -2723,6 +2738,66 @@ def run_scan_evidence_stages(
             "stage": "format",
             "stages": stages,
         }
+
+    if format_substage is not None:
+        subordinate = format_substage(con, router)
+        if not isinstance(subordinate, dict):
+            raise TypeError("格式从属阶段必须返回 dict")
+        stages["format_substage"] = subordinate
+        if subordinate.get("state") != "completed":
+            return {
+                "state": str(subordinate.get("state") or "unknown"),
+                "stage": "format",
+                "stages": stages,
+            }
+        primary_processed = int(formatted.get("processed") or 0)
+        primary_selected = int(formatted.get("selected") or 0)
+        sub_processed = int(subordinate.get("processed") or 0)
+        sub_selected = int(subordinate.get("selected") or 0)
+        primary_failures = sum(
+            int(formatted.get(key) or 0)
+            for key in ("invalid", "timeout", "error", "unstable")
+        )
+        sub_failures = sum(
+            int(subordinate.get(key) or 0)
+            for key in ("invalid", "timeout", "error")
+        )
+        dbstate.update_stage_checkpoint(
+            con,
+            "format",
+            "completed",
+            items_done=primary_processed + sub_processed,
+            items_total=primary_selected + sub_selected,
+            error_count=primary_failures + sub_failures,
+            current_entry_id=None,
+            checkpoint={
+                "mode": format_mode,
+                "sample_percent": _format_sample_value(
+                    config.get("format_sample_percent", 10.0)),
+                "eligible": int(formatted.get("eligible") or 0),
+                "selected": primary_selected,
+                "unsupported": int(formatted.get("unsupported") or 0),
+                "primary_completed": True,
+                "substage": dict(subordinate),
+            },
+        )
+        _emit_control_event(
+            on_event,
+            "stage_finished",
+            stage="format",
+            processed=primary_processed + sub_processed,
+            selected=primary_selected + sub_selected,
+            invalid=(
+                int(formatted.get("invalid") or 0)
+                + int(subordinate.get("invalid") or 0)),
+            timeout=(
+                int(formatted.get("timeout") or 0)
+                + int(subordinate.get("timeout") or 0)),
+            error=(
+                int(formatted.get("error") or 0)
+                + int(subordinate.get("error") or 0)),
+            raw=dict(subordinate),
+        )
 
     rescanned = run_rescan_stage_controlled(
         con,
@@ -2933,6 +3008,9 @@ def seal_and_publish_scan(
     staging_path: str | None = None,
     manifest: dict[str, object] | None = None,
     issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    additional_artifact_builder: Callable[
+        [sqlite3.Connection, str, str], Mapping[str, bytes]
+    ] | None = None,
     remove_event_log: bool = True,
     now_utc: str | None = None,
     on_event: Callable[..., None] | None = None,
@@ -3088,6 +3166,7 @@ def seal_and_publish_scan(
         lease_id=handle.lease.lease_id,
         now_utc=finished_at,
         issue_report_builder=issue_report_builder,
+        additional_artifact_builder=additional_artifact_builder,
     )
     warnings = list(publication.warnings)
     if remove_event_log and os.path.exists(runtime.event_log_path):
@@ -3104,6 +3183,7 @@ def seal_and_publish_scan(
             lease_released=publication.lease_released,
             warnings=tuple(warnings),
             issue_report_path=publication.issue_report_path,
+            artifact_paths=publication.artifact_paths,
         )
     _emit_control_event(
         on_event,
@@ -3129,6 +3209,9 @@ def run_scan_completion_stages(
     staging_path: str | None = None,
     manifest: dict[str, object] | None = None,
     issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    additional_artifact_builder: Callable[
+        [sqlite3.Connection, str, str], Mapping[str, bytes]
+    ] | None = None,
     on_progress: Callable[[str, dict[str, object]], None] | None = None,
     on_event: Callable[..., None] | None = None,
     on_threshold: Callable[
@@ -3196,6 +3279,7 @@ def run_scan_completion_stages(
         staging_path=staging_path,
         manifest=manifest,
         issue_report_builder=issue_report_builder,
+        additional_artifact_builder=additional_artifact_builder,
         on_event=on_event,
     )
     return {
@@ -3223,6 +3307,12 @@ def run_scan_to_publication(
     staging_path: str | None = None,
     manifest: dict[str, object] | None = None,
     issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    additional_artifact_builder: Callable[
+        [sqlite3.Connection, str, str], Mapping[str, bytes]
+    ] | None = None,
+    format_substage: Callable[
+        [sqlite3.Connection, RunCommandRouter], dict[str, object]
+    ] | None = None,
     on_threshold: Callable[
         [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
     before_seal: Callable[[], None] | None = None,
@@ -3243,6 +3333,7 @@ def run_scan_to_publication(
         hash_default_decision=hash_default_decision,
         hash_retry_mode=hash_retry_mode,
         hash_poll_seconds=hash_poll_seconds,
+        format_substage=format_substage,
         _hash_worker_target=_hash_worker_target,
     )
     if evidence["state"] != "completed":
@@ -3263,6 +3354,7 @@ def run_scan_to_publication(
         staging_path=staging_path,
         manifest=manifest,
         issue_report_builder=issue_report_builder,
+        additional_artifact_builder=additional_artifact_builder,
         on_progress=on_progress,
         on_event=on_event,
         on_threshold=on_threshold,
