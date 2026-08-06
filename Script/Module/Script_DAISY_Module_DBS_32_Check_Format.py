@@ -28,7 +28,6 @@ import csv
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import time
@@ -41,6 +40,7 @@ sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbh
 import Script_DAISY_Lib_DBS_02_Meta as meta
+import Script_DAISY_Lib_DBS_05_Reader as dbreader
 
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _OOXML_EXTS = {"docx", "xlsx", "pptx"}
@@ -227,9 +227,10 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
     elif not force:
         raise core.PreflightError(
             f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
-    con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
+    con, descriptor = dbreader.open_database(
+        snapshot_path, expected_type="snapshot")
     try:
-        core.require_sealed_snapshot(con)
+        dbreader.require_capabilities(descriptor, "files")
         uuid_, = con.execute(
             "SELECT snapshot_uuid"
             " FROM snapshot_info").fetchone()

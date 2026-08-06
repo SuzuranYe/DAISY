@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +19,7 @@ _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_04_Diff as dbdiff
+import Script_DAISY_Lib_DBS_05_Reader as dbreader
 
 
 def _status_count(counts: dict, status: str) -> int:
@@ -44,8 +44,13 @@ def _append_table(lines: list[str], headers: tuple[str, ...], rows: list[tuple])
 def _render_diff_issue_report(db_path: str, artifact_filename: str,
                               result: dict, row_limit: int = 500) -> str:
     counts = result["counts"]
-    con = sqlite3.connect(f"file:{os.path.abspath(db_path)}?mode=ro", uri=True)
+    con, descriptor = dbreader.open_database(
+        db_path, expected_type="diff", require_sealed=False,
+        verify_integrity=False)
     try:
+        # 工作库文件名仍为 partial；结构已由 compare() 完整创建。
+        if descriptor.lifecycle == "sealed":
+            dbreader.require_capabilities(descriptor, "file_changes")
         problem_total, = con.execute(
             "SELECT COUNT(*) FROM diff_entries"
             " WHERE status IN ('unstable','unknown')").fetchone()
@@ -131,12 +136,15 @@ def main() -> int:
         return 2
     # Diff 库名带根文件夹名：取新侧快照的 root label（配对目标侧）
     try:
-        _c = sqlite3.connect(f"file:{os.path.abspath(args.new)}?mode=ro",
-                             uri=True)
-        labels = [r[0] for r in _c.execute(
-            "SELECT root_label FROM roots ORDER BY root_label")]
-        _c.close()
-    except sqlite3.Error:
+        _c, descriptor = dbreader.open_database(
+            args.new, expected_type="snapshot")
+        try:
+            dbreader.require_capabilities(descriptor, "files")
+            labels = [r[0] for r in _c.execute(
+                "SELECT root_label FROM roots ORDER BY root_label")]
+        finally:
+            _c.close()
+    except core.PreflightError:
         labels = []                    # 不可读时回退；准入校验会给出正式报错
     name = core.snapshot_name(labels or ["Unknown"], "Diff")
     publish_stem = os.path.abspath(os.path.join(args.output_dir, name))

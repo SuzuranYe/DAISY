@@ -49,6 +49,7 @@ STG-11 在底层自动执行同等完整核验。
 | Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_04_Diff.py` 中的 `DIFF_DDL` |
 | 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_DBS_02_Meta.py` |
 | 哈希、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
+| 数据库类型、schema 与模块能力探测 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
@@ -783,6 +784,14 @@ BitLocker 状态；不得未经检查公开分享。
   不伪造为 0、空值或成功。该门槛不表示 v1.4.1 程序能够读取未来新 schema，也不把
   v1.4.1 未完成 partial 纳入无条件续传承诺。详细矩阵见
   [v1.6.0 待办](Spec_DAISY_V1_6_0_Backlog.md)。
+- v1.6.0 开发分支已增加统一只读 Reader。它按身份表、schema、封存状态和实际表列识别
+  快照／Diff／partial，并将模块状态区分为 `available`、`empty`、`unavailable`、
+  `incompatible` 和 `invalid`。DBS-21／31／32／41、增量来源和 Issues 读取均通过该层；
+  schema 3 的 DDL、数据契约和发布版本身份在阶段 1 未改变。对于 schema 3，Reader 还
+  读取 `hash_coverage`、config 和 manifest 的执行证据：模块执行后 0 行才是 `empty/0`，
+  Quick／No-Hash 明确未执行的模块是 `unavailable/NULL`，不得伪装为无问题或无记录。
+  能力的语义状态与物理投影是否可查询分别记录；旧固定导出可读取结构完整的 schema 3
+  空表，但新模块选择界面不得据此把未执行模块列为可选。
 
 ### 12.2 信息架构与字段命名
 

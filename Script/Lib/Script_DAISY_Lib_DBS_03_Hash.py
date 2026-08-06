@@ -24,6 +24,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_05_Reader as dbreader
 
 HASH_TOOL = "python-hashlib"
 HASH_TOOL_VERSION = platform.python_version()
@@ -166,9 +167,11 @@ def load_previous(prev_path: str,
     if recorded != actual:
         raise core.PreflightError(
             f"上一快照文件名高32bit指纹不符：记录 {recorded}，实际 {actual}")
-    con = sqlite3.connect(f"file:{prev_path}?mode=ro&immutable=1", uri=True)
+    con, descriptor = dbreader.open_database(
+        prev_path, expected_type="snapshot")
     try:
-        core.require_sealed_snapshot(con, "上一快照")
+        dbreader.require_capabilities(
+            descriptor, "files", "directories", "hashes")
         (uuid_, schema_v, pk_rule, has_file_issues, has_unstable_entries,
          has_enumeration_gaps) = con.execute(
             "SELECT snapshot_uuid,schema_version,path_key_rule,"

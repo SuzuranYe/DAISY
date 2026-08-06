@@ -1520,7 +1520,17 @@ def render_snapshot_issue_report(
 ) -> str | None:
     """从封存前 SQLite 生成可读问题摘要，不修改数据库。"""
     path = os.path.abspath(snapshot_path)
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    # 局部导入避免 Core／Reader 的模块初始化环，同时让 Issues 与其它消费者
+    # 共用同一类型、schema、封存状态和能力探测入口。
+    import Script_DAISY_Lib_DBS_05_Reader as dbreader
+    con, descriptor = dbreader.open_database(
+        path, expected_type="snapshot")
+    try:
+        dbreader.require_capabilities(
+            descriptor, "overview", "issues", "diagnostics")
+    except Exception:
+        con.close()
+        raise
     con.row_factory = sqlite3.Row
     try:
         info = con.execute(

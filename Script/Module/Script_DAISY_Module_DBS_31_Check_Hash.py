@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +22,7 @@ _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbh
+import Script_DAISY_Lib_DBS_05_Reader as dbreader
 
 
 def patrol(snapshot_path: str, root_map: dict | None = None,
@@ -41,9 +41,10 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
     elif not force:
         raise core.PreflightError(
             f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
-    con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
+    con, descriptor = dbreader.open_database(
+        snapshot_path, expected_type="snapshot")
     try:
-        core.require_sealed_snapshot(con)
+        dbreader.require_capabilities(descriptor, "files", "hashes")
         uuid_, coverage = con.execute(
             "SELECT snapshot_uuid, hash_coverage"
             " FROM snapshot_info").fetchone()

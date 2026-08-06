@@ -38,6 +38,7 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_05_Reader as dbreader
 
 _LIST_CAP = 50      # 摘要内明细列表上限（超出注明总数，绝不静默截断）
 _EXCEL_WORKBOOK_NAME = "Report_Excel.xlsx"
@@ -607,13 +608,20 @@ def export_snapshot(snapshot_path: str, output_dir: str) -> dict:
     stem = stem[:-len(".sqlite")] if stem.endswith(".sqlite") else stem
     folder = os.path.join(os.path.abspath(output_dir), stem + "_Report")
     os.makedirs(folder, exist_ok=True)
-    con = sqlite3.connect(f"file:{snapshot_path}?mode=ro", uri=True)
+    con, descriptor = dbreader.open_database(
+        snapshot_path, expected_type="snapshot")
     files = [
         _write_report_guide(folder, "snapshot", snapshot_path),
         _write_report_info(folder),
     ]
     try:
-        core.require_sealed_snapshot(con)
+        dbreader.require_queryable_capabilities(
+            descriptor,
+            "overview", "issues", "files", "directories", "hashes",
+            "photo_metadata", "video_metadata", "video_gps",
+            "media_streams", "working_metadata", "document_metadata",
+            "archives", "diagnostics",
+        )
         # 人读路径一律拼接为「label\rel_path」完整逻辑路径
         files.append(_dump_query(
             con, folder, "Tree.csv",
@@ -692,17 +700,18 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
             break
     folder = os.path.join(os.path.abspath(output_dir), stem + "_Report")
     os.makedirs(folder, exist_ok=True)
-    con = sqlite3.connect(f"file:{diff_path}?mode=ro", uri=True)
+    con, descriptor = dbreader.open_database(
+        diff_path, expected_type="diff")
     files = [
         _write_report_guide(folder, "diff", diff_path),
         _write_report_info(folder),
     ]
     try:
-        core.require_sqlite_integrity(con, "Diff 数据库")
-        schema_version, = con.execute(
-            "SELECT schema_version FROM diff_info").fetchone()
-        core.require_readable_schema_version(
-            schema_version, "Diff 数据库")
+        dbreader.require_queryable_capabilities(
+            descriptor,
+            "overview", "file_changes", "directory_changes",
+            "content_groups", "enumeration_gaps", "evidence_notes",
+        )
         _full = ("CASE WHEN {r} IS NULL THEN NULL WHEN {r} = ''"
                  " THEN {l} ELSE {l} || '\\' || {r} END")
         files.append(_dump_query(

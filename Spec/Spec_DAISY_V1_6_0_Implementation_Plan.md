@@ -1,17 +1,18 @@
 # DAISY v1.6.0 需求、修改与测试计划
 
-状态：需求确认与实施规划
+状态：实施中（阶段 0～1 已完成）
 
 编制日期：2026-08-06
 
 目标版本：v1.6.0
 
-当前开发基线：`Codex`／`main` 为 `824af84`；v1.5.1 发布标签为 `2ccd263`
+实施起点：`Codex` 为 `5ea7800`；当前 `main` 为 `824af84`；v1.5.1 标签为 `2ccd263`
 
 关联文档：
 
 - [v1.6.0 可靠性、兼容与报告重构待办](Spec_DAISY_V1_6_0_Backlog.md)
 - [v1.6.0 数据库解析设计](Spec_DAISY_V1_6_0_Database_Parsing_Design.md)
+- [v1.6.0 测试记录](Spec_DAISY_V1_6_0_Test_Record.md)
 - [现行技术规格](Spec_DAISY_Technical.md)
 - [v1.5.1 测试计划](Spec_DAISY_V1_5_1_Test_Plan.md)
 

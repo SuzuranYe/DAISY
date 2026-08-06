@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-from contextlib import closing
 import hashlib
 import json
 import os
@@ -16,6 +15,7 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_05_Reader as dbreader
 
 # Diff 库 DDL（精确定义以本处为准）
 DIFF_DDL = r"""
@@ -125,9 +125,11 @@ def _check_and_open(path: str, force: bool) -> tuple[sqlite3.Connection, int]:
     else:
         raise core.PreflightError(
             f"文件名缺少 SHA-256 高32bit 指纹（--force 可越过）：{path}")
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con, descriptor = dbreader.open_database(
+        path, expected_type="snapshot")
     try:
-        core.require_sealed_snapshot(con, f"快照 {path}")
+        dbreader.require_queryable_capabilities(
+            descriptor, "files", "directories", "hashes", "raw_payloads")
     except Exception:
         con.close()
         raise
@@ -308,10 +310,15 @@ def _resolve_exiftool_candidates(old_path: str, new_path: str,
         return
     old_cache: dict[int, str | None] = {}
     new_cache: dict[int, str | None] = {}
-    with closing(sqlite3.connect(
-            f"file:{old_path}?mode=ro", uri=True)) as old_con, \
-            closing(sqlite3.connect(
-                f"file:{new_path}?mode=ro", uri=True)) as new_con:
+    old_con, _old_descriptor = dbreader.open_database(
+        old_path, expected_type="snapshot", verify_integrity=False)
+    try:
+        new_con, _new_descriptor = dbreader.open_database(
+            new_path, expected_type="snapshot", verify_integrity=False)
+    except Exception:
+        old_con.close()
+        raise
+    try:
         for row, old_eid, new_eid in candidates:
             old_digest = _stable_exiftool_digest(
                 old_con, old_eid, old_cache)
@@ -321,6 +328,9 @@ def _resolve_exiftool_candidates(old_path: str, new_path: str,
             row["metadata_changed"] = 0 if same else 1
             if same and row["status"] == "metadata_extraction_changed":
                 row["status"] = "unchanged"
+    finally:
+        new_con.close()
+        old_con.close()
 
 
 def _hash_evidence(old: dict, new: dict, oh: dict, nh: dict) -> str:

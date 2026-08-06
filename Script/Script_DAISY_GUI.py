@@ -133,6 +133,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Tree.py",
     "Script_DAISY_Test_Storage_Unit.py",
     "Script_DAISY_Test_Storage_Read_Only.py",
+    "Script_DAISY_Test_DBS_Reader.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
 _PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"

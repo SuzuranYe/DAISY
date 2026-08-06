@@ -1,0 +1,69 @@
+{
+  "fixture_contract": "daisy-v1.4.1-schema3-golden-v1",
+  "source_application_version": "1.4.1",
+  "source_git_tag": "v1.4.1",
+  "deterministic_fixture_profiles": [
+    "full",
+    "quick",
+    "full_no_hash_normalized",
+    "issues_unstable_enumeration_unsupported",
+    "diff"
+  ],
+  "schema_version": 3,
+  "path_key_rule": 1,
+  "data_contract": "daisy-snapshot-v3",
+  "min_reader_version": "1.4.1",
+  "snapshot_ddl_sha256": "9d162b401617a9242393ba2dcf32445be6437799553abb4c5923c527dc0963a7",
+  "diff_ddl_sha256": "de5828bdf33955a6256e61eea3c390fb8a5c140c436b059145aab8d432eefa3f",
+  "snapshot_tables": [
+    "archive_members",
+    "archive_metadata",
+    "audio_streams",
+    "dirs",
+    "document_metadata",
+    "entries",
+    "errors",
+    "hashes",
+    "metadata_diagnostics",
+    "photo_metadata",
+    "raw_payloads",
+    "roots",
+    "run_events",
+    "snapshot_info",
+    "snapshot_manifest",
+    "video_gps_points",
+    "video_metadata",
+    "video_streams",
+    "working_metadata"
+  ],
+  "diff_tables": [
+    "diff_dirs",
+    "diff_entries",
+    "diff_hash_groups",
+    "diff_info",
+    "diff_subtrees"
+  ],
+  "schema3_snapshot_capabilities": [
+    "overview",
+    "issues",
+    "files",
+    "directories",
+    "hashes",
+    "photo_metadata",
+    "video_metadata",
+    "video_gps",
+    "media_streams",
+    "working_metadata",
+    "document_metadata",
+    "archives",
+    "raw_payloads",
+    "diagnostics",
+    "run_history"
+  ],
+  "future_snapshot_capabilities": [
+    "run_sessions",
+    "entry_attempts",
+    "read_performance",
+    "format_checks"
+  ]
+}
