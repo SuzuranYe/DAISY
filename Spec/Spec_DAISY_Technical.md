@@ -51,6 +51,7 @@ STG-11 在底层自动执行同等完整核验。
 | 哈希、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
 | 数据库类型、schema 与模块能力探测 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
 | 核验快照准入、当前 root 映射和连接生命周期 | `Script\Lib\Script_DAISY_Lib_DBS_06_Verify.py` |
+| 数据库解析模块注册表、CSV 与旧 Excel writer | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |

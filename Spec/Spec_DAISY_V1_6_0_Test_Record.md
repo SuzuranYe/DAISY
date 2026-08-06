@@ -169,4 +169,25 @@ Ran 302 tests in 91.136s
 OK
 ```
 
-失败 0，跳过 0。阶段 2 的 Parse 注册表、writer 和兼容薄入口尚未完成。
+失败 0，跳过 0。这是阶段 2 第一步的结果，后续 Parse 拆分记录如下。
+
+第二步将 DBS-41 的数据库解析、CSV 和 XLSX 实现移至
+`Script_DAISY_Lib_DBS_07_Parse.py`，并新增：
+
+- 快照／Diff 稳定模块注册表、能力要求和 schema 3 fallback 声明；
+- 保持原页面顺序与 SQL 投影的 `ParsePageSpec`；
+- 保持 UTF-8 无 BOM、LF 和完整值的 `CsvQueryWriter`；
+- 从技术 CSV 生成既有工作簿的 `LegacyExcelWriter`；
+- 仅保留旧 CLI、退出码和 Python 函数别名的 DBS-41 Module。
+
+Parse 专项 5 项和既有导出／v1.4.1 消费者回归 7 项全部通过。另从检查点 `11ed71b`
+只读加载迁移前实现，对同一合成输入做逐字节差分：快照报告 18 个文件、Diff 报告 8 个
+文件均完全一致，输入快照／Diff SHA-256 均不变。DBS-31／32 业务服务尚未成为薄入口，
+因此阶段 2 继续标记为进行中。加入 Parse 专项后的完整回归结果为：
+
+```text
+Ran 307 tests in 94.573s
+OK
+```
+
+失败 0，跳过 0。
