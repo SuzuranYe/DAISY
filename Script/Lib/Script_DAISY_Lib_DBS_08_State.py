@@ -415,6 +415,18 @@ def _now_text(value: str | None = None) -> str:
     return str(value or core.now_utc_iso())
 
 
+def _tool_version_value(
+    tools: dict[str, object],
+    name: str,
+) -> str | None:
+    value = tools.get(name)
+    if isinstance(value, dict):
+        value = value.get("version")
+    if value is None:
+        return None
+    return str(value)
+
+
 def _parse_utc(value: str) -> datetime:
     text = str(value).strip()
     if text.endswith("Z"):
@@ -579,9 +591,9 @@ def initialize_v4_connection(
                 host,
                 platform.platform(),
                 scanner_version,
-                tools.get("exiftool"),
-                tools.get("ffprobe"),
-                tools.get("sevenzip"),
+                _tool_version_value(tools, "exiftool"),
+                _tool_version_value(tools, "ffprobe"),
+                _tool_version_value(tools, "sevenzip"),
                 core.HASH_CHUNK_BYTES,
                 json.dumps(effective_config, ensure_ascii=False),
             ),

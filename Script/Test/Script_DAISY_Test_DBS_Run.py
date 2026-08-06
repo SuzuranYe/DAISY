@@ -23,6 +23,7 @@ sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR, _FIXTURE_DIR]
 import DBS_Hash_Worker_Fixture as worker_fixture
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as dbmeta
+import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_08_State as dbstate
 import Script_DAISY_Lib_DBS_09_Run as dbrun
 
@@ -656,6 +657,286 @@ class TestControlledStageBoundaries(_RunFixture):
             self.assertNotIn("current_item", events)
         finally:
             dbrun.close_handle(handle, release_lease=True)
+
+
+class TestScanEvidencePipeline(_RunFixture):
+    @staticmethod
+    def tools() -> dict[str, dict[str, object]]:
+        return {
+            "exiftool": {"path": "fixture", "version": "13.fixture"},
+            "ffprobe": {"path": "fixture", "version": "7.fixture"},
+            "sevenzip": {"path": "fixture", "version": "24.fixture"},
+        }
+
+    class FakeExifToolWorker:
+        def __init__(self, _path) -> None:
+            pass
+
+        @staticmethod
+        def extract(file_path, photo_profile=False, timeout=None):
+            return {"SourceFile": file_path}
+
+        @staticmethod
+        def close() -> None:
+            pass
+
+    def test_full_pipeline_uses_frozen_session_inputs_and_schema4_stages(
+        self,
+    ) -> None:
+        with open(os.path.join(self.root_path, "file.bin"), "wb") as stream:
+            stream.write(b"abc")
+        handle = self.create(tool_versions=self.tools())
+        events = []
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                result = dbrun.run_scan_evidence_stages(
+                    handle,
+                    dbrun.RunCommandRouter(),
+                    show_current_file=False,
+                    on_event=lambda event, **_payload: events.append(event),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual(("completed", "rescan"), (
+                result["state"], result["stage"]))
+            self.assertEqual(
+                {"enumerate", "hash", "metadata", "rescan"},
+                set(result["stages"]),
+            )
+            entry = handle.connection.execute(
+                "SELECT hash_status,meta_status FROM entries"
+            ).fetchone()
+            self.assertEqual(("done", "done"), tuple(entry))
+            self.assertEqual(1, handle.connection.execute(
+                "SELECT COUNT(*) FROM hashes WHERE status='valid'"
+            ).fetchone()[0])
+            self.assertEqual(1, handle.connection.execute(
+                "SELECT COUNT(*) FROM raw_payloads"
+            ).fetchone()[0])
+            checkpoints = dict(handle.connection.execute(
+                "SELECT stage,state FROM stage_checkpoints"
+                " WHERE stage IN ('enumerate','hash','metadata','rescan')"
+            ))
+            self.assertEqual(
+                {stage: "completed" for stage in checkpoints},
+                checkpoints,
+            )
+            versions = handle.connection.execute(
+                "SELECT exiftool_version,ffprobe_version,sevenzip_version"
+                " FROM snapshot_info"
+            ).fetchone()
+            self.assertEqual(
+                ("13.fixture", "7.fixture", "24.fixture"),
+                tuple(versions),
+            )
+            self.assertNotIn("current_item", events)
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_quick_pipeline_never_starts_hash_or_metadata_tools(self) -> None:
+        with open(os.path.join(self.root_path, "file.bin"), "wb") as stream:
+            stream.write(b"abc")
+        handle = self.create(
+            config={
+                "phase": "quick",
+                "quick": True,
+                "hash": "none",
+                "no_file_id": True,
+            },
+            tool_versions={},
+        )
+        try:
+            with mock.patch.object(
+                    dbhash, "run_hash_worker",
+                    side_effect=AssertionError("Quick 不应启动哈希 worker")), \
+                    mock.patch.object(
+                        dbmeta,
+                        "ExifToolWorker",
+                        side_effect=AssertionError(
+                            "Quick 不应启动元数据工具"),
+                    ):
+                result = dbrun.run_scan_evidence_stages(
+                    handle, dbrun.RunCommandRouter())
+            self.assertEqual("completed", result["state"])
+            self.assertEqual(("skipped", "not_applicable"), tuple(
+                handle.connection.execute(
+                    "SELECT hash_status,meta_status FROM entries"
+                ).fetchone()))
+            checkpoints = dict(handle.connection.execute(
+                "SELECT stage,state FROM stage_checkpoints"
+                " WHERE stage IN ('hash','metadata','rescan')"
+            ))
+            self.assertEqual(
+                {"hash": "skipped", "metadata": "skipped",
+                 "rescan": "completed"},
+                checkpoints,
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_quick_pipeline_rejects_format_validation(self) -> None:
+        handle = self.create(
+            config={
+                "phase": "quick",
+                "quick": True,
+                "hash": "none",
+                "format_validation": "all",
+            },
+            tool_versions={},
+        )
+        try:
+            with self.assertRaisesRegex(
+                    core.PreflightError, "Quick.*不能启用格式校验"):
+                dbrun.run_scan_evidence_stages(
+                    handle, dbrun.RunCommandRouter())
+            self.assertEqual(0, handle.connection.execute(
+                "SELECT COUNT(*) FROM entries").fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_enabled_format_cannot_be_silently_omitted(self) -> None:
+        handle = self.create(
+            config={
+                "phase": "full",
+                "hash": "full",
+                "metadata_storage": "complete",
+                "format_validation": "sample",
+            },
+            tool_versions=self.tools(),
+        )
+        try:
+            with self.assertRaisesRegex(
+                    core.PreflightError, "拒绝遗漏该阶段"):
+                dbrun.run_scan_evidence_stages(
+                    handle, dbrun.RunCommandRouter())
+            self.assertEqual(0, handle.connection.execute(
+                "SELECT COUNT(*) FROM entries").fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_output_subdirectory_inside_root_is_excluded(self) -> None:
+        self.output_dir = os.path.join(self.root_path, "Snapshots")
+        os.makedirs(self.output_dir)
+        self.partial = os.path.join(
+            self.output_dir, "Run.partial.sqlite")
+        self.publish_stem = os.path.join(self.output_dir, "Run")
+        with open(os.path.join(self.root_path, "kept.bin"), "wb") as stream:
+            stream.write(b"kept")
+        with open(os.path.join(self.output_dir, "old.sqlite"), "wb") as stream:
+            stream.write(b"excluded")
+        handle = self.create(tool_versions=self.tools())
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                result = dbrun.run_scan_evidence_stages(
+                    handle,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual("completed", result["state"])
+            self.assertEqual(
+                [("kept.bin",)],
+                handle.connection.execute(
+                    "SELECT rel_path FROM entries ORDER BY rel_path"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_output_directory_equal_to_root_excludes_owned_files(self) \
+            -> None:
+        self.output_dir = self.root_path
+        self.partial = os.path.join(
+            self.output_dir, "Run.partial.sqlite")
+        self.publish_stem = os.path.join(self.output_dir, "Run")
+        with open(os.path.join(self.root_path, "kept.bin"), "wb") as stream:
+            stream.write(b"kept")
+        handle = self.create(tool_versions=self.tools())
+        runtime = dbstate.load_runtime(handle.connection)
+        with open(runtime.event_log_path, "w", encoding="utf-8",
+                  newline="\n") as stream:
+            stream.write("owned\n")
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                result = dbrun.run_scan_evidence_stages(
+                    handle,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual("completed", result["state"])
+            self.assertEqual(
+                [("kept.bin",)],
+                handle.connection.execute(
+                    "SELECT rel_path FROM entries ORDER BY rel_path"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_save_exit_then_resume_retries_hash_and_finishes_pipeline(
+        self,
+    ) -> None:
+        with open(os.path.join(self.root_path, "file.bin"), "wb") as stream:
+            stream.write(b"abc")
+        handle = self.create(tool_versions=self.tools())
+        first_router = dbrun.RunCommandRouter()
+
+        def save_on_worker_start(event, **_payload) -> None:
+            if event == "worker_started":
+                receipt = first_router.route(
+                    dbrun.ControlCommand(1, "save_exit"))
+                self.assertTrue(receipt.accepted)
+
+        try:
+            first = dbrun.run_scan_evidence_stages(
+                handle,
+                first_router,
+                on_event=save_on_worker_start,
+                hash_stall_seconds=1.0,
+                hash_timeout_seconds=2.0,
+                hash_poll_seconds=0.005,
+            )
+            self.assertEqual(("save_exit", "hash"), (
+                first["state"], first["stage"]))
+            self.assertEqual("pending", handle.connection.execute(
+                "SELECT hash_status FROM entries").fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+        resumed = dbrun.resume_run(self.partial)
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                second = dbrun.run_scan_evidence_stages(
+                    resumed,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual("completed", second["state"])
+            self.assertEqual(
+                [(1, "cancelled"), (2, "succeeded")],
+                resumed.connection.execute(
+                    "SELECT attempt_number,status FROM entry_attempts"
+                    " WHERE stage='hash' ORDER BY attempt_number"
+                ).fetchall(),
+            )
+            self.assertEqual(("done", "done"), tuple(
+                resumed.connection.execute(
+                    "SELECT hash_status,meta_status FROM entries"
+                ).fetchone()))
+            self.assertEqual(2, resumed.connection.execute(
+                "SELECT COUNT(*) FROM run_sessions").fetchone()[0])
+        finally:
+            dbrun.close_handle(resumed, release_lease=True)
 
 
 class TestRunCreation(_RunFixture):

@@ -1242,6 +1242,16 @@ def run_hash_stage_controlled(
     if router.state != "running":
         raise core.PreflightError(
             f"哈希阶段要求 running 控制器，实际为 {router.state}")
+    if router.hash_control.current() is not None:
+        boundary = settle_pending_stage_control(
+            con,
+            "hash",
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+        if boundary != "running":
+            return {"state": boundary}
 
     while True:
         stats = dbhash.process_hash_stage_v4(
@@ -1289,3 +1299,241 @@ def run_hash_stage_controlled(
             continue
         stats["state"] = result
         return stats
+
+
+def _configured_root_mapping(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(old): str(new) for old, new in value.items()}
+    if not isinstance(value, list):
+        raise core.PreflightError("map_root 必须是对象或字符串列表")
+    mapping: dict[str, str] = {}
+    for raw in value:
+        old, separator, new = str(raw).partition("=")
+        if not separator or not old or not new or old in mapping:
+            raise core.PreflightError(
+                f"冻结的 map_root 无效：{raw!r}")
+        mapping[old] = new
+    return mapping
+
+
+def _metadata_tools(
+    tools: dict[str, object],
+) -> dict[str, dict[str, object]]:
+    selected: dict[str, dict[str, object]] = {}
+    for name in ("exiftool", "ffprobe", "sevenzip"):
+        value = tools.get(name)
+        if not isinstance(value, dict):
+            raise core.PreflightError(
+                f"当前 session 缺少 {name} 的路径／版本能力")
+        path = value.get("path")
+        version = value.get("version")
+        if not isinstance(path, str) or not path \
+                or not isinstance(version, str) or not version:
+            raise core.PreflightError(
+                f"当前 session 的 {name} 路径／版本无效")
+        selected[name] = dict(value)
+    return selected
+
+
+def run_scan_evidence_stages(
+    handle: RunHandle,
+    router: RunCommandRouter,
+    *,
+    show_current_file: bool = False,
+    on_progress: Callable[[str, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+    hash_stall_seconds: float = dbhash.HASH_STALL_SECONDS,
+    hash_timeout_seconds: float | None = None,
+    hash_default_decision: str = "continue_waiting",
+    hash_poll_seconds: float = 0.05,
+    _hash_worker_target=None,
+) -> dict[str, object]:
+    """运行扫描的证据采集阶段；不执行格式校验、抽验、封存或发布。"""
+    con = handle.connection
+    runtime = dbstate.load_runtime(con)
+    if runtime.run_state != "running":
+        raise core.PreflightError(
+            f"证据采集要求 running，实际为 {runtime.run_state}")
+    session_ended, config, tools = _session_payload(
+        con, runtime.active_session_id)
+    if session_ended:
+        raise core.PreflightError("当前 session 已结束，不能采集证据")
+    phase = str(config.get("phase") or "")
+    if phase not in ("full", "quick"):
+        raise core.PreflightError(f"冻结的扫描模式无效：{phase!r}")
+    hash_mode = str(config.get("hash") or (
+        "none" if phase == "quick" else "full"))
+    if phase == "quick" and hash_mode != "none":
+        raise core.PreflightError("Quick 冻结配置不能启用哈希")
+    if hash_mode not in ("none", "incremental", "full"):
+        raise core.PreflightError(f"冻结的哈希模式无效：{hash_mode!r}")
+    format_mode = str(
+        config.get("format_validation") or "off"
+    ).strip().casefold()
+    if format_mode not in ("off", "sample", "all"):
+        raise core.PreflightError(
+            f"冻结的格式校验模式无效：{format_mode!r}")
+    if phase == "quick" and format_mode != "off":
+        raise core.PreflightError("Quick 冻结配置不能启用格式校验")
+    if phase == "full" and format_mode != "off":
+        raise core.PreflightError(
+            "格式校验尚未接入 schema 4 扫描流水线，拒绝遗漏该阶段")
+    retain_original = config.get("metadata_storage", "complete") == "complete"
+    if phase == "full" and config.get("metadata_storage", "complete") \
+            not in ("complete", "normalized"):
+        raise core.PreflightError("冻结的 metadata_storage 无效")
+
+    def progress(stage: str, payload: dict[str, object]) -> None:
+        if on_progress is not None:
+            on_progress(stage, dict(payload))
+
+    exclude_paths = {
+        handle.partial_path,
+        handle.partial_path + "-wal",
+        handle.partial_path + "-shm",
+        handle.lease_path,
+        runtime.event_log_path,
+    }
+    stages: dict[str, dict[str, object]] = {}
+    enumeration = run_enumeration_stage_controlled(
+        con,
+        router,
+        collect_file_id=not bool(config.get("no_file_id", False)),
+        exclude_paths=exclude_paths,
+        exclude_dirs={runtime.output_dir},
+        on_progress=lambda payload: progress("enumerate", payload),
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    stages["enumerate"] = enumeration
+    if enumeration["state"] != "completed":
+        return {
+            "state": enumeration["state"],
+            "stage": "enumerate",
+            "stages": stages,
+        }
+
+    if phase == "quick":
+        con.execute(
+            "UPDATE entries SET meta_status='not_applicable'"
+            " WHERE meta_status='pending' AND media_kind='other'")
+        con.execute(
+            "UPDATE entries SET meta_status='skipped'"
+            " WHERE meta_status='pending'")
+        con.execute(
+            "UPDATE entries SET hash_status='skipped'"
+            " WHERE hash_status='pending'")
+        con.commit()
+        total = int(con.execute(
+            "SELECT COUNT(*) FROM entries").fetchone()[0])
+        for stage in ("hash", "metadata"):
+            dbstate.update_stage_checkpoint(
+                con,
+                stage,
+                "skipped",
+                items_done=total,
+                items_total=total,
+                current_entry_id=None,
+                checkpoint={"reason": "quick_scan"},
+            )
+            stages[stage] = {
+                "state": "completed",
+                "total": total,
+                "skipped": total,
+            }
+            _emit_control_event(
+                on_event,
+                "stage_skipped",
+                stage=stage,
+                reason="quick_scan",
+            )
+    else:
+        previous = None
+        if hash_mode == "incremental":
+            previous_path = config.get("previous_snapshot")
+            if not isinstance(previous_path, str) or not previous_path:
+                raise core.PreflightError(
+                    "增量扫描的冻结配置缺少 previous_snapshot")
+            previous = dbhash.load_previous(
+                os.path.abspath(previous_path),
+                _configured_root_mapping(config.get("map_root")),
+            )
+            con.execute(
+                "UPDATE snapshot_info SET previous_snapshot_uuid=?",
+                (previous.uuid,),
+            )
+            con.commit()
+            _emit_control_event(
+                on_event,
+                "previous_snapshot_loaded",
+                uuid=previous.uuid,
+                path=os.path.basename(previous_path),
+                has_file_issues=previous.has_file_issues,
+            )
+        hashed = run_hash_stage_controlled(
+            con,
+            hash_mode,
+            router,
+            previous=previous,
+            stall_seconds=hash_stall_seconds,
+            timeout_seconds=hash_timeout_seconds,
+            default_decision=hash_default_decision,
+            show_current_file=show_current_file,
+            on_progress=lambda _index, payload: progress("hash", payload),
+            on_event=on_event,
+            poll_seconds=hash_poll_seconds,
+            paused_wait_seconds=paused_wait_seconds,
+            _worker_target=_hash_worker_target,
+        )
+        stages["hash"] = hashed
+        if hashed["state"] != "completed":
+            return {
+                "state": hashed["state"],
+                "stage": "hash",
+                "stages": stages,
+            }
+        metadata = run_metadata_stage_controlled(
+            con,
+            _metadata_tools(tools),
+            router,
+            retain_original_metadata=retain_original,
+            timeout_policy=config.get("exiftool_timeout_policy"),
+            show_current_file=show_current_file,
+            on_progress=lambda _index, payload: progress(
+                "metadata", payload),
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+        stages["metadata"] = metadata
+        if metadata["state"] != "completed":
+            return {
+                "state": metadata["state"],
+                "stage": "metadata",
+                "stages": stages,
+            }
+
+    rescanned = run_rescan_stage_controlled(
+        con,
+        router,
+        on_progress=lambda done, total, changed: progress(
+            "rescan",
+            {"processed": done, "total": total, "changed": changed},
+        ),
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    stages["rescan"] = rescanned
+    if rescanned["state"] != "completed":
+        return {
+            "state": rescanned["state"],
+            "stage": "rescan",
+            "stages": stages,
+        }
+    return {
+        "state": "completed",
+        "stage": "rescan",
+        "stages": stages,
+    }
