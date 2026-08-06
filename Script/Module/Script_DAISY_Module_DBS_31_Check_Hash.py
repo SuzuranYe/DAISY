@@ -22,7 +22,7 @@ _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbh
-import Script_DAISY_Lib_DBS_05_Reader as dbreader
+import Script_DAISY_Lib_DBS_06_Verify as dbverify
 
 
 def patrol(snapshot_path: str, root_map: dict | None = None,
@@ -31,41 +31,20 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
            on_progress=None,
            root_specs: list[str] | None = None) -> dict:
     """执行巡检并返回报告 dict。root_map={label: 当前路径}。"""
-    snapshot_path = os.path.abspath(snapshot_path)
-    if not os.path.isfile(snapshot_path):
-        raise core.PreflightError(f"快照不存在：{snapshot_path}")
-    recorded = core.filename_sha256_high32(snapshot_path)
-    if recorded is not None:
-        if recorded != core.sha256_file(snapshot_path)[:8].upper():
-            raise core.PreflightError("快照文件名高32bit指纹不符")
-    elif not force:
-        raise core.PreflightError(
-            f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
-    con, descriptor = dbreader.open_database(
-        snapshot_path, expected_type="snapshot")
+    verification = dbverify.open_verification_snapshot(
+        snapshot_path,
+        root_map=root_map,
+        root_specs=root_specs,
+        force=force,
+        required_capabilities=("files", "hashes"),
+    )
+    con = verification.connection
     try:
-        dbreader.require_capabilities(descriptor, "files", "hashes")
-        uuid_, coverage = con.execute(
-            "SELECT snapshot_uuid, hash_coverage"
-            " FROM snapshot_info").fetchone()
-        roots = {}
-        root_rows = list(con.execute(
-            "SELECT root_id, root_label, root_path FROM roots"))
-        labels = [label for _root_id, label, _rpath in root_rows]
-        specs = (
-            root_specs if root_specs is not None
-            else [f"{label}={path}" for label, path in (root_map or {}).items()]
-        )
-        current_roots = core.resolve_current_root_specs(labels, specs)
-        label_by_rid = {}
-        for root_id, label, _recorded_path in root_rows:
-            cur = current_roots[label]
-            if not os.path.isdir(cur):
-                raise core.PreflightError(
-                    f"root「{label}」当前路径不存在：{cur}"
-                    f"（用 --root \"{label}=当前路径\" 指定）")
-            roots[root_id] = cur
-            label_by_rid[root_id] = label
+        uuid_ = verification.snapshot_uuid
+        coverage = verification.hash_coverage
+        roots = verification.current_roots
+        label_by_rid = verification.labels_by_root_id
+        labels = list(verification.root_labels)
 
         # ① 全量 stat 核对（存在性＋size/mtime）
         stat_missing, stat_changed = [], []
@@ -148,7 +127,7 @@ def patrol(snapshot_path: str, root_map: dict | None = None,
                 "ok": not (stat_missing or stat_changed
                            or hash_mismatched or hash_tool_error)}
     finally:
-        con.close()
+        verification.close()
 
 
 def main() -> int:

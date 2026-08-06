@@ -40,7 +40,7 @@ sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbh
 import Script_DAISY_Lib_DBS_02_Meta as meta
-import Script_DAISY_Lib_DBS_05_Reader as dbreader
+import Script_DAISY_Lib_DBS_06_Verify as dbverify
 
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _OOXML_EXTS = {"docx", "xlsx", "pptx"}
@@ -217,47 +217,26 @@ def validate_snapshot(snapshot_path: str, root_map: dict | None = None,
                       sevenzip: str | None = None,
                       force: bool = False, on_progress=None,
                       root_specs: list[str] | None = None) -> dict:
-    snapshot_path = os.path.abspath(snapshot_path)
-    if not os.path.isfile(snapshot_path):
-        raise core.PreflightError(f"快照不存在：{snapshot_path}")
-    recorded = core.filename_sha256_high32(snapshot_path)
-    if recorded is not None:
-        if recorded != core.sha256_file(snapshot_path)[:8].upper():
-            raise core.PreflightError("快照文件名高32bit指纹不符")
-    elif not force:
-        raise core.PreflightError(
-            f"快照文件名缺少高32bit指纹（--force 可越过）：{snapshot_path}")
-    con, descriptor = dbreader.open_database(
-        snapshot_path, expected_type="snapshot")
+    verification = dbverify.open_verification_snapshot(
+        snapshot_path,
+        root_map=root_map,
+        root_specs=root_specs,
+        force=force,
+        required_capabilities=("files",),
+    )
+    snapshot_path = verification.path
+    con = verification.connection
     try:
-        dbreader.require_capabilities(descriptor, "files")
-        uuid_, = con.execute(
-            "SELECT snapshot_uuid"
-            " FROM snapshot_info").fetchone()
-        roots = {}
-        root_rows = list(con.execute(
-            "SELECT root_id, root_label, root_path FROM roots"))
-        labels = [label for _rid, label, _rpath in root_rows]
-        specs = (
-            root_specs if root_specs is not None
-            else [f"{label}={path}" for label, path in (root_map or {}).items()]
-        )
-        current_roots = core.resolve_current_root_specs(labels, specs)
-        label_by_rid = {}
-        for rid, label, _recorded_path in root_rows:
-            cur = current_roots[label]
-            if not os.path.isdir(cur):
-                raise core.PreflightError(
-                    f"root「{label}」当前路径不存在：{cur}"
-                    f"（用 --root \"{label}=当前路径\" 指定）")
-            roots[rid] = cur
-            label_by_rid[rid] = label
+        uuid_ = verification.snapshot_uuid
+        roots = verification.current_roots
+        label_by_rid = verification.labels_by_root_id
+        labels = list(verification.root_labels)
         entries = con.execute(
             "SELECT entry_id, root_id, rel_path, extension, media_kind,"
             " size_bytes, modified_at_utc FROM entries WHERE is_placeholder=0"
             " ORDER BY root_id, rel_path").fetchall()
     finally:
-        con.close()
+        verification.close()
 
     if sample_percent < 100.0:
         ids = {eid for eid, _ in dbh.pick_sample(
