@@ -2326,6 +2326,16 @@ def publish_sealed_snapshot(
         destination = sqlite3.connect(staging)
         source.backup(destination)
         destination.execute("PRAGMA foreign_keys=ON")
+        update_stage_checkpoint(
+            destination,
+            "publish",
+            "completed",
+            items_done=1,
+            items_total=1,
+            current_entry_id=None,
+            checkpoint={"method": "sqlite_backup_no_clobber"},
+            now_utc=now_utc,
+        )
         mark_published(destination, now_utc=now_utc)
         integrity = destination.execute("PRAGMA integrity_check").fetchone()
         if integrity is None or integrity[0] != "ok":

@@ -219,6 +219,322 @@ class TestHashTimeoutPolicy(unittest.TestCase):
         self.assertEqual(("save_exit", "user"), control.current())
 
 
+class _FakeExternalProcess:
+    def __init__(
+        self,
+        *,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        returncode: int | None = 0,
+        pid: int = 7701,
+    ) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+        self.terminate_calls = 0
+        self.kill_calls = 0
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+
+    def communicate(self, timeout=None):
+        del timeout
+        return self._stdout, self._stderr
+
+
+class TestIndependentHashProcess(_WorkerFixture):
+    def test_valid_digest_uses_encoded_path_and_is_reaped(self) -> None:
+        digest = hashlib.sha256(b"abc").hexdigest()
+        process = _FakeExternalProcess(
+            stdout=(digest.upper() + "\r\n").encode("ascii"))
+        calls = []
+
+        def factory(command, **kwargs):
+            calls.append((command, kwargs))
+            return process
+
+        outcome = dbhash.run_independent_hash_process(
+            self.path,
+            os.path.join(self.base, "powershell.exe"),
+            expected_size=3,
+            stall_seconds=1.0,
+            timeout_seconds=2.0,
+            poll_seconds=0.001,
+            _popen_factory=factory,
+        )
+        self.assertEqual(("completed", digest, 3, 3, True), (
+            outcome.outcome,
+            outcome.hash_hex,
+            outcome.bytes_read,
+            outcome.final_offset,
+            outcome.worker_reaped,
+        ))
+        self.assertEqual(1, len(calls))
+        self.assertIn("-EncodedCommand", calls[0][0])
+        self.assertNotIn(
+            os.path.abspath(self.path), "\0".join(calls[0][0]))
+        self.assertEqual(0, process.terminate_calls)
+        self.assertEqual(0, process.kill_calls)
+
+    def test_ambiguous_output_is_tool_error_not_a_digest(self) -> None:
+        process = _FakeExternalProcess(stdout=b"banner\nnot-a-hash\n")
+        outcome = dbhash.run_independent_hash_process(
+            self.path,
+            os.path.join(self.base, "powershell.exe"),
+            expected_size=3,
+            stall_seconds=1.0,
+            timeout_seconds=2.0,
+            poll_seconds=0.001,
+            _popen_factory=lambda _command, **_kwargs: process,
+        )
+        self.assertEqual("tool_error", outcome.outcome)
+        self.assertIsNone(outcome.hash_hex)
+        self.assertIn("唯一", outcome.error)
+
+    def test_timeout_terminates_only_the_owned_process(self) -> None:
+        process = _FakeExternalProcess(returncode=None)
+        outcome = dbhash.run_independent_hash_process(
+            self.path,
+            os.path.join(self.base, "powershell.exe"),
+            expected_size=3,
+            stall_seconds=0.003,
+            timeout_seconds=0.01,
+            default_decision="skip_and_record",
+            poll_seconds=0.001,
+            _popen_factory=lambda _command, **_kwargs: process,
+        )
+        self.assertEqual("timeout", outcome.outcome)
+        self.assertGreaterEqual(outcome.threshold_count, 1)
+        self.assertEqual(1, process.terminate_calls)
+        self.assertEqual(0, process.kill_calls)
+        self.assertTrue(outcome.worker_reaped)
+
+    def test_lifecycle_stop_uses_the_bound_worker_handle(self) -> None:
+        process = _FakeExternalProcess(returncode=None)
+        control = dbhash.HashWorkerControl()
+        self.assertTrue(control.request_stop())
+        outcome = dbhash.run_independent_hash_process(
+            self.path,
+            os.path.join(self.base, "powershell.exe"),
+            expected_size=3,
+            control=control,
+            stall_seconds=1.0,
+            timeout_seconds=2.0,
+            poll_seconds=0.001,
+            _popen_factory=lambda _command, **_kwargs: process,
+        )
+        self.assertEqual("stopped", outcome.outcome)
+        self.assertEqual(1, process.terminate_calls)
+        self.assertTrue(outcome.worker_reaped)
+
+
+class TestReadPerformanceClassification(_WorkerFixture):
+    def performance_connection(
+        self,
+        rates_mib: list[float],
+        *,
+        extensions: list[str] | None = None,
+    ) -> sqlite3.Connection:
+        con = sqlite3.connect(":memory:")
+        dbstate.initialize_v4_connection(
+            con,
+            [("夹具", self.base)],
+            {
+                "phase": "full",
+                "hash": "full",
+                "metadata_storage": "complete",
+                "format_validation": "off",
+            },
+            output_dir=self.base,
+            partial_path=os.path.join(self.base, "perf.partial.sqlite"),
+            publish_stem_path=os.path.join(self.base, "perf_final"),
+            snapshot_uuid="6" * 32,
+            session_id="7" * 32,
+            lease_id="8" * 32,
+            hostname="fixture-host",
+            pid=4242,
+            process_start_token="fixture-start",
+        )
+        con.execute(
+            "UPDATE roots SET volume_serial='VOL-FIXTURE' WHERE root_id=1")
+        now = core.now_utc_iso()
+        con.execute(
+            "INSERT INTO dirs"
+            " (dir_id,root_id,rel_path,path_key,enum_status,observed_at_utc)"
+            " VALUES (1,1,'','','ok',?)",
+            (now,),
+        )
+        size = 8 * 1024 * 1024
+        for index, rate_mib in enumerate(rates_mib, 1):
+            extension = (
+                extensions[index - 1] if extensions is not None else "bin")
+            name = f"file_{index}.{extension}"
+            con.execute(
+                "INSERT INTO entries"
+                " (entry_id,root_id,dir_id,rel_path,path_key,name,extension,"
+                " media_kind,size_bytes,modified_at_utc,attributes,"
+                " observed_at_utc,meta_status,hash_status)"
+                " VALUES (?,1,1,?,?,?,?,?,?,?,0,?,'not_applicable','pending')",
+                (
+                    index,
+                    name,
+                    name,
+                    name,
+                    extension,
+                    "other",
+                    size,
+                    now,
+                    now,
+                ),
+            )
+            attempt_id = dbstate.start_attempt(
+                con,
+                index,
+                "hash",
+                tool_name="fixture-hash",
+                tool_version="1.fixture",
+            )
+
+            def writer(
+                current: sqlite3.Connection,
+                entry_id: int,
+                _attempt_id: int,
+            ) -> None:
+                current.execute(
+                    "INSERT INTO hashes"
+                    " (entry_id,algorithm,hash_hex,origin,size_bytes,"
+                    " bytes_read,status,tool,tool_version)"
+                    " VALUES (?,'sha256',?,'computed',?,?,'valid',"
+                    " 'fixture-hash','1.fixture')",
+                    (entry_id, f"{entry_id:064x}", size, size),
+                )
+
+            active = size / (float(rate_mib) * 1024 ** 2)
+            dbstate.finish_attempt(
+                con,
+                attempt_id,
+                "succeeded",
+                bytes_read=size,
+                final_offset=size,
+                end_reason="valid",
+                performance={
+                    "origin": "computed",
+                    "size_bytes": size,
+                    "bytes_read": size,
+                    "elapsed_seconds": active,
+                    "active_read_seconds": active,
+                    "stall_count": 0,
+                    "longest_stall_seconds": 0.0,
+                    "first_stall_offset": None,
+                    "last_stall_offset": None,
+                    "final_offset": size,
+                    "ended_reason": "valid",
+                },
+                _current_writer=writer,
+            )
+        return con
+
+    def test_same_volume_type_and_size_group_marks_low_and_high(self) \
+            -> None:
+        con = self.performance_connection(
+            [100.0] * 8 + [40.0, 20.0])
+        try:
+            result = dbhash.classify_read_performance_candidates(con)
+            self.assertEqual((10, 1, 1, 1, False), (
+                result["eligible"],
+                result["throughput_groups"],
+                result["low"],
+                result["high"],
+                result["physical_location_claimed"],
+            ))
+            rows = con.execute(
+                "SELECT candidate_confidence,candidate_reason"
+                " FROM read_performance ORDER BY performance_id"
+            ).fetchall()
+            self.assertEqual(["none"] * 8 + ["low", "high"], [
+                row[0] for row in rows])
+            self.assertIn("读取性能异常候选", rows[-1][1])
+            self.assertIn("不能据此认定物理坏区", rows[-1][1])
+        finally:
+            con.close()
+
+    def test_different_type_is_not_used_as_a_peer_group(self) -> None:
+        con = self.performance_connection(
+            [100.0] * 8 + [10.0],
+            extensions=["bin"] * 8 + ["jpg"],
+        )
+        try:
+            result = dbhash.classify_read_performance_candidates(con)
+            self.assertEqual((1, 0, 0), (
+                result["throughput_groups"],
+                result["low"],
+                result["high"],
+            ))
+            self.assertEqual(
+                {"none"},
+                {row[0] for row in con.execute(
+                    "SELECT candidate_confidence FROM read_performance")},
+            )
+        finally:
+            con.close()
+
+    def test_dynamic_timeout_stall_is_high_even_without_peer_group(self) \
+            -> None:
+        con = self.performance_connection([100.0])
+        try:
+            con.execute(
+                "UPDATE read_performance SET stall_count=1,"
+                " longest_stall_seconds=90.0,"
+                " candidate_confidence='low',"
+                " candidate_reason='读取性能异常候选：旧值'")
+            con.commit()
+            result = dbhash.classify_read_performance_candidates(con)
+            self.assertEqual((0, 1), (result["low"], result["high"]))
+            confidence, reason = con.execute(
+                "SELECT candidate_confidence,candidate_reason"
+                " FROM read_performance"
+            ).fetchone()
+            self.assertEqual("high", confidence)
+            self.assertIn("动态阈值", reason)
+        finally:
+            con.close()
+
+    def test_reused_rows_are_reset_but_never_classified(self) -> None:
+        con = self.performance_connection([10.0])
+        try:
+            con.execute(
+                "UPDATE read_performance SET origin='reused',"
+                " candidate_confidence='high',"
+                " candidate_reason='读取性能异常候选：旧值'")
+            con.execute(
+                "UPDATE hashes SET origin='reused',"
+                " source_snapshot_uuid=?,source_computed_at_utc=?",
+                ("9" * 32, core.now_utc_iso()),
+            )
+            con.commit()
+            result = dbhash.classify_read_performance_candidates(con)
+            self.assertEqual((0, 1, 0), (
+                result["eligible"],
+                result["excluded_reused"],
+                result["high"],
+            ))
+            self.assertEqual(("none", None), tuple(con.execute(
+                "SELECT candidate_confidence,candidate_reason"
+                " FROM read_performance"
+            ).fetchone()))
+        finally:
+            con.close()
+
+
 class TestHashWorkerSupervisor(_WorkerFixture):
     def test_stall_choice_targets_current_worker_and_skips_immediately(
         self,

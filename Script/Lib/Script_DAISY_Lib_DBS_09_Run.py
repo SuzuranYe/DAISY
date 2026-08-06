@@ -23,6 +23,7 @@ import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as dbverify
 import Script_DAISY_Lib_DBS_08_State as dbstate
+import Script_DAISY_Lib_DBS_10_Issues as dbissues
 
 
 LEASE_SUFFIX = ".lease"
@@ -1678,6 +1679,673 @@ def run_hash_stage_controlled(
         return stats
 
 
+def _source_stat_signature(path: str) -> tuple[int, str]:
+    stat_result = os.stat(
+        core.to_extended_path(path), follow_symlinks=False)
+    return (
+        int(stat_result.st_size),
+        core.ns_to_utc_iso(stat_result.st_mtime_ns),
+    )
+
+
+def _verify_hash_candidates(
+    con: sqlite3.Connection,
+    percent: float,
+    min_count: int,
+) -> tuple[int, list[tuple[int, int, int, str, str, str]]]:
+    snapshot_uuid = str(con.execute(
+        "SELECT snapshot_uuid FROM snapshot_info WHERE id=1"
+    ).fetchone()[0])
+    candidates = con.execute(
+        "SELECT h.entry_id,e.size_bytes,e.root_id,e.rel_path,h.hash_hex,"
+        " e.modified_at_utc FROM hashes h"
+        " JOIN entries e ON e.entry_id=h.entry_id"
+        " WHERE h.algorithm='sha256' AND h.origin='computed'"
+        " AND h.hash_hex IS NOT NULL AND length(h.hash_hex)=64"
+        " AND e.is_placeholder=0"
+        " AND (h.status='valid' OR h.failure_reason LIKE 'verify_%')"
+        " ORDER BY e.root_id,e.path_key,e.rel_path"
+    ).fetchall()
+    selected_ids = {
+        int(entry_id)
+        for entry_id, _size in dbhash.pick_sample(
+            [(int(row[0]), int(row[1])) for row in candidates],
+            percent,
+            min_count,
+            seed=snapshot_uuid + ":scan_verify",
+        )
+    }
+    selected = [
+        (
+            int(row[0]),
+            int(row[1]),
+            int(row[2]),
+            str(row[3]),
+            str(row[4]).casefold(),
+            str(row[5]),
+        )
+        for row in candidates if int(row[0]) in selected_ids
+    ]
+    return len(candidates), selected
+
+
+def _latest_verify_hash_attempts(
+    con: sqlite3.Connection,
+) -> dict[int, tuple[str, str | None, int]]:
+    return {
+        int(row[0]): (
+            str(row[1]),
+            None if row[2] is None else str(row[2]),
+            int(row[3]),
+        )
+        for row in con.execute(
+            "SELECT a.entry_id,a.status,a.error_code,a.bytes_read"
+            " FROM entry_attempts a WHERE a.stage='verify_hash'"
+            " AND NOT EXISTS (SELECT 1 FROM entry_attempts newer"
+            "  WHERE newer.entry_id=a.entry_id"
+            "  AND newer.stage=a.stage"
+            "  AND newer.attempt_number>a.attempt_number)"
+        )
+    }
+
+
+def _mark_hash_verification_unstable(
+    con: sqlite3.Connection,
+    entry_id: int,
+    error_code: str,
+    message: str,
+) -> None:
+    con.execute(
+        "UPDATE hashes SET status='unstable',failure_reason=?"
+        " WHERE entry_id=? AND algorithm='sha256'",
+        (f"{error_code}: {message}", entry_id),
+    )
+    con.execute(
+        "UPDATE entries SET hash_status='unstable' WHERE entry_id=?",
+        (entry_id,),
+    )
+    con.execute(
+        "INSERT INTO errors"
+        " (entry_id,stage,error_code,message,occurred_at_utc)"
+        " VALUES (?,'hash',?,?,?)",
+        (entry_id, error_code, message, core.now_utc_iso()),
+    )
+
+
+def _verified_primary_digest(outcome: dbhash.HashWorkerOutcome) \
+        -> str | None:
+    result = outcome.result
+    if outcome.outcome != "completed" or not isinstance(result, dict):
+        return None
+    digest = result.get("hash_hex")
+    if result.get("status") != "valid" or not isinstance(digest, str):
+        return None
+    if len(digest) != 64 or any(
+            character not in "0123456789abcdefABCDEF"
+            for character in digest):
+        return None
+    if int(result.get("bytes_read") or -1) != outcome.size_bytes:
+        return None
+    return digest.casefold()
+
+
+def _verify_controlled_attempt_state(
+    con: sqlite3.Connection,
+    router: RunCommandRouter,
+    outcome,
+    *,
+    on_event: Callable[..., None] | None,
+    paused_wait_seconds: float,
+) -> str | None:
+    if outcome.outcome in ("paused", "save_exit"):
+        for_exit = outcome.outcome == "save_exit"
+        dbstate.request_pause(con, for_exit=for_exit)
+        dbstate.update_stage_checkpoint(
+            con,
+            "verify_hash",
+            "pause_requested",
+            current_entry_id=None,
+            checkpoint={"reason": "worker_pause"},
+        )
+        dbstate.mark_paused(con, for_exit=for_exit)
+        dbstate.update_stage_checkpoint(
+            con,
+            "verify_hash",
+            "paused",
+            current_entry_id=None,
+            checkpoint={"reason": "worker_pause"},
+        )
+        if for_exit:
+            router.end()
+            _emit_control_event(
+                on_event,
+                "run_saved",
+                stage="verify_hash",
+                state="save_exit",
+            )
+            return "save_exit"
+        return _wait_after_pause(
+            con,
+            "verify_hash",
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+    if outcome.outcome == "stopped":
+        dbstate.update_stage_checkpoint(
+            con,
+            "verify_hash",
+            "failed_recoverable",
+            current_entry_id=None,
+            checkpoint={"reason": "stop_and_resume"},
+        )
+        dbstate.stop_run(con, reason="stop_and_resume")
+        router.end()
+        _emit_control_event(
+            on_event,
+            "run_stopped",
+            stage="verify_hash",
+            state="stopped",
+        )
+        return "stopped"
+    return None
+
+
+def run_independent_hash_stage_controlled(
+    con: sqlite3.Connection,
+    router: RunCommandRouter,
+    *,
+    percent: float = 1.0,
+    min_count: int = 100,
+    powershell_path: str,
+    powershell_version: str,
+    show_current_file: bool = False,
+    stall_seconds: float = dbhash.HASH_STALL_SECONDS,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    on_progress: Callable[[int, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
+    poll_seconds: float = 0.05,
+    paused_wait_seconds: float = 0.25,
+    _independent_runner=None,
+    _primary_runner=None,
+) -> dict[str, object]:
+    """以受控 PowerShell 进程抽验本次 computed 哈希并保留 attempt。"""
+    dbstate.require_v4_connection(con)
+    if router.state != "running":
+        raise core.PreflightError(
+            f"独立抽验要求 running 控制器，实际为 {router.state}")
+    if isinstance(min_count, bool) or not isinstance(min_count, int) \
+            or min_count < 0:
+        raise ValueError("min_count 不能小于 0")
+    ratio = _format_sample_value(percent)
+    runtime = dbstate.load_runtime(con)
+    if runtime.run_state != "running":
+        raise core.PreflightError(
+            f"独立抽验要求 running，实际为 {runtime.run_state}")
+    coverage = str(con.execute(
+        "SELECT hash_coverage FROM snapshot_info WHERE id=1"
+    ).fetchone()[0])
+    config = _json_object(con.execute(
+        "SELECT config_json FROM snapshot_info WHERE id=1"
+    ).fetchone()[0], "snapshot config_json")
+    configured_hash = str(config.get("hash") or coverage)
+    if configured_hash == "none":
+        dbstate.update_stage_checkpoint(
+            con,
+            "verify_hash",
+            "skipped",
+            items_done=0,
+            items_total=0,
+            current_entry_id=None,
+            checkpoint={"reason": "hash_mode_none"},
+        )
+        return {
+            "state": "completed",
+            "eligible": 0,
+            "sampled": 0,
+            "processed": 0,
+            "matched": 0,
+            "mismatched": 0,
+            "tool_error": 0,
+            "timeout": 0,
+            "unstable": 0,
+            "bytes_total": 0,
+            "bytes_read": 0,
+        }
+
+    checkpoint = con.execute(
+        "SELECT state,checkpoint_json FROM stage_checkpoints"
+        " WHERE stage='verify_hash'"
+    ).fetchone()
+    if checkpoint is not None and checkpoint[0] in ("completed", "skipped"):
+        saved = _json_object(checkpoint[1], "verify_hash checkpoint_json")
+        saved["state"] = "completed"
+        return saved
+    if not isinstance(powershell_path, str) or not powershell_path:
+        raise core.PreflightError("独立抽验缺少冻结 PowerShell 路径")
+    if not isinstance(powershell_version, str) or not powershell_version:
+        raise core.PreflightError("独立抽验缺少冻结 PowerShell 版本")
+
+    eligible, selected = _verify_hash_candidates(con, ratio, min_count)
+    selected_ids = {row[0] for row in selected}
+    latest = {
+        entry_id: value
+        for entry_id, value in _latest_verify_hash_attempts(con).items()
+        if entry_id in selected_ids
+    }
+    terminal = {
+        entry_id: value for entry_id, value in latest.items()
+        if value[0] not in ("cancelled", "abandoned")
+    }
+    stats: dict[str, object] = {
+        "state": "running",
+        "eligible": eligible,
+        "sampled": len(selected),
+        "processed": len(terminal),
+        "matched": sum(value[0] == "succeeded" for value in terminal.values()),
+        "mismatched": sum(
+            value[0] in ("invalid", "unstable")
+            and value[1] == "verify_mismatch"
+            for value in terminal.values()),
+        "tool_error": sum(
+            value[0] in ("error", "skipped_policy")
+            for value in terminal.values()),
+        "timeout": sum(value[0] == "timeout" for value in terminal.values()),
+        "unstable": sum(
+            value[0] == "unstable"
+            and value[1] != "verify_mismatch"
+            for value in terminal.values()),
+        "bytes_total": sum(row[1] for row in selected),
+        "bytes_read": sum(value[2] for value in terminal.values()),
+    }
+    dbstate.update_stage_checkpoint(
+        con,
+        "verify_hash",
+        "running",
+        items_done=int(stats["processed"]),
+        items_total=int(stats["sampled"]),
+        bytes_done=int(stats["bytes_read"]),
+        bytes_total=int(stats["bytes_total"]),
+        error_count=(
+            int(stats["mismatched"])
+            + int(stats["tool_error"])
+            + int(stats["timeout"])
+            + int(stats["unstable"])
+        ),
+        current_entry_id=None,
+    )
+    roots = dict(con.execute("SELECT root_id,root_path FROM roots"))
+    independent_runner = (
+        _independent_runner or dbhash.run_independent_hash_process)
+    primary_runner = _primary_runner or dbhash.run_hash_worker
+    last_current_event = 0.0
+    last_progress_event = 0.0
+
+    for entry_id, size_bytes, root_id, rel_path, recorded, recorded_mtime \
+            in selected:
+        previous = latest.get(entry_id)
+        if previous is not None and previous[0] not in (
+                "cancelled", "abandoned"):
+            continue
+        boundary = settle_pending_stage_control(
+            con,
+            "verify_hash",
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+        if boundary != "running":
+            stats["state"] = boundary
+            return stats
+        path = os.path.join(roots[root_id], rel_path)
+        now = time.monotonic()
+        if show_current_file and on_event is not None \
+                and now - last_current_event >= 0.1:
+            on_event("current_item", stage="verify_hash", item=rel_path)
+            last_current_event = now
+        attempt_id = dbstate.start_attempt(
+            con,
+            entry_id,
+            "verify_hash",
+            tool_name="powershell-get-filehash",
+            tool_version=powershell_version,
+            coverage="sample",
+        )
+        try:
+            pre_signature = _source_stat_signature(path)
+        except OSError as exc:
+            pre_signature = None
+            pre_error = f"pre_stat: {exc}"
+        else:
+            pre_error = None
+            if pre_signature != (size_bytes, recorded_mtime):
+                pre_error = (
+                    "source_changed_before_verify: "
+                    f"recorded=({size_bytes},{recorded_mtime}) "
+                    f"current={pre_signature}"
+                )
+        if pre_error is not None:
+            dbstate.finish_attempt(
+                con,
+                attempt_id,
+                "unstable",
+                end_reason="verify_source_changed",
+                error_code="verify_source_changed",
+                error_message=pre_error,
+                result={"phase": "pre_stat"},
+                _current_writer=lambda current, current_entry_id, _attempt_id,
+                message=pre_error: _mark_hash_verification_unstable(
+                    current,
+                    current_entry_id,
+                    "verify_source_changed",
+                    message,
+                ),
+            )
+            stats["unstable"] = int(stats["unstable"]) + 1
+            stats["processed"] = int(stats["processed"]) + 1
+            continue
+
+        try:
+            independent = independent_runner(
+                path,
+                powershell_path,
+                expected_size=size_bytes,
+                stall_seconds=stall_seconds,
+                timeout_seconds=timeout_seconds,
+                default_decision=default_decision,
+                display_name=rel_path,
+                control=router.hash_control,
+                on_event=on_event,
+                on_threshold=on_threshold,
+                poll_seconds=poll_seconds,
+            )
+        except Exception as exc:
+            dbstate.finish_attempt(
+                con,
+                attempt_id,
+                "error",
+                end_reason="independent_worker_start_failed",
+                error_code="independent_worker_start_failed",
+                error_message=str(exc),
+                result={"worker_outcome": "start_failed"},
+            )
+            dbstate.update_stage_checkpoint(
+                con,
+                "verify_hash",
+                "failed_recoverable",
+                current_entry_id=None,
+                checkpoint={"reason": "worker_start_failed"},
+            )
+            dbstate.fail_run(
+                con,
+                recoverable=True,
+                error_code="independent_worker_start_failed",
+                error_message=str(exc),
+            )
+            raise
+
+        final_outcome = independent
+        attempt_status = "succeeded"
+        error_code = None
+        error_message = None
+        result: dict[str, object] = {
+            "initial_independent": independent.hash_hex,
+            "recorded": recorded,
+            "worker_exitcode": independent.worker_exitcode,
+            "worker_reaped": independent.worker_reaped,
+            "threshold_count": independent.threshold_count,
+        }
+        if independent.outcome in ("paused", "save_exit", "stopped"):
+            attempt_status = "cancelled"
+        elif independent.outcome == "timeout":
+            attempt_status = "timeout"
+            error_code = "independent_hash_timeout"
+            error_message = independent.error or error_code
+        elif independent.outcome != "completed" \
+                or independent.hash_hex is None:
+            attempt_status = "error"
+            error_code = "independent_hash_tool_error"
+            error_message = independent.error or error_code
+        elif independent.hash_hex != recorded:
+            try:
+                primary = primary_runner(
+                    path,
+                    expected_size=size_bytes,
+                    stall_seconds=stall_seconds,
+                    timeout_seconds=timeout_seconds,
+                    default_decision=default_decision,
+                    display_name=rel_path,
+                    control=router.hash_control,
+                    on_event=on_event,
+                    on_threshold=on_threshold,
+                    poll_seconds=poll_seconds,
+                )
+            except Exception as exc:
+                attempt_status = "error"
+                error_code = "verify_primary_recheck_start_failed"
+                error_message = str(exc)
+                result["primary_recheck_outcome"] = "start_failed"
+            else:
+                final_outcome = primary
+                result["primary_recheck"] = _verified_primary_digest(primary)
+                result["primary_recheck_outcome"] = primary.outcome
+                if primary.outcome in ("paused", "save_exit", "stopped"):
+                    attempt_status = "cancelled"
+                elif primary.outcome == "timeout":
+                    attempt_status = "timeout"
+                    error_code = "verify_recheck_timeout"
+                    error_message = error_code
+                elif result["primary_recheck"] is None:
+                    attempt_status = "error"
+                    error_code = "verify_primary_recheck_error"
+                    error_message = error_code
+                else:
+                    try:
+                        independent_again = independent_runner(
+                            path,
+                            powershell_path,
+                            expected_size=size_bytes,
+                            stall_seconds=stall_seconds,
+                            timeout_seconds=timeout_seconds,
+                            default_decision=default_decision,
+                            display_name=rel_path,
+                            control=router.hash_control,
+                            on_event=on_event,
+                            on_threshold=on_threshold,
+                            poll_seconds=poll_seconds,
+                        )
+                    except Exception as exc:
+                        attempt_status = "error"
+                        error_code = "independent_recheck_start_failed"
+                        error_message = str(exc)
+                        result["independent_recheck_outcome"] = \
+                            "start_failed"
+                    else:
+                        final_outcome = independent_again
+                        result["independent_recheck"] = \
+                            independent_again.hash_hex
+                        result["independent_recheck_outcome"] = \
+                            independent_again.outcome
+                        if independent_again.outcome in (
+                                "paused", "save_exit", "stopped"):
+                            attempt_status = "cancelled"
+                        elif independent_again.outcome == "timeout":
+                            attempt_status = "timeout"
+                            error_code = "verify_recheck_timeout"
+                            error_message = error_code
+                        elif independent_again.outcome != "completed" \
+                                or independent_again.hash_hex is None:
+                            attempt_status = "error"
+                            error_code = "independent_hash_tool_error"
+                            error_message = (
+                                independent_again.error or error_code)
+                        elif result["primary_recheck"] == recorded \
+                                and independent_again.hash_hex == recorded:
+                            attempt_status = "succeeded"
+                            result["initial_mismatch_resolved"] = True
+                        else:
+                            attempt_status = "unstable"
+                            error_code = "verify_mismatch"
+                            error_message = (
+                                f"recorded={recorded} "
+                                f"independent={independent.hash_hex} "
+                                "primary_recheck="
+                                f"{result['primary_recheck']} "
+                                "independent_recheck="
+                                f"{independent_again.hash_hex}"
+                            )
+
+        if attempt_status not in ("cancelled", "timeout", "error"):
+            try:
+                post_signature = _source_stat_signature(path)
+            except OSError as exc:
+                post_signature = None
+                post_error = f"post_stat: {exc}"
+            else:
+                post_error = None
+                if post_signature != pre_signature:
+                    post_error = (
+                        "source_changed_during_verify: "
+                        f"before={pre_signature} after={post_signature}"
+                    )
+            if post_error is not None:
+                attempt_status = "unstable"
+                error_code = "verify_source_changed"
+                error_message = post_error
+        performance = independent.performance()
+        performance["ended_reason"] = error_code or attempt_status
+
+        def write_unstable(
+            current: sqlite3.Connection,
+            current_entry_id: int,
+            _current_attempt_id: int,
+        ) -> None:
+            if attempt_status == "unstable" and error_code is not None:
+                _mark_hash_verification_unstable(
+                    current,
+                    current_entry_id,
+                    error_code,
+                    str(error_message or error_code),
+                )
+
+        dbstate.finish_attempt(
+            con,
+            attempt_id,
+            attempt_status,
+            bytes_read=independent.bytes_read,
+            final_offset=independent.final_offset,
+            stall_count=independent.stall_count,
+            max_stall_seconds=independent.longest_stall_seconds,
+            decision=final_outcome.decision,
+            decision_source=final_outcome.decision_source,
+            end_reason=error_code or attempt_status,
+            error_code=error_code,
+            error_message=error_message,
+            result=result,
+            performance=performance,
+            _current_writer=write_unstable,
+        )
+        if attempt_status == "cancelled":
+            state = _verify_controlled_attempt_state(
+                con,
+                router,
+                final_outcome,
+                on_event=on_event,
+                paused_wait_seconds=paused_wait_seconds,
+            )
+            if state == "running":
+                return run_independent_hash_stage_controlled(
+                    con,
+                    router,
+                    percent=ratio,
+                    min_count=min_count,
+                    powershell_path=powershell_path,
+                    powershell_version=powershell_version,
+                    show_current_file=show_current_file,
+                    stall_seconds=stall_seconds,
+                    timeout_seconds=timeout_seconds,
+                    default_decision=default_decision,
+                    on_progress=on_progress,
+                    on_event=on_event,
+                    on_threshold=on_threshold,
+                    poll_seconds=poll_seconds,
+                    paused_wait_seconds=paused_wait_seconds,
+                    _independent_runner=independent_runner,
+                    _primary_runner=primary_runner,
+                )
+            stats["state"] = state or final_outcome.outcome
+            return stats
+
+        stats["processed"] = int(stats["processed"]) + 1
+        stats["bytes_read"] = (
+            int(stats["bytes_read"]) + int(independent.bytes_read))
+        if attempt_status == "succeeded":
+            stats["matched"] = int(stats["matched"]) + 1
+        elif attempt_status == "timeout":
+            stats["timeout"] = int(stats["timeout"]) + 1
+        elif attempt_status == "error":
+            stats["tool_error"] = int(stats["tool_error"]) + 1
+        elif error_code == "verify_mismatch":
+            stats["mismatched"] = int(stats["mismatched"]) + 1
+        else:
+            stats["unstable"] = int(stats["unstable"]) + 1
+        errors = (
+            int(stats["mismatched"])
+            + int(stats["tool_error"])
+            + int(stats["timeout"])
+            + int(stats["unstable"])
+        )
+        checkpoint_payload = {
+            key: value for key, value in stats.items() if key != "state"
+        }
+        dbstate.update_stage_checkpoint(
+            con,
+            "verify_hash",
+            "running",
+            items_done=int(stats["processed"]),
+            items_total=int(stats["sampled"]),
+            bytes_done=int(stats["bytes_read"]),
+            bytes_total=int(stats["bytes_total"]),
+            error_count=errors,
+            current_entry_id=None,
+            checkpoint=checkpoint_payload,
+        )
+        now = time.monotonic()
+        if on_progress is not None and (
+                now - last_progress_event >= 0.5
+                or int(stats["processed"]) == int(stats["sampled"])):
+            on_progress(int(stats["processed"]), dict(stats))
+            last_progress_event = now
+
+    stats["state"] = "completed"
+    final_payload = {
+        key: value for key, value in stats.items() if key != "state"
+    }
+    dbstate.update_stage_checkpoint(
+        con,
+        "verify_hash",
+        "completed",
+        items_done=int(stats["processed"]),
+        items_total=int(stats["sampled"]),
+        bytes_done=int(stats["bytes_read"]),
+        bytes_total=int(stats["bytes_total"]),
+        error_count=(
+            int(stats["mismatched"])
+            + int(stats["tool_error"])
+            + int(stats["timeout"])
+            + int(stats["unstable"])
+        ),
+        current_entry_id=None,
+        checkpoint=final_payload,
+    )
+    _emit_control_event(
+        on_event, "stage_finished", stage="verify_hash", **final_payload)
+    return stats
+
+
 def _configured_root_mapping(value: object) -> dict[str, str]:
     if value is None:
         return {}
@@ -1728,7 +2396,7 @@ def run_scan_evidence_stages(
     hash_poll_seconds: float = 0.05,
     _hash_worker_target=None,
 ) -> dict[str, object]:
-    """运行扫描的证据采集阶段；不执行格式校验、抽验、封存或发布。"""
+    """运行扫描证据阶段；包含可选格式校验，不执行抽验、封存或发布。"""
     con = handle.connection
     runtime = dbstate.load_runtime(con)
     if runtime.run_state != "running":
@@ -1930,3 +2598,522 @@ def run_scan_evidence_stages(
         "stage": "rescan",
         "stages": stages,
     }
+
+
+def _scan_stage_states(con: sqlite3.Connection) -> dict[str, str]:
+    return {
+        str(stage): str(state)
+        for stage, state in con.execute(
+            "SELECT stage,state FROM stage_checkpoints ORDER BY stage_order"
+        )
+    }
+
+
+def _require_scan_seal_ready(con: sqlite3.Connection) -> None:
+    runtime = dbstate.load_runtime(con)
+    if runtime.run_state != "running":
+        raise core.PreflightError(
+            f"封存要求 running，实际为 {runtime.run_state}")
+    states = _scan_stage_states(con)
+    required = {
+        "enumerate": frozenset(("completed",)),
+        "hash": frozenset(("completed", "skipped")),
+        "metadata": frozenset(("completed", "skipped")),
+        "format": frozenset(("completed", "skipped")),
+        "rescan": frozenset(("completed",)),
+        "verify_hash": frozenset(("completed", "skipped")),
+        "verify_format": frozenset(("completed", "skipped")),
+    }
+    incomplete = [
+        f"{stage}={states.get(stage, 'missing')}"
+        for stage, accepted in required.items()
+        if states.get(stage) not in accepted
+    ]
+    if incomplete:
+        raise core.PreflightError(
+            "封存被拒：阶段尚未形成终态：" + "、".join(incomplete))
+    running_attempts = int(con.execute(
+        "SELECT COUNT(*) FROM entry_attempts WHERE status='running'"
+    ).fetchone()[0])
+    residue = int(con.execute(
+        "SELECT COUNT(*) FROM entries"
+        " WHERE meta_status IN ('pending','processing')"
+        " OR hash_status IN ('pending','processing')"
+    ).fetchone()[0])
+    format_residue = int(con.execute(
+        "SELECT COUNT(*) FROM format_checks"
+        " WHERE status IN ('pending','processing')"
+    ).fetchone()[0])
+    if running_attempts or residue or format_residue:
+        raise core.PreflightError(
+            "封存被拒：仍有未提交边界："
+            f"attempt={running_attempts}、entry={residue}、"
+            f"format={format_residue}"
+        )
+
+
+def _latest_attempt_counts(
+    con: sqlite3.Connection,
+) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    for stage, status, count in con.execute(
+        "SELECT a.stage,a.status,COUNT(*) FROM entry_attempts a"
+        " WHERE NOT EXISTS (SELECT 1 FROM entry_attempts newer"
+        "  WHERE newer.entry_id=a.entry_id AND newer.stage=a.stage"
+        "  AND newer.attempt_number>a.attempt_number)"
+        " GROUP BY a.stage,a.status ORDER BY a.stage,a.status"
+    ):
+        result.setdefault(str(stage), {})[str(status)] = int(count)
+    return result
+
+
+def _collect_v4_snapshot_counts(
+    con: sqlite3.Connection,
+) -> dict[str, object]:
+    counts: dict[str, object] = dict(core.collect_snapshot_counts(con))
+    format_status = {
+        str(status): int(count)
+        for status, count in con.execute(
+            "SELECT status,COUNT(*) FROM format_checks"
+            " GROUP BY status ORDER BY status"
+        )
+    }
+    performance_confidence = {
+        str(confidence): int(count)
+        for confidence, count in con.execute(
+            "SELECT candidate_confidence,COUNT(*) FROM read_performance"
+            " GROUP BY candidate_confidence ORDER BY candidate_confidence"
+        )
+    }
+    attempts = _latest_attempt_counts(con)
+    counts.update({
+        "format_status": format_status,
+        "latest_attempt_status": attempts,
+        "performance_confidence": performance_confidence,
+        "sessions": int(con.execute(
+            "SELECT COUNT(*) FROM run_sessions").fetchone()[0]),
+    })
+    hash_status = counts.get("hash_status") or {}
+    meta_status = counts.get("meta_status") or {}
+    counts["has_file_issues"] = bool(
+        counts.get("has_file_issues")
+        or hash_status.get("error")
+        or meta_status.get("error")
+        or meta_status.get("timeout")
+        or format_status.get("invalid")
+        or format_status.get("error")
+        or format_status.get("timeout")
+    )
+    counts["has_unstable_entries"] = bool(
+        counts.get("has_unstable_entries")
+        or format_status.get("unstable")
+        or any(
+            status_counts.get("unstable")
+            for status_counts in attempts.values()
+        )
+    )
+    return counts
+
+
+def _scan_manifest_payload(
+    con: sqlite3.Connection,
+    config: dict[str, object],
+    tools: dict[str, object],
+    counts: dict[str, object],
+    supplied: dict[str, object] | None,
+) -> dict[str, object]:
+    manifest = dict(supplied or {})
+    manifest.update({
+        "scanner_version": str(con.execute(
+            "SELECT scanner_version FROM snapshot_info WHERE id=1"
+        ).fetchone()[0]),
+        "tools": dict(tools),
+        "runtime_contract": {
+            "data_contract": dbstate.DATA_CONTRACT,
+            "resume_contract": dbstate.RESUME_CONTRACT,
+            "projection_contract": dbstate.PROJECTION_CONTRACT,
+            "stage_storage": "stage_checkpoints",
+            "session_storage": "run_sessions",
+            "attempt_storage": "entry_attempts",
+            "authoritative_event_storage": "run_state_events",
+        },
+        "verification": {
+            "hash": counts.get("latest_attempt_status", {}).get(
+                "verify_hash", {}),
+            "format": counts.get("latest_attempt_status", {}).get(
+                "verify_format", {}),
+        },
+        "format_validation": {
+            "mode": config.get("format_validation", "off"),
+            "status": counts.get("format_status", {}),
+        },
+        "performance_analysis": {
+            "storage": "read_performance",
+            "confidence": counts.get("performance_confidence", {}),
+            "physical_location_claimed": False,
+        },
+    })
+    return manifest
+
+
+def _skip_scan_verify_format_stage(con: sqlite3.Connection) -> None:
+    state = str(con.execute(
+        "SELECT state FROM stage_checkpoints WHERE stage='verify_format'"
+    ).fetchone()[0])
+    if state in ("completed", "skipped"):
+        return
+    if state != "pending":
+        raise core.PreflightError(
+            f"扫描封存不能解释 verify_format={state}")
+    dbstate.update_stage_checkpoint(
+        con,
+        "verify_format",
+        "skipped",
+        items_done=0,
+        items_total=0,
+        current_entry_id=None,
+        checkpoint={
+            "reason": "not_applicable_scan_pipeline",
+            "format_stage": "format",
+        },
+    )
+
+
+def seal_and_publish_scan(
+    handle: RunHandle,
+    *,
+    staging_path: str | None = None,
+    manifest: dict[str, object] | None = None,
+    issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    remove_event_log: bool = True,
+    now_utc: str | None = None,
+    on_event: Callable[..., None] | None = None,
+) -> dbstate.PublicationResult:
+    """验证终态、封存 schema 4 partial，并以 no-clobber 发布数据库和 Issues。"""
+    con = handle.connection
+    _require_scan_seal_ready(con)
+    runtime = dbstate.load_runtime(con)
+    session_ended, config, tools = _session_payload(
+        con, runtime.active_session_id)
+    if session_ended:
+        raise core.PreflightError("当前 session 已结束，不能封存")
+    hash_coverage = str(config.get("hash") or "none")
+    if hash_coverage not in ("none", "incremental", "full"):
+        raise core.PreflightError(
+            f"冻结的 hash coverage 无效：{hash_coverage!r}")
+    staging = _normalized(
+        staging_path or runtime.publish_stem_path + ".publishing.sqlite")
+    if os.path.normcase(os.path.dirname(staging)) != os.path.normcase(
+            runtime.output_dir):
+        raise core.PreflightError("发布 staging 必须位于冻结输出目录")
+    if os.path.normcase(staging) in {
+        os.path.normcase(runtime.partial_path),
+        os.path.normcase(runtime.event_log_path),
+        os.path.normcase(runtime.publish_stem_path),
+        os.path.normcase(handle.lease_path),
+    }:
+        raise core.PreflightError("发布 staging 与冻结运行路径冲突")
+
+    seal_started = False
+    sealed = False
+    connection_closed = False
+    finished_at = str(now_utc or core.now_utc_iso())
+    try:
+        dbstate.update_stage_checkpoint(
+            con,
+            "seal",
+            "running",
+            items_done=0,
+            items_total=1,
+            current_entry_id=None,
+        )
+        dbstate.begin_sealing(con, now_utc=finished_at)
+        seal_started = True
+        _emit_control_event(on_event, "stage_started", stage="seal")
+        counts = _collect_v4_snapshot_counts(con)
+        con.execute(
+            "UPDATE snapshot_info SET has_file_issues=?,"
+            " has_unstable_entries=?,has_enumeration_gaps=?,"
+            " hash_coverage=?,counts_json=? WHERE id=1",
+            (
+                int(bool(counts["has_file_issues"])),
+                int(bool(counts["has_unstable_entries"])),
+                int(bool(counts["has_enumeration_gaps"])),
+                hash_coverage,
+                json.dumps(counts, ensure_ascii=False),
+            ),
+        )
+        core._embed_snapshot_evidence(
+            con,
+            runtime.publish_stem_path,
+            hash_coverage,
+            counts,
+            finished_at,
+            runtime.event_log_path,
+            _scan_manifest_payload(con, config, tools, counts, manifest),
+        )
+        dbstate.update_stage_checkpoint(
+            con,
+            "seal",
+            "completed",
+            items_done=1,
+            items_total=1,
+            current_entry_id=None,
+            checkpoint={
+                "integrity": "pending_final_check",
+                "manifest": "snapshot_manifest",
+            },
+            now_utc=finished_at,
+        )
+        dbstate.update_stage_checkpoint(
+            con,
+            "publish",
+            "running",
+            items_done=0,
+            items_total=1,
+            current_entry_id=None,
+            checkpoint={"method": "sqlite_backup_no_clobber"},
+            now_utc=finished_at,
+        )
+        con.commit()
+        integrity = con.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or integrity[0] != "ok":
+            raise core.PreflightError(
+                f"SQLite 完整性检查失败：{integrity}")
+        foreign_key_error = con.execute(
+            "PRAGMA foreign_key_check").fetchone()
+        if foreign_key_error is not None:
+            raise core.PreflightError(
+                "SQLite 外键检查失败：" + str(tuple(foreign_key_error)))
+        dbstate.update_stage_checkpoint(
+            con,
+            "seal",
+            "completed",
+            items_done=1,
+            items_total=1,
+            current_entry_id=None,
+            checkpoint={
+                "integrity": "ok",
+                "foreign_keys": "ok",
+                "manifest": "snapshot_manifest",
+            },
+            now_utc=finished_at,
+        )
+        dbstate.mark_sealed_unpublished(con, now_utc=finished_at)
+        sealed = True
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.execute("PRAGMA journal_mode=DELETE")
+        con.close()
+        connection_closed = True
+        _emit_control_event(
+            on_event, "stage_finished", stage="seal", state="completed")
+    except Exception as exc:
+        if sealed and not connection_closed:
+            try:
+                con.close()
+                connection_closed = True
+            except sqlite3.Error:
+                pass
+        if seal_started and not sealed and not connection_closed:
+            try:
+                dbstate.update_stage_checkpoint(
+                    con,
+                    "seal",
+                    "failed_recoverable",
+                    current_entry_id=None,
+                    checkpoint={"reason": "seal_failed"},
+                )
+                dbstate.fail_run(
+                    con,
+                    recoverable=True,
+                    error_code="seal_failed",
+                    error_message=str(exc),
+                )
+            except Exception:
+                pass
+        raise
+
+    publication = dbstate.publish_sealed_snapshot(
+        runtime.partial_path,
+        staging,
+        lease_path=handle.lease_path,
+        lease_id=handle.lease.lease_id,
+        now_utc=finished_at,
+        issue_report_builder=issue_report_builder,
+    )
+    warnings = list(publication.warnings)
+    if remove_event_log and os.path.exists(runtime.event_log_path):
+        try:
+            os.remove(runtime.event_log_path)
+        except OSError as exc:
+            warnings.append(
+                f"最终快照已发布，但临时事件日志未删除：{exc}")
+    if warnings != list(publication.warnings):
+        publication = dbstate.PublicationResult(
+            final_path=publication.final_path,
+            sha256=publication.sha256,
+            partial_removed=publication.partial_removed,
+            lease_released=publication.lease_released,
+            warnings=tuple(warnings),
+            issue_report_path=publication.issue_report_path,
+        )
+    _emit_control_event(
+        on_event,
+        "stage_finished",
+        stage="publish",
+        state="published",
+        final_path=publication.final_path,
+        issue_report_path=publication.issue_report_path,
+    )
+    return publication
+
+
+def run_scan_completion_stages(
+    handle: RunHandle,
+    router: RunCommandRouter,
+    *,
+    show_current_file: bool = False,
+    hash_stall_seconds: float = dbhash.HASH_STALL_SECONDS,
+    hash_timeout_seconds: float | None = None,
+    hash_default_decision: str = "continue_waiting",
+    hash_poll_seconds: float = 0.05,
+    paused_wait_seconds: float = 0.25,
+    staging_path: str | None = None,
+    manifest: dict[str, object] | None = None,
+    issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    on_progress: Callable[[str, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
+    _independent_runner=None,
+    _primary_runner=None,
+) -> dict[str, object]:
+    """完成独立抽验、扫描专用阶段收尾、封存与发布。"""
+    con = handle.connection
+    runtime = dbstate.load_runtime(con)
+    if runtime.run_state != "running":
+        raise core.PreflightError(
+            f"扫描收尾要求 running，实际为 {runtime.run_state}")
+    session_ended, config, tools = _session_payload(
+        con, runtime.active_session_id)
+    if session_ended:
+        raise core.PreflightError("当前 session 已结束，不能完成扫描")
+    powershell = tools.get("powershell")
+    powershell_path = ""
+    powershell_version = ""
+    if isinstance(powershell, dict):
+        powershell_path = str(powershell.get("path") or "")
+        powershell_version = str(powershell.get("version") or "")
+    verification = run_independent_hash_stage_controlled(
+        con,
+        router,
+        percent=config.get("verify_sample_percent", 1.0),
+        min_count=100,
+        powershell_path=powershell_path,
+        powershell_version=powershell_version,
+        show_current_file=show_current_file,
+        stall_seconds=hash_stall_seconds,
+        timeout_seconds=hash_timeout_seconds,
+        default_decision=hash_default_decision,
+        on_progress=(
+            None if on_progress is None else
+            lambda _index, payload: on_progress("verify_hash", payload)
+        ),
+        on_event=on_event,
+        on_threshold=on_threshold,
+        poll_seconds=hash_poll_seconds,
+        paused_wait_seconds=paused_wait_seconds,
+        _independent_runner=_independent_runner,
+        _primary_runner=_primary_runner,
+    )
+    if verification["state"] != "completed":
+        return {
+            "state": verification["state"],
+            "stage": "verify_hash",
+            "verification": verification,
+        }
+    performance = dbhash.classify_read_performance_candidates(con)
+    _emit_control_event(
+        on_event,
+        "performance_analysis_finished",
+        stage="verify_hash",
+        **performance,
+    )
+    _skip_scan_verify_format_stage(con)
+    publication = seal_and_publish_scan(
+        handle,
+        staging_path=staging_path,
+        manifest=manifest,
+        issue_report_builder=issue_report_builder,
+        on_event=on_event,
+    )
+    return {
+        "state": "published",
+        "stage": "publish",
+        "verification": verification,
+        "performance": performance,
+        "publication": publication,
+    }
+
+
+def run_scan_to_publication(
+    handle: RunHandle,
+    router: RunCommandRouter,
+    *,
+    show_current_file: bool = False,
+    on_progress: Callable[[str, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+    hash_stall_seconds: float = dbhash.HASH_STALL_SECONDS,
+    hash_timeout_seconds: float | None = None,
+    hash_default_decision: str = "continue_waiting",
+    hash_poll_seconds: float = 0.05,
+    staging_path: str | None = None,
+    manifest: dict[str, object] | None = None,
+    issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
+    on_threshold: Callable[
+        [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
+    _hash_worker_target=None,
+    _independent_runner=None,
+    _primary_runner=None,
+) -> dict[str, object]:
+    """运行完整 schema 4 扫描生产链，非终态控制结果不进入封存。"""
+    evidence = run_scan_evidence_stages(
+        handle,
+        router,
+        show_current_file=show_current_file,
+        on_progress=on_progress,
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+        hash_stall_seconds=hash_stall_seconds,
+        hash_timeout_seconds=hash_timeout_seconds,
+        hash_default_decision=hash_default_decision,
+        hash_poll_seconds=hash_poll_seconds,
+        _hash_worker_target=_hash_worker_target,
+    )
+    if evidence["state"] != "completed":
+        return {
+            "state": evidence["state"],
+            "stage": evidence["stage"],
+            "evidence": evidence,
+        }
+    completion = run_scan_completion_stages(
+        handle,
+        router,
+        show_current_file=show_current_file,
+        hash_stall_seconds=hash_stall_seconds,
+        hash_timeout_seconds=hash_timeout_seconds,
+        hash_default_decision=hash_default_decision,
+        hash_poll_seconds=hash_poll_seconds,
+        paused_wait_seconds=paused_wait_seconds,
+        staging_path=staging_path,
+        manifest=manifest,
+        issue_report_builder=issue_report_builder,
+        on_progress=on_progress,
+        on_event=on_event,
+        on_threshold=on_threshold,
+        _independent_runner=_independent_runner,
+        _primary_runner=_primary_runner,
+    )
+    completion["evidence"] = evidence
+    return completion

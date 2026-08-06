@@ -597,10 +597,24 @@ session；不会卡在“旧 session 未结束但 paused 不可恢复”的状�
 限频且默认从生产者关闭。既有 schema 3 函数只增加末尾可选回调，默认调用及旧专项回归
 保持不变。
 
-本检查点尚未把现行 DBS-11 生产编排切换到 schema 4，也尚未实现 GUI timeout 决策框、
-恢复卡片和完整扫描各阶段的暂停衔接。因此 `SCANNER_VERSION=1.5.1`、
-`SCHEMA_VERSION=3` 及既有 schema 3 入口继续保持不变；阶段 4 只有在生产编排、GUI 和
-突然终止端到端恢复接入并通过后才算完成。
+第五个子检查点已完成 schema 4 内部生产收尾链。独立抽验不再使用无界批处理：每个文件
+由本任务持有的 PowerShell `Get-FileHash` 精确进程执行，路径使用 UTF-8 令牌和 UTF-16LE
+`-EncodedCommand`，并复用 30 秒 stall、90 秒／9 GiB 动态无进展决策、暂停／保存／停止
+及精确句柄回收。抽验前后检查 size／mtime；首轮不一致时主实现和独立实现各重算一次，
+只有双方恢复到原摘要才记为偶发恢复，否则以 `verify_hash` attempt 和 unstable 当前哈希
+留证。
+
+同一子检查点增加 `run_scan_to_publication`：枚举、哈希、元数据、可选格式、复扫、独立
+抽验、性能分析、封存、只读 Issues 和 no-clobber 发布形成单一 schema 4 内部链。封存前
+强制验证所有 checkpoint 和 attempt／当前结果边界；manifest、计数、事件、SQLite 和外键
+检查通过后才进入 `sealed_unpublished`。发布副本内完成 publish checkpoint 和 session，
+失败或冲突保留原 partial 与精确 lease。读取性能实际分析也已落地：只比较同卷、同类型、
+相近大小的当前 computed 成功读取，至少 8 个／组且至少 1 MiB，以中位数、MAD、吞吐比例
+和 stall 阈值区分 low／high；排除 reused，高置信度进入同一 Issues，且不推断物理坏区。
+
+现行 DBS-11 CLI 和 GUI 仍未切换到该内部链，GUI timeout 决策框、恢复卡片和完整用户流程
+也尚未接入。因此 `SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 及既有 schema 3 入口
+继续保持不变；阶段 4 只有在生产 CLI／GUI、突然终止端到端恢复和组合测试通过后才算完成。
 
 ### 阶段 5：核验合并与 Full 可选格式校验
 

@@ -530,3 +530,51 @@ schema 4 运行层当前提供：
 本检查点只完成报告分析、渲染和发布事务能力。读取性能离群候选的实际分组计算、生产
 扫描的封存／发布编排、统一 CLI／GUI 仍未接入，不能把合成的高置信度候选渲染测试写成
 性能异常诊断已经完整落地。
+
+### 9.2 独立抽验、性能分析与内部生产发布链（第三检查点）
+
+schema 4 扫描内部链已补齐复扫后的独立哈希抽验、性能候选计算、封存和发布；现行
+DBS-11 CLI／GUI 仍保持 schema 3，尚未切换。当前检查点实现并验证：
+
+- 独立抽验按文件创建一个本任务持有的 PowerShell `Get-FileHash` 进程，使用 UTF-8 路径
+  令牌和 UTF-16LE `-EncodedCommand`；30 秒 stall、90 秒／9 GiB 动态无进展阈值、继续
+  等待／跳过记录／停止续传、暂停和保存均绑定当前 PID，只终止并等待该精确句柄；
+- 抽验前后核对 size／mtime。首轮摘要不一致时，主哈希 worker 与独立 PowerShell 各重算
+  一次；双方回到原摘要才记为偶发恢复，否则 `verify_hash` attempt、当前 hash、entry 和
+  errors 一致标为 unstable。工具错误、timeout、源变化和 mismatch 分开记录；
+- 暂停后的 verify attempt 记 cancelled，同 session 继续后从文件起点重试；Quick／No-Hash
+  不要求 PowerShell，并把 verify_hash checkpoint 明确写为 skipped；
+- 性能分析只消费当前成功的 computed 主哈希 attempt，排除 reused、独立抽验和历史尝试；
+  比较组固定为同卷、同扩展名（无扩展名时同 media kind）和
+  `round(log2(size_bytes))` 大小带，至少 8 个／组且文件至少 1 MiB。吞吐中位数、MAD、
+  中位数比例和 stall 阈值共同区分 low／high；低置信度只留库，高置信度进入同一 Issues；
+- `run_scan_to_publication` 串联证据阶段、抽验、性能分析、封存和发布。前置 checkpoint、
+  running attempt、pending／processing 当前结果均有硬拒绝；扫描专用 verify_format 明确
+  skipped。manifest、计数和事件内嵌后执行 SQLite／外键检查，再进入
+  `sealed_unpublished`；
+- 发布副本内完成 publish checkpoint、运行状态和 session，摘要后缀基于关闭后的最终
+  字节。Issues 在发布副本上只读生成并复核摘要，无问题不创建；冲突不覆盖，发布失败保留
+  sealed partial 与精确 lease，封存前失败进入 `failed_recoverable`；
+- 成功后只清理本次 partial、精确 lease 和冻结 event log。测试覆盖中文文件名、UTF-8／LF
+  事件内嵌、Full、Quick、真实 mismatch、性能 high＋low、发布冲突、阶段残留拒绝和损坏
+  事件日志故障注入。
+
+真实 Windows PowerShell 5.1 烟雾测试只读工作区 `README.md`，PowerShell 摘要与 Python
+SHA-256 相同，进程退出码为 0 且精确句柄已回收；没有读取任何真实档案或用户临时目录。
+定向与第一轮完整回归结果：
+
+| 批次 | 结果 | 用时 |
+|---|---:|---:|
+| 哈希／运行／状态／发布／Issues 联合 | 121／121 | 9.448s |
+| 完整发现式回归 A | 436／436 | 99.817s |
+| 完整发现式回归 B | 436／436 | 100.494s |
+
+全部批次失败 0，跳过 0，并启用 `ResourceWarning` 即错误。两轮完整回归把 `TEMP`、
+`TMP`、`TMPDIR` 分别固定到工作区 `.test_runtime\v1_6_0\full_publication_a\temp` 和
+`.test_runtime\v1_6_0\full_publication_b\temp`；未读取用户 `TEMP\`，未扫描真实档案或
+硬盘，未枚举、附加、复用或停止其它进程。schema 3 DDL、
+`SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 和现行 DBS-11 入口未改。
+
+本检查点完成的是可供新入口调用的 schema 4 内部生产链。现行 DBS-11 CLI、统一核验
+CLI、GUI timeout／恢复／发布界面和 sealed partial 的重启后发布恢复入口仍待后续接线；
+因此阶段 4／5 和 v1.6.0 整体均未完成，也不能更新 README 为已发布功能。

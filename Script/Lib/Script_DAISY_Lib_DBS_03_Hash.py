@@ -7,6 +7,7 @@ size 和 mtime 一致。
 """
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import hashlib
 import json
@@ -18,6 +19,7 @@ import random
 import re
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -354,6 +356,46 @@ class HashWorkerOutcome:
     def performance(self) -> dict[str, object]:
         return {
             "origin": "computed",
+            "size_bytes": self.size_bytes,
+            "bytes_read": self.bytes_read,
+            "elapsed_seconds": self.elapsed_seconds,
+            "active_read_seconds": self.active_read_seconds,
+            "stall_count": self.stall_count,
+            "longest_stall_seconds": self.longest_stall_seconds,
+            "first_stall_offset": self.first_stall_offset,
+            "last_stall_offset": self.last_stall_offset,
+            "final_offset": self.final_offset,
+            "ended_reason": self.outcome,
+        }
+
+
+@dataclass(frozen=True)
+class IndependentHashOutcome:
+    """单个 PowerShell Get-FileHash 进程的受控结果。"""
+
+    outcome: str
+    hash_hex: str | None
+    error: str | None
+    decision: str
+    decision_source: str
+    size_bytes: int
+    bytes_read: int
+    final_offset: int
+    elapsed_seconds: float
+    active_read_seconds: float
+    stall_count: int
+    longest_stall_seconds: float
+    first_stall_offset: int | None
+    last_stall_offset: int | None
+    threshold_count: int
+    worker_pid: int
+    worker_exitcode: int | None
+    worker_reaped: bool
+    events: tuple[dict[str, object], ...]
+
+    def performance(self) -> dict[str, object]:
+        return {
+            "origin": "independent",
             "size_bytes": self.size_bytes,
             "bytes_read": self.bytes_read,
             "elapsed_seconds": self.elapsed_seconds,
@@ -804,6 +846,328 @@ def run_hash_worker(
         longest_stall_seconds=longest_stall_seconds,
         first_stall_offset=first_stall_offset,
         last_stall_offset=last_stall_offset,
+        threshold_count=threshold_count,
+        worker_pid=worker_pid,
+        worker_exitcode=exitcode,
+        worker_reaped=reaped,
+        events=tuple(events),
+    )
+
+
+def _independent_hash_command(powershell: str, path: str) -> list[str]:
+    """以不含原始路径的 EncodedCommand 构造 PowerShell 参数。"""
+    path_token = base64.b64encode(path.encode("utf-8")).decode("ascii")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+        "$p=[Text.Encoding]::UTF8.GetString("
+        "[Convert]::FromBase64String('" + path_token + "'));"
+        "try { (Get-FileHash -LiteralPath $p -Algorithm SHA256"
+        " -ErrorAction Stop).Hash }"
+        " catch { [Console]::Error.Write($_.Exception.Message); exit 7 }"
+    )
+    encoded = base64.b64encode(
+        script.encode("utf-16-le")).decode("ascii")
+    return [
+        powershell,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        encoded,
+    ]
+
+
+def _finish_owned_subprocess(
+    process,
+    *,
+    terminate: bool,
+    wait_seconds: float = 2.0,
+) -> tuple[int | None, bool, bytes, bytes]:
+    """只终止并回收调用方刚创建的一个精确子进程句柄。"""
+    if terminate and process.poll() is None:
+        process.terminate()
+    try:
+        stdout, stderr = process.communicate(timeout=wait_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate(timeout=wait_seconds)
+    return (
+        process.returncode,
+        process.poll() is not None,
+        bytes(stdout or b""),
+        bytes(stderr or b""),
+    )
+
+
+def run_independent_hash_process(
+    path: str,
+    powershell: str,
+    *,
+    expected_size: int | None = None,
+    stall_seconds: float = HASH_STALL_SECONDS,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    display_name: str | None = None,
+    control: HashWorkerControl | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], AtomicTimeoutDecision], None] | None = None,
+    poll_seconds: float = 0.05,
+    _popen_factory=None,
+) -> IndependentHashOutcome:
+    """监督一个 Get-FileHash 进程；无进展时沿用 schema 4 timeout 决策。"""
+    if stall_seconds <= 0 or poll_seconds <= 0:
+        raise ValueError("stall 和 poll 参数必须大于 0")
+    if default_decision not in HASH_TIMEOUT_DECISIONS:
+        raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+    normalized = os.path.abspath(os.fspath(path))
+    if expected_size is None:
+        try:
+            size_bytes = int(os.stat(
+                core.to_extended_path(normalized),
+                follow_symlinks=False,
+            ).st_size)
+        except OSError:
+            size_bytes = 0
+    else:
+        size_bytes = int(expected_size)
+    if size_bytes < 0:
+        raise ValueError("expected_size 不能小于 0")
+    threshold_seconds = (
+        hash_no_progress_timeout_for_size(size_bytes)
+        if timeout_seconds is None else float(timeout_seconds)
+    )
+    if threshold_seconds <= 0:
+        raise ValueError("timeout_seconds 必须大于 0")
+    shell = os.path.abspath(os.fspath(powershell))
+    if _popen_factory is None and not os.path.isfile(shell):
+        raise core.PreflightError(f"PowerShell 路径不存在：{shell}")
+
+    label = str(display_name or os.path.basename(normalized))
+    owned_control = control or HashWorkerControl()
+    events: list[dict[str, object]] = []
+
+    def emit(event: str, **payload: object) -> None:
+        record = {"event": event, **payload}
+        events.append(record)
+        if on_event is not None:
+            try:
+                on_event(event, **payload)
+            except Exception:
+                pass
+
+    command = _independent_hash_command(shell, normalized)
+    factory = _popen_factory or subprocess.Popen
+    process = factory(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    worker_pid = int(process.pid)
+    if worker_pid <= 0:
+        try:
+            _finish_owned_subprocess(process, terminate=True)
+        finally:
+            raise core.PreflightError("独立哈希进程没有有效 PID")
+    try:
+        owned_control.bind_worker(worker_pid)
+    except Exception:
+        _finish_owned_subprocess(process, terminate=True)
+        raise
+
+    emit("worker_started", file=label, worker_pid=worker_pid,
+         implementation="powershell_get_filehash")
+    started = time.monotonic()
+    timeout_window_started = started
+    stall_count = 0
+    longest_stall_seconds = 0.0
+    threshold_count = 0
+    stall_reported = False
+    outcome = "tool_error"
+    decision = "none"
+    decision_source = "none"
+    terminate = False
+    exitcode = None
+    reaped = False
+    stdout = b""
+    stderr = b""
+
+    try:
+        while True:
+            action = owned_control.current()
+            if action is not None:
+                control_action, control_source = action
+                outcome = {
+                    "pause": "paused",
+                    "save_exit": "save_exit",
+                    "stop": "stopped",
+                }[control_action]
+                decision = "stop_and_resume"
+                decision_source = control_source
+                terminate = True
+                emit(
+                    "worker_controlled",
+                    file=label,
+                    action=control_action,
+                    bytes_read=0,
+                )
+                break
+            if process.poll() is not None:
+                outcome = "completed"
+                break
+
+            now = time.monotonic()
+            idle = now - started
+            longest_stall_seconds = max(longest_stall_seconds, idle)
+            if idle >= stall_seconds and not stall_reported:
+                stall_reported = True
+                stall_count = 1
+                owned_control.open_timeout_decision(worker_pid)
+                emit(
+                    "stall",
+                    file=label,
+                    worker_pid=worker_pid,
+                    idle_seconds=round(idle, 3),
+                    final_offset=0,
+                )
+
+            pending_choice = (
+                owned_control.take_timeout_decision(worker_pid)
+                if stall_reported else None
+            )
+            if pending_choice is not None:
+                decision = pending_choice.decision
+                decision_source = pending_choice.source
+                emit(
+                    "stall_decided",
+                    file=label,
+                    worker_pid=worker_pid,
+                    decision=decision,
+                    decision_source=decision_source,
+                    threshold_count=threshold_count,
+                )
+                if decision == "continue_waiting":
+                    timeout_window_started = time.monotonic()
+                    owned_control.open_timeout_decision(worker_pid)
+                    time.sleep(poll_seconds)
+                    continue
+                terminate = True
+                outcome = (
+                    "timeout" if decision == "skip_and_record"
+                    else "stopped"
+                )
+                break
+
+            if now - timeout_window_started >= threshold_seconds:
+                threshold_count += 1
+                owned_control.open_timeout_decision(worker_pid)
+                emit(
+                    "threshold_reached",
+                    file=label,
+                    worker_pid=worker_pid,
+                    threshold_seconds=threshold_seconds,
+                    idle_seconds=round(idle, 3),
+                    final_offset=0,
+                    threshold_count=threshold_count,
+                )
+                arbiter = AtomicTimeoutDecision()
+                if on_threshold is not None:
+                    try:
+                        on_threshold({
+                            "file": label,
+                            "worker_pid": worker_pid,
+                            "size_bytes": size_bytes,
+                            "bytes_read": 0,
+                            "threshold_seconds": threshold_seconds,
+                            "threshold_count": threshold_count,
+                        }, arbiter)
+                    except Exception as exc:
+                        emit(
+                            "threshold_callback_error",
+                            file=label,
+                            error=str(exc),
+                        )
+                if owned_control.current() is not None:
+                    time.sleep(poll_seconds)
+                    continue
+                choice = owned_control.resolve_timeout_decision(
+                    worker_pid,
+                    default_decision,
+                    preferred=arbiter.current(),
+                )
+                decision = choice.decision
+                decision_source = choice.source
+                emit(
+                    "threshold_decided",
+                    file=label,
+                    worker_pid=worker_pid,
+                    decision=decision,
+                    decision_source=decision_source,
+                    threshold_count=threshold_count,
+                )
+                if decision == "continue_waiting":
+                    timeout_window_started = time.monotonic()
+                    owned_control.open_timeout_decision(worker_pid)
+                    time.sleep(poll_seconds)
+                    continue
+                terminate = True
+                outcome = (
+                    "timeout" if decision == "skip_and_record"
+                    else "stopped"
+                )
+                break
+            time.sleep(poll_seconds)
+    finally:
+        try:
+            exitcode, reaped, stdout, stderr = _finish_owned_subprocess(
+                process, terminate=terminate or outcome != "completed")
+        finally:
+            owned_control.unbind_worker(worker_pid)
+
+    elapsed_seconds = max(0.0, time.monotonic() - started)
+    longest_stall_seconds = max(longest_stall_seconds, elapsed_seconds)
+    digest = None
+    error = None
+    if outcome == "completed":
+        tokens = stdout.decode("utf-8", "replace").strip().split()
+        if exitcode == 0 and len(tokens) == 1 and _HEX64.match(tokens[0]):
+            digest = tokens[0].lower()
+            emit("worker_completed", file=label, bytes_read=size_bytes)
+        else:
+            outcome = "tool_error"
+            detail = stderr.decode("utf-8", "replace").strip()
+            error = (detail or "Get-FileHash 未返回唯一的 SHA-256")[:2048]
+            emit(
+                "worker_tool_error",
+                file=label,
+                worker_exitcode=exitcode,
+                error=error,
+            )
+    elif outcome == "timeout":
+        error = "independent_hash_timeout"
+    elif outcome == "stopped":
+        error = "stop_and_resume"
+
+    completed_bytes = size_bytes if digest is not None else 0
+    return IndependentHashOutcome(
+        outcome=outcome,
+        hash_hex=digest,
+        error=error,
+        decision=decision,
+        decision_source=decision_source,
+        size_bytes=size_bytes,
+        bytes_read=completed_bytes,
+        final_offset=completed_bytes,
+        elapsed_seconds=elapsed_seconds,
+        active_read_seconds=elapsed_seconds if digest is not None else 0.0,
+        stall_count=stall_count,
+        longest_stall_seconds=longest_stall_seconds,
+        first_stall_offset=0 if stall_count else None,
+        last_stall_offset=0 if stall_count else None,
         threshold_count=threshold_count,
         worker_pid=worker_pid,
         worker_exitcode=exitcode,
@@ -1496,6 +1860,196 @@ def process_hash_stage_v4(
             on_progress(int(stats["processed"]), dict(stats))
             last_progress_event = now
     return stats
+
+
+def classify_read_performance_candidates(
+    con: sqlite3.Connection,
+    *,
+    group_minimum: int = 8,
+    throughput_minimum_bytes: int = 1024 * 1024,
+) -> dict[str, object]:
+    """按同卷、同类型和相近大小组标注读取性能异常候选。"""
+    if isinstance(group_minimum, bool) or not isinstance(group_minimum, int) \
+            or group_minimum < 4:
+        raise ValueError("group_minimum 必须是至少 4 的整数")
+    if isinstance(throughput_minimum_bytes, bool) \
+            or not isinstance(throughput_minimum_bytes, int) \
+            or throughput_minimum_bytes < 0:
+        raise ValueError("throughput_minimum_bytes 必须是非负整数")
+    dbstate.require_v4_connection(con)
+    runtime = dbstate.load_runtime(con)
+    if runtime.run_state != "running":
+        raise core.PreflightError(
+            f"性能候选分析要求 running，实际为 {runtime.run_state}")
+
+    raw_rows = con.execute(
+        "SELECT p.performance_id,p.size_bytes,p.bytes_read,"
+        " p.active_read_seconds,p.stall_count,p.longest_stall_seconds,"
+        " e.extension,e.media_kind,r.volume_serial,r.root_id"
+        " FROM read_performance p"
+        " JOIN entry_attempts a ON a.attempt_id=p.attempt_id"
+        " JOIN entries e ON e.entry_id=p.entry_id"
+        " JOIN roots r ON r.root_id=e.root_id"
+        " JOIN hashes h ON h.entry_id=e.entry_id"
+        "  AND h.algorithm='sha256'"
+        " WHERE p.stage='hash' AND p.origin='computed'"
+        " AND a.status='succeeded'"
+        " AND NOT EXISTS (SELECT 1 FROM entry_attempts newer"
+        "  WHERE newer.entry_id=a.entry_id AND newer.stage='hash'"
+        "  AND newer.attempt_number>a.attempt_number)"
+        " AND e.hash_status='done'"
+        " AND h.origin='computed' AND h.status='valid'"
+        " AND p.bytes_read>=p.size_bytes"
+        " ORDER BY p.performance_id"
+    ).fetchall()
+    reused_rows = int(con.execute(
+        "SELECT COUNT(*) FROM read_performance"
+        " WHERE stage='hash' AND origin='reused'"
+    ).fetchone()[0])
+    rows: list[dict[str, object]] = []
+    groups: dict[tuple[str, str, int], list[dict[str, object]]] = {}
+    for raw in raw_rows:
+        (performance_id, size_bytes, bytes_read, active_seconds,
+         stall_count, longest_stall, extension, media_kind,
+         volume_serial, root_id) = tuple(raw)
+        size = int(size_bytes)
+        active = float(active_seconds)
+        throughput = (
+            float(bytes_read) / active if active > 0 and bytes_read else 0.0)
+        volume_key = (
+            str(volume_serial)
+            if str(volume_serial or "").strip()
+            else f"root:{int(root_id)}"
+        )
+        normalized_extension = str(extension or "").strip().casefold()
+        type_key = (
+            "ext:" + normalized_extension
+            if normalized_extension else
+            "kind:" + str(media_kind or "other").strip().casefold()
+        )
+        size_band = int(round(math.log2(max(size, 1))))
+        row = {
+            "performance_id": int(performance_id),
+            "size_bytes": size,
+            "bytes_read": int(bytes_read),
+            "throughput": throughput,
+            "stall_count": int(stall_count),
+            "longest_stall": float(longest_stall),
+            "group": (volume_key, type_key, size_band),
+        }
+        rows.append(row)
+        if size >= throughput_minimum_bytes and throughput > 0:
+            groups.setdefault(row["group"], []).append(row)
+
+    assignments: dict[int, tuple[str, str | None]] = {
+        int(row["performance_id"]): ("none", None) for row in rows
+    }
+    reason_parts: dict[int, list[str]] = {}
+
+    def promote(performance_id: int, confidence: str, reason: str) -> None:
+        current, _current_reason = assignments[performance_id]
+        rank = {"none": 0, "low": 1, "high": 2}
+        if rank[confidence] > rank[current]:
+            assignments[performance_id] = (confidence, None)
+        reason_parts.setdefault(performance_id, []).append(reason)
+
+    analyzed_groups = 0
+    for grouped in groups.values():
+        if len(grouped) < group_minimum:
+            continue
+        analyzed_groups += 1
+        throughputs = [float(row["throughput"]) for row in grouped]
+        median = float(statistics.median(throughputs))
+        if median <= 0:
+            continue
+        deviations = [abs(value - median) for value in throughputs]
+        mad = float(statistics.median(deviations))
+        for row in grouped:
+            throughput = float(row["throughput"])
+            ratio = throughput / median
+            confidence = "none"
+            if mad == 0:
+                if ratio <= 0.25:
+                    confidence = "high"
+                elif ratio <= 0.50:
+                    confidence = "low"
+            else:
+                robust_score = (median - throughput) / (1.4826 * mad)
+                if robust_score >= 6.0 and ratio <= 0.50:
+                    confidence = "high"
+                elif robust_score >= 3.5 and ratio <= 0.75:
+                    confidence = "low"
+            if confidence != "none":
+                promote(
+                    int(row["performance_id"]),
+                    confidence,
+                    "同卷、同类型、相近大小组"
+                    f"（样本 {len(grouped)}，吞吐 "
+                    f"{throughput / 1024 ** 2:.2f} MiB/s，"
+                    f"中位数 {median / 1024 ** 2:.2f} MiB/s，"
+                    f"比例 {ratio:.3f}）",
+                )
+
+    for row in rows:
+        longest = float(row["longest_stall"])
+        if longest <= 0:
+            continue
+        threshold = hash_no_progress_timeout_for_size(
+            int(row["size_bytes"]))
+        if longest >= threshold:
+            promote(
+                int(row["performance_id"]),
+                "high",
+                f"最长无进展 {longest:.3f}s 达到动态阈值 "
+                f"{threshold:.3f}s",
+            )
+        elif longest >= HASH_STALL_SECONDS:
+            promote(
+                int(row["performance_id"]),
+                "low",
+                f"最长无进展 {longest:.3f}s 达到早期 stall 告警 "
+                f"{HASH_STALL_SECONDS}s",
+            )
+
+    finalized: dict[int, tuple[str, str | None]] = {}
+    for performance_id, (confidence, _reason) in assignments.items():
+        parts = reason_parts.get(performance_id, [])
+        reason = None
+        if confidence != "none":
+            reason = (
+                "读取性能异常候选：" + "；".join(parts)
+                + "。该结论仅定位可疑逻辑路径／时段，"
+                "不能据此认定物理坏区。"
+            )[:2048]
+        finalized[performance_id] = (confidence, reason)
+
+    with con:
+        con.execute(
+            "UPDATE read_performance SET candidate_confidence='none',"
+            " candidate_reason=NULL"
+        )
+        con.executemany(
+            "UPDATE read_performance SET candidate_confidence=?,"
+            " candidate_reason=? WHERE performance_id=?",
+            (
+                (confidence, reason, performance_id)
+                for performance_id, (confidence, reason)
+                in finalized.items()
+            ),
+        )
+    confidence_counts = {"none": 0, "low": 0, "high": 0}
+    for confidence, _reason in finalized.values():
+        confidence_counts[confidence] += 1
+    return {
+        "method": "daisy-read-performance-v1",
+        "eligible": len(rows),
+        "throughput_groups": analyzed_groups,
+        "group_minimum": group_minimum,
+        "throughput_minimum_bytes": throughput_minimum_bytes,
+        "excluded_reused": reused_rows,
+        **confidence_counts,
+        "physical_location_claimed": False,
+    }
 
 
 # === 增量复用与计算溯源 ===

@@ -411,7 +411,13 @@ row ID 与物理布局后，文件清单、SHA-256、规范化元数据、统计
 unstable 条目均硬性拒绝；`has_file_issues=1` 本身不阻止其他有效哈希复用。
 复用记录保存最初计算事件，而不是只指向最后一个中间快照。
 
-Full 的独立抽验和 `check-hash` 使用 PowerShell `Get-FileHash`，与主哈希实现分离。抽验不一致时双方重算；仍不一致则标记异常并留证。
+Full 的独立抽验和 `check-hash` 使用 PowerShell `Get-FileHash`，与主哈希实现分离。schema 4
+扫描的抽验按文件启动本任务持有的精确 PowerShell 进程，路径以 UTF-8 令牌放入
+UTF-16LE `-EncodedCommand`，不依赖尾随 `$args` 或字符串引号拼接。控制层沿用 30 秒
+stall、90 秒／9 GiB 动态无进展阈值和三种处置；暂停、停止或 timeout 只终止并等待当前
+句柄。读取前后 size／mtime 必须稳定。第一次摘要不一致时，主实现和独立实现各重算一次；
+双方恢复为原摘要才算偶发抽验异常，否则写入 `verify_hash` attempt，并把当前哈希标为
+unstable 留证。
 
 正式兼容范围包括 Windows PowerShell 5.1（`powershell.exe`）和
 PowerShell 7.x（`pwsh.exe`）。两个系列使用相同的 `Get-FileHash` 调用路径，
@@ -801,13 +807,14 @@ BitLocker 状态；不得未经检查公开分享。
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用
   流式业务投影比较一次完成与多 session 恢复；运行身份、attempt 和观察时间不进入业务
-  投影。现行 DBS-11 生产入口在 worker 接入前仍使用冻结 schema 3，不能把状态层专项通过
-  误写成扫描入口已经切换。
+  投影。schema 4 内部生产链已经能够从证据采集运行到发布，但现行 DBS-11 CLI 和 GUI
+  尚未切换，仍使用冻结 schema 3；不得把内部编排通过误写成用户入口已经切换。
 - v1.6.0 阶段 4 的第一检查点已在哈希库中实现 spawn 工作进程、启动握手、30 秒 stall、
   90 秒／9 GiB 动态无进展 timeout、三种原子处置、精确句柄回收、逐文件 checkpoint、
   attempt 与低频性能摘要。schema 4 哈希当前结果与历史 attempt 在同一 SQLite 事务提交；
-  暂停或停止中的当前文件不保存 `hashlib` 内部状态，恢复时从文件起点重做。该内核尚未
-  接入 DBS-11 生产编排和 GUI，因此现行 schema 3 扫描语义及版本常量仍未改变。
+  暂停或停止中的当前文件不保存 `hashlib` 内部状态，恢复时从文件起点重做。该内核已接入
+  `DBS_09_Run.py` 的 schema 4 内部生产链，但尚未接入现行 DBS-11 CLI 和 GUI，因此
+  schema 3 扫描语义及版本常量仍未改变。
 - `DBS_09_Run.py` 进一步封装 schema 4 partial 的 no-clobber 预留、只读恢复预览、
   `<partial>.lease` 明确接管和数据库／lease 双端心跳。partial、publish stem 与 event log
   必须互不相同；同会话暂停后进程消失时，旧 session 先转为 abandoned，再创建 resume
@@ -824,6 +831,20 @@ BitLocker 状态；不得未经检查公开分享。
   在单文件提交后停下并从数据库状态恢复全局进度，复扫保存已观察变化后可重跑。数值进度
   以 500 ms、当前文件以 100 ms 限频；当前文件开关关闭时不调用生产回调。Core／Meta 的
   schema 3 旧函数只增加默认关闭的末尾参数，未传回调的旧扫描路径不改变。
+- `DBS_09_Run.py` 的 schema 4 内部生产链依次执行枚举、哈希、元数据、可选格式、复扫、
+  独立哈希抽验、读取性能分析、封存和发布。扫描专用 `verify_format` 明确记为 skipped，
+  不把未执行写成完成。只有前置 checkpoint 全部为 completed／skipped 且不存在 running
+  attempt 或 pending／processing 当前结果时才进入 sealing。manifest、计数和事件先内嵌，
+  SQLite 与外键检查通过后 partial 才进入 `sealed_unpublished`；发布副本最终把 publish
+  checkpoint 和 session 写为 completed／published。任一目标冲突都保留 sealed partial
+  和精确 lease，不重扫源档案。
+- 读取性能分析只消费当前成功、`origin=computed` 的主哈希 attempt；`origin=reused`、
+  独立抽验和历史 attempt 不参与比较。吞吐比较组必须同卷、同扩展名（无扩展名时同
+  `media_kind`），并按 `round(log2(size_bytes))` 归入最大约 2 倍跨度的相近大小带；组内
+  至少 8 个且文件至少 1 MiB。算法用吞吐中位数和 MAD；MAD 为 0 时分别以中位数的 50%
+  和 25% 作为低／高置信度界线。30 秒 stall 至少为低置信度，达到该文件动态 timeout
+  阈值为高置信度。低置信度只留 `read_performance`，高置信度进入同名 Issues；措辞只称
+  可疑逻辑路径／时段，明确不能推断物理坏区。
 - `DBS_10_Issues.py` 通过统一 Reader 只读分析 schema 3／4 快照，固定输出枚举、哈希、
   Exif／元数据、格式、读取性能候选和运行证据六个板块。已执行且无问题为 `0`，未执行、
   旧库未记录或能力不可解释为 `NULL`；unsupported／unknown／unrecognized format 只显示
@@ -833,7 +854,8 @@ BitLocker 状态；不得未经检查公开分享。
 - schema 4 发布层可接收只读 Issues builder：先在 `mode=ro` 发布副本上分析并复核摘要
   未变化，再以 UTF-8 无 BOM、LF、no-clobber 创建 sidecar，最后发布 SQLite。报告或
   SQLite 任一目标冲突均不覆盖；SQLite 发布失败时只删除本次新建的 sidecar，保留 sealed
-  partial 供恢复。该能力尚未接入生产扫描封存入口，不能据此宣称 v1.6.0 已完成切换。
+  partial 供恢复。该能力已接入 schema 4 内部生产链；现行 DBS-11 CLI／GUI 尚未切换，
+  因而仍不能据此宣称 v1.6.0 用户流程已完成切换。
 
 ### 12.2 信息架构与字段命名
 

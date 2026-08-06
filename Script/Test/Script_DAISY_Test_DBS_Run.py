@@ -430,6 +430,266 @@ class TestControlledHashStage(_RunFixture):
         self.assertEqual("ended", router.state)
 
 
+class TestControlledIndependentHashStage(_RunFixture):
+    @staticmethod
+    def independent_outcome(
+        digest: str | None,
+        *,
+        outcome: str = "completed",
+        decision: str = "none",
+        decision_source: str = "none",
+        error: str | None = None,
+    ) -> dbhash.IndependentHashOutcome:
+        completed = 3 if digest is not None else 0
+        return dbhash.IndependentHashOutcome(
+            outcome=outcome,
+            hash_hex=digest,
+            error=error,
+            decision=decision,
+            decision_source=decision_source,
+            size_bytes=3,
+            bytes_read=completed,
+            final_offset=completed,
+            elapsed_seconds=0.01,
+            active_read_seconds=0.01 if completed else 0.0,
+            stall_count=0,
+            longest_stall_seconds=0.01,
+            first_stall_offset=None,
+            last_stall_offset=None,
+            threshold_count=0,
+            worker_pid=7701,
+            worker_exitcode=0,
+            worker_reaped=True,
+            events=(),
+        )
+
+    @staticmethod
+    def primary_outcome(digest: str) -> dbhash.HashWorkerOutcome:
+        return dbhash.HashWorkerOutcome(
+            outcome="completed",
+            result={
+                "hash_hex": digest,
+                "bytes_read": 3,
+                "status": "valid",
+            },
+            decision="none",
+            decision_source="none",
+            size_bytes=3,
+            bytes_read=3,
+            final_offset=3,
+            elapsed_seconds=0.01,
+            active_read_seconds=0.01,
+            stall_count=0,
+            longest_stall_seconds=0.01,
+            first_stall_offset=None,
+            last_stall_offset=None,
+            threshold_count=0,
+            worker_pid=7702,
+            worker_exitcode=0,
+            worker_reaped=True,
+            events=(),
+        )
+
+    def prepared(self) -> tuple[dbrun.RunHandle, str]:
+        handle = self.create()
+        self.add_hash_entry(handle)
+        result = dbrun.run_hash_stage_controlled(
+            handle.connection,
+            "full",
+            dbrun.RunCommandRouter(),
+            stall_seconds=1.0,
+            timeout_seconds=2.0,
+            poll_seconds=0.005,
+        )
+        self.assertEqual("completed", result["state"])
+        digest = handle.connection.execute(
+            "SELECT hash_hex FROM hashes"
+        ).fetchone()[0]
+        return handle, digest
+
+    def test_matching_sample_records_independent_attempt_and_performance(
+        self,
+    ) -> None:
+        handle, digest = self.prepared()
+        try:
+            result = dbrun.run_independent_hash_stage_controlled(
+                handle.connection,
+                dbrun.RunCommandRouter(),
+                percent=100,
+                min_count=1,
+                powershell_path="fixture-powershell",
+                powershell_version="5.1.fixture",
+                _independent_runner=lambda *_args, **_kwargs:
+                self.independent_outcome(digest),
+            )
+            self.assertEqual(("completed", 1, 1, 1, 0), (
+                result["state"],
+                result["eligible"],
+                result["sampled"],
+                result["matched"],
+                result["tool_error"],
+            ))
+            self.assertEqual(
+                ("succeeded", "powershell-get-filehash", "5.1.fixture"),
+                tuple(handle.connection.execute(
+                    "SELECT status,tool_name,tool_version"
+                    " FROM entry_attempts WHERE stage='verify_hash'"
+                ).fetchone()),
+            )
+            self.assertEqual(("independent", 3), tuple(
+                handle.connection.execute(
+                    "SELECT origin,bytes_read FROM read_performance"
+                    " WHERE stage='verify_hash'"
+                ).fetchone()))
+            self.assertEqual("done", handle.connection.execute(
+                "SELECT hash_status FROM entries"
+            ).fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_persistent_disagreement_marks_current_hash_unstable(self) \
+            -> None:
+        handle, digest = self.prepared()
+        wrong = "f" * 64 if digest != "f" * 64 else "e" * 64
+        try:
+            result = dbrun.run_independent_hash_stage_controlled(
+                handle.connection,
+                dbrun.RunCommandRouter(),
+                percent=100,
+                min_count=1,
+                powershell_path="fixture-powershell",
+                powershell_version="5.1.fixture",
+                _independent_runner=lambda *_args, **_kwargs:
+                self.independent_outcome(wrong),
+                _primary_runner=lambda *_args, **_kwargs:
+                self.primary_outcome(digest),
+            )
+            self.assertEqual((1, 0), (
+                result["mismatched"], result["matched"]))
+            self.assertEqual(("unstable", "unstable"), tuple(
+                handle.connection.execute(
+                    "SELECT e.hash_status,h.status FROM entries e"
+                    " JOIN hashes h ON h.entry_id=e.entry_id"
+                ).fetchone()))
+            self.assertEqual(("unstable", "verify_mismatch"), tuple(
+                handle.connection.execute(
+                    "SELECT status,error_code FROM entry_attempts"
+                    " WHERE stage='verify_hash'"
+                ).fetchone()))
+            self.assertEqual(("hash", "verify_mismatch"), tuple(
+                handle.connection.execute(
+                    "SELECT stage,error_code FROM errors"
+                ).fetchone()))
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_first_disagreement_that_both_rechecks_resolve_is_matched(
+        self,
+    ) -> None:
+        handle, digest = self.prepared()
+        wrong = "f" * 64 if digest != "f" * 64 else "e" * 64
+        values = iter((wrong, digest))
+        try:
+            result = dbrun.run_independent_hash_stage_controlled(
+                handle.connection,
+                dbrun.RunCommandRouter(),
+                percent=100,
+                min_count=1,
+                powershell_path="fixture-powershell",
+                powershell_version="5.1.fixture",
+                _independent_runner=lambda *_args, **_kwargs:
+                self.independent_outcome(next(values)),
+                _primary_runner=lambda *_args, **_kwargs:
+                self.primary_outcome(digest),
+            )
+            self.assertEqual((1, 0), (
+                result["matched"], result["mismatched"]))
+            payload = json.loads(handle.connection.execute(
+                "SELECT result_json FROM entry_attempts"
+                " WHERE stage='verify_hash'"
+            ).fetchone()[0])
+            self.assertTrue(payload["initial_mismatch_resolved"])
+            self.assertEqual("done", handle.connection.execute(
+                "SELECT hash_status FROM entries"
+            ).fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_pause_continue_retries_cancelled_independent_attempt(self) \
+            -> None:
+        handle, digest = self.prepared()
+        router = dbrun.RunCommandRouter()
+        calls = 0
+
+        def runner(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.assertTrue(router.route(
+                    dbrun.ControlCommand(1, "pause")
+                ).accepted)
+                return self.independent_outcome(
+                    None,
+                    outcome="paused",
+                    decision="stop_and_resume",
+                    decision_source="user",
+                )
+            return self.independent_outcome(digest)
+
+        def on_event(event, **_payload) -> None:
+            if event == "run_paused":
+                self.assertTrue(router.route(
+                    dbrun.ControlCommand(2, "continue")
+                ).accepted)
+
+        try:
+            result = dbrun.run_independent_hash_stage_controlled(
+                handle.connection,
+                router,
+                percent=100,
+                min_count=1,
+                powershell_path="fixture-powershell",
+                powershell_version="5.1.fixture",
+                on_event=on_event,
+                paused_wait_seconds=0.01,
+                _independent_runner=runner,
+            )
+            self.assertEqual(("completed", 1, 2), (
+                result["state"], result["matched"], calls))
+            self.assertEqual(
+                [(1, "cancelled"), (2, "succeeded")],
+                handle.connection.execute(
+                    "SELECT attempt_number,status FROM entry_attempts"
+                    " WHERE stage='verify_hash' ORDER BY attempt_number"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_hash_none_skips_without_powershell_capability(self) -> None:
+        handle = self.create(config={
+            "phase": "quick",
+            "hash": "none",
+            "metadata_storage": "normalized",
+            "format_validation": "off",
+        })
+        try:
+            result = dbrun.run_independent_hash_stage_controlled(
+                handle.connection,
+                dbrun.RunCommandRouter(),
+                powershell_path="",
+                powershell_version="",
+            )
+            self.assertEqual(("completed", 0), (
+                result["state"], result["sampled"]))
+            self.assertEqual("skipped", handle.connection.execute(
+                "SELECT state FROM stage_checkpoints"
+                " WHERE stage='verify_hash'"
+            ).fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+
 class TestControlledStageBoundaries(_RunFixture):
     def test_enumeration_pauses_at_boundary_then_restarts_cleanly(
         self,

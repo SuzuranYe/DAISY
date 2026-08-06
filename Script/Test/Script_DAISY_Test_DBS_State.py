@@ -751,6 +751,10 @@ class TestSchema4Publication(_StateFixture):
                 + "_<SHA256-high32-uppercase>.sqlite",
                 runtime.published_path_pattern,
             )
+            self.assertEqual(("completed", 1, 1), tuple(con.execute(
+                "SELECT state,items_done,items_total"
+                " FROM stage_checkpoints WHERE stage='publish'"
+            ).fetchone()))
         finally:
             con.close()
 
