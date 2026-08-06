@@ -627,10 +627,28 @@ session；不会卡在“旧 session 未结束但 paused 不可恢复”的状�
 重试；manifest 同步 session／重试计数和 `source_rescanned=false`。合成测试在封存后删除
 源夹具，仍能仅凭 sealed partial 成功发布，证明目标冲突恢复不依赖源文件。
 
-旧 `full-scan`／`quick-scan` CLI 和 GUI 仍未切换，以免在兼容包装与界面尚未完成时无提示
-改变既有 schema 3 自动化。GUI timeout 决策框、恢复卡片和完整用户流程也尚未接入。因此
-Core 的 `SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 及既有 schema 3 入口继续保持不变；
-阶段 4 只有在 GUI 和突然终止控制子进程端到端组合测试通过后才算完成。
+第七个子检查点完成 GUI 生产接线。现有 Full／Quick 页面均改用统一 `scan` 命令和
+`--control-stdin`，而 `full-scan`／`quick-scan` 旧 CLI、Core 的
+`SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 及 schema 3 入口继续保持不变。恢复命令只
+传 partial、明确手动恢复、session 重试范围和非冻结的显示开关，不把当前 GUI 的工具、
+哈希、格式或输出选项覆盖进冻结配置。Full 默认关闭格式校验；timeout 默认处置、格式抽样
+和当前文件开关位于“高级／扫描行为”，默认 1080p 设置页仍无需滚动。
+
+GUI 只向当前 `Popen` 精确持有的 stdin 写严格 JSONL。暂停／继续、保存退出和停止有独立
+按钮状态；运行中关闭推荐保存退出且仍强制确认。达到哈希动态阈值时显示非阻塞三选项窗口；
+默认继续等待后窗口仍可针对同一 worker 改选，worker 或阶段结束时清除。终态事件到达后
+GUI 主动关闭自己持有的 stdin 写端，使子进程控制读取器退出；不会枚举、附加或终止其它
+进程。保存退出只持久化 task key 和 partial 恢复指针，不恢复普通表单；下次启动显示恢复
+卡片，用户确认后才填入页面，也不会自动开始读取。停止保留审计 partial，但不加入主动
+恢复卡片。
+
+Windows lease 探测同步修正为同时检查精确 PID 的 `GetExitCodeProcess=STILL_ACTIVE`；仅能
+打开已退出进程对象不再被误判为活 owner，查询失败仍保守拒绝接管。工作区组合测试已覆盖
+暂停后保存并由新进程恢复，以及突然终止本测试精确创建的 Quick 子进程后立即恢复发布。
+完整发现测试连续两轮分别为 462／462、465／465 通过，夹具 `TEMP`／`TMP` 固定在工作区
+`.test_runtime/v1_6_0`。
+至此阶段 4 完成；扫描／对比／核验／解析四个最终一级入口仍按阶段 8 实施，不能据此提前
+宣称统一 GUI 已完成。
 
 ### 阶段 5：核验合并与 Full 可选格式校验
 

@@ -251,10 +251,12 @@ class TestGuiArguments(unittest.TestCase):
             },
         )
         self.assertIn("--resume", resumed)
-        self.assertIn("--powershell-path", resumed)
+        self.assertIn("--manual-resume", resumed)
+        self.assertIn("--control-stdin", resumed)
         for inactive in (
                 "--root", "--output-dir", "--hash",
-                "--metadata-storage", "--verify-sample-percent"):
+                "--metadata-storage", "--verify-sample-percent",
+                "--powershell-path"):
             self.assertNotIn(inactive, resumed)
 
         full_hash_check = gui.build_tool_args(
@@ -307,8 +309,11 @@ class TestGuiArguments(unittest.TestCase):
                 "--no-file-id", "--resume",
                 "--exiftool-path",
                 "--ffprobe-path", "--sevenzip-path", "--powershell-path",
+                "--format-validation", "--format-sample-percent",
+                "--timeout-action", "--retry-mode", "--show-current-file",
             },
-            "quick_scan": {"--root", "--output-dir", "--no-file-id"},
+            "quick_scan": {
+                "--root", "--output-dir", "--no-file-id", "--resume"},
             "check_format": {
                 "--snapshot", "--root", "--sample-percent", "--report-dir",
                 "--exiftool-path", "--ffprobe-path", "--sevenzip-path",
@@ -1391,7 +1396,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "cascade"],
-            ["工具路径", "哈希比例"],
+            ["工具路径", "哈希比例", "扫描行为"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
@@ -1403,7 +1408,7 @@ class TestGuiArguments(unittest.TestCase):
              if entry["kind"] == "command"],
             ["显示命令预览", "DAISY功能自检"],
         )
-        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 5])
+        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 6])
         self.assertEqual(
             app.app_menu.options["background"], gui._MENU_BACKGROUND)
         self.assertEqual(len("工具路径"), 4)
@@ -3108,10 +3113,10 @@ class TestGuiArguments(unittest.TestCase):
         expected = (
             ("env-check", "env_check", "ENV-01  运行环境检测",
              "Script_DAISY_Module_ENV_01_Env_Check"),
-            ("full-scan", "full_scan", "DBS-11  完整档案扫描",
-             "Script_DAISY_Module_DBS_11_Full_Scan"),
-            ("quick-scan", "quick_scan", "DBS-12  快速档案扫描",
-             "Script_DAISY_Module_DBS_12_Quick_Scan"),
+            ("scan", "full_scan", "DBS-11  完整档案扫描",
+             "Script_DAISY_Module_DBS_10_Scan"),
+            ("scan", "quick_scan", "DBS-12  快速档案扫描",
+             "Script_DAISY_Module_DBS_10_Scan"),
             ("diff", "diff", "DBS-21  快照变更分析",
              "Script_DAISY_Module_DBS_21_Diff"),
             ("check-hash", "check_hash", "DBS-31  内容哈希核验",
@@ -3144,8 +3149,11 @@ class TestGuiArguments(unittest.TestCase):
                 and name.endswith(".py")
             ),
             sorted([
-                *(module + ".py" for *_prefix, module in expected),
-                scan_module + ".py",
+                *(module + ".py" for module in {
+                    *(item[-1] for item in expected),
+                    "Script_DAISY_Module_DBS_11_Full_Scan",
+                    "Script_DAISY_Module_DBS_12_Quick_Scan",
+                }),
             ]),
         )
         self.assertEqual(

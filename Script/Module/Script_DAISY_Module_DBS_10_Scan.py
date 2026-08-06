@@ -1,7 +1,8 @@
 r"""DAISY v1.6.0 统一扫描入口：Full／Quick、暂停恢复与 schema 4 发布。
 
-旧 ``full-scan``／``quick-scan`` 命令在兼容期内继续存在；新 GUI 和新自动化
-应调用本入口，以共享同一套 session、lease、worker 与发布编排。
+旧 ``full-scan``／``quick-scan`` 命令在兼容期内继续存在；新 GUI 将
+DBS-11 完整档案扫描与 DBS-12 快速档案扫描映射到本入口，以共享同一套
+session、lease、worker 与发布编排。
 """
 from __future__ import annotations
 

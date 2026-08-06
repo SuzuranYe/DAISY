@@ -2166,7 +2166,26 @@ def _process_start_token(pid: int) -> str | None:
     import ctypes
     import ctypes.wintypes
     process_query = 0x1000
-    handle = ctypes.windll.kernel32.OpenProcess(process_query, False, pid)
+    kernel32 = ctypes.windll.kernel32
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (
+        ctypes.wintypes.DWORD, ctypes.wintypes.BOOL,
+        ctypes.wintypes.DWORD,
+    )
+    open_process.restype = ctypes.wintypes.HANDLE
+    get_process_times = kernel32.GetProcessTimes
+    get_process_times.argtypes = (
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+    )
+    get_process_times.restype = ctypes.wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.wintypes.HANDLE,)
+    close_handle.restype = ctypes.wintypes.BOOL
+    handle = open_process(process_query, False, pid)
     if not handle:
         return None
     try:
@@ -2174,7 +2193,7 @@ def _process_start_token(pid: int) -> str | None:
         exit_time = ctypes.wintypes.FILETIME()
         kernel = ctypes.wintypes.FILETIME()
         user = ctypes.wintypes.FILETIME()
-        ok = ctypes.windll.kernel32.GetProcessTimes(
+        ok = get_process_times(
             handle,
             ctypes.byref(creation),
             ctypes.byref(exit_time),
@@ -2187,7 +2206,7 @@ def _process_start_token(pid: int) -> str | None:
             creation.dwLowDateTime)
         return str(value)
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        close_handle(handle)
 
 
 def new_lease_record(

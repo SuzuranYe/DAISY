@@ -226,7 +226,9 @@ timeout 决定和生命周期动作也以先提交者为准，不能同时返回
 `state_revision`，写入 `paused_saved_for_exit` 事件，把 session 从 `paused` 改为 `saved`
 并设置 `resume_hint=suggest`。这是一个受审计的 session 收尾动作，不是允许任意
 `paused → paused` 状态转换；重复执行必须整体拒绝。控制输入读取器不关闭调用方提供的
-stdin，也不枚举或控制其它进程。
+stdin，也不枚举或控制其它进程。GUI 作为管道写端 owner，在收到 `run_saved`、
+`run_stopped`、`run_result` 或失败终态后必须关闭自己持有的写端，使已经停止接收控制的
+子进程读取线程解除阻塞；只能关闭当前 `Popen` 返回的精确句柄。
 
 非哈希阶段也只能在可解释边界响应生命周期动作。枚举在目录／文件领取边界停止，保留
 临时对账证据但不把不完整树合并为当前业务结果；同会话继续后重新枚举并完整对账。元数据
@@ -258,6 +260,11 @@ event log 必须是输出目录内三个互不相同的绝对路径；仅位于�
 
 锁刷新使用同目录临时文件加原子替换。实现和测试只操作当前任务的精确锁路径，不按进程
 名枚举或终止任何其它进程。
+
+Windows 上“PID 存活”不能只以 `OpenProcess` 成功判断，因为父端仍持有进程对象句柄时，
+已经退出的进程仍可能被打开。实现必须查询 `GetExitCodeProcess`，只有
+`STILL_ACTIVE` 才算存活；查询失败时保守视为存活并拒绝接管。进程启动 token 仍用于防止
+PID 复用，二者缺一不可。
 
 ## 七、事件尾部恢复
 
@@ -318,6 +325,7 @@ roots、dirs、entries 当前属性、当前有效哈希、规范化元数据、
 - 非法状态转换、旧 revision 和错误 session 均原子拒绝；
 - 三种退出语义及 resume hint 正确；
 - 活锁、死锁、PID 复用、异机未过期／过期和损坏锁使用纯合成测试；
+- 本测试精确创建的 Windows 子进程退出但句柄仍由父端持有时，不得误判为活 owner；
 - running attempt 恢复为 abandoned，当前 processing 结果回到 pending；
 - JSONL 截断尾部可恢复，中间坏行拒绝；
 - 发布副本失败不覆盖目标且原 partial 可重试；

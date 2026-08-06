@@ -751,13 +751,37 @@ def _pid_alive(pid: int) -> bool:
         except OSError:
             return False
     import ctypes
+    import ctypes.wintypes
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    h = ctypes.windll.kernel32.OpenProcess(
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.windll.kernel32
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (
+        ctypes.wintypes.DWORD, ctypes.wintypes.BOOL,
+        ctypes.wintypes.DWORD,
+    )
+    open_process.restype = ctypes.wintypes.HANDLE
+    get_exit_code = kernel32.GetExitCodeProcess
+    get_exit_code.argtypes = (
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    )
+    get_exit_code.restype = ctypes.wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.wintypes.HANDLE,)
+    close_handle.restype = ctypes.wintypes.BOOL
+    h = open_process(
         PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
         return False
-    ctypes.windll.kernel32.CloseHandle(h)
-    return True
+    try:
+        exit_code = ctypes.wintypes.DWORD()
+        if not get_exit_code(h, ctypes.byref(exit_code)):
+            # 查询失败时保守视为存活，避免错误接管仍可能活动的 owner。
+            return True
+        return int(exit_code.value) == STILL_ACTIVE
+    finally:
+        close_handle(h)
 
 
 def _lock_path(partial_path: str) -> str:

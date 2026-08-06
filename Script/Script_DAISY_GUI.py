@@ -113,6 +113,7 @@ sys.path.insert(0, _LIB_DIR)
 
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as metadata
+import Script_DAISY_Lib_DBS_09_Run as dbrun
 import Script_DAISY_Lib_STG_01_Core as storage_core
 
 
@@ -139,11 +140,13 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_State.py",
     "Script_DAISY_Test_DBS_Hash_Worker.py",
     "Script_DAISY_Test_DBS_Run.py",
+    "Script_DAISY_Test_GUI_Scan.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
 _PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 _MAX_ROOT_DIRECTORIES = 9
 _ROOT_BATCH_TASKS = frozenset(("full_scan", "quick_scan"))
+_SCAN_TASK_KEYS = frozenset(("full_scan", "quick_scan"))
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
 _DEFAULT_WINDOW_SIZE = (1920, 1080)
@@ -218,6 +221,7 @@ def default_gui_preferences() -> dict[str, object]:
         "font_size_delta": 0,
         "confirm_close_when_idle": True,
         "last_task_key": "env_check",
+        "recovery_scans": [],
     }
 
 
@@ -258,6 +262,26 @@ def load_gui_preferences(
     if (isinstance(last_task_key, str)
             and last_task_key in _RESTORABLE_TASK_KEYS):
         preferences["last_task_key"] = last_task_key
+
+    recovery_scans = loaded.get("recovery_scans")
+    if isinstance(recovery_scans, list):
+        validated = []
+        seen_paths: set[str] = set()
+        for item in recovery_scans[-20:]:
+            if not isinstance(item, dict):
+                continue
+            task_key = item.get("task_key")
+            partial = item.get("partial")
+            if task_key not in _SCAN_TASK_KEYS or not isinstance(partial, str):
+                continue
+            partial = partial.strip()
+            canonical = os.path.normcase(os.path.abspath(partial))
+            if (not partial.lower().endswith(".partial.sqlite")
+                    or not partial or canonical in seen_paths):
+                continue
+            validated.append({"task_key": task_key, "partial": partial})
+            seen_paths.add(canonical)
+        preferences["recovery_scans"] = validated
     return preferences
 
 
@@ -869,6 +893,10 @@ def run_job_target_text(task_key: str, job: RunJob) -> str:
         resume = str(job.values.get("resume") or "").strip()
         if resume:
             return f"续传快照：{_absolute(resume)}"
+    if task_key == "quick_scan":
+        resume = str(job.values.get("resume") or "").strip()
+        if resume:
+            return f"续传快照：{_absolute(resume)}"
     if task_key == "storage_collect":
         disk_number = str(job.values.get("disk_number") or "").strip()
         if disk_number:
@@ -923,6 +951,8 @@ _EXE_TYPES = (
 
 _FULL_NEW = (("start_mode", ("new",)),)
 _FULL_RESUME = (("start_mode", ("resume",)),)
+_QUICK_NEW = (("start_mode", ("new",)),)
+_QUICK_RESUME = (("start_mode", ("resume",)),)
 _FULL_INCREMENTAL = (
     ("start_mode", ("new",)),
     ("hash_mode", ("incremental",)),
@@ -931,7 +961,14 @@ _FULL_HASHED = (
     ("start_mode", ("new",)),
     ("hash_mode", ("incremental", "full")),
 )
-_FULL_POWERSHELL = (("hash_mode", ("incremental", "full")),)
+_FULL_POWERSHELL = (
+    ("start_mode", ("new",)),
+    ("hash_mode", ("incremental", "full")),
+)
+_FULL_FORMAT_SAMPLE = (
+    ("start_mode", ("new",)),
+    ("format_validation", ("sample",)),
+)
 _FORMAT_SAMPLE = (("check_scope", ("sample",)),)
 _HASH_SAMPLE = (("check_scope", ("sample",)),)
 
@@ -990,7 +1027,7 @@ TASKS = (
     ),
     TaskSpec(
         "full_scan",
-        "full-scan",
+        "scan",
         "DBS-11  完整档案扫描",
         "完整档案扫描",
         "登记目录、元数据与 SHA-256，生成可续传的封存快照。",
@@ -1050,6 +1087,25 @@ TASKS = (
                 section="快照内容", active_when=_FULL_NEW,
             ),
             FieldSpec(
+                "format_validation", "格式校验", "--format-validation",
+                "choice", "off",
+                choices=(
+                    ("关闭（默认）", "off"),
+                    ("抽样校验", "sample"),
+                    ("全部校验", "all"),
+                ),
+                help="Full 可选格式校验；默认关闭，保持既有 Full 含义和性能。",
+                section="快照内容", top_menu=True,
+                active_when=_FULL_NEW,
+            ),
+            FieldSpec(
+                "format_sample_percent", "格式抽样",
+                "--format-sample-percent", default="10.0",
+                help="仅抽样格式校验使用；必须大于 0 且不超过 100。",
+                section="快照内容", top_menu=True,
+                active_when=_FULL_FORMAT_SAMPLE,
+            ),
+            FieldSpec(
                 "collect_file_id", "NTFS标识",
                 "--no-file-id", "choice_flag", True,
                 choices=(
@@ -1099,18 +1155,21 @@ TASKS = (
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
+                active_when=_FULL_NEW,
             ),
             FieldSpec(
                 "ffprobe_path", "视频工具", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
+                active_when=_FULL_NEW,
             ),
             FieldSpec(
                 "sevenzip_path", "压缩工具", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
+                active_when=_FULL_NEW,
             ),
             FieldSpec(
                 "powershell_path", "系统工具", "--powershell-path",
@@ -1119,21 +1178,61 @@ TASKS = (
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
                 active_when=_FULL_POWERSHELL,
             ),
+            FieldSpec(
+                "timeout_action", "超时默认", "--timeout-action",
+                "choice", "continue_waiting",
+                choices=(
+                    ("继续等待（默认）", "continue_waiting"),
+                    ("跳过并记录", "skip_and_record"),
+                    ("停止并保留续传", "stop_and_resume"),
+                ),
+                help="动态无进展阈值到达后的默认处置；弹窗仍可针对当前文件改选。",
+                section="高级设置", top_menu=True,
+                active_when=_FULL_HASHED,
+            ),
+            FieldSpec(
+                "retry_mode", "重试范围", "--retry-mode", "choice",
+                "pending",
+                choices=(
+                    ("仅未处理（默认）", "pending"),
+                    ("瞬时失败", "transient"),
+                    ("全部未成功", "all-unsuccessful"),
+                ),
+                help="恢复 session 时选择哈希重试集合，不改变 partial 的冻结配置。",
+                section="故障恢复", active_when=_FULL_RESUME,
+            ),
+            FieldSpec(
+                "show_current_file", "当前文件", "--show-current-file",
+                "choice_flag", False,
+                choices=(("关闭（默认）", False), ("显示", True)),
+                flag_value=True,
+                help="在进度区显示正在处理的相对路径；默认关闭以减少事件量。",
+                section="高级设置", top_menu=True,
+            ),
         ),
     ),
     TaskSpec(
         "quick_scan",
-        "quick-scan",
+        "scan",
         "DBS-12  快速档案扫描",
         "快速档案扫描",
         "快速登记目录与文件属性，不读取内容或调用外部工具。",
         "档案只读 · 快速 · 生成快照",
         (
             FieldSpec(
+                "start_mode", "启动方式", None, "choice", "new",
+                choices=(
+                    ("新建快速扫描（默认）", "new"),
+                    ("恢复未完成扫描", "resume"),
+                ),
+                help="恢复时沿用 partial 内冻结的 Quick 配置。",
+                section="启动方式",
+            ),
+            FieldSpec(
                 "roots", "档案根目录", "--root", "multidir", required=True,
                 help="使用“添加目录”建立列表；可修改为“label=路径”，也可用 ×"
                      " 单独移除，最多 9 个。",
-                section="任务输入",
+                section="任务输入", active_when=_QUICK_NEW,
             ),
             FieldSpec(
                 "root_batch_mode", "生成方式", None, "choice",
@@ -1145,13 +1244,19 @@ TASKS = (
                 ),
                 help="分别模式按添加顺序逐项运行，单项失败后继续下一项；"
                      "停止会终止整个队列。",
-                section="任务输入",
+                section="任务输入", active_when=_QUICK_NEW,
+            ),
+            FieldSpec(
+                "resume", "续传快照", "--resume", "file", required=True,
+                help="必须指向 schema 4 .partial.sqlite；恢复时不覆盖冻结参数。",
+                filetypes=_PARTIAL_TYPES, section="任务输入",
+                active_when=_QUICK_RESUME,
             ),
             FieldSpec(
                 "output_dir", "快照目录", "--output-dir", "dir",
                 _DEFAULT_SNAPSHOTS_DIR,
                 help="默认指向项目内 Output\\Snapshots；也可选择其它完整路径。",
-                section="结果输出",
+                section="结果输出", active_when=_QUICK_NEW,
             ),
             FieldSpec(
                 "collect_file_id", "NTFS标识", "--no-file-id",
@@ -1163,7 +1268,7 @@ TASKS = (
                 flag_value=False,
                 help="建议采集；选择“不采集”可提高兼容性，但会降低移动／"
                      "重命名判定证据。",
-                section="快照内容",
+                section="快照内容", active_when=_QUICK_NEW,
             ),
         ),
     ),
@@ -1550,7 +1655,7 @@ def build_run_jobs(task_key: str,
         return jobs or [RunJob(task.title, merged)]
     if task_key not in _ROOT_BATCH_TASKS:
         return [RunJob(task.title, merged)]
-    if (task_key == "full_scan"
+    if (task_key in _SCAN_TASK_KEYS
             and merged.get("start_mode") == "resume"):
         return [RunJob(task.title, merged)]
 
@@ -1590,6 +1695,21 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
     task = TASK_BY_KEY[task_key]
     values = _task_values(task, values)
     args = [task.command]
+    if task_key in _SCAN_TASK_KEYS:
+        mode = "full" if task_key == "full_scan" else "quick"
+        args += ["--mode", mode]
+        if values.get("start_mode") == "resume":
+            resume = str(values.get("resume") or "").strip()
+            if resume:
+                args += ["--resume", _absolute(resume), "--manual-resume"]
+            retry_mode = str(values.get("retry_mode") or "").strip()
+            if task_key == "full_scan" and retry_mode:
+                args += ["--retry-mode", retry_mode]
+            if (task_key == "full_scan"
+                    and bool(values.get("show_current_file"))):
+                args.append("--show-current-file")
+            args.append("--control-stdin")
+            return args
     if task_key == "export_report":
         source_type = str(values.get("source_type") or "snapshot")
         source_path = str(values.get("source_path") or "").strip()
@@ -1641,6 +1761,8 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
                 continue
             if text:
                 args += [spec.flag, text]
+    if task_key in _SCAN_TASK_KEYS:
+        args.append("--control-stdin")
     return args
 
 
@@ -1680,7 +1802,7 @@ def root_confirmation_text(
     """返回开始前用于核对扫描范围的完整目录清单。"""
     if task_key not in _ROOT_BATCH_TASKS:
         return ""
-    if (task_key == "full_scan"
+    if (task_key in _SCAN_TASK_KEYS
             and values.get("start_mode") == "resume"):
         return ""
     roots = [
@@ -1719,7 +1841,7 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
         if spec.required and not _lines(value):
             issues.append(f"请填写“{spec.label}”。")
 
-    if task_key == "full_scan":
+    if task_key in _SCAN_TASK_KEYS:
         resume = str(values.get("resume") or "").strip()
         if (values.get("start_mode") == "resume" and resume
                 and not resume.lower().endswith(".partial.sqlite")):
@@ -1731,6 +1853,8 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
 
     numeric_rules = {
         ("full_scan", "verify_percent"): (0.0, 100.0, True, False),
+        ("full_scan", "format_sample_percent"): (
+            0.0, 100.0, False, False),
         ("check_format", "sample_percent"): (0.0, 100.0, False, False),
         ("check_hash", "sample_percent"): (0.0, 100.0, False, False),
     }
@@ -1747,6 +1871,9 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
             issues.append(f"“{fields[key].label}”必须是数字。")
             continue
         label = fields[key].label
+        if not math.isfinite(number):
+            issues.append(f"“{label}”必须是有限数字。")
+            continue
         if integer_only and not number.is_integer():
             issues.append(f"“{label}”必须是整数。")
             continue
@@ -2663,6 +2790,8 @@ class DaisyApp:
             self.gui_preferences["font_size_delta"])
         self.confirm_close_when_idle = bool(
             self.gui_preferences["confirm_close_when_idle"])
+        self.recovery_scans = list(
+            self.gui_preferences.get("recovery_scans") or [])
         self.task = TASK_BY_KEY[str(
             self.gui_preferences["last_task_key"])]
         self.values: dict[
@@ -2704,10 +2833,19 @@ class DaisyApp:
         self.run_jobs: list[RunJob] = []
         self.run_job_index = -1
         self.run_results: list[int | None] = []
+        self.run_outcomes: list[str | None] = []
         self.run_queue_started = 0.0
         self.worker_starting = False
         self.close_after_stop = False
         self.stop_requested = False
+        self.save_exit_requested = False
+        self.scan_control_sequence = 0
+        self.scan_control_state = "idle"
+        self.scan_control_previous_state = "idle"
+        self.scan_run_result: dict[str, object] | None = None
+        self.timeout_dialog: tk.Toplevel | None = None
+        self.timeout_dialog_label: tk.Label | None = None
+        self.timeout_worker_pid: int | None = None
         self.events: queue.Queue[tuple] = queue.Queue()
         self._configure_window()
         self._configure_styles()
@@ -2716,6 +2854,7 @@ class DaisyApp:
         self._set_progress_expanded(False)
         self._set_log_expanded(False)
         self._select_task(self.task.key, save_current=False)
+        self._refresh_recovery_card()
         self._apply_interface_font_preferences()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind(
@@ -2970,6 +3109,7 @@ class DaisyApp:
             "font_size_delta": self.ui_font_size_delta,
             "confirm_close_when_idle": self.confirm_close_when_idle,
             "last_task_key": self.task.key,
+            "recovery_scans": list(getattr(self, "recovery_scans", ())),
         })
         try:
             save_gui_preferences(self.gui_preferences)
@@ -2979,6 +3119,100 @@ class DaisyApp:
                 f"本次设置已生效，但无法写入：\n{exc}",
                 parent=self.root,
             )
+
+    @staticmethod
+    def _same_recovery_path(left: str, right: str) -> bool:
+        return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
+            os.path.abspath(right))
+
+    def _refresh_recovery_card(self) -> None:
+        if not hasattr(self, "recovery_card"):
+            return
+        if not self.recovery_scans:
+            self.recovery_card.pack_forget()
+            return
+        record = self.recovery_scans[-1]
+        partial = str(record["partial"])
+        task_name = task_display_title(str(record["task_key"]))
+        self.recovery_title_label.configure(
+            text=f"可恢复 · {task_name}")
+        display = self._middle_progress_text(
+            os.path.basename(partial), 22)
+        self.recovery_path_label.configure(text=display)
+        self.recovery_path_tooltip.text = partial
+        if not self.recovery_card.winfo_manager():
+            self.recovery_card.pack(
+                side="right", padx=(0, 8),
+                before=self.settings_toggle_button,
+            )
+        self._set_recovery_card_state()
+
+    def _set_recovery_card_state(self) -> None:
+        if not hasattr(self, "recovery_use_button"):
+            return
+        state = "disabled" if self._task_is_active() else "normal"
+        self.recovery_use_button.configure(state=state)
+        self.recovery_ignore_button.configure(state=state)
+
+    def _add_recovery_scan(self, task_key: str, partial: str) -> None:
+        if task_key not in _SCAN_TASK_KEYS or not partial:
+            return
+        normalized = os.path.abspath(partial)
+        self.recovery_scans = [
+            record for record in self.recovery_scans
+            if not self._same_recovery_path(
+                str(record.get("partial") or ""), normalized)
+        ]
+        self.recovery_scans.append({
+            "task_key": task_key,
+            "partial": normalized,
+        })
+        self.recovery_scans = self.recovery_scans[-20:]
+        self._refresh_recovery_card()
+        self._save_gui_preferences()
+
+    def _remove_recovery_scan(self, partial: str) -> None:
+        before = len(self.recovery_scans)
+        self.recovery_scans = [
+            record for record in self.recovery_scans
+            if not self._same_recovery_path(
+                str(record.get("partial") or ""), partial)
+        ]
+        if len(self.recovery_scans) != before:
+            self._refresh_recovery_card()
+            self._save_gui_preferences()
+
+    def _prepare_latest_recovery(self) -> None:
+        if not self.recovery_scans or self._task_is_active():
+            return
+        record = self.recovery_scans[-1]
+        task_key = str(record["task_key"])
+        partial = str(record["partial"])
+        if not messagebox.askyesno(
+                "准备恢复扫描",
+                "这只会切换页面并填入 partial 路径，不会自动开始读取。"
+                f"\n\n{partial}\n\n继续吗？",
+                icon="question", parent=self.root):
+            return
+        self.saved_values[task_key] = {
+            "start_mode": "resume",
+            "resume": partial,
+        }
+        self._select_task(task_key)
+        self._set_settings_expanded(True)
+        self._set_status("恢复参数已准备；核对后点击“开始任务”。", _WARNING)
+
+    def _dismiss_latest_recovery(self) -> None:
+        if not self.recovery_scans or self._task_is_active():
+            return
+        partial = str(self.recovery_scans[-1]["partial"])
+        if not messagebox.askyesno(
+                "忽略恢复提示",
+                "只移除 DAISY 的恢复提示，不会删除 partial 文件。"
+                f"\n\n{partial}\n\n确定忽略吗？",
+                icon="question", parent=self.root):
+            return
+        self._remove_recovery_scan(partial)
 
     def _set_ui_font(
         self, *, family: str | None = None,
@@ -3421,6 +3655,70 @@ class DaisyApp:
         if hash_percentage_index is not None:
             self.advanced_locked_menu_entries.append(
                 int(hash_percentage_index))
+
+        scan_behavior_menu = tk.Menu(
+            advanced_menu, **base_menu_options)
+        self.scan_behavior_menu = scan_behavior_menu
+        timeout_menu = tk.Menu(
+            scan_behavior_menu, **base_menu_options)
+        self.scan_timeout_action_var = tk.StringVar(
+            value="continue_waiting")
+        for label, value in (
+                ("继续等待（默认）", "continue_waiting"),
+                ("跳过并记录", "skip_and_record"),
+                ("停止并保留续传", "stop_and_resume")):
+            timeout_menu.add_radiobutton(
+                label=label,
+                variable=self.scan_timeout_action_var,
+                value=value,
+                command=lambda selected=value:
+                self._set_scan_advanced_value(
+                    "timeout_action", selected),
+                selectcolor=_UNIFIED_ACTION_BACKGROUND,
+            )
+        scan_behavior_menu.add_cascade(
+            label="哈希超时默认", menu=timeout_menu)
+        self.scan_show_current_file_var = tk.BooleanVar(value=False)
+        scan_behavior_menu.add_checkbutton(
+            label="在进度区显示当前文件",
+            variable=self.scan_show_current_file_var,
+            command=lambda: self._set_scan_advanced_value(
+                "show_current_file",
+                bool(self.scan_show_current_file_var.get()),
+            ),
+            selectcolor=_UNIFIED_ACTION_BACKGROUND,
+        )
+        format_menu = tk.Menu(
+            scan_behavior_menu, **base_menu_options)
+        self.scan_format_validation_var = tk.StringVar(value="off")
+        for label, value in (
+                ("关闭（默认）", "off"),
+                ("抽样校验", "sample"),
+                ("全部校验", "all")):
+            format_menu.add_radiobutton(
+                label=label,
+                variable=self.scan_format_validation_var,
+                value=value,
+                command=lambda selected=value:
+                self._set_scan_advanced_value(
+                    "format_validation", selected),
+                selectcolor=_UNIFIED_ACTION_BACKGROUND,
+            )
+        format_menu.add_separator()
+        format_menu.add_command(
+            label="设置抽样比例（10.0%）…",
+            command=self._edit_scan_format_sample_percent,
+        )
+        self.scan_format_sample_menu = format_menu
+        self.scan_format_sample_menu_index = int(format_menu.index("end"))
+        scan_behavior_menu.add_cascade(
+            label="Full 格式校验", menu=format_menu)
+        advanced_menu.add_cascade(
+            label="扫描行为", menu=scan_behavior_menu)
+        scan_behavior_index = advanced_menu.index("end")
+        if scan_behavior_index is not None:
+            self.advanced_locked_menu_entries.append(
+                int(scan_behavior_index))
         advanced_menu.add_separator()
         advanced_menu.add_command(
             label="显示命令预览",
@@ -3688,6 +3986,36 @@ class DaisyApp:
             "展开或收起当前任务的说明与设置；已填写内容不会丢失。",
         )
 
+        self.recovery_card = tk.Frame(
+            title_row, bg=_AMBER_SOFT,
+            highlightbackground=_AMBER, highlightthickness=1,
+        )
+        self.recovery_title_label = tk.Label(
+            self.recovery_card, text="可恢复扫描", bg=_AMBER_SOFT,
+            fg=_AMBER_DEEP, font=("Microsoft YaHei UI", 8, "bold"),
+            anchor="w",
+        )
+        self.recovery_title_label.pack(side="left", padx=(8, 4), pady=4)
+        self.recovery_path_label = tk.Label(
+            self.recovery_card, bg=_AMBER_SOFT, fg=_TEXT,
+            font=("Microsoft YaHei UI", 8), anchor="w",
+        )
+        self.recovery_path_label.pack(side="left", padx=(0, 6), pady=4)
+        self.recovery_path_tooltip = attach_tooltip(
+            self.recovery_path_label, "")
+        self.recovery_ignore_button = ttk.Button(
+            self.recovery_card, text="忽略", style="PanelHeader.TButton",
+            command=self._dismiss_latest_recovery,
+        )
+        self.recovery_ignore_button.pack(
+            side="right", padx=(0, 4), pady=3)
+        self.recovery_use_button = ttk.Button(
+            self.recovery_card, text="恢复",
+            style="PanelHeader.TButton",
+            command=self._prepare_latest_recovery,
+        )
+        self.recovery_use_button.pack(side="right", padx=(0, 4), pady=3)
+
         self.settings_body = tk.Frame(self.task_card, bg=_SURFACE)
         self.settings_body.pack(fill="both", expand=True)
         self.desc_label = tk.Label(
@@ -3790,6 +4118,22 @@ class DaisyApp:
             self.mini_stop_button,
             "请求停止当前任务；多项队列中尚未开始的项目也会取消。",
         )
+        self.mini_save_button = ttk.Button(
+            progress_header, text="保存退出", style="Mini.TButton",
+            command=self._save_scan_progress, state="disabled",
+        )
+        attach_tooltip(
+            self.mini_save_button,
+            "安全保存已完成进度并结束当前扫描；下次启动会显示恢复入口。",
+        )
+        self.mini_pause_button = ttk.Button(
+            progress_header, text="暂停", style="Mini.TButton",
+            command=self._pause_or_continue_scan, state="disabled",
+        )
+        attach_tooltip(
+            self.mini_pause_button,
+            "在安全边界暂停当前扫描；暂停期间任务进程和锁仍保留。",
+        )
 
         progress_body = tk.Frame(progress_inner, bg=_SURFACE)
         self.progress_body = progress_body
@@ -3813,66 +4157,77 @@ class DaisyApp:
                 wraplength=max(260, event.width - 90)),
         )
 
+        self.current_file_title_label = tk.Label(
+            progress_body, text="当前文件", bg=_SURFACE, fg=_GREEN_DARK,
+            font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
+        )
+        self.current_file_label = tk.Label(
+            progress_body, text="", bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 8), anchor="w",
+        )
+        self.current_file_tooltip = attach_tooltip(
+            self.current_file_label, "")
+
         self.queue_title_label = tk.Label(
             progress_body, text="任务队列", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         )
         self.queue_title_label.grid(
-            row=1, column=0, sticky="w", padx=(0, 10))
+            row=2, column=0, sticky="w", padx=(0, 10))
         self.queue_detail_label = tk.Label(
             progress_body, text="等待队列", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.queue_detail_label.grid(row=1, column=1, sticky="ew")
+        self.queue_detail_label.grid(row=2, column=1, sticky="ew")
         self.queue_percent_label = tk.Label(
             progress_body, text="0%", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
         )
-        self.queue_percent_label.grid(row=1, column=2, sticky="e")
+        self.queue_percent_label.grid(row=2, column=2, sticky="e")
         self.queue_progress_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Queue.Horizontal.TProgressbar",
         )
         self.queue_progress_bar.grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(4, 7))
+            row=3, column=0, columnspan=3, sticky="ew", pady=(4, 7))
 
         tk.Label(
             progress_body, text="任务阶段", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-        ).grid(row=3, column=0, sticky="w", padx=(0, 10))
+        ).grid(row=4, column=0, sticky="w", padx=(0, 10))
         self.progress_stage_label = tk.Label(
             progress_body, text="等待开始", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
         self.progress_stage_label.grid(
-            row=3, column=1, columnspan=2, sticky="ew")
+            row=4, column=1, columnspan=2, sticky="ew")
         self.progress_stage_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Stage.Horizontal.TProgressbar",
         )
         self.progress_stage_bar.grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=(4, 6))
+            row=5, column=0, columnspan=3, sticky="ew", pady=(4, 6))
 
         tk.Label(
             progress_body, text="本阶段", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
-        ).grid(row=5, column=0, sticky="w", padx=(0, 10))
+        ).grid(row=6, column=0, sticky="w", padx=(0, 10))
         self.progress_detail_label = tk.Label(
             progress_body, text="尚未运行", bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.progress_detail_label.grid(row=5, column=1, sticky="ew")
+        self.progress_detail_label.grid(row=6, column=1, sticky="ew")
         self.progress_percent_label = tk.Label(
             progress_body, text="0%", bg=_SURFACE, fg=_GREEN_DARK,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
         )
-        self.progress_percent_label.grid(row=5, column=2, sticky="e")
+        self.progress_percent_label.grid(row=6, column=2, sticky="e")
         self.progress_work_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Work.Horizontal.TProgressbar",
         )
         self.progress_work_bar.grid(
-            row=6, column=0, columnspan=3, sticky="ew", pady=(4, 5))
+            row=7, column=0, columnspan=3, sticky="ew", pady=(4, 5))
 
         log_panel = tk.Frame(
             content, bg=_LOG_BG, highlightbackground=_BORDER,
@@ -4021,17 +4376,33 @@ class DaisyApp:
             execution_action_area, text="停止", style="Stop.TButton",
             command=self._stop, state="disabled",
         )
+        self.save_scan_button = ttk.Button(
+            execution_action_area, text="保存并退出",
+            style="Secondary.TButton",
+            command=self._save_scan_progress, state="disabled",
+        )
+        self.pause_scan_button = ttk.Button(
+            execution_action_area, text="暂停", style="Secondary.TButton",
+            command=self._pause_or_continue_scan, state="disabled",
+        )
         self.run_button = ttk.Button(
             execution_action_area, text=_RUN_BUTTON_TEXT,
             style="Primary.TButton",
             command=self._run,
         )
-        self.execution_buttons = (self.stop_button, self.run_button)
+        self.execution_buttons = (
+            self.pause_scan_button, self.save_scan_button,
+            self.stop_button, self.run_button,
+        )
         for button, tooltip in (
             (self.run_button,
              "校验当前页面后开始执行对应任务。"),
             (self.stop_button,
              "请求停止当前任务；多项队列中尚未开始的项目也会取消。"),
+            (self.pause_scan_button,
+             "在安全边界暂停扫描；暂停后可继续、保存退出或停止。"),
+            (self.save_scan_button,
+             "安全保存已完成进度并结束扫描；下次启动主动显示恢复入口。"),
             (self.clear_cache_button,
              "清除可重建缓存，并把参数、队列、日志和进度恢复为首次启动状态；"
              "不触碰正式产物。"),
@@ -4157,9 +4528,20 @@ class DaisyApp:
                     padx=(0, 8 if column < len(buttons) - 1 else 0),
                     pady=(5 if row_index else 0, 0),
                 )
-        self.stop_button.grid(
-            row=0, column=1, sticky="e", padx=(0, 8))
-        self.run_button.grid(row=0, column=2, sticky="e")
+        controls = [self.stop_button, self.run_button]
+        task = getattr(self, "task", None)
+        if (getattr(task, "key", None) in _SCAN_TASK_KEYS
+                or getattr(self, "process_task_key", None)
+                in _SCAN_TASK_KEYS):
+            controls = [
+                self.pause_scan_button, self.save_scan_button,
+                self.stop_button, self.run_button,
+            ]
+        for column, button in enumerate(controls, start=1):
+            button.grid(
+                row=0, column=column, sticky="e",
+                padx=(0, 8 if column < len(controls) else 0),
+            )
 
     def _refresh_content_row_weights(self) -> None:
         """让设置区或日志区占满固定布局中的剩余纵向空间。"""
@@ -4265,6 +4647,35 @@ class DaisyApp:
         self.stop_button.configure(state=state)
         self.mini_stop_button.configure(state=state)
 
+    def _refresh_scan_controls(self) -> None:
+        """按统一扫描状态同步主窗口与小窗控制按钮。"""
+        if not hasattr(self, "pause_scan_button"):
+            return
+        scan_active = (
+            getattr(self, "process_task_key", None) in _SCAN_TASK_KEYS
+            and getattr(self, "process", None) is not None
+        )
+        state = self.scan_control_state
+        pause_text = "继续" if state == "paused" else "暂停"
+        pause_state = (
+            "normal" if scan_active and state in ("running", "paused")
+            else "disabled"
+        )
+        save_state = (
+            "normal" if scan_active and state in ("running", "paused")
+            else "disabled"
+        )
+        stop_state = (
+            "normal" if scan_active and state in ("running", "paused")
+            else "disabled"
+        )
+        for button in (self.pause_scan_button, self.mini_pause_button):
+            button.configure(text=pause_text, state=pause_state)
+        for button in (self.save_scan_button, self.mini_save_button):
+            button.configure(state=save_state)
+        if getattr(self, "process_task_key", None) in _SCAN_TASK_KEYS:
+            self._set_stop_state(stop_state)
+
     def _toggle_mini_mode(self) -> None:
         if self.mini_mode:
             self._leave_mini_mode()
@@ -4303,6 +4714,9 @@ class DaisyApp:
         self.content.grid_rowconfigure(2, weight=0)
         self.content.pack_configure(padx=10, pady=10)
         self.mini_stop_button.pack(side="right", padx=(0, 6))
+        self.mini_save_button.pack(side="right", padx=(0, 6))
+        self.mini_pause_button.pack(side="right", padx=(0, 6))
+        self._refresh_scan_controls()
         self._refresh_mini_action()
 
         self.root.update_idletasks()
@@ -4325,6 +4739,8 @@ class DaisyApp:
     def _leave_mini_mode(self) -> None:
         if not self.mini_mode:
             return
+        self.mini_pause_button.pack_forget()
+        self.mini_save_button.pack_forget()
         self.mini_stop_button.pack_forget()
         self.progress_panel.grid_configure(row=1, pady=(10, 0))
         self.task_card.grid()
@@ -4484,6 +4900,70 @@ class DaisyApp:
         if self.values:
             self.saved_values[self.task.key] = self._collect_values()
 
+    def _set_scan_advanced_value(self, key: str, value: object) -> None:
+        if self._task_is_active() or key not in (
+                "timeout_action", "show_current_file",
+                "format_validation"):
+            self._refresh_scan_advanced_values()
+            return
+        self.saved_values.setdefault("full_scan", {})[key] = value
+        self._refresh_scan_advanced_values()
+        if self.task.key == "full_scan":
+            self._update_preview()
+
+    def _edit_scan_format_sample_percent(self) -> None:
+        if self._task_is_active():
+            return
+        current = _task_values(
+            TASK_BY_KEY["full_scan"],
+            self.saved_values.get("full_scan", {}),
+        )
+        entered = simpledialog.askstring(
+            "Full 格式抽样比例",
+            "请输入大于 0 且不超过 100 的百分比：",
+            initialvalue=str(current.get("format_sample_percent") or "10.0"),
+            parent=self.root,
+        )
+        if entered is None:
+            return
+        candidate = dict(current)
+        candidate["format_validation"] = "sample"
+        candidate["format_sample_percent"] = entered.strip()
+        issues = validate_values("full_scan", candidate)
+        numeric_issue = next((
+            issue for issue in issues if "格式抽样" in issue), None)
+        if numeric_issue:
+            messagebox.showerror(
+                "比例无效", numeric_issue, parent=self.root)
+            return
+        saved = self.saved_values.setdefault("full_scan", {})
+        saved["format_validation"] = "sample"
+        saved["format_sample_percent"] = entered.strip()
+        self._refresh_scan_advanced_values()
+        if self.task.key == "full_scan":
+            self._update_preview()
+
+    def _refresh_scan_advanced_values(self) -> None:
+        if not hasattr(self, "scan_timeout_action_var"):
+            return
+        values = _task_values(
+            TASK_BY_KEY["full_scan"],
+            self.saved_values.get("full_scan", {}),
+        )
+        self.scan_timeout_action_var.set(str(
+            values.get("timeout_action") or "continue_waiting"))
+        self.scan_show_current_file_var.set(bool(
+            values.get("show_current_file", False)))
+        self.scan_format_validation_var.set(str(
+            values.get("format_validation") or "off"))
+        self.scan_format_sample_menu.entryconfigure(
+            self.scan_format_sample_menu_index,
+            label=(
+                "设置抽样比例（"
+                f"{values.get('format_sample_percent') or '10.0'}%）…"
+            ),
+        )
+
     def _select_task_from_toolbar(self, task_key: str) -> None:
         """切换功能模块，并移除按钮焦点框。"""
         self._select_task(task_key)
@@ -4538,6 +5018,7 @@ class DaisyApp:
         self.desc_label.configure(text=self.task.description)
         self._build_form()
         self._refresh_hash_percentage_menu_labels()
+        self._refresh_scan_advanced_values()
         self._refresh_tool_cache_labels()
         active = self._task_is_active()
         missing_tests = (
@@ -4548,6 +5029,8 @@ class DaisyApp:
             text=_RUN_BUTTON_TEXT,
             state="disabled" if missing_tests or active else "normal",
         )
+        self._layout_action_buttons()
+        self._refresh_scan_controls()
         self._refresh_environment_actions()
         if self.process is None:
             self._reset_progress(task_display_title(self.task.key))
@@ -5799,6 +6282,7 @@ class DaisyApp:
     def _begin_progress(self) -> None:
         self.current_stage_index = 0
         self.current_stage_total = 0
+        self._hide_current_file()
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         detecting_storage = self.process_task_key == "storage_list"
@@ -5836,8 +6320,321 @@ class DaisyApp:
         text = str(value or "")
         return text if len(text) <= limit else text[:limit - 1] + "…"
 
+    @staticmethod
+    def _middle_progress_text(value: object, limit: int = 110) -> str:
+        text = str(value or "")
+        if len(text) <= limit:
+            return text
+        left = max(1, (limit - 1) // 2)
+        right = max(1, limit - left - 1)
+        return text[:left] + "…" + text[-right:]
+
+    def _set_current_file(self, value: object) -> None:
+        full_text = str(value or "").strip()
+        if not full_text:
+            self._hide_current_file()
+            return
+        self.current_file_label.configure(
+            text=self._middle_progress_text(full_text))
+        self.current_file_tooltip.text = full_text
+        self.current_file_title_label.grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=(0, 7))
+        self.current_file_label.grid(
+            row=1, column=1, columnspan=2, sticky="ew", pady=(0, 7))
+
+    def _hide_current_file(self) -> None:
+        if not hasattr(self, "current_file_label"):
+            return
+        self.current_file_title_label.grid_remove()
+        self.current_file_label.grid_remove()
+        self.current_file_label.configure(text="")
+        self.current_file_tooltip.text = ""
+
+    def _send_scan_control(
+        self,
+        action: str,
+        *,
+        worker_pid: int | None = None,
+        decision: str | None = None,
+    ) -> int | None:
+        """只向当前 GUI 精确持有的扫描子进程 stdin 写入控制消息。"""
+        process = self.process
+        if (self.process_task_key not in _SCAN_TASK_KEYS
+                or process is None or process.stdin is None
+                or process.stdin.closed):
+            return None
+        sequence = self.scan_control_sequence + 1
+        try:
+            encoded = dbrun.encode_control_command(dbrun.ControlCommand(
+                sequence=sequence,
+                action=action,
+                worker_pid=worker_pid,
+                decision=decision,
+            ))
+            process.stdin.write(encoded)
+            process.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            self._append_log(f"控制请求发送失败：{exc}\n", "error")
+            self._set_status("无法向当前扫描发送控制请求；任务仍保持原状态。", _DANGER)
+            return None
+        self.scan_control_sequence = sequence
+        return sequence
+
+    def _close_scan_control_input(self) -> None:
+        """关闭父端持有的当前扫描 stdin，使终态子进程可立即退出。"""
+        process = self.process
+        if process is None or process.stdin is None or process.stdin.closed:
+            return
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+
+    def _pause_or_continue_scan(self) -> None:
+        if self.scan_control_state == "paused":
+            action, pending, label = "continue", "resume_requested", "继续"
+        elif self.scan_control_state == "running":
+            action, pending, label = "pause", "pause_requested", "暂停"
+        else:
+            return
+        previous = self.scan_control_state
+        if self._send_scan_control(action) is None:
+            return
+        self.scan_control_previous_state = previous
+        self.scan_control_state = pending
+        self._set_status(f"已请求{label}；正在等待安全边界确认…", _WARNING)
+        self._refresh_scan_controls()
+
+    def _request_save_scan_progress(self) -> bool:
+        if self.scan_control_state not in (
+                "running", "pause_requested", "paused", "resume_requested"):
+            return False
+        previous = self.scan_control_state
+        if self._send_scan_control("save_exit") is None:
+            return False
+        self.scan_control_previous_state = previous
+        self.save_exit_requested = True
+        self.scan_control_state = "save_exit_requested"
+        self._set_status("正在安全保存进度并结束当前扫描…", _WARNING)
+        self._refresh_scan_controls()
+        return True
+
+    def _save_scan_progress(self) -> None:
+        if self.process_task_key not in _SCAN_TASK_KEYS:
+            return
+        detail = (
+            "已完成工作会提交到 partial，当前文件会在恢复后从安全边界重做；"
+            "本次任务进程将结束，DAISY 下次启动会显示恢复入口。"
+        )
+        if len(self.run_jobs) > 1:
+            detail += "队列中尚未开始的目录也会取消。"
+        if not messagebox.askyesno(
+                "保存进度并退出任务",
+                detail + "\n\n确定继续吗？",
+                icon="warning", parent=self.root):
+            return
+        self._request_save_scan_progress()
+
+    def _close_timeout_dialog(self) -> None:
+        dialog = self.timeout_dialog
+        self.timeout_dialog = None
+        self.timeout_dialog_label = None
+        self.timeout_worker_pid = None
+        if dialog is None:
+            return
+        try:
+            if dialog.winfo_exists():
+                dialog.destroy()
+        except tk.TclError:
+            pass
+
+    def _resolve_timeout_dialog(self, decision: str) -> None:
+        worker_pid = self.timeout_worker_pid
+        if worker_pid is None:
+            self._close_timeout_dialog()
+            return
+        if self._send_scan_control(
+                "timeout_decision",
+                worker_pid=worker_pid,
+                decision=decision,
+        ) is not None:
+            labels = {
+                "continue_waiting": "继续等待",
+                "skip_and_record": "跳过并记录",
+                "stop_and_resume": "停止并保留续传",
+            }
+            self._append_log(
+                f"已向当前哈希 worker 请求：{labels[decision]}。\n",
+                "warning",
+            )
+        self._close_timeout_dialog()
+
+    def _show_timeout_dialog(self, payload: dict[str, object]) -> None:
+        try:
+            worker_pid = int(payload.get("worker_pid") or 0)
+        except (TypeError, ValueError):
+            return
+        if worker_pid <= 0:
+            return
+        file_name = str(payload.get("file") or "未知文件")
+        threshold = payload.get("threshold_seconds") or "?"
+        count = payload.get("threshold_count") or 1
+        detail = (
+            f"文件连续无进展达到 {threshold}s（第 {count} 次）：\n"
+            f"{file_name}\n\n不选择时继续等待；本窗口不会阻塞主界面。"
+        )
+        if self.timeout_dialog is not None:
+            if self.timeout_worker_pid == worker_pid:
+                assert self.timeout_dialog_label is not None
+                self.timeout_dialog_label.configure(text=detail)
+                self.timeout_dialog.deiconify()
+                self.timeout_dialog.lift()
+                return
+            self._close_timeout_dialog()
+
+        dialog = tk.Toplevel(self.root)
+        self.timeout_dialog = dialog
+        self.timeout_worker_pid = worker_pid
+        dialog.title("哈希读取等待")
+        dialog.configure(bg=_SURFACE)
+        dialog.transient(self.root)
+        dialog.protocol("WM_DELETE_WINDOW", self._close_timeout_dialog)
+        label = tk.Label(
+            dialog, text=detail, bg=_SURFACE, fg=_TEXT,
+            font=self._font_tuple(9), justify="left", anchor="w",
+            wraplength=520, padx=16, pady=14,
+        )
+        self.timeout_dialog_label = label
+        label.pack(fill="x")
+        attach_tooltip(label, file_name)
+        actions = tk.Frame(dialog, bg=_SURFACE)
+        actions.pack(fill="x", padx=16, pady=(0, 14))
+        for button_text, decision in (
+                ("继续等待", "continue_waiting"),
+                ("跳过并记录", "skip_and_record"),
+                ("停止并保留续传", "stop_and_resume")):
+            ttk.Button(
+                actions, text=button_text,
+                style=("Stop.TButton" if decision == "stop_and_resume"
+                       else "Secondary.TButton"),
+                command=lambda value=decision:
+                self._resolve_timeout_dialog(value),
+            ).pack(side="left", padx=(0, 8))
+        dialog.update_idletasks()
+        work_area = _monitor_work_area_for_window(self.root)
+        width = min(620, max(460, dialog.winfo_reqwidth()))
+        height = min(320, max(190, dialog.winfo_reqheight()))
+        width, height, x, y = fit_window_to_work_area(
+            (width, height),
+            (self.root.winfo_x() + 60, self.root.winfo_y() + 80),
+            work_area,
+        )
+        dialog.geometry(_window_geometry_string(width, height, x, y))
+
+    def _apply_scan_control_receipt(
+        self, payload: dict[str, object],
+    ) -> None:
+        action = str(payload.get("action") or "")
+        accepted = payload.get("accepted") is True
+        if accepted:
+            return
+        reason = str(payload.get("reason") or "rejected")
+        self._append_log(
+            f"扫描控制未被接受：{action}（{reason}）。\n", "warning")
+        if action in ("pause", "continue"):
+            self.scan_control_state = self.scan_control_previous_state
+        elif action == "save_exit":
+            self.save_exit_requested = False
+            self.close_after_stop = False
+            self.scan_control_state = self.scan_control_previous_state
+        elif action == "stop":
+            self.stop_requested = False
+            self.scan_control_state = self.scan_control_previous_state
+        self._set_status("控制请求未生效；请查看运行日志。", _WARNING)
+        self._refresh_scan_controls()
+
     def _apply_gui_event(self, payload: dict[str, object]) -> None:
         event_name = payload.get("event")
+        if event_name == "control_receipt":
+            self._apply_scan_control_receipt(payload)
+            return
+        if event_name == "control_rejected":
+            self._append_log(
+                "扫描控制消息被拒绝："
+                f"{payload.get('detail') or payload.get('code') or '未知原因'}\n",
+                "warning",
+            )
+            return
+        if event_name == "run_paused":
+            self.scan_control_state = "paused"
+            self._set_status("扫描已在安全边界暂停。", _WARNING)
+            self._refresh_scan_controls()
+            return
+        if event_name == "run_resumed":
+            self.scan_control_state = "running"
+            self._set_status(f"{self._queue_prefix()}扫描已继续运行。")
+            self._refresh_scan_controls()
+            return
+        if event_name == "run_saved":
+            self.save_exit_requested = True
+            self.scan_control_state = "saved"
+            self._set_status("扫描进度已安全保存，正在结束本任务进程。", _WARNING)
+            self._close_scan_control_input()
+            self._refresh_scan_controls()
+            return
+        if event_name == "run_stopped":
+            self.stop_requested = True
+            self.scan_control_state = "stopped"
+            self._set_status("扫描已安全停止，正在结束本任务进程。", _WARNING)
+            self._close_scan_control_input()
+            self._refresh_scan_controls()
+            return
+        if event_name == "current_item":
+            self._set_current_file(payload.get("item"))
+            return
+        if event_name == "threshold_reached":
+            self._show_timeout_dialog(payload)
+            return
+        if event_name in ("threshold_decided", "stall_decided"):
+            try:
+                worker_pid = int(payload.get("worker_pid") or 0)
+            except (TypeError, ValueError):
+                worker_pid = 0
+            keep_open = (
+                event_name == "threshold_decided"
+                and payload.get("decision") == "continue_waiting"
+            )
+            if worker_pid == self.timeout_worker_pid and not keep_open:
+                self._close_timeout_dialog()
+            return
+        if event_name in ("stage_finished", "stage_skipped"):
+            if payload.get("stage") == "hash":
+                self._close_timeout_dialog()
+            return
+        if event_name == "run_result":
+            self._close_scan_control_input()
+            self.scan_run_result = dict(payload)
+            state = str(payload.get("state") or "")
+            task_key = self.process_task_key or self.task.key
+            if state == "save_exit":
+                partial = str(payload.get("partial") or "")
+                self.save_exit_requested = True
+                self.scan_control_state = "saved"
+                self._add_recovery_scan(task_key, partial)
+            elif state == "stopped":
+                self.stop_requested = True
+                self.scan_control_state = "stopped"
+            elif state == "published":
+                self.scan_control_state = "published"
+                if self.run_jobs and self.run_job_index >= 0:
+                    resume = str(self.run_jobs[
+                        self.run_job_index].values.get("resume") or "")
+                    if resume:
+                        self._remove_recovery_scan(resume)
+            self._refresh_scan_controls()
+            return
+        if event_name in ("run_failed", "run_interrupted"):
+            self._close_scan_control_input()
         if event_name == "environment_inventory":
             self._apply_environment_inventory(payload)
             return
@@ -5914,7 +6711,14 @@ class DaisyApp:
         self._stop_work_progress()
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
-        if returncode == 0 and not self.stop_requested:
+        if self.save_exit_requested:
+            style, colour, detail = (
+                "Warning", _WARNING,
+                f"进度已保存，可在下次启动后恢复 · {_format_duration(elapsed)}")
+            self.progress_work_bar.configure(
+                style=f"{style}.Horizontal.TProgressbar")
+            self.progress_percent_label.configure(text="已保存", fg=colour)
+        elif returncode == 0 and not self.stop_requested:
             style, colour, detail = (
                 "Success", _SUCCESS,
                 (
@@ -6019,9 +6823,16 @@ class DaisyApp:
                 "disk_number", None)
         self.process_task_key = task_key
         self.stop_requested = False
+        self.save_exit_requested = False
+        self.scan_control_state = (
+            "starting" if task_key in _SCAN_TASK_KEYS else "idle")
+        self.scan_control_sequence = 0
+        self.scan_run_result = None
+        self.scan_control_previous_state = "idle"
         self.run_jobs = jobs
         self.run_job_index = -1
         self.run_results = []
+        self.run_outcomes = []
         self.run_queue_started = time.monotonic()
         self.run_button.configure(state="disabled")
         for button in self.install_tool_buttons.values():
@@ -6029,6 +6840,8 @@ class DaisyApp:
         self.admin_mode_switch.set_mode(
             value=self.is_administrator, enabled=False)
         self._set_stop_state("disabled")
+        self._refresh_scan_controls()
+        self._set_recovery_card_state()
         self._set_settings_expanded(False)
         self._set_progress_expanded(True)
         self._set_log_expanded(True)
@@ -6154,13 +6967,22 @@ class DaisyApp:
 
     def _start_next_job(self) -> None:
         next_index = self.run_job_index + 1
-        if self.stop_requested or next_index >= len(self.run_jobs):
+        if (self.stop_requested or self.save_exit_requested
+                or next_index >= len(self.run_jobs)):
             return
         self.run_job_index = next_index
         job = self.run_jobs[next_index]
         task_key = self.process_task_key or self.task.key
         self.progress_target_label.configure(
             text=run_job_target_text(task_key, job), fg=_TEXT)
+        self._hide_current_file()
+        self._close_timeout_dialog()
+        self.scan_control_sequence = 0
+        self.scan_run_result = None
+        if task_key in _SCAN_TASK_KEYS:
+            self.scan_control_state = "starting"
+            self.scan_control_previous_state = "starting"
+            self._refresh_scan_controls()
         if task_key == _PROJECT_SELF_TEST_KEY:
             effective: dict[str, object] = {}
             tool_sources: dict[str, str] = {}
@@ -6201,11 +7023,17 @@ class DaisyApp:
         )
         self.worker_starting = True
         worker = threading.Thread(
-            target=self._worker, args=(command, tool_sources), daemon=True)
+            target=self._worker,
+            args=(command, tool_sources, task_key in _SCAN_TASK_KEYS),
+            daemon=True,
+        )
         worker.start()
 
     def _worker(
-        self, command: list[str], tool_sources: dict[str, str],
+        self,
+        command: list[str],
+        tool_sources: dict[str, str],
+        control_stdin: bool,
     ) -> None:
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
@@ -6227,7 +7055,9 @@ class DaisyApp:
             )
         try:
             process = subprocess.Popen(
-                command, cwd=_BASE, stdin=subprocess.DEVNULL,
+                command, cwd=_BASE,
+                stdin=(subprocess.PIPE if control_stdin
+                       else subprocess.DEVNULL),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 env=env, creationflags=creationflags,
             )
@@ -6235,7 +7065,7 @@ class DaisyApp:
             self.events.put(("start_error", str(exc)))
             return
         self.events.put(("started", process, time.monotonic()))
-        if self.stop_requested:
+        if self.stop_requested and not control_stdin:
             self._terminate_process(process)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         stream_buffer = ""
@@ -6259,6 +7089,11 @@ class DaisyApp:
         finally:
             process.stdout.close()
         returncode = process.wait()
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
         self.events.put(("done", returncode, time.monotonic()))
 
     def _poll_events(self) -> None:
@@ -6270,7 +7105,23 @@ class DaisyApp:
                     self.worker_starting = False
                     self.process = event[1]
                     self.process_started = event[2]
-                    if self.close_after_stop:
+                    if self.process_task_key in _SCAN_TASK_KEYS:
+                        self.scan_control_state = "running"
+                        self._refresh_scan_controls()
+                        if self.close_after_stop or self.save_exit_requested:
+                            if not self._request_save_scan_progress():
+                                self.close_after_stop = False
+                                self.save_exit_requested = False
+                        elif self.stop_requested:
+                            if self._send_scan_control("stop") is None:
+                                self.stop_requested = False
+                                self.scan_control_state = "running"
+                                self._refresh_scan_controls()
+                        else:
+                            self._set_status(
+                                f"{self._queue_prefix()}运行中"
+                                f"（PID {self.process.pid}）…")
+                    elif self.close_after_stop:
                         self._set_stop_state("disabled")
                         self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
                     else:
@@ -6285,6 +7136,7 @@ class DaisyApp:
                     self._apply_gui_event(event[1])
                 elif kind == "start_error":
                     self.worker_starting = False
+                    self.save_exit_requested = False
                     self._append_log(
                         f"启动失败：{event[1]}\n", "error")
                     self._finish_ui(None)
@@ -6303,7 +7155,12 @@ class DaisyApp:
         failures = processed - successes
         elapsed = time.monotonic() - self.run_queue_started
         value = processed / total * 100
-        if self.stop_requested:
+        if self.save_exit_requested:
+            style, colour = "Warning", _WARNING
+            detail = (
+                f"队列已保存退出 · 已处理 {processed}/{total} · "
+                f"用时 {_format_duration(elapsed)}")
+        elif self.stop_requested:
             style, colour = "Warning", _WARNING
             detail = (
                 f"队列已停止 · 已处理 {processed}/{total} · "
@@ -6331,11 +7188,12 @@ class DaisyApp:
             style=f"{style}.Horizontal.TProgressbar")
         self.progress_work_bar.configure(
             style=f"{style}.Horizontal.TProgressbar")
-        if not self.stop_requested:
+        if not self.stop_requested and not self.save_exit_requested:
             self.progress_stage_bar.configure(value=100)
             self._set_work_fraction(100, style=style)
         self.progress_percent_label.configure(
-            text="停止" if self.stop_requested else
+            text="已保存" if self.save_exit_requested else
+            "停止" if self.stop_requested else
             "检查" if failures else "完成",
             fg=colour,
         )
@@ -6348,6 +7206,8 @@ class DaisyApp:
         self_test = self.process_task_key == _PROJECT_SELF_TEST_KEY
         installing = self.process_task_key == _DEPENDENCY_INSTALL_KEY
         detecting_storage = self.process_task_key == "storage_list"
+        saved = self.save_exit_requested or any(
+            outcome == "save_exit" for outcome in self.run_outcomes)
         stopped = self.stop_requested
         storage_detection_succeeded = (
             detecting_storage and returncode == 0 and not stopped)
@@ -6368,6 +7228,11 @@ class DaisyApp:
                         "任务未能启动。"
                     ),
                     _DANGER,
+                )
+            elif saved:
+                self._set_status(
+                    "扫描进度已保存；下次启动可从恢复卡片继续。",
+                    _WARNING,
                 )
             elif self.stop_requested:
                 self._set_status(
@@ -6411,7 +7276,13 @@ class DaisyApp:
                 code is None for code in self.run_results)
             failures += start_failures
             processed = len(self.run_results)
-            if self.stop_requested:
+            if saved:
+                remaining = max(0, total - processed)
+                summary = (
+                    f"队列已保存退出：已处理 {processed} 项，"
+                    f"未启动 {remaining} 项。")
+                colour, tag = _WARNING, "warning"
+            elif self.stop_requested:
                 remaining = max(0, total - processed)
                 summary = (
                     f"队列已停止：成功 {successes} 项，"
@@ -6436,16 +7307,26 @@ class DaisyApp:
                 else "normal"
             ))
         self._set_stop_state("disabled")
+        self.scan_control_state = "idle"
+        self._refresh_scan_controls()
         self._set_task_navigation_state("normal")
         self.process_task_key = None
         self.stop_requested = False
+        self.save_exit_requested = False
         self.run_jobs = []
         self.run_job_index = -1
         self.run_results = []
+        self.run_outcomes = []
         self.run_queue_started = 0.0
         self.worker_starting = False
+        self.scan_run_result = None
+        self.scan_control_sequence = 0
+        self.scan_control_previous_state = "idle"
+        self._hide_current_file()
+        self._close_timeout_dialog()
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
+        self._set_recovery_card_state()
         if storage_detection_succeeded:
             self._restore_storage_selection_after_detection()
         if self.close_after_stop:
@@ -6474,10 +7355,15 @@ class DaisyApp:
             (finished or time.monotonic()) - self.process_started
             if self.process_started else 0.0
         )
+        outcome = (
+            str(self.scan_run_result.get("state") or "")
+            if self.scan_run_result is not None else None
+        )
         self.process = None
         self.process_started = 0.0
         self._set_stop_state("disabled")
         self.run_results.append(returncode)
+        self.run_outcomes.append(outcome)
         total = max(1, len(self.run_jobs))
         job = (
             self.run_jobs[self.run_job_index]
@@ -6494,7 +7380,11 @@ class DaisyApp:
             ("DAISY 功能自检" if self_test else "任务"))
         if returncode is None:
             self._append_log(f"\n{item}未能启动。\n", "error")
-        elif self.stop_requested:
+        elif outcome == "save_exit" or self.save_exit_requested:
+            self._append_log(
+                f"\n{item}已保存进度并退出（退出码 {returncode}，"
+                f"用时 {elapsed:.1f}s）。\n", "warning")
+        elif outcome == "stopped" or self.stop_requested:
             self._append_log(
                 f"\n{item}已停止（退出码 {returncode}，"
                 f"用时 {elapsed:.1f}s）。\n", "warning")
@@ -6513,7 +7403,8 @@ class DaisyApp:
 
         self._refresh_tool_cache_labels()
         has_next = self.run_job_index + 1 < len(self.run_jobs)
-        if not self.stop_requested and has_next:
+        if (not self.stop_requested and not self.save_exit_requested
+                and has_next):
             if returncode != 0:
                 self._append_log("单项失败；继续运行下一目录。\n", "warning")
             self.root.after(80, self._start_next_job)
@@ -6558,6 +7449,22 @@ class DaisyApp:
             "确认停止任务", prompt,
             icon="warning", parent=self.root,
         ):
+            return
+        if self.process_task_key in _SCAN_TASK_KEYS:
+            previous = self.scan_control_state
+            if self._send_scan_control("stop") is None:
+                return
+            self.scan_control_previous_state = previous
+            self.stop_requested = True
+            self.scan_control_state = "stop_requested"
+            self._set_stop_state("disabled")
+            status = (
+                "正在安全停止当前目录并取消剩余队列…"
+                if len(self.run_jobs) > 1 else
+                "正在安全停止并保留审计证据…"
+            )
+            self._set_status(status, _WARNING)
+            self._refresh_scan_controls()
             return
         self.stop_requested = True
         self._set_stop_state("disabled")
@@ -6609,11 +7516,21 @@ class DaisyApp:
             self._destroy_root()
             return
 
-        detail = "关闭界面会停止当前任务，并可能留下未完成产物。确定继续吗？"
+        scan_active = getattr(
+            self, "process_task_key", None) in _SCAN_TASK_KEYS
+        detail = (
+            "关闭界面前会安全保存当前扫描进度、结束本任务进程并释放锁；"
+            "下次启动会显示恢复入口。确定继续吗？"
+            if scan_active else
+            "关闭界面会停止当前任务，并可能留下未完成产物。确定继续吗？"
+        )
         if len(self.run_jobs) > 1:
             detail = (
-                "关闭界面会停止当前目录，并取消队列中尚未启动的目录；"
-                "也可能留下未完成产物。确定继续吗？"
+                ("关闭界面前会保存当前扫描进度，并取消队列中尚未启动的"
+                 "目录；下次启动会显示当前 partial 的恢复入口。确定继续吗？")
+                if scan_active else
+                ("关闭界面会停止当前目录，并取消队列中尚未启动的目录；"
+                 "也可能留下未完成产物。确定继续吗？")
             )
         if not messagebox.askyesno(
             "再次确认退出", detail,
@@ -6621,10 +7538,14 @@ class DaisyApp:
         ):
             return
         self._save_gui_preferences()
-        self.stop_requested = True
         self._set_stop_state("disabled")
         if process is not None:
             self.close_after_stop = True
+            if scan_active:
+                if not self._request_save_scan_progress():
+                    self.close_after_stop = False
+                return
+            self.stop_requested = True
             self._set_status("正在停止任务，随后关闭窗口…", _WARNING)
             threading.Thread(
                 target=self._terminate_process, args=(process,), daemon=True,
@@ -6632,8 +7553,14 @@ class DaisyApp:
             return
         if self.worker_starting:
             self.close_after_stop = True
-            self._set_status("正在取消启动，随后关闭窗口…", _WARNING)
+            if scan_active:
+                self.save_exit_requested = True
+                self._set_status("任务启动后将立即保存进度并关闭窗口…", _WARNING)
+            else:
+                self.stop_requested = True
+                self._set_status("正在取消启动，随后关闭窗口…", _WARNING)
             return
+        self.stop_requested = True
         self._destroy_root()
 
     def _destroy_root(self) -> None:
