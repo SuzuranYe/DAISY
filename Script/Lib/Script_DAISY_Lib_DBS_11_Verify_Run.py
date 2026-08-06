@@ -22,6 +22,8 @@ import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as legacy
 import Script_DAISY_Lib_DBS_12_Verify_Tools as verifytools
+import Script_DAISY_Lib_DBS_13_Raw as dbraw
+import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 
 
 VERIFICATION_CONTRACT = "daisy-verification-v1"
@@ -60,6 +62,8 @@ class VerificationOptions:
     timeout_decision: str = "continue_waiting"
     hash_timeout_seconds: float | None = None
     format_timeout_seconds: float | None = None
+    raw_deep_validation: bool = False
+    raw_timeout_seconds: float | None = None
     show_current_file: bool = False
 
     def __post_init__(self) -> None:
@@ -67,6 +71,11 @@ class VerificationOptions:
             raise ValueError(f"未知哈希核验模式：{self.hash_mode}")
         if self.format_mode not in FORMAT_MODES:
             raise ValueError(f"未知格式核验模式：{self.format_mode}")
+        if self.raw_deep_validation and self.format_mode == "off":
+            raise ValueError("RAW 深度校验必须依附已启用的格式校验")
+        if self.raw_timeout_seconds is not None \
+                and not self.raw_deep_validation:
+            raise ValueError("RAW 深度校验关闭时不能设置 RAW timeout")
         if self.timeout_decision not in TIMEOUT_DECISIONS:
             raise ValueError(f"未知 timeout 默认处置：{self.timeout_decision}")
         _finite_percent(self.hash_sample_percent, "哈希抽样比例")
@@ -74,6 +83,7 @@ class VerificationOptions:
         for value, label in (
             (self.hash_timeout_seconds, "哈希 timeout"),
             (self.format_timeout_seconds, "格式 timeout"),
+            (self.raw_timeout_seconds, "RAW timeout"),
         ):
             if value is not None and (
                     not math.isfinite(float(value)) or float(value) <= 0.0):
@@ -88,6 +98,8 @@ class VerificationOptions:
             "timeout_decision": self.timeout_decision,
             "hash_timeout_seconds": self.hash_timeout_seconds,
             "format_timeout_seconds": self.format_timeout_seconds,
+            "raw_deep_validation": self.raw_deep_validation,
+            "raw_timeout_seconds": self.raw_timeout_seconds,
             "show_current_file": self.show_current_file,
         }
 
@@ -1298,14 +1310,250 @@ def _run_format_stage(
     }, "running", used_tools
 
 
+def _raw_capability_payload(probe=None) -> dict[str, object]:
+    """在读取快照／源文件前完成隔离能力探测并收窄为报告字段。"""
+    result = (
+        envcap.probe_rawpy_capability()
+        if probe is None else probe()
+    )
+    if isinstance(result, envcap.RuntimeCapability):
+        payload = result.as_dict()
+    elif isinstance(result, Mapping):
+        payload = dict(result)
+    else:
+        raise core.PreflightError("RAW 能力探测未返回结构化结果")
+    state = str(payload.get("state") or "")
+    reason = str(payload.get("reason") or "").strip()
+    version = str(payload.get("version") or "").strip()
+    if state != "available":
+        raise core.PreflightError(
+            "RAW 深度校验不可用："
+            + (reason or f"能力状态为 {state or 'unknown'}"))
+    if not version:
+        raise core.PreflightError("RAW 深度校验能力缺少 rawpy 版本")
+    details = payload.get("details")
+    if not isinstance(details, Mapping):
+        details = {}
+    if not bool(payload.get("isolated")):
+        raise core.PreflightError("RAW 深度校验能力不是隔离探测结果")
+    if details.get("worker_reaped") is not True:
+        raise core.PreflightError("RAW 深度校验能力探测子进程未确认回收")
+    return {
+        "id": str(payload.get("id") or envcap.RAW_CAPABILITY_ID),
+        "title": str(payload.get("title") or envcap.RAW_CAPABILITY_TITLE),
+        "state": "available",
+        "version": version,
+        "provider": str(payload.get("provider") or "rawpy/LibRaw"),
+        "isolated": True,
+        "details": dict(details),
+    }
+
+
+def _run_raw_stage(
+    entries: list[_Entry],
+    initial_stats: dict[int, _FileStat],
+    snapshot: dict[str, object],
+    options: VerificationOptions,
+    control: UnifiedVerificationControl,
+    capability: Mapping[str, object] | None,
+    on_progress,
+    on_event,
+    on_threshold,
+    raw_runner,
+) -> tuple[dict[str, object], str]:
+    if not options.raw_deep_validation:
+        _emit(on_event, "stage_skipped", stage="raw", reason="未选择")
+        return {
+            "state": "NULL",
+            "reason": "本次未选择 RAW 深度校验",
+            "problems": [],
+        }, "running"
+    if capability is None:
+        raise core.PreflightError("RAW 深度校验缺少已通过的隔离能力")
+
+    format_selected = _choose_entries(
+        entries,
+        options.format_mode,
+        options.format_sample_percent,
+        str(snapshot["snapshot_uuid"]) + ":validate",
+    )
+    candidate_total = sum(
+        1 for entry in entries if dbraw.is_raw_candidate(entry.extension))
+    selected = [
+        entry for entry in format_selected
+        if dbraw.is_raw_candidate(entry.extension)
+    ]
+    _emit(
+        on_event,
+        "stage_started",
+        stage="raw",
+        candidate_total=candidate_total,
+        selected=len(selected),
+    )
+    progress = _RateEmitter(on_progress, _PROGRESS_INTERVAL)
+    current = _RateEmitter(on_event, _CURRENT_ITEM_INTERVAL)
+    runner = raw_runner or dbraw.run_raw_decode_worker
+    problems: list[dict[str, object]] = []
+    valid = 0
+    unsupported = 0
+    unverifiable = 0
+    processed = 0
+    decoded_pixels = 0
+    decoded_bytes = 0
+
+    def section(section_state: str) -> dict[str, object]:
+        return {
+            "state": section_state,
+            "format_mode": options.format_mode,
+            "format_sample_percent": (
+                options.format_sample_percent
+                if options.format_mode == "sample" else 100.0),
+            "raw_candidate_total": candidate_total,
+            "selected": len(selected),
+            "processed": processed,
+            "checked": processed - unverifiable,
+            "valid": valid,
+            "unsupported": unsupported,
+            "unverifiable": unverifiable,
+            "counts": _section_counts(problems),
+            "problems": problems,
+            "decoded_pixels": decoded_pixels,
+            "decoded_bytes": decoded_bytes,
+            "capability": dict(capability),
+            "coverage_note": (
+                "RAW 范围继承本次格式校验选择；sample 不代表全部 RAW。"
+            ),
+        }
+
+    for entry in selected:
+        while True:
+            boundary = _settle_boundary(control, "raw", on_event)
+            if boundary != "running":
+                return section("stopped"), "stopped"
+            initial = initial_stats.get(entry.entry_id)
+            if initial is None or not _matches_baseline(entry, initial):
+                unverifiable += 1
+                processed += 1
+                break
+            before, _before_error = _stat_file(entry.physical_path)
+            if before is None or not _matches_baseline(entry, before):
+                unverifiable += 1
+                processed += 1
+                break
+            if options.show_current_file:
+                current.send(
+                    "raw", "current_item", stage="raw", item=entry.rel_path)
+
+            def raw_event(event: str, **payload: object) -> None:
+                _emit(on_event, event, stage="raw", **payload)
+
+            outcome = runner(
+                entry.physical_path,
+                expected_size=entry.size_bytes,
+                timeout_seconds=options.raw_timeout_seconds,
+                default_decision=options.timeout_decision,
+                display_name=entry.rel_path,
+                control=control.worker_control,
+                on_event=raw_event,
+                on_threshold=on_threshold,
+            )
+            if outcome.outcome == "paused":
+                if _wait_worker_pause(control, "raw", on_event) == "running":
+                    continue
+                return section("stopped"), "stopped"
+            if outcome.outcome == "stopped":
+                control.finish()
+                _emit(on_event, "run_stopped", stage="raw", state="stopped")
+                return section("stopped"), "stopped"
+
+            after, after_error = _stat_file(entry.physical_path)
+            if after is None:
+                problems.append(_issue_row(
+                    entry,
+                    "error",
+                    after_error,
+                    code="raw_post_stat_missing",
+                ))
+            elif not _same_stat(before, after) \
+                    or not _matches_baseline(entry, after):
+                problems.append(_issue_row(
+                    entry,
+                    "error",
+                    "RAW 解码前后 size／mtime 不稳定",
+                    code="raw_unstable",
+                ))
+            elif outcome.succeeded:
+                valid += 1
+                decoded_pixels += int(outcome.pixel_count or 0)
+                decoded_bytes += int(outcome.decoded_bytes or 0)
+            elif outcome.outcome == "completed" \
+                    and outcome.status == "unsupported" \
+                    and outcome.worker_reaped \
+                    and outcome.worker_exitcode == 0:
+                unsupported += 1
+            else:
+                status = str(outcome.status or "error")
+                if status not in ("invalid", "timeout", "error"):
+                    status = "error"
+                problems.append(_issue_row(
+                    entry,
+                    status,
+                    outcome.detail,
+                    code=outcome.code,
+                    rawpy_version=outcome.rawpy_version,
+                    libraw_version=outcome.libraw_version,
+                    worker_exitcode=outcome.worker_exitcode,
+                    worker_reaped=outcome.worker_reaped,
+                ))
+            processed += 1
+            break
+        progress.send(
+            "raw",
+            "raw",
+            processed,
+            len(selected),
+            {
+                "valid": valid,
+                "unsupported": unsupported,
+                "unverifiable": unverifiable,
+                "problems": len(problems),
+            },
+        )
+    progress.send(
+        "raw",
+        "raw",
+        processed,
+        len(selected),
+        {
+            "valid": valid,
+            "unsupported": unsupported,
+            "unverifiable": unverifiable,
+            "problems": len(problems),
+        },
+        force=True,
+    )
+    _emit(
+        on_event,
+        "stage_finished",
+        stage="raw",
+        processed=processed,
+        valid=valid,
+        unsupported=unsupported,
+        unverifiable=unverifiable,
+        problems=len(problems),
+    )
+    return section("executed"), "running"
+
+
 def _conclusion(report: dict[str, object]) -> str:
     if report["run_state"] != "complete":
         return "stopped"
     stat = report["sections"]["stat"]
     hashed = report["sections"]["hash"]
     formatted = report["sections"]["format"]
+    raw = report["sections"]["raw"]
     if stat.get("problems") or hashed.get("problems") \
-            or formatted.get("problems"):
+            or formatted.get("problems") or raw.get("problems"):
         return "issues_found"
     if hashed.get("state") == "unavailable" \
             or int(hashed.get("unverifiable") or 0) > 0:
@@ -1328,9 +1576,19 @@ def run_unified_verification(
     _tool_resolver=None,
     _hash_runner=None,
     _format_runner=None,
+    _raw_capability_probe=None,
+    _raw_runner=None,
 ) -> dict[str, object]:
     """执行统一核验并返回报告模型；此函数本身不写报告文件。"""
     selected_options = options or VerificationOptions()
+    raw_capability = None
+    if selected_options.raw_deep_validation:
+        raw_capability = _raw_capability_payload(_raw_capability_probe)
+        _emit(
+            on_event,
+            "runtime_capability_detected",
+            capability=raw_capability,
+        )
     owned_control = control or UnifiedVerificationControl()
     supplied = dict(tools or {})
     started = time.monotonic()
@@ -1351,6 +1609,14 @@ def run_unified_verification(
     format_section: dict[str, object] = {
         "state": "NULL", "reason": "任务在格式校验前停止",
         "coverage_note": FORMAT_COVERAGE_NOTE, "problems": []}
+    raw_section: dict[str, object] = {
+        "state": "NULL",
+        "reason": (
+            "任务在 RAW 深度校验前停止"
+            if selected_options.raw_deep_validation
+            else "本次未选择 RAW 深度校验"),
+        "problems": [],
+    }
     used_tools: dict[str, dict[str, object]] = {}
     if state == "running":
         hash_section, state, hash_tools = _run_hash_stage(
@@ -1381,6 +1647,19 @@ def run_unified_verification(
             _format_runner,
         )
         used_tools.update(format_tools)
+    if state == "running":
+        raw_section, state = _run_raw_stage(
+            entries,
+            initial_stats,
+            snapshot,
+            selected_options,
+            owned_control,
+            raw_capability,
+            on_progress,
+            on_event,
+            on_threshold,
+            _raw_runner,
+        )
 
     after = _file_identity(os.path.abspath(snapshot_path))
     if after != input_identity:
@@ -1400,6 +1679,7 @@ def run_unified_verification(
             "stat": stat,
             "hash": hash_section,
             "format": format_section,
+            "raw": raw_section,
         },
         "tools": used_tools,
     }
@@ -1456,6 +1736,7 @@ def render_verification_markdown(report: Mapping[str, object]) -> str:
     stat = sections["stat"]
     hashed = sections["hash"]
     formatted = sections["format"]
+    raw = sections["raw"]
     conclusion_text = {
         "passed": "在本次覆盖口径内未发现问题。",
         "issues_found": "发现需要处理或复核的问题。",
@@ -1484,6 +1765,8 @@ def render_verification_markdown(report: Mapping[str, object]) -> str:
         f"核对 {hashed.get('checked', 0)}；不可核验 {hashed.get('unverifiable', 0)} |",
         f"| 格式校验 | {_module_state_text(formatted)} | {_problem_count(formatted)} | "
         f"核对 {formatted.get('checked', 0)}；不支持 {formatted.get('unsupported', 0)} |",
+        f"| RAW 深检 | {_module_state_text(raw)} | {_problem_count(raw)} | "
+        f"选中 {raw.get('selected', 0)}；不支持 {raw.get('unsupported', 0)} |",
         "",
         "## 文件状态",
         "",
@@ -1517,9 +1800,32 @@ def render_verification_markdown(report: Mapping[str, object]) -> str:
     _append_problem_rows(lines, list(formatted.get("problems") or []))
     lines.extend([
         "",
+        "## RAW 深度校验问题",
+        "",
+        f"- 执行状态：{_module_state_text(raw)}",
+        f"- 问题文件：{_problem_count(raw)}",
+        f"- RAW 候选：{raw.get('raw_candidate_total', 'NULL')}；"
+        f"选中：{raw.get('selected', 'NULL')}；"
+        f"不可核验：{raw.get('unverifiable', 'NULL')}",
+        f"- 不支持 RAW：{raw.get('unsupported', 'NULL')}"
+        "（只记录总数，不展开文件名）",
+    ])
+    if raw.get("capability"):
+        lines.append(
+            "- 解码能力：rawpy "
+            f"{core.markdown_cell(raw['capability'].get('version'))}；"
+            "隔离子进程")
+    if raw.get("coverage_note"):
+        lines.append(
+            f"- 覆盖边界：{core.markdown_cell(raw['coverage_note'])}")
+    if raw.get("reason"):
+        lines.append(f"- 原因：{core.markdown_cell(raw['reason'])}")
+    _append_problem_rows(lines, list(raw.get("problems") or []))
+    lines.extend([
+        "",
         "## 技术证据",
         "",
-        "逐文件哈希值、完整问题字段、worker 回收状态、工具版本和"
+        "逐文件哈希值、完整问题字段、RAW worker 回收状态、工具版本和"
         "读取性能摘要位于同名 JSON；Markdown 是证据提炼，不是新的事实来源。",
         "",
     ])

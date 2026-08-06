@@ -734,8 +734,11 @@ v1.5.1 兼容入口；240 文件夹具在两种入口下分别选中完全相同
 连续 3 轮共 36／36 通过。RAW 工作 JSONL 与最终伴随 JSON 现也已实现：先验证 snapshot
 UUID／冻结配置绑定再修复末尾半行，每条终态 flush＋fsync；valid／unsupported 不保存路径，
 问题才进入最终明细；0／NULL、UTF-8 无 BOM／LF、staging 和 no-clobber 专项连续 3 轮共
-24／24 通过。统一核验／Full／ENV／GUI 接线、与 SQLite 发布的联动事务，以及许可明确的
-真实 RAW 夹具尚未完成；因此阶段 5 仍为进行中。
+24／24 通过。统一核验现已增加 RAW 从属阶段和 CLI 参数：隔离能力在数据库／源文件读取前
+预检，RAW 选择严格继承格式 sample／all；valid／unsupported 只汇总，invalid／timeout／
+error 进入同一 JSON／Markdown 的固定板块，schema 3 输入身份不变。专项连续 3 轮共 15／15，
+既有统一核验／CLI／兼容联合 22／22。Full／ENV／GUI 接线、与 SQLite 发布的联动事务，以及
+许可明确的真实 RAW 夹具尚未完成；因此阶段 5 仍为进行中。
 
 ### 阶段 6：跨版本对比
 
@@ -1336,6 +1339,22 @@ invalid／timeout／error 才进入问题明细和固定 Markdown 板块。报�
 未完成 NULL，并使用 staging、回读契约验证和 no-clobber。首轮测试发现 Windows `os.open`
 描述符会把 bytes 中的 LF 转为 CRLF；实现已显式加入 `O_BINARY`，没有降低格式断言。修正后
 8 项专项连续 3 轮共 24／24。该层仍不打开 SQLite；扫描发布联动与统一核验接线是下一步。
+
+### 17.11 统一核验 RAW 从属阶段检查点
+
+`VerificationOptions` 和 `verify` CLI 新增默认关闭的 RAW 深检及独立 timeout；格式关闭时
+RAW 选项不可构造。启用后先调用统一能力层，只有 available、isolated 且探测 worker 已回收
+才进入数据库准入，因此 unavailable 或伪造的非隔离结果会在读取快照／源文件前失败。
+
+RAW 阶段用与格式核验完全相同的 `:validate` seed 和 sample／all 选择，再从中筛选 RAW 扩展；
+240 文件夹具证明两阶段选中同一 100 个路径。每文件仍做前后 stat，valid 只有干净回收且
+像素摘要非空才累计；unsupported 不保留路径，invalid／timeout／error 进入独立
+“RAW 深度校验问题”板块。关闭时不探测能力、不启动 worker，状态为 NULL。
+
+新专项首轮 4／5，唯一失败是测试用子串 `valid.dng` 错误命中 `invalid.dng`；改为精确 JSON
+字段断言后连续 3 轮共 15／15。既有统一核验 11／11、CLI 7／7、兼容投影 4／4 同批通过。
+所有用例使用注入能力／worker，schema 3 SQLite 的 SHA-256、大小和 mtime 不变；没有导入
+真实 rawpy。统一核验结果直接进入主 Markdown／JSON，不生成扫描专用恢复伴随文件。
 
 ## 十八、完成定义
 

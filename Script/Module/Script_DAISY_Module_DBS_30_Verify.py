@@ -29,6 +29,7 @@ _STAGES = {
     "stat": (1, "文件状态"),
     "hash": (2, "内容哈希"),
     "format": (3, "格式校验"),
+    "raw": (4, "RAW 深检"),
 }
 _STAGES_TOTAL = len(_STAGES)
 _TIMEOUT_ACTIONS = (
@@ -241,11 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--format-sample-percent", type=float)
     parser.add_argument(
+        "--raw-deep-validation", action="store_true",
+        help="在格式范围内用隔离 rawpy／LibRaw 实际解码 RAW；默认关闭",
+    )
+    parser.add_argument(
         "--timeout-action", choices=_TIMEOUT_ACTIONS,
         help="单文件达到动态阈值后的默认处置；默认继续等待",
     )
     parser.add_argument("--hash-timeout-seconds", type=float)
     parser.add_argument("--format-timeout-seconds", type=float)
+    parser.add_argument("--raw-timeout-seconds", type=float)
     parser.add_argument(
         "--show-current-file", action="store_true",
         help="发送正在核验的相对文件路径；默认关闭",
@@ -284,9 +290,11 @@ def verification_options(args: argparse.Namespace) \
         args.ffprobe_path,
         args.sevenzip_path,
         args.format_timeout_seconds is not None,
+        args.raw_deep_validation,
+        args.raw_timeout_seconds is not None,
     )):
         raise core.PreflightError(
-            "格式校验关闭时不接受格式工具路径或格式 timeout")
+            "格式校验关闭时不接受格式工具、格式 timeout 或 RAW 深检")
     if args.hash == "off" and args.format == "off" \
             and args.timeout_action is not None:
         raise core.PreflightError(
@@ -306,6 +314,8 @@ def verification_options(args: argparse.Namespace) \
             timeout_decision=args.timeout_action or "continue_waiting",
             hash_timeout_seconds=args.hash_timeout_seconds,
             format_timeout_seconds=args.format_timeout_seconds,
+            raw_deep_validation=args.raw_deep_validation,
+            raw_timeout_seconds=args.raw_timeout_seconds,
             show_current_file=args.show_current_file,
         )
     except (TypeError, ValueError) as exc:
@@ -329,6 +339,7 @@ def _print_report_summary(
     stat = sections["stat"]
     hashed = sections["hash"]
     formatted = sections["format"]
+    raw = sections["raw"]
     print(
         f"文件状态：核对 {int(stat.get('checked') or 0):,} | "
         f"问题 {len(stat.get('problems') or []):,}")
@@ -342,6 +353,11 @@ def _print_report_summary(
         f"核对 {int(formatted.get('checked') or 0):,} | "
         f"不支持 {int(formatted.get('unsupported') or 0):,} | "
         f"问题 {len(formatted.get('problems') or []):,}")
+    print(
+        f"RAW 深检：{raw.get('state')} | "
+        f"核对 {int(raw.get('checked') or 0):,} | "
+        f"不支持 {int(raw.get('unsupported') or 0):,} | "
+        f"问题 {len(raw.get('problems') or []):,}")
     print(f"人读报告：{publication.markdown_path}")
     print(f"技术证据：{publication.json_path}")
 

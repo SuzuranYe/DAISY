@@ -824,3 +824,32 @@ staging 清理。测试只写工作区 `.test_runtime\v1_6_0`，未读取用户 
 
 当前伴随报告还没有与 SQLite 的最终发布动作联动，也没有接入统一核验、Full、ENV-01 或
 GUI；真实 RAW 解码阻断仍未解除。
+
+## 十七、阶段 5：统一核验 RAW 从属阶段（第七检查点）
+
+统一 `verify` 增加 `--raw-deep-validation` 和 `--raw-timeout-seconds`，并在报告中增加固定
+RAW 板块。实现边界：
+
+- RAW 必须依附格式 sample／all；关闭格式时参数预检拒绝，关闭 RAW 时不探测、不启动 worker；
+- rawpy 能力探测发生在 `_load_entries` 之前；非 available、非 isolated 或探测 worker 未确认
+  回收均拒绝，因此显式请求不可用能力不会先读取快照或源文件；
+- RAW 范围重新使用格式阶段同一确定性 seed／比例，240 个全 RAW 文件的 10% 样本在两阶段
+  均为同一 100 个路径；
+- 每文件解码前后 stat，只有 `RawDecodeOutcome.succeeded` 才记 valid；unsupported 只计数，
+  invalid／timeout／error 保留问题路径；
+- 主 JSON／Markdown 增加“RAW 深度校验问题”，技术能力版本和覆盖边界同源；不写 SQLite。
+
+RAW 新专项首轮 4／5；失败来自测试用 `assertNotIn("valid.dng", ...)` 会命中
+`invalid.dng`，不是路径隐私实现失败。断言改为精确 `rel_path` JSON 字段后连续 3 轮共
+15／15。最终联合批次：
+
+| 批次 | 结果 | 关键证据 |
+|---|---:|---|
+| 统一核验 RAW | 3×5／5 | 预检顺序、关闭零调用、100 文件同样本、问题／隐私、schema 3 只读 |
+| 统一核验核心 | 11／11 | RAW 默认关闭下既有行为与报告发布 |
+| 统一核验 CLI | 7／7 | 旧默认参数、控制、退出码和端到端 |
+| 新旧核验兼容 | 4／4 | 哈希／格式抽样及问题投影不漂移 |
+
+全部把 `ResourceWarning` 视为错误，未调用真实 rawpy、ExifTool、FFprobe 或 7-Zip，未读取
+用户 `TEMP\`，也未枚举或影响其它进程。真实 RAW 解码、Full 恢复伴随证据、ENV-01 和 GUI
+仍未完成。
