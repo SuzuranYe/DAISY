@@ -1,6 +1,6 @@
 # DAISY v1.6.0 数据库解析设计
 
-状态：计划中，尚未实现
+状态：实施中；只读识别、模块目录和选择计划已实现，writer／CLI／GUI 尚未完成
 
 目标版本：v1.6.0
 
@@ -282,3 +282,22 @@ Issues 预览沿用固定证据域板块：枚举、哈希、Exif／元数据、
 只有当 HTML 能独立回答核心问题、XLSX 可用于人工筛选、CSV 保持稳定机器契约、模块选择
 真实控制查询与输出、v1.4.1 旧库全程只读兼容，并通过大库流式、取消、安全和 GUI 矩阵
 测试后，DBS-41 才能称为“数据库解析”。仅新增复选框或把现有 CSV 换一个外壳不算完成。
+
+## 十一、实施记录
+
+### 11.1 只读识别与选择计划检查点
+
+Reader 新增默认不改变既有调用的 `verify_artifact_fingerprint` 参数。数据库解析快速阶段以
+`verify_integrity=False` 和 `verify_artifact_fingerprint=False` 打开 schema 4：仍核对身份、
+schema、封存状态、表列和发布文件名模式，但不读取整个数据库计算文件名指纹，并明确记录
+“正式读取前必须完整复核”；正式阶段同时恢复完整指纹和 SQLite 完整性检查。
+
+Parse Lib 现提供 15 个快照模块、6 个 Diff 模块的稳定目录，以及 `available`、`empty`、
+`unavailable`、`incompatible`、`invalid` 卡片状态。`human-summary`、`full-audit`、`custom`
+只决定内容，HTML／XLSX／CSV／JSONL 独立决定格式；预设只自动选择 available，显式选择
+empty／unavailable 会返回状态和原因。`raw_payloads` 带固定隐私提示。旧 `export-report`
+继续使用冻结的旧模块顺序、CSV 页面和 XLSX writer，没有切到新目录或改变既有输出。
+
+本检查点只完成内部服务，不新增半成品 `parse-db` 命令，也不改 GUI。下一检查点必须完成
+流式投影、raw payload 校验、manifest、staging 和 no-clobber，之后才建立新 CLI；HTML、
+新版 XLSX 和模块卡片仍按后续检查点实施。

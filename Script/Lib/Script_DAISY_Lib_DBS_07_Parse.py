@@ -31,6 +31,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from typing import Iterable
 import zipfile
 from xml.sax.saxutils import escape
 
@@ -594,8 +595,113 @@ class ParseModuleSpec:
     required_capabilities: tuple[str, ...]
     pages: tuple[ParsePageSpec, ...] = ()
     schema3_fallback: bool = True
-    formats: frozenset[str] = frozenset(("csv", "xlsx"))
+    formats: frozenset[str] = frozenset(("html", "xlsx", "csv", "jsonl"))
     privacy_level: str = "content_metadata"
+    description: str = ""
+    optional_capabilities: tuple[str, ...] = ()
+    presets: frozenset[str] = frozenset(("full-audit",))
+    preview_limit: int = 200
+    projection_version: str = "daisy-parse-module-v1"
+    legacy_export: bool = True
+
+
+@dataclass(frozen=True)
+class ParseModuleStatus:
+    """一个解析模块在已识别数据库中的可选状态。"""
+
+    spec: ParseModuleSpec
+    state: str
+    row_count: int | None
+    reason: str | None
+    queryable: bool
+    capabilities: tuple[dict[str, object], ...]
+    optional_capabilities: tuple[dict[str, object], ...]
+
+    @property
+    def selectable(self) -> bool:
+        return self.state == "available" and self.queryable
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "id": self.spec.module_id,
+            "title": self.spec.title,
+            "description": self.spec.description,
+            "state": self.state,
+            "row_count": self.row_count,
+            "reason": self.reason,
+            "selectable": self.selectable,
+            "queryable": self.queryable,
+            "formats": sorted(self.spec.formats),
+            "privacy_level": self.spec.privacy_level,
+            "presets": sorted(self.spec.presets),
+            "preview_limit": self.spec.preview_limit,
+            "projection_version": self.spec.projection_version,
+            "schema3_fallback": self.spec.schema3_fallback,
+            "capabilities": [dict(item) for item in self.capabilities],
+            "optional_capabilities": [
+                dict(item) for item in self.optional_capabilities
+            ],
+        }
+
+
+@dataclass(frozen=True)
+class ParseDatabaseInspection:
+    """两阶段数据库识别中的一次只读结果。"""
+
+    descriptor: dbreader.DatabaseDescriptor
+    file_size_bytes: int
+    integrity_checked: bool
+    compatibility_mode: str
+    modules: tuple[ParseModuleStatus, ...]
+
+    @property
+    def module_state_counts(self) -> dict[str, int]:
+        counts = {
+            state: 0 for state in (
+                "available", "empty", "unavailable", "incompatible",
+                "invalid",
+            )
+        }
+        for module in self.modules:
+            counts[module.state] = counts.get(module.state, 0) + 1
+        return counts
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "database": self.descriptor.as_dict(),
+            "file_size_bytes": self.file_size_bytes,
+            "integrity_checked": self.integrity_checked,
+            "compatibility_mode": self.compatibility_mode,
+            "module_state_counts": self.module_state_counts,
+            "modules": [module.as_dict() for module in self.modules],
+        }
+
+
+@dataclass(frozen=True)
+class ParseExportPlan:
+    """内容选择与格式选择的正交、可序列化计划。"""
+
+    preset: str
+    module_ids: tuple[str, ...]
+    format_ids: tuple[str, ...]
+    format_modules: dict[str, tuple[str, ...]]
+    privacy_notices: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "preset": self.preset,
+            "modules": list(self.module_ids),
+            "formats": list(self.format_ids),
+            "format_modules": {
+                format_id: list(module_ids)
+                for format_id, module_ids in self.format_modules.items()
+            },
+            "privacy_notices": list(self.privacy_notices),
+        }
+
+
+PARSE_PRESETS = frozenset(("human-summary", "full-audit", "custom"))
+PARSE_FORMATS = ("html", "xlsx", "csv", "jsonl")
 
 
 class CsvQueryWriter:
@@ -645,7 +751,12 @@ def _entry_page(filename: str, table: str) -> ParsePageSpec:
 
 
 _SNAPSHOT_MODULES = (
-    ParseModuleSpec("overview", "数据概览", "snapshot", ("overview",)),
+    ParseModuleSpec(
+        "overview", "数据概览", "snapshot", ("overview",),
+        formats=frozenset(("html", "xlsx", "csv")),
+        description="身份、根目录、数量、容量、状态与覆盖率",
+        presets=frozenset(("human-summary", "full-audit")),
+    ),
     ParseModuleSpec(
         "files", "文件清单", "snapshot", ("files",),
         (ParsePageSpec(
@@ -655,6 +766,7 @@ _SNAPSHOT_MODULES = (
             " JOIN roots r ON r.root_id = e.root_id"
             " ORDER BY r.root_label, e.rel_path",
         ),),
+        description="路径、类型、大小、时间与处理状态",
     ),
     ParseModuleSpec(
         "directories", "目录清单", "snapshot", ("directories",),
@@ -666,27 +778,33 @@ _SNAPSHOT_MODULES = (
             " JOIN roots r ON r.root_id = d.root_id"
             " ORDER BY r.root_label, d.rel_path",
         ),),
+        description="目录树、root 和枚举状态",
     ),
     ParseModuleSpec(
         "photo_metadata", "照片信息", "snapshot", ("photo_metadata",),
         (_entry_page("Exif_inventory_photo.csv", "photo_metadata"),),
+        description="照片的规范化拍摄与设备字段",
     ),
     ParseModuleSpec(
         "video_metadata", "视频信息", "snapshot", ("video_metadata",),
         (_entry_page("Exif_inventory_video.csv", "video_metadata"),),
+        description="视频文件级格式化元数据",
     ),
     ParseModuleSpec(
         "video_gps", "视频定位", "snapshot", ("video_gps",),
         (_entry_page("GPS_inventory_video.csv", "video_gps_points"),),
+        description="视频中的规范化定位点",
     ),
     ParseModuleSpec(
         "working_metadata", "工作文件", "snapshot", ("working_metadata",),
         (_entry_page("Exif_inventory_working.csv", "working_metadata"),),
+        description="PSD、TIFF、PNG 等工作文件字段",
     ),
     ParseModuleSpec(
         "document_metadata", "文档信息", "snapshot",
         ("document_metadata",),
         (_entry_page("Exif_inventory_document.csv", "document_metadata"),),
+        description="PDF／Office 文档格式化字段",
     ),
     ParseModuleSpec(
         "media_streams", "媒体轨道", "snapshot", ("media_streams",),
@@ -694,10 +812,12 @@ _SNAPSHOT_MODULES = (
             _entry_page("Stream_inventory_video.csv", "video_streams"),
             _entry_page("Stream_inventory_audio.csv", "audio_streams"),
         ),
+        description="视频与音频流的编码和时长信息",
     ),
     ParseModuleSpec(
         "hashes", "逐文件哈希", "snapshot", ("hashes",),
         (_entry_page("Hash_inventory.csv", "hashes"),),
+        description="逐文件 SHA-256、来源与读取状态",
     ),
     ParseModuleSpec(
         "archives", "压缩归档", "snapshot", ("archives",),
@@ -705,11 +825,13 @@ _SNAPSHOT_MODULES = (
             _entry_page("Archive_inventory.csv", "archive_metadata"),
             _entry_page("Archive_inventory_members.csv", "archive_members"),
         ),
+        description="压缩包及其成员摘要",
     ),
     ParseModuleSpec(
         "diagnostics", "诊断证据", "snapshot", ("diagnostics",),
         (_entry_page(
             "Metadata_diagnostics.csv", "metadata_diagnostics"),),
+        description="错误与元数据诊断的原始证据",
     ),
     ParseModuleSpec(
         "issues", "问题摘要", "snapshot", ("issues",),
@@ -726,6 +848,28 @@ _SNAPSHOT_MODULES = (
             " LEFT JOIN dirs d ON d.dir_id = er.dir_id"
             " ORDER BY er.error_pk",
         ),),
+        description="枚举、哈希、元数据、格式与性能问题",
+        optional_capabilities=(
+            "format_checks", "read_performance", "entry_attempts",
+        ),
+        presets=frozenset(("human-summary", "full-audit")),
+    ),
+    ParseModuleSpec(
+        "raw_payloads", "原始数据", "snapshot", ("raw_payloads",),
+        schema3_fallback=True,
+        privacy_level="sensitive_raw",
+        description="ExifTool／ffprobe canonical JSON 原始载荷",
+        legacy_export=False,
+    ),
+    ParseModuleSpec(
+        "run_history", "运行历史", "snapshot", ("run_history",),
+        schema3_fallback=True,
+        description="manifest、会话、事件、尝试和工具来源",
+        optional_capabilities=(
+            "run_sessions", "entry_attempts", "read_performance",
+            "format_checks",
+        ),
+        legacy_export=False,
     ),
 )
 
@@ -735,7 +879,12 @@ _DIFF_PATH_SQL = (
     " THEN {label} ELSE {label} || '\\' || {relative} END"
 )
 _DIFF_MODULES = (
-    ParseModuleSpec("overview", "对比概览", "diff", ("overview",)),
+    ParseModuleSpec(
+        "overview", "对比概览", "diff", ("overview",),
+        formats=frozenset(("html", "xlsx", "csv")),
+        description="双侧身份、覆盖率、root 配对与结论",
+        presets=frozenset(("human-summary", "full-audit")),
+    ),
     ParseModuleSpec(
         "file_changes", "文件变化", "diff", ("file_changes",),
         (ParsePageSpec(
@@ -748,6 +897,7 @@ _DIFF_MODULES = (
                 label="new_root_label", relative="new_rel_path")
             + " AS new_path, * FROM diff_entries ORDER BY status, path_key",
         ),),
+        description="增删、变化、移动、复制与证据等级",
     ),
     ParseModuleSpec(
         "directory_changes", "目录变化", "diff", ("directory_changes",),
@@ -761,6 +911,7 @@ _DIFF_MODULES = (
                 label="new_root_label", relative="new_rel_path")
             + " AS new_path, * FROM diff_dirs ORDER BY path_key",
         ),),
+        description="目录增删、状态变化与 unknown",
     ),
     ParseModuleSpec(
         "content_groups", "内容分组", "diff", ("content_groups",),
@@ -768,6 +919,7 @@ _DIFF_MODULES = (
             "Diff_hash_groups.csv",
             "SELECT * FROM diff_hash_groups ORDER BY group_id",
         ),),
+        description="哈希多重集、副本和硬链接变化",
     ),
     ParseModuleSpec(
         "enumeration_gaps", "枚举缺口", "diff", ("enumeration_gaps",),
@@ -776,14 +928,43 @@ _DIFF_MODULES = (
             "SELECT * FROM diff_subtrees"
             " ORDER BY side, root_label, rel_path",
         ),),
+        description="失败子树、影响范围与 unknown 传播",
+        presets=frozenset(("human-summary", "full-audit")),
     ),
     ParseModuleSpec(
-        "evidence_notes", "证据说明", "diff", ("evidence_notes",)),
+        "evidence_notes", "证据说明", "diff", ("evidence_notes",),
+        formats=frozenset(("html", "xlsx", "csv")),
+        description="能力缺失、跨版本降级与证据边界",
+        presets=frozenset(("human-summary", "full-audit")),
+    ),
 )
 
 
-def parse_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
-    """返回稳定顺序的旧报告模块注册表。"""
+_PARSE_MODULE_ORDER = {
+    "snapshot": (
+        "overview", "issues", "files", "directories", "hashes",
+        "photo_metadata", "video_metadata", "video_gps",
+        "media_streams", "working_metadata", "document_metadata",
+        "archives", "raw_payloads", "diagnostics", "run_history",
+    ),
+    "diff": (
+        "overview", "file_changes", "directory_changes",
+        "content_groups", "enumeration_gaps", "evidence_notes",
+    ),
+}
+
+_LEGACY_MODULE_ORDER = {
+    "snapshot": (
+        "overview", "files", "directories", "photo_metadata",
+        "video_metadata", "video_gps", "working_metadata",
+        "document_metadata", "media_streams", "hashes", "archives",
+        "diagnostics", "issues",
+    ),
+    "diff": _PARSE_MODULE_ORDER["diff"],
+}
+
+
+def _registered_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
     if database_type == "snapshot":
         return _SNAPSHOT_MODULES
     if database_type == "diff":
@@ -791,10 +972,240 @@ def parse_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
     raise ValueError(f"未知数据库类型：{database_type}")
 
 
+def parse_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
+    """返回面向 v1.6.0 产品界面的完整稳定模块目录。"""
+    registered = {
+        module.module_id: module
+        for module in _registered_modules(database_type)
+    }
+    order = _PARSE_MODULE_ORDER[database_type]
+    if set(registered) != set(order):
+        raise RuntimeError(f"{database_type} 解析模块目录与稳定顺序不一致")
+    return tuple(registered[module_id] for module_id in order)
+
+
+def parse_module_statuses(
+    descriptor: dbreader.DatabaseDescriptor,
+) -> tuple[ParseModuleStatus, ...]:
+    """把 Reader 能力折叠成卡片状态；不把 empty／NULL 伪装可选。"""
+    priority = {
+        "available": 0,
+        "empty": 1,
+        "unavailable": 2,
+        "incompatible": 3,
+        "invalid": 4,
+    }
+    result = []
+    for spec in parse_modules(descriptor.database_type):
+        required = []
+        for capability_id in spec.required_capabilities:
+            try:
+                capability = descriptor.capability(capability_id)
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"解析模块 {spec.module_id} 引用了未登记能力"
+                    f" {capability_id}"
+                ) from exc
+            required.append(capability)
+        optional = []
+        for capability_id in spec.optional_capabilities:
+            try:
+                optional.append(descriptor.capability(capability_id))
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"解析模块 {spec.module_id} 引用了未登记可选能力"
+                    f" {capability_id}"
+                ) from exc
+        state = max(required, key=lambda item: priority[item.state]).state
+        row_counts = [
+            capability.row_count for capability in required
+            if capability.row_count is not None
+        ]
+        row_count = (
+            sum(int(value) for value in row_counts)
+            if state in ("available", "empty")
+            and len(row_counts) == len(required)
+            else None
+        )
+        reasons = [
+            f"{capability.capability_id}={capability.state}："
+            f"{capability.reason or '未记录原因'}"
+            for capability in required
+            if capability.state != "available"
+        ]
+        result.append(ParseModuleStatus(
+            spec=spec,
+            state=state,
+            row_count=row_count,
+            reason="；".join(reasons) if reasons else None,
+            queryable=all(capability.queryable for capability in required),
+            capabilities=tuple(
+                capability.as_dict() for capability in required),
+            optional_capabilities=tuple(
+                capability.as_dict() for capability in optional),
+        ))
+    return tuple(result)
+
+
+def _compatibility_mode(
+    descriptor: dbreader.DatabaseDescriptor,
+) -> str:
+    if descriptor.database_type == "snapshot":
+        return (
+            "v1.4.1-compatible"
+            if descriptor.schema_version == 3 else "v1.6.0-native"
+        )
+    old_schema = int(descriptor.identity["old_schema_version"])
+    new_schema = int(descriptor.identity["new_schema_version"])
+    return (
+        "v1.4.1-compatible"
+        if (old_schema, new_schema) == (3, 3) else "cross-version"
+    )
+
+
+def inspect_parse_database(
+    path: str,
+    *,
+    verify_integrity: bool = False,
+) -> ParseDatabaseInspection:
+    """只读识别解析输入；快速阶段不读取整个 schema 4 文件核摘要。"""
+    con, descriptor = dbreader.open_database(
+        path,
+        require_sealed=True,
+        verify_integrity=verify_integrity,
+        verify_artifact_fingerprint=verify_integrity,
+    )
+    try:
+        file_size = os.stat(descriptor.path).st_size
+    finally:
+        con.close()
+    return ParseDatabaseInspection(
+        descriptor=descriptor,
+        file_size_bytes=int(file_size),
+        integrity_checked=bool(verify_integrity),
+        compatibility_mode=_compatibility_mode(descriptor),
+        modules=parse_module_statuses(descriptor),
+    )
+
+
+def _normalize_tokens(values: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(values, str):
+        values = (values,)
+    result = []
+    for value in values:
+        for item in str(value).split(","):
+            normalized = item.strip().casefold()
+            if normalized and normalized not in result:
+                result.append(normalized)
+    return tuple(result)
+
+
+def plan_parse_export(
+    inspection: ParseDatabaseInspection,
+    *,
+    preset: str = "human-summary",
+    include: Iterable[str] = (),
+    formats: Iterable[str] = ("html",),
+) -> ParseExportPlan:
+    """验证模块／格式组合；预设不会暗中开启或移除输出格式。"""
+    normalized_preset = str(preset).strip().casefold()
+    if normalized_preset not in PARSE_PRESETS:
+        raise core.PreflightError(f"未知解析内容预设：{preset}")
+    requested_modules = _normalize_tokens(include)
+    requested_formats = _normalize_tokens(formats)
+    unknown_formats = [
+        format_id for format_id in requested_formats
+        if format_id not in PARSE_FORMATS
+    ]
+    if unknown_formats:
+        raise core.PreflightError(
+            "未知解析输出格式：" + "、".join(unknown_formats))
+    if not requested_formats:
+        raise core.PreflightError("至少选择一种解析输出格式")
+
+    by_id = {module.spec.module_id: module for module in inspection.modules}
+    unknown_modules = [
+        module_id for module_id in requested_modules
+        if module_id not in by_id
+    ]
+    if unknown_modules:
+        raise core.PreflightError(
+            "当前数据库类型没有解析模块：" + "、".join(unknown_modules))
+    for module_id in requested_modules:
+        module = by_id[module_id]
+        if not module.selectable:
+            detail = f"：{module.reason}" if module.reason else ""
+            raise core.PreflightError(
+                f"解析模块 {module_id} 为 {module.state}，不可选择{detail}")
+
+    selected = []
+    if normalized_preset != "custom":
+        selected.extend(
+            module.spec.module_id for module in inspection.modules
+            if normalized_preset in module.spec.presets and module.selectable
+        )
+    for module_id in requested_modules:
+        if module_id not in selected:
+            selected.append(module_id)
+    if not selected:
+        raise core.PreflightError(
+            "当前预设没有可选模块；请选择有记录的模块或更换数据库")
+
+    format_modules: dict[str, tuple[str, ...]] = {}
+    for format_id in requested_formats:
+        compatible = tuple(
+            module_id for module_id in selected
+            if format_id in by_id[module_id].spec.formats
+        )
+        if not compatible:
+            raise core.PreflightError(
+                f"所选模块均不支持输出格式 {format_id}")
+        format_modules[format_id] = compatible
+    unsupported = [
+        module_id for module_id in selected
+        if not any(
+            module_id in format_modules[format_id]
+            for format_id in requested_formats
+        )
+    ]
+    if unsupported:
+        raise core.PreflightError(
+            "所选格式无法承载模块：" + "、".join(unsupported))
+
+    privacy_notices = []
+    for module_id in selected:
+        module = by_id[module_id]
+        if module.spec.privacy_level == "sensitive_raw":
+            privacy_notices.append(
+                "原始数据可能包含位置、设备、软件和作者信息；"
+                "HTML／XLSX 只允许受限预览，完整值优先写入 JSONL。"
+            )
+    return ParseExportPlan(
+        preset=normalized_preset,
+        module_ids=tuple(selected),
+        format_ids=requested_formats,
+        format_modules=format_modules,
+        privacy_notices=tuple(privacy_notices),
+    )
+
+
+def legacy_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
+    registered = {
+        module.module_id: module
+        for module in _registered_modules(database_type)
+        if module.legacy_export
+    }
+    order = _LEGACY_MODULE_ORDER[database_type]
+    if set(registered) != set(order):
+        raise RuntimeError(
+            f"{database_type} 旧报告模块与冻结顺序不一致")
+    return tuple(registered[module_id] for module_id in order)
+
+
 def legacy_pages(database_type: str) -> tuple[ParsePageSpec, ...]:
     return tuple(
         page
-        for module in parse_modules(database_type)
+        for module in legacy_modules(database_type)
         for page in module.pages
     )
 
@@ -817,7 +1228,7 @@ def legacy_capabilities(database_type: str) -> tuple[str, ...]:
         raise ValueError(f"未知数据库类型：{database_type}")
     registered = {
         capability_id
-        for module in parse_modules(database_type)
+        for module in legacy_modules(database_type)
         for capability_id in module.required_capabilities
     }
     result = order[database_type]

@@ -785,6 +785,8 @@ def _validate_published_filename(
     path: str,
     runtime: dict[str, object],
     warnings: list[str],
+    *,
+    verify_fingerprint: bool = True,
 ) -> None:
     pattern_value = runtime.get("published_path_pattern")
     if not pattern_value:
@@ -810,7 +812,11 @@ def _validate_published_filename(
             f"{basename}；模式：{os.path.basename(pattern)}")
     if os.path.normcase(os.path.dirname(pattern)) != os.path.normcase(
             os.path.dirname(os.path.abspath(path))):
-        warnings.append("published 快照已离开原输出目录；文件名与内容指纹仍会核对")
+        warnings.append("published 快照已离开原输出目录；文件名模式仍已核对")
+    if not verify_fingerprint:
+        warnings.append(
+            "快速识别未核对 published 内容指纹；正式读取前必须完整复核")
+        return
     fingerprint = core.filename_sha256_high32_matches(path)
     if fingerprint is not True:
         detail = "缺少摘要后缀" if fingerprint is None else "摘要后缀不匹配"
@@ -1044,6 +1050,7 @@ def inspect_connection(
     expected_type: str | None = None,
     require_sealed: bool = True,
     verify_integrity: bool = True,
+    verify_artifact_fingerprint: bool = True,
 ) -> DatabaseDescriptor:
     """在既有连接上执行统一探测；调用方仍负责关闭连接。"""
     if expected_type is not None and expected_type not in DATABASE_TYPES:
@@ -1163,7 +1170,11 @@ def inspect_connection(
             })
             if runtime["run_state"] == "published":
                 _validate_published_filename(
-                    normalized_path, runtime, warnings)
+                    normalized_path,
+                    runtime,
+                    warnings,
+                    verify_fingerprint=verify_artifact_fingerprint,
+                )
         capabilities = _capability_map(
             con, tables, columns, SNAPSHOT_CAPABILITY_SPECS, lifecycle,
             capability_overrides)
@@ -1719,6 +1730,7 @@ def open_database(
     expected_type: str | None = None,
     require_sealed: bool = True,
     verify_integrity: bool = True,
+    verify_artifact_fingerprint: bool = True,
 ) -> tuple[sqlite3.Connection, DatabaseDescriptor]:
     """只读打开并统一探测；失败时保证关闭连接。"""
     con, normalized = _connect_read_only(path)
@@ -1729,6 +1741,7 @@ def open_database(
             expected_type=expected_type,
             require_sealed=require_sealed,
             verify_integrity=verify_integrity,
+            verify_artifact_fingerprint=verify_artifact_fingerprint,
         )
     except Exception:
         con.close()
@@ -1742,6 +1755,7 @@ def inspect_database(
     expected_type: str | None = None,
     require_sealed: bool = True,
     verify_integrity: bool = True,
+    verify_artifact_fingerprint: bool = True,
 ) -> DatabaseDescriptor:
     """只读识别数据库并在返回前关闭连接。"""
     con, descriptor = open_database(
@@ -1749,6 +1763,7 @@ def inspect_database(
         expected_type=expected_type,
         require_sealed=require_sealed,
         verify_integrity=verify_integrity,
+        verify_artifact_fingerprint=verify_artifact_fingerprint,
     )
     con.close()
     return descriptor
@@ -1760,6 +1775,7 @@ def probe_database(
     expected_type: str | None = None,
     require_sealed: bool = True,
     verify_integrity: bool = True,
+    verify_artifact_fingerprint: bool = True,
 ) -> DatabaseProbe:
     """返回适合 GUI 展示的结果，不向界面泄漏 SQLite 异常堆栈。"""
     try:
@@ -1768,6 +1784,7 @@ def probe_database(
             expected_type=expected_type,
             require_sealed=require_sealed,
             verify_integrity=verify_integrity,
+            verify_artifact_fingerprint=verify_artifact_fingerprint,
         )
     except (core.PreflightError, OSError, sqlite3.Error, ValueError) as exc:
         return DatabaseProbe("invalid", None, str(exc))

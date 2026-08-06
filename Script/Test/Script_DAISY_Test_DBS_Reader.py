@@ -608,6 +608,28 @@ class TestDatabaseReader(_ReaderFixture):
         self.assertFalse(probe.valid)
         self.assertIn("不符合冻结路径模式", probe.error)
 
+    def test_schema4_fast_identification_defers_content_fingerprint(self) \
+            -> None:
+        path = self.snapshot_v4()
+        identity = _file_identity(path)
+        with mock.patch.object(
+            core,
+            "filename_sha256_high32_matches",
+            side_effect=AssertionError("快速识别不应读取完整文件摘要"),
+        ) as fingerprint:
+            descriptor = reader.inspect_database(
+                path,
+                verify_integrity=False,
+                verify_artifact_fingerprint=False,
+            )
+        fingerprint.assert_not_called()
+        self.assertIsNone(descriptor.sqlite_integrity)
+        self.assertIn(
+            "快速识别未核对 published 内容指纹；正式读取前必须完整复核",
+            descriptor.warnings,
+        )
+        self.assertEqual(_file_identity(path), identity)
+
     def test_existing_table_with_missing_columns_is_incompatible(self) -> None:
         path = self.snapshot()
         con = sqlite3.connect(path)

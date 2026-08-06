@@ -44,6 +44,16 @@ class TestParseRegistry(unittest.TestCase):
         self.assertEqual(
             [module.module_id for module in modules],
             [
+                "overview", "issues", "files", "directories", "hashes",
+                "photo_metadata", "video_metadata", "video_gps",
+                "media_streams", "working_metadata", "document_metadata",
+                "archives", "raw_payloads", "diagnostics", "run_history",
+            ],
+        )
+        self.assertEqual(
+            [module.module_id for module in dbparse.legacy_modules(
+                "snapshot")],
+            [
                 "overview", "files", "directories", "photo_metadata",
                 "video_metadata", "video_gps", "working_metadata",
                 "document_metadata", "media_streams", "hashes",
@@ -74,9 +84,14 @@ class TestParseRegistry(unittest.TestCase):
         )
         self.assertTrue(all(module.schema3_fallback for module in modules))
         self.assertTrue(all(
-            module.formats == frozenset(("csv", "xlsx"))
-            for module in modules
+            {"csv", "xlsx"}.issubset(module.formats)
+            for module in dbparse.legacy_modules("snapshot")
         ))
+        raw_module = next(
+            module for module in modules
+            if module.module_id == "raw_payloads")
+        self.assertEqual(raw_module.privacy_level, "sensitive_raw")
+        self.assertFalse(raw_module.legacy_export)
 
     def test_diff_registry_freezes_legacy_projection_order(self) -> None:
         modules = dbparse.parse_modules("diff")
