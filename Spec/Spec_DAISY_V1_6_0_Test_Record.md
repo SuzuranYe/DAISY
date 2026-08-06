@@ -711,3 +711,30 @@ LibRaw 必须在隔离子进程实际解码，崩溃、timeout、访问异常和
 检查点没有运行真实工具端到端测试，不能把注入分类测试描述成真实工具兼容证明；这部分
 仍需在不违反工作区边界的测试设施就绪后补证。统一 verify CLI、旧入口完整投影对照、
 最终 GUI 合并和 RAW 深度校验仍未完成。
+
+## 十三、阶段 5：统一核验 CLI（第三检查点）
+
+新增 `Script_DAISY_Module_DBS_30_Verify.py` 和主入口 `verify`，复用统一核验业务模型，不改写
+旧 `check-hash`／`check-format` 入口。CLI 提供：
+
+- 全量 stat，以及相互独立的哈希／格式 off、sample、all；默认样本分别为 1% 和 10%；
+- 动态无进展 timeout、无人操作默认处置、当前文件开关及控制 stdin；
+- 进程内暂停／继续／停止；明确拒绝 `save_exit` 并返回
+  `verification_not_resumable`，不暗示核验支持跨重启续传；
+- 同源 Markdown 人读报告与 JSON 技术证据，结论到退出码的稳定映射；
+- schema 3／4 封存快照只读输入，v1.4.1 无逐文件哈希时报告 `incomplete`，不产生假成功。
+
+代码审查同时发现 `KeyboardInterrupt` 曾把未登记的 `keyboard_interrupt` 作为停止来源，可能
+由状态校验异常掩盖原始中断；已改为状态模型允许的显式 `user` 来源。最终验证如下：
+
+| 批次 | 结果 | 关键证据 |
+|---|---:|---|
+| 统一核验 CLI 专项 | 7／7 | 参数、控制、入口、退出码、报告、schema 3 只读身份 |
+| 统一核验核心复测 | 11／11 | 内置／外部路由、暂停、timeout、报告发布 |
+| GUI 入口／模块清单契约 | 1／1 | 新模块已登记，既有 8 项 GUI 菜单尚未提前重组 |
+
+全部批次失败 0、跳过 0，并把 `ResourceWarning` 视为错误。端到端子进程把
+`TEMP`／`TMP`／`TMPDIR` 固定到工作区 `.test_runtime\v1_6_0`；输入 schema 3 数据库前后
+SHA-256、大小和 mtime 相同。没有调用真实 ExifTool／FFprobe／7-Zip，没有扫描真实档案或
+硬盘，没有读取用户 `TEMP\`，也没有枚举、附加或停止其它进程。旧入口完整投影对照、Full
+可选格式接入、最终 GUI 合并和 RAW 深度校验仍待完成，阶段 5 不能关闭。

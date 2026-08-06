@@ -3141,6 +3141,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(entry.COMMANDS["scan"][0], scan_module)
         self.assertTrue(os.path.isfile(os.path.join(
             _MODULE, scan_module + ".py")))
+        verify_module = "Script_DAISY_Module_DBS_30_Verify"
+        self.assertEqual(entry.COMMANDS["verify"][0], verify_module)
+        self.assertTrue(os.path.isfile(os.path.join(
+            _MODULE, verify_module + ".py")))
         self.assertEqual(len(gui._TASK_MENU_ORDER), 8)
         self.assertEqual(
             sorted(
@@ -3153,6 +3157,7 @@ class TestGuiArguments(unittest.TestCase):
                     *(item[-1] for item in expected),
                     "Script_DAISY_Module_DBS_11_Full_Scan",
                     "Script_DAISY_Module_DBS_12_Quick_Scan",
+                    verify_module,
                 }),
             ]),
         )
