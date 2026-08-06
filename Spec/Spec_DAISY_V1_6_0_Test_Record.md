@@ -800,3 +800,27 @@ available／unavailable／incompatible／crashed／timeout、版本和原因，�
 所以 RAW-05 的真实 LibRaw 解码证据仍未满足，属于发布阻断。扫描恢复 JSONL、最终伴随 JSON、
 Issues 合并、统一核验／Full／ENV-01／GUI 接线也尚未实现；不得把本检查点描述为 RAW 功能
 全部完成。
+
+## 十六、阶段 5：RAW 恢复证据与伴随报告（第六检查点）
+
+新增工作 JSONL 和最终伴随报告层，不连接 SQLite：
+
+- `.partial.sqlite` 确定性对应 `.raw_verification.jsonl`，头部绑定 snapshot UUID、格式
+  sample／all、比例和 rawpy／LibRaw 版本摘要；
+- 已有 journal 必须先验证完整头部与 binding SHA-256，绑定不符时不修复、不截断；绑定一致
+  后才允许移除最后一个没有 LF 的半行；
+- valid／unsupported 结果只保存 entry ID 与 stat 身份，路径和 detail 均为 NULL；只有
+  invalid／timeout／error 保留逻辑路径并进入最终问题明细；
+- 暂停／停止不写终态，恢复时当前文件从头执行；已写终态只有 size／mtime 同时匹配才复用；
+- 最终 JSON 同源生成固定“RAW 深度校验问题”Markdown，严格区分 executed 0 和 incomplete／
+  未执行 NULL；sample 报告明确不代表全部 RAW；
+- staging 回读验证、no-clobber、UTF-8 无 BOM／LF，失败清理本次精确 staging。
+
+首轮 8 项中 4 项通过、4 项因 CRLF 失败。根因是 Windows 的 `os.open` 文件描述符默认文本
+模式，即使 `os.write` 输入 bytes 仍会转换 LF。所有 journal／staging 描述符现显式加入
+`O_BINARY`，没有放宽断言。修正后连续 3 轮共 24／24，失败 0、跳过 0；覆盖绑定不符字节
+不变、半行修复、5 类终态、路径隐私、暂停／停止拒绝、incomplete 结论、no-clobber 和
+staging 清理。测试只写工作区 `.test_runtime\v1_6_0`，未读取用户 `TEMP\` 或其它文件。
+
+当前伴随报告还没有与 SQLite 的最终发布动作联动，也没有接入统一核验、Full、ENV-01 或
+GUI；真实 RAW 解码阻断仍未解除。

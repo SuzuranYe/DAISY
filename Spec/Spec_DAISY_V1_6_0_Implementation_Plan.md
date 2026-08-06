@@ -731,9 +731,11 @@ v1.5.1 兼容入口；240 文件夹具在两种入口下分别选中完全相同
 `spawn` 深度解码 worker；父进程不导入 rawpy，成功必须经过 `postprocess()` 并返回非空像素
 尺寸，unsupported／解码失败／MemoryError／native-like 退出／timeout 分别分类。动态阈值
 沿用 90s／9 GiB 阶梯，默认继续等待；暂停、跳过和停止只回收本任务精确 worker。合成专项
-连续 3 轮共 36／36 通过。扫描恢复 JSONL、伴随报告、统一核验／Full／ENV／GUI 接线和
-许可明确的真实
-RAW 夹具尚未完成；因此阶段 5 仍为进行中。
+连续 3 轮共 36／36 通过。RAW 工作 JSONL 与最终伴随 JSON 现也已实现：先验证 snapshot
+UUID／冻结配置绑定再修复末尾半行，每条终态 flush＋fsync；valid／unsupported 不保存路径，
+问题才进入最终明细；0／NULL、UTF-8 无 BOM／LF、staging 和 no-clobber 专项连续 3 轮共
+24／24 通过。统一核验／Full／ENV／GUI 接线、与 SQLite 发布的联动事务，以及许可明确的
+真实 RAW 夹具尚未完成；因此阶段 5 仍为进行中。
 
 ### 阶段 6：跨版本对比
 
@@ -1320,6 +1322,20 @@ timeout 后只终止并等待该精确进程。新增 `Script_DAISY_Lib_DBS_13_R
 `BrokenPipeError`，已收口为 `worker_crashed` 后全绿。没有导入真实 rawpy 或读取真实 RAW；
 RAW-05 要求的许可／摘要冻结真实夹具仍是发布阻断，不能以合成模块冒充真实 LibRaw 解码。
 本检查点也尚未接入扫描、核验、ENV-01 或 GUI。
+
+### 17.10 RAW 恢复证据与伴随报告检查点
+
+新增 `Script_DAISY_Lib_DBS_14_Raw_Evidence.py`。工作路径由 `.partial.sqlite` 确定性映射为
+`.raw_verification.jsonl`；头部绑定 snapshot UUID、格式范围／比例和 rawpy／LibRaw 版本。
+恢复时先完整解析并验证头部归属，只有绑定一致才允许截断末尾半行；绑定不符时原文件字节
+保持不动。每个终态记录使用二进制描述符写入 UTF-8 LF，并执行 flush 等价的完整写＋fsync。
+暂停／停止不写终态，因此恢复会从当前文件重新解码。
+
+最终 `<snapshot-stem>_Raw_Verification.json` 只汇总 valid／unsupported，二者均不保留路径；
+invalid／timeout／error 才进入问题明细和固定 Markdown 板块。报告区分已执行 0 与未执行／
+未完成 NULL，并使用 staging、回读契约验证和 no-clobber。首轮测试发现 Windows `os.open`
+描述符会把 bytes 中的 LF 转为 CRLF；实现已显式加入 `O_BINARY`，没有降低格式断言。修正后
+8 项专项连续 3 轮共 24／24。该层仍不打开 SQLite；扫描发布联动与统一核验接线是下一步。
 
 ## 十八、完成定义
 
