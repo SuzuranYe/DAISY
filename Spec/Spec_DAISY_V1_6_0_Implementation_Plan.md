@@ -1238,7 +1238,7 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 0～2 | 完成 | 需求／兼容基线、统一只读 Reader、Verify／Parse 行为保持重构已有提交和回归 |
 | 3 | 完成 | schema 4、session、attempt、lease、恢复状态机和数据契约已落地 |
 | 4 | 完成 | worker、暂停／保存退出／停止、动态 timeout、扫描发布链、scan CLI 和现有扫描 GUI 接线已落地 |
-| 5 | 进行中 | 统一核验、旧入口投影及 RAW 核验／Full 扫描链已提交或完成实现；ENV／GUI 接线和真实 RAW 夹具仍未完成 |
+| 5 | 进行中 | 统一核验、旧入口投影、RAW 核验／Full 扫描链及 ENV／Full GUI 能力接线已完成；核验页最终 GUI 与真实 RAW 夹具仍未完成 |
 | 6～9 | 未开始完成性实施 | 跨版本 Diff、数据库解析、四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
 
 最近一次完整发现式回归是在扫描 GUI 检查点后执行，结果为 465／465；同一阶段的 State、
@@ -1382,6 +1382,31 @@ SHA-256、schema 和 snapshot UUID；工作 JSONL 仅在数据库、Issues 和 R
 no-clobber 和既有发布联合 37／37。测试均使用工作区合成文件和注入 worker，没有导入真实
 rawpy、读取真实 RAW、扫描硬盘、读取用户 `TEMP\` 或枚举／影响其它进程。RAW-05 的真实
 LibRaw 解码、ENV-01 展示和 GUI 开关仍是未完成项，不能据此宣布 RAW 功能发布就绪。
+
+### 17.13 ENV-01 与 Full GUI 能力接线检查点
+
+`ENV-01` 现复用统一运行能力注册表探测 rawpy／LibRaw，并同时通过环境清单和独立
+`runtime_capabilities` GUI 事件输出同一结构化结果。该能力是可选项：unavailable、
+incompatible、crashed 或 timeout 都显示直接原因，但不会把 ExifTool、FFprobe、7-Zip、
+PowerShell 和 smartctl 等基础环境检查误判为失败。成功写出的环境报告增加
+`runtime_capabilities` 与 `checks.rawpy_libraw`；没有改变任何 SQLite 路径或结构。
+
+现有 Full GUI 的“高级 → 扫描行为 → Full 格式校验”增加默认关闭的“RAW 深度校验”。它
+必须同时满足本次是新建 Full、格式校验为 sample／all，以及最近一次隔离能力证据为
+available、isolated、探测 worker 已回收且存在版本；否则菜单禁用并直接显示原因。能力失效
+或关闭格式校验会撤销已选 RAW，不会留下隐藏的启用参数。RAW 启用且哈希关闭时，统一
+timeout 默认处置仍会进入命令；命令预览同步出现或移除 `--raw-deep-validation`。环境检测页
+新增“可选能力”卡片，说明缺失原因和“缺失不等于基础检测失败”的边界。
+
+本检查点新增真实隐藏 Tk 控件测试，覆盖菜单从“尚未检测”到可用、命令预览、页面切换、
+能力失效后撤销及环境卡片同步。静态解析 4／4、ENV／GUI 定向 27／27、扫描／状态／RAW／
+Issues／GUI／发布联合 161／161；RAW、ENV 与真实 Tk 相关批次连续 3 轮为
+3×34／34。所有测试均使用工作区合成数据、注入能力或本测试精确创建并销毁的隐藏 Tk 窗口，
+没有读取用户 `TEMP\`、没有扫描真实硬盘／档案，也没有枚举、附加或终止其它进程。
+
+这里仅完成现有 Full 页和 ENV-01 接线。四入口重组后的“核验”页还需在阶段 8～9 暴露同一
+RAW 从属开关；RAW-05 要求的许可／SHA-256 冻结真实 RAW 夹具与真实 LibRaw 解码仍是发布
+阻断。因此不能把本节测试写成真实 RAW 兼容证明，也不能据此更新 v1.6.0 版本号或 tag。
 
 ## 十八、完成定义
 

@@ -4839,6 +4839,31 @@ class TestEnvironmentInventory(unittest.TestCase):
             }],
         )
 
+    def test_optional_raw_capability_uses_unified_registry(self):
+        capability = envcheck.envcap.RuntimeCapability(
+            envcheck.envcap.RAW_CAPABILITY_ID,
+            envcheck.envcap.RAW_CAPABILITY_TITLE,
+            "unavailable",
+            reason="synthetic missing rawpy",
+            provider="rawpy/LibRaw",
+            isolated=True,
+        )
+        with patch.object(
+                envcheck.envcap,
+                "probe_runtime_capabilities",
+                return_value={
+                    envcheck.envcap.RAW_CAPABILITY_ID: capability,
+                }):
+            result = envcheck.inspect_runtime_capabilities()
+        self.assertEqual(
+            result[envcheck.envcap.RAW_CAPABILITY_ID]["state"],
+            "unavailable",
+        )
+        self.assertIn(
+            "synthetic missing rawpy",
+            result[envcheck.envcap.RAW_CAPABILITY_ID]["reason"],
+        )
+
     def test_gui_inventory_event_keeps_only_allowlisted_install_targets(self):
         app = object.__new__(gui.DaisyApp)
         app.detected_tools = {}
@@ -5331,7 +5356,23 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as td:
             argv = ["env-check", "--output-dir", td]
-            with patch.object(sys, "argv", argv):
+            runtime_capabilities = {
+                envcheck.envcap.RAW_CAPABILITY_ID: {
+                    "id": envcheck.envcap.RAW_CAPABILITY_ID,
+                    "title": envcheck.envcap.RAW_CAPABILITY_TITLE,
+                    "state": "unavailable",
+                    "available": False,
+                    "version": None,
+                    "reason": "synthetic optional dependency missing",
+                    "provider": "rawpy/LibRaw",
+                    "isolated": True,
+                    "details": {"worker_reaped": True},
+                },
+            }
+            with patch.object(sys, "argv", argv), patch.object(
+                    envcheck,
+                    "inspect_runtime_capabilities",
+                    return_value=runtime_capabilities):
                 with patch.object(
                         envcheck, "inspect_local_tools",
                         return_value=(tools, [])):
@@ -5376,6 +5417,13 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
             report["checks"]["smartctl_readonly_scan"], "passed")
         self.assertEqual(
             report["checks"]["windows_storage_inventory"], "passed")
+        self.assertEqual(
+            report["checks"]["rawpy_libraw"], "unavailable")
+        self.assertEqual(
+            report["runtime_capabilities"][
+                envcheck.envcap.RAW_CAPABILITY_ID]["reason"],
+            "synthetic optional dependency missing",
+        )
 
 
 class TestIndependentVerify(_SnapshotFixture):

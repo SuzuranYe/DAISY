@@ -17,6 +17,7 @@ _LIB_DIR = os.path.join(os.path.dirname(_MODULE_DIR), "Lib")
 sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_03_Hash as dbh
+import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 import Script_DAISY_Lib_STG_01_Core as storage_core
 import Script_DAISY_Lib_STG_02_Windows as storage_windows
 import Script_DAISY_Lib_STG_03_Smartctl as smartctl
@@ -85,6 +86,15 @@ def inspect_local_tools(
     return tools, issues
 
 
+def inspect_runtime_capabilities() -> dict[str, dict[str, object]]:
+    """探测可选运行能力；不可用能力不让基础环境检测整体失败。"""
+    return {
+        capability_id: capability.as_dict()
+        for capability_id, capability in (
+            envcap.probe_runtime_capabilities()).items()
+    }
+
+
 def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(description="ENV-01 运行环境检测")
@@ -106,8 +116,17 @@ def main() -> int:
         "smartctl": args.smartctl_path,
     }
     inventory, issues = inspect_local_tools(explicit)
+    runtime_capabilities = inspect_runtime_capabilities()
     core.emit_gui_event(
-        "environment_inventory", tools=inventory, missing=issues)
+        "environment_inventory",
+        tools=inventory,
+        missing=issues,
+        capabilities=runtime_capabilities,
+    )
+    core.emit_gui_event(
+        "runtime_capabilities",
+        capabilities=runtime_capabilities,
+    )
     if inventory:
         core.emit_gui_event("tools_detected", tools=inventory)
     print("本机工具版本：")
@@ -118,6 +137,17 @@ def main() -> int:
             print(
                 f"  {_TOOL_DISPLAY_NAMES[name]:<10} "
                 f"{info['version']:<12} {info['path']}")
+    print("可选运行能力：")
+    for capability in runtime_capabilities.values():
+        state = str(capability.get("state") or "unknown")
+        version = str(capability.get("version") or "")
+        reason = str(capability.get("reason") or "")
+        summary = version if state == "available" else reason
+        print(
+            f"  {capability.get('title', capability.get('id', ''))}："
+            f"{state}"
+            + (f" · {summary}" if summary else "")
+        )
     if issues:
         print("缺失或不可用：", file=sys.stderr)
         for issue in issues:
@@ -126,7 +156,6 @@ def main() -> int:
                 file=sys.stderr,
             )
         return 2
-
     try:
         tools = core.run_preflight(
             {"exiftool": args.exiftool_path, "ffprobe": args.ffprobe_path,
@@ -172,11 +201,15 @@ def main() -> int:
     report = {**core.report_metadata("ENV-01 运行环境检测"),
               "generated_at_utc": core.now_utc_iso(),
               "scanner_version": core.SCANNER_VERSION, "tools": tools,
+              "runtime_capabilities": runtime_capabilities,
               "checks": {"sha256_nist": "passed",
                          "tool_smoke_readonly": "passed",
                          "powershell_get_filehash": "passed",
                          "smartctl_readonly_scan": "passed",
-                         "windows_storage_inventory": "passed"}}
+                         "windows_storage_inventory": "passed",
+                         "rawpy_libraw": runtime_capabilities.get(
+                             envcap.RAW_CAPABILITY_ID, {}).get(
+                                 "state", "unavailable")}}
     os.makedirs(args.output_dir, exist_ok=True)
     out = os.path.join(
         args.output_dir,

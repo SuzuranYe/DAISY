@@ -114,6 +114,7 @@ sys.path.insert(0, _LIB_DIR)
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as metadata
 import Script_DAISY_Lib_DBS_09_Run as dbrun
+import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 import Script_DAISY_Lib_STG_01_Core as storage_core
 
 
@@ -143,6 +144,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_Verify_Raw.py",
     "Script_DAISY_Test_DBS_Raw.py",
     "Script_DAISY_Test_DBS_Raw_Evidence.py",
+    "Script_DAISY_Test_DBS_Scan_Raw.py",
     "Script_DAISY_Test_DBS_Parse.py",
     "Script_DAISY_Test_DBS_State.py",
     "Script_DAISY_Test_DBS_Hash_Worker.py",
@@ -217,6 +219,35 @@ _PROJECT_CACHE_FILE_SUFFIXES = (".pyc", ".pyo")
 _CACHE_SCAN_EXCLUDED_DIR_NAMES = frozenset((
     ".git", ".venv", "venv", "node_modules", "output",
 ))
+
+
+def raw_runtime_capability_status(
+    capabilities: dict[str, dict[str, object]] | None,
+) -> tuple[bool, str]:
+    """返回 GUI 与 CLI 一致的 RAW 能力准入结果和直接可显示原因。"""
+    raw = (
+        capabilities.get(envcap.RAW_CAPABILITY_ID)
+        if isinstance(capabilities, dict) else None
+    )
+    if not isinstance(raw, dict):
+        return False, "尚未检测；请先运行“运行环境检测”"
+    details = raw.get("details")
+    available = (
+        raw.get("state") == "available"
+        and raw.get("available") is True
+        and raw.get("isolated") is True
+        and isinstance(details, dict)
+        and details.get("worker_reaped") is True
+        and bool(raw.get("version"))
+    )
+    if available:
+        version = str(raw.get("version"))
+        libraw = str(details.get("libraw_version") or "").strip()
+        suffix = f"；LibRaw {libraw}" if libraw else ""
+        return True, f"rawpy {version}{suffix}（隔离探测通过）"
+    state = str(raw.get("state") or "unavailable")
+    reason = str(raw.get("reason") or "隔离能力证据不完整").strip()
+    return False, f"{state}：{reason}"
 
 
 def default_gui_preferences() -> dict[str, object]:
@@ -976,6 +1007,10 @@ _FULL_FORMAT_SAMPLE = (
     ("start_mode", ("new",)),
     ("format_validation", ("sample",)),
 )
+_FULL_RAW = (
+    ("start_mode", ("new",)),
+    ("format_validation", ("sample", "all")),
+)
 _FORMAT_SAMPLE = (("check_scope", ("sample",)),)
 _HASH_SAMPLE = (("check_scope", ("sample",)),)
 
@@ -1113,6 +1148,21 @@ TASKS = (
                 active_when=_FULL_FORMAT_SAMPLE,
             ),
             FieldSpec(
+                "raw_deep_validation", "RAW深检",
+                "--raw-deep-validation", "choice_flag", False,
+                choices=(
+                    ("关闭（默认）", False),
+                    ("启用隔离深度解码", True),
+                ),
+                flag_value=True,
+                help=(
+                    "仅处理本次格式校验范围内的 RAW；由独立 rawpy／LibRaw "
+                    "子进程实际解码。默认关闭，能力不可用时会显示原因。"
+                ),
+                section="快照内容", top_menu=True,
+                active_when=_FULL_RAW,
+            ),
+            FieldSpec(
                 "collect_file_id", "NTFS标识",
                 "--no-file-id", "choice_flag", True,
                 choices=(
@@ -1195,7 +1245,7 @@ TASKS = (
                 ),
                 help="动态无进展阈值到达后的默认处置；弹窗仍可针对当前文件改选。",
                 section="高级设置", top_menu=True,
-                active_when=_FULL_HASHED,
+                active_when=_FULL_NEW,
             ),
             FieldSpec(
                 "retry_mode", "重试范围", "--retry-mode", "choice",
@@ -1685,8 +1735,19 @@ def build_run_jobs(task_key: str,
 
 
 def _field_active(spec: FieldSpec, values: dict[str, object]) -> bool:
-    return all(values.get(key) in allowed
-               for key, allowed in spec.active_when)
+    active = all(values.get(key) in allowed
+                 for key, allowed in spec.active_when)
+    if not active:
+        return False
+    if spec.key == "timeout_action":
+        return (
+            values.get("hash_mode") in ("incremental", "full")
+            or (
+                bool(values.get("raw_deep_validation"))
+                and values.get("format_validation") in ("sample", "all")
+            )
+        )
+    return True
 
 
 def active_field_keys(task_key: str,
@@ -1853,6 +1914,11 @@ def validate_values(task_key: str, values: dict[str, object]) -> list[str]:
         if (values.get("start_mode") == "resume" and resume
                 and not resume.lower().endswith(".partial.sqlite")):
             issues.append("续传文件必须以 .partial.sqlite 结尾。")
+    if task_key == "full_scan" \
+            and values.get("start_mode") == "new" \
+            and bool(values.get("raw_deep_validation")) \
+            and values.get("format_validation") not in ("sample", "all"):
+        issues.append("RAW 深度校验必须先启用抽样或全部格式校验。")
     if task_key == "storage_collect":
         disk_numbers = _lines(values.get("disk_number"))
         if any(not re.fullmatch(r"\d+", number) for number in disk_numbers):
@@ -2809,8 +2875,12 @@ class DaisyApp:
         self.task_toolbar_buttons: dict[str, ttk.Button] = {}
         self._task_toolbar_layout_ready = False
         self.detected_tools: dict[str, dict[str, object]] = {}
+        self.runtime_capabilities: dict[
+            str, dict[str, object]
+        ] = {}
         self.manual_tool_paths: dict[str, str] = {}
         self.install_tool_buttons: dict[str, ttk.Button] = {}
+        self.environment_capability_label: tk.Label | None = None
         self.environment_missing_names: tuple[str, ...] = ()
         self.missing_installable_tools: tuple[str, ...] = ()
         self.is_administrator = is_windows_administrator()
@@ -3684,7 +3754,7 @@ class DaisyApp:
                 selectcolor=_UNIFIED_ACTION_BACKGROUND,
             )
         scan_behavior_menu.add_cascade(
-            label="哈希超时默认", menu=timeout_menu)
+            label="超时默认处置", menu=timeout_menu)
         self.scan_show_current_file_var = tk.BooleanVar(value=False)
         scan_behavior_menu.add_checkbutton(
             label="在进度区显示当前文件",
@@ -3718,6 +3788,17 @@ class DaisyApp:
         )
         self.scan_format_sample_menu = format_menu
         self.scan_format_sample_menu_index = int(format_menu.index("end"))
+        self.scan_raw_deep_validation_var = tk.BooleanVar(value=False)
+        format_menu.add_checkbutton(
+            label="RAW 深度校验（尚未检测）",
+            variable=self.scan_raw_deep_validation_var,
+            command=lambda: self._set_scan_advanced_value(
+                "raw_deep_validation",
+                bool(self.scan_raw_deep_validation_var.get()),
+            ),
+            selectcolor=_UNIFIED_ACTION_BACKGROUND,
+        )
+        self.scan_raw_menu_index = int(format_menu.index("end"))
         scan_behavior_menu.add_cascade(
             label="Full 格式校验", menu=format_menu)
         advanced_menu.add_cascade(
@@ -4910,10 +4991,26 @@ class DaisyApp:
     def _set_scan_advanced_value(self, key: str, value: object) -> None:
         if self._task_is_active() or key not in (
                 "timeout_action", "show_current_file",
-                "format_validation"):
+                "format_validation", "raw_deep_validation"):
             self._refresh_scan_advanced_values()
             return
-        self.saved_values.setdefault("full_scan", {})[key] = value
+        saved = self.saved_values.setdefault("full_scan", {})
+        if key == "raw_deep_validation" and bool(value):
+            available, reason = raw_runtime_capability_status(
+                getattr(self, "runtime_capabilities", {}))
+            format_mode = str(saved.get("format_validation") or "off")
+            if not available or format_mode == "off":
+                saved[key] = False
+                self._set_status(
+                    "RAW 深度校验无法启用："
+                    + (reason if not available else "请先启用格式校验。"),
+                    _WARNING,
+                )
+                self._refresh_scan_advanced_values()
+                return
+        saved[key] = value
+        if key == "format_validation" and value == "off":
+            saved["raw_deep_validation"] = False
         self._refresh_scan_advanced_values()
         if self.task.key == "full_scan":
             self._update_preview()
@@ -4961,8 +5058,37 @@ class DaisyApp:
             values.get("timeout_action") or "continue_waiting"))
         self.scan_show_current_file_var.set(bool(
             values.get("show_current_file", False)))
-        self.scan_format_validation_var.set(str(
-            values.get("format_validation") or "off"))
+        format_mode = str(values.get("format_validation") or "off")
+        self.scan_format_validation_var.set(format_mode)
+        raw_available, raw_reason = raw_runtime_capability_status(
+            getattr(self, "runtime_capabilities", {}))
+        raw_allowed = raw_available and format_mode in ("sample", "all")
+        raw_enabled = bool(
+            values.get("raw_deep_validation", False)) and raw_allowed
+        if not raw_allowed:
+            saved_full = self.saved_values.get("full_scan")
+            if isinstance(saved_full, dict) \
+                    and saved_full.get("raw_deep_validation") is True:
+                saved_full["raw_deep_validation"] = False
+        self.scan_raw_deep_validation_var.set(raw_enabled)
+        compact_reason = " ".join(raw_reason.split())
+        if len(compact_reason) > 72:
+            compact_reason = compact_reason[:71] + "…"
+        if not raw_available:
+            raw_label = f"RAW 深度校验（不可用：{compact_reason}）"
+        elif format_mode == "off":
+            raw_label = "RAW 深度校验（请先启用格式校验）"
+        else:
+            raw_label = f"RAW 深度校验（可用：{compact_reason}）"
+        self.scan_format_sample_menu.entryconfigure(
+            self.scan_raw_menu_index,
+            label=raw_label,
+            state=(
+                "normal"
+                if raw_allowed and not self._task_is_active()
+                else "disabled"
+            ),
+        )
         self.scan_format_sample_menu.entryconfigure(
             self.scan_format_sample_menu_index,
             label=(
@@ -5137,6 +5263,57 @@ class DaisyApp:
             )
         return row + 1
 
+    def _build_environment_capabilities(
+        self, row: int, form_pad: int,
+    ) -> int:
+        """显示可选能力状态；缺失不等同于基础环境检测失败。"""
+        panel = tk.Frame(
+            self.form_inner, bg=_SURFACE,
+            highlightbackground=_BORDER, highlightthickness=1,
+        )
+        panel.grid(
+            row=row, column=0, columnspan=2, sticky="ew",
+            padx=form_pad, pady=(8, 4),
+        )
+        panel.grid_columnconfigure(0, weight=1)
+        header = tk.Frame(panel, bg=_SURFACE)
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(6, 2))
+        tk.Frame(header, bg=_GREEN_DARK, width=4, height=18).pack(
+            side="left", fill="y")
+        tk.Label(
+            header, text="可选能力", bg=_SURFACE, fg=_GREEN_DEEP,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+        ).pack(side="left", padx=(8, 0))
+        available, reason = raw_runtime_capability_status(
+            self.runtime_capabilities)
+        label = tk.Label(
+            panel,
+            text=(
+                "RAW 深度校验：可用 · " + reason
+                if available else
+                "RAW 深度校验：不可用 · " + reason
+            ),
+            bg=_SURFACE,
+            fg=_SUCCESS if available else _WARNING,
+            font=("Microsoft YaHei UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        )
+        label.grid(row=1, column=0, sticky="ew", padx=12, pady=(2, 8))
+        panel.bind(
+            "<Configure>",
+            lambda event, target=label: target.configure(
+                wraplength=max(260, event.width - 24)),
+        )
+        attach_tooltip(
+            label,
+            "RAW 深度校验默认关闭。只有隔离探测通过后，Full 扫描中的"
+            "对应选项才会启用；不可用不会让基础环境检测失败。",
+        )
+        self.environment_capability_label = label
+        return row + 1
+
     def _build_admin_requirement_notice(
         self, row: int, form_pad: int,
     ) -> int:
@@ -5250,6 +5427,7 @@ class DaisyApp:
             child.destroy()
         self.values = {}
         self.install_tool_buttons = {}
+        self.environment_capability_label = None
         self.storage_detect_button = None
         form_pad = 16 if self.compact_layout else 22
         saved = _task_values(
@@ -5429,6 +5607,7 @@ class DaisyApp:
             row += 1
 
         if self.task.key == "env_check":
+            row = self._build_environment_capabilities(row, form_pad)
             row = self._build_environment_installation(row, form_pad)
 
         self.form_inner.grid_rowconfigure(row, minsize=4)
@@ -6078,6 +6257,11 @@ class DaisyApp:
         tools = payload.get("tools")
         if isinstance(tools, dict):
             self._cache_detected_tools({"tools": tools})
+        capabilities = payload.get("capabilities")
+        if isinstance(capabilities, dict):
+            self._apply_runtime_capabilities({
+                "capabilities": capabilities,
+            })
         raw_missing = payload.get("missing")
         missing_names: list[str] = []
         installable: list[str] = []
@@ -6097,6 +6281,39 @@ class DaisyApp:
         self.environment_missing_names = tuple(missing_names)
         self.missing_installable_tools = tuple(installable)
         self._refresh_tool_cache_labels()
+
+    def _apply_runtime_capabilities(
+        self, payload: dict[str, object],
+    ) -> None:
+        capabilities = payload.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return
+        raw = capabilities.get(envcap.RAW_CAPABILITY_ID)
+        if not isinstance(raw, dict) or raw.get("state") not in (
+                envcap.RUNTIME_CAPABILITY_STATES):
+            return
+        details = raw.get("details")
+        normalized = dict(raw)
+        normalized["details"] = (
+            dict(details) if isinstance(details, dict) else {})
+        if not hasattr(self, "runtime_capabilities"):
+            self.runtime_capabilities = {}
+        self.runtime_capabilities[envcap.RAW_CAPABILITY_ID] = normalized
+        self._refresh_scan_advanced_values()
+        label = getattr(self, "environment_capability_label", None)
+        if label is not None:
+            available, reason = raw_runtime_capability_status(
+                self.runtime_capabilities)
+            label.configure(
+                text=(
+                    "RAW 深度校验：可用 · " + reason
+                    if available else
+                    "RAW 深度校验：不可用 · " + reason
+                ),
+                fg=_SUCCESS if available else _WARNING,
+            )
+        if getattr(getattr(self, "task", None), "key", None) == "full_scan":
+            self._update_preview()
 
     def _apply_storage_inventory(
         self, payload: dict[str, object],
@@ -6644,6 +6861,9 @@ class DaisyApp:
             self._close_scan_control_input()
         if event_name == "environment_inventory":
             self._apply_environment_inventory(payload)
+            return
+        if event_name == "runtime_capabilities":
+            self._apply_runtime_capabilities(payload)
             return
         if event_name == "tools_detected":
             self._cache_detected_tools(payload)

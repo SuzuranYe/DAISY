@@ -85,6 +85,7 @@ class TestScanArgumentMapping(unittest.TestCase):
         )
         self.assertIn("--control-stdin", args)
         self.assertNotIn("full-scan", args)
+        self.assertNotIn("--raw-deep-validation", args)
 
     def test_full_resume_does_not_override_frozen_configuration(self) -> None:
         partial = os.path.join(_RUNTIME_ROOT, "Saved.partial.sqlite")
@@ -136,6 +137,86 @@ class TestScanArgumentMapping(unittest.TestCase):
             "format_sample_percent": "nan",
         })
         self.assertTrue(any("有限数字" in issue for issue in issues))
+
+    def test_raw_is_format_subordinate_and_maps_timeout_without_hash(
+        self,
+    ) -> None:
+        args = gui.build_tool_args("full_scan", {
+            "roots": _RUNTIME_ROOT,
+            "hash_mode": "none",
+            "format_validation": "all",
+            "raw_deep_validation": True,
+            "timeout_action": "skip_and_record",
+        })
+        self.assertIn("--raw-deep-validation", args)
+        self.assertEqual(
+            "skip_and_record",
+            args[args.index("--timeout-action") + 1],
+        )
+        issues = gui.validate_values("full_scan", {
+            "roots": _RUNTIME_ROOT,
+            "format_validation": "off",
+            "raw_deep_validation": True,
+        })
+        self.assertTrue(any("必须先启用" in issue for issue in issues))
+
+
+class TestRawCapabilityPresentation(unittest.TestCase):
+    @staticmethod
+    def available_payload() -> dict[str, object]:
+        return {
+            "id": gui.envcap.RAW_CAPABILITY_ID,
+            "title": gui.envcap.RAW_CAPABILITY_TITLE,
+            "state": "available",
+            "available": True,
+            "version": "0.synthetic",
+            "reason": None,
+            "provider": "rawpy/LibRaw",
+            "isolated": True,
+            "details": {
+                "worker_reaped": True,
+                "libraw_version": "0.libraw",
+            },
+        }
+
+    def test_missing_nonisolated_and_available_have_direct_reasons(self) -> None:
+        available, reason = gui.raw_runtime_capability_status({})
+        self.assertFalse(available)
+        self.assertIn("尚未检测", reason)
+        payload = self.available_payload()
+        payload["isolated"] = False
+        available, reason = gui.raw_runtime_capability_status({
+            gui.envcap.RAW_CAPABILITY_ID: payload,
+        })
+        self.assertFalse(available)
+        self.assertIn("隔离能力证据不完整", reason)
+        payload = self.available_payload()
+        available, reason = gui.raw_runtime_capability_status({
+            gui.envcap.RAW_CAPABILITY_ID: payload,
+        })
+        self.assertTrue(available)
+        self.assertIn("rawpy 0.synthetic", reason)
+        self.assertIn("LibRaw 0.libraw", reason)
+
+    def test_runtime_event_updates_allowlisted_capability(self) -> None:
+        app = object.__new__(gui.DaisyApp)
+        app.runtime_capabilities = {}
+        app.environment_capability_label = None
+        app.task = types.SimpleNamespace(key="full_scan")
+        app._refresh_scan_advanced_values = Mock()
+        app._update_preview = Mock()
+        app._apply_runtime_capabilities({
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID: self.available_payload(),
+                "arbitrary": {"state": "available"},
+            },
+        })
+        self.assertEqual(
+            {gui.envcap.RAW_CAPABILITY_ID},
+            set(app.runtime_capabilities),
+        )
+        app._refresh_scan_advanced_values.assert_called_once_with()
+        app._update_preview.assert_called_once_with()
 
 
 class TestScanControlProtocol(unittest.TestCase):
@@ -493,6 +574,69 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertTrue(shown.startswith("前"))
         self.assertTrue(shown.endswith(".dng"))
         self.assertEqual(self.app.current_file_tooltip.text, value)
+
+    def test_raw_capability_gates_menu_preview_and_environment_card(
+        self,
+    ) -> None:
+        self.app._select_task("full_scan", save_current=False)
+        self.root.update_idletasks()
+        menu = self.app.scan_format_sample_menu
+        index = self.app.scan_raw_menu_index
+        self.assertEqual(menu.entrycget(index, "state"), "disabled")
+        self.assertIn("尚未检测", menu.entrycget(index, "label"))
+
+        available = TestRawCapabilityPresentation.available_payload()
+        self.app._apply_runtime_capabilities({
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID: available,
+            },
+        })
+        self.app._set_scan_advanced_value("format_validation", "all")
+        self.root.update_idletasks()
+        self.assertEqual(menu.entrycget(index, "state"), "normal")
+        self.assertIn("隔离探测通过", menu.entrycget(index, "label"))
+
+        self.app._set_scan_advanced_value("raw_deep_validation", True)
+        self.root.update_idletasks()
+        self.assertTrue(self.app.scan_raw_deep_validation_var.get())
+        self.assertIs(
+            self.app.saved_values["full_scan"]["raw_deep_validation"],
+            True,
+        )
+        self.assertIn("--raw-deep-validation", self.app.preview_var.get())
+
+        self.app._select_task("env_check", save_current=False)
+        self.root.update_idletasks()
+        self.assertIn(
+            "RAW 深度校验：可用",
+            self.app.environment_capability_label.cget("text"),
+        )
+        unavailable = dict(available)
+        unavailable.update({
+            "state": "unavailable",
+            "available": False,
+            "reason": "合成能力失效",
+        })
+        self.app._apply_runtime_capabilities({
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID: unavailable,
+            },
+        })
+        self.root.update_idletasks()
+        self.assertIn(
+            "合成能力失效",
+            self.app.environment_capability_label.cget("text"),
+        )
+
+        self.app._select_task("full_scan", save_current=False)
+        self.root.update_idletasks()
+        self.assertEqual(menu.entrycget(index, "state"), "disabled")
+        self.assertIn("合成能力失效", menu.entrycget(index, "label"))
+        self.assertIs(
+            self.app.saved_values["full_scan"]["raw_deep_validation"],
+            False,
+        )
+        self.assertNotIn("--raw-deep-validation", self.app.preview_var.get())
 
     def test_default_continue_keeps_timeout_choice_available(self) -> None:
         payload = {
