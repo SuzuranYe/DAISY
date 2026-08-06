@@ -622,3 +622,57 @@ CLI、GUI timeout／恢复／发布界面和 sealed partial 的重启后发布�
 视为错误。测试没有运行 Full 外部工具采集、真实硬盘检测或工作区外扫描，也没有枚举、
 停止、附加或复用其它进程。GUI 接线和突然终止控制子进程端到端故障注入仍是阶段 4 的
 剩余阻断项。
+
+### 9.4 现有扫描 GUI 生产接线（第五检查点）
+
+提交 `569aebc feat: connect resumable scan gui controls` 已把现有 Full／Quick 页面接到统一
+`scan --mode full|quick --control-stdin` 入口，并验证以下边界：
+
+- Full／Quick 使用 schema 4 新建／恢复链；旧 `full-scan`／`quick-scan` 命令保持不变；
+- 暂停／继续、保存退出、停止、timeout 三决定和运行中关闭只操作本窗口持有的精确子进程
+  与 stdin；
+- 保存退出只持久化 task key 和 partial 恢复指针，下次启动先显示恢复卡片，用户确认后
+  才填入页面；普通表单值不恢复，停止任务不主动建议恢复；
+- 开始任务后收起设置并展开进度／日志；Full 的格式校验默认关闭，动态 timeout 默认处置、
+  抽样比例和当前文件开关位于高级设置；
+- Windows lease 活性探测修正为检查精确 PID 的 `STILL_ACTIVE`，测试只终止自己启动的
+  Quick 子进程，没有枚举其它进程。
+
+定向结果为 State 22／22、Run 51／51、统一扫描 CLI 10／10、GUI scan 19／19；随后完整
+发现式回归为 465／465。测试数据和 `TEMP`／`TMP` 均位于工作区
+`.test_runtime\v1_6_0`；未读取用户 `TEMP\`，未扫描真实硬盘或工作区外档案。
+
+这一检查点只连接现有 Full／Quick 页面，不等于扫描／对比／核验／解析四入口 GUI 已经
+完成。代码发布身份仍是 `SCANNER_VERSION=1.5.1`，因此当前 GUI 标题显示 v1.5.1 是预期
+事实；最终版本号尚未更新。
+
+## 十、阶段 5：统一核验核心（第一检查点）
+
+提交 `68ef716 feat: add unified verification core` 新增只读统一核验业务模型：
+
+- schema 3／4 封存快照均通过统一 Reader 识别，输入数据库核验前后身份一致；
+- 全量 stat 始终执行；哈希和格式分别支持 off／sample／all，抽样比例和种子互不串扰；
+- 哈希必须前后 stat 稳定、独立 PowerShell 完整读取、worker 已回收且摘要与有效基准相同
+  才能记为一致；无基准明确记为不可核验；
+- 内置 ZIP／PDF 在单独 `spawn` worker 中执行，支持 pause／timeout／stop 和精确回收；
+- unknown／unsupported 只计数不列路径；Markdown 人读报告与 JSON 技术证据来自同一模型，
+  使用 staging、摘要校验和 no-clobber 发布；
+- 未采用自定义 Windows native Job。
+
+新统一核验专项 10／10、旧核验＋新统一核验联合 31／31 通过，并把 `ResourceWarning` 视为
+错误。该提交之后尚未执行完整发现式回归。外部 ExifTool／FFprobe／7-Zip 直接监督、统一
+verify CLI、旧入口投影对照和 GUI 合并尚未完成，不能关闭阶段 5。
+
+## 十一、2026-08-06 重启前交接与新增 RAW 需求
+
+用户新增“RAW 深度校验”：Full 扫描和统一核验的格式校验下均可选择，默认关闭；rawpy／
+LibRaw 必须在隔离子进程实际解码，崩溃、timeout、访问异常和内存错误不能拖垮 GUI／父
+任务；明确 unsupported 只计总数，解码失败／截断等进入固定 Issues 板块；统一运行能力
+层负责可用性和禁用原因；结果只写报告／伴随证据，不改变数据库结构。该需求及 RAW-01～14
+测试已写入实施计划，本节只记录需求，尚无实现或通过结果。
+
+重启交接时：`Codex` 的已提交代码 HEAD 为 `68ef716`，`main` 为 `824af84`。未跟踪 WIP
+`Script/Lib/Script_DAISY_Lib_DBS_12_Verify_Tools.py` 为 632 行，SHA-256
+`ABF89ED666E85E69E5C3A5FF397F5FB7A8DCFF010B20790C73131F6F7E754CEA`；它尚未接入、
+尚未测试，已知仍有事件去重和文件消失分类待修，不能视为检查点。用户 `TEMP\` 仍未跟踪
+且未被读取或改动。详细续接顺序、native 异常的不确定性和下一步见实施计划第 17 章。
