@@ -139,6 +139,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_Verify_Unified.py",
     "Script_DAISY_Test_DBS_Verify_Tools.py",
     "Script_DAISY_Test_DBS_Verify_CLI.py",
+    "Script_DAISY_Test_DBS_Verify_Compatibility.py",
     "Script_DAISY_Test_DBS_Parse.py",
     "Script_DAISY_Test_DBS_State.py",
     "Script_DAISY_Test_DBS_Hash_Worker.py",

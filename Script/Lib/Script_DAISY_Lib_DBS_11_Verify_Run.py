@@ -974,7 +974,8 @@ def _run_hash_stage(
         entries,
         options.hash_mode,
         options.hash_sample_percent,
-        str(snapshot["snapshot_uuid"]) + ":verify:hash",
+        # 保持 v1.5.1 check-hash 的确定性样本，便于新旧报告对照。
+        str(snapshot["snapshot_uuid"]) + ":patrol",
     )
     with_baseline = [entry for entry in selected if entry.baseline_hash]
     used_tools: dict[str, dict[str, object]] = {}
@@ -1170,7 +1171,8 @@ def _run_format_stage(
         entries,
         options.format_mode,
         options.format_sample_percent,
-        str(snapshot["snapshot_uuid"]) + ":verify:format",
+        # 保持 v1.5.1 check-format 的确定性样本，且与哈希 seed 独立。
+        str(snapshot["snapshot_uuid"]) + ":validate",
     )
     _emit(on_event, "stage_started", stage="format")
     progress = _RateEmitter(on_progress, _PROGRESS_INTERVAL)
