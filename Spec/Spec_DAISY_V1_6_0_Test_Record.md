@@ -191,3 +191,22 @@ OK
 ```
 
 失败 0，跳过 0。
+
+第三步把 DBS-31／32 的业务实现移入 `Script_DAISY_Lib_DBS_06_Verify.py`：
+
+- DBS-31 的 stat、哈希抽样／全量核验和 JSON／Issues 报告写出成为共用服务；
+- DBS-32 的 ZIP、PDF、OLE、7-Zip、ExifTool、ffprobe 判据和全部报告写出成为共用服务；
+- 旧 DBS-31／32 脚本分别由 223／430 行缩为 93／111 行，只保留 CLI、退出码和兼容符号；
+- `validate_legacy_office` 仍保留旧 `validate_sevenzip` 运行时替换点。
+
+共用 Verify、旧 CLI、哈希注入、格式判据和混合目录端到端定向回归 19 项全部通过。
+另从检查点 `05225e0` 只读加载迁移前实现，在同一合成快照上做差分：DBS-31 的 JSON
+与 `_Issues.md` 逐字节一致；固定报告随机名、时间戳和计时后，DBS-32 的 JSON、CSV、
+Markdown、Info CSV 共 4 个文件逐字节一致；输入快照 SHA-256 均不变。完整回归结果为：
+
+```text
+Ran 308 tests in 95.871s
+OK
+```
+
+失败 0，跳过 0。阶段 2 第 1～3 项完成；大型旧测试文件拆分尚未完成。

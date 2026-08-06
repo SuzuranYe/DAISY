@@ -227,6 +227,34 @@ class TestVerificationInputModel(unittest.TestCase):
         ) as verification:
             self.assertEqual(verification.hash_coverage, "none")
 
+    def test_legacy_modules_delegate_to_shared_services(self) -> None:
+        self.assertIs(hashcheck.patrol, dbverify.patrol_hash)
+        self.assertIs(hashcheck.dbh, dbverify.dbh)
+        self.assertIs(formatcheck.validate_snapshot,
+                      dbverify.validate_format_snapshot)
+        self.assertIs(formatcheck.validate_zip, dbverify.validate_zip)
+        self.assertIs(formatcheck.validate_pdf, dbverify.validate_pdf)
+        self.assertIs(formatcheck.validate_sevenzip,
+                      dbverify.validate_sevenzip)
+        self.assertIs(formatcheck.validate_media, dbverify.validate_media)
+        self.assertIs(formatcheck._pick_validator,
+                      dbverify.pick_format_validator)
+        self.assertIs(formatcheck.subprocess, dbverify.subprocess)
+
+        ole_path = os.path.join(self.base, "legacy.doc")
+        with open(ole_path, "wb") as handle:
+            handle.write(dbverify._OLE_MAGIC + b"\x00" * 16)
+        with mock.patch.object(
+            formatcheck,
+            "validate_sevenzip",
+            return_value=("valid", None),
+        ) as validator:
+            self.assertEqual(
+                formatcheck.validate_legacy_office(ole_path, "7z"),
+                ("valid", None),
+            )
+        validator.assert_called_once_with(ole_path, "7z")
+
     def test_mapping_failure_closes_reader_connection(self) -> None:
         path = self.snapshot()
         captured = []
