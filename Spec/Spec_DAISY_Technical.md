@@ -66,6 +66,7 @@ v1.6.0 开发分支另有不占编号的统一编排脚本
 | RAW 恢复 JSONL、最终伴随 JSON 与 Markdown 投影 | `Script\Lib\Script_DAISY_Lib_DBS_14_Raw_Evidence.py` |
 | 数据库解析稳定字段与流式业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_15_Parse_Projection.py` |
 | 数据库解析技术 writer、manifest、staging 与 no-clobber 发布 | `Script\Lib\Script_DAISY_Lib_DBS_16_Parse_Run.py` |
+| 数据库解析自包含 HTML 与流式 XLSX 人读投影 | `Script\Lib\Script_DAISY_Lib_DBS_17_Parse_Human.py` |
 | Python 可选运行能力统一探测 | `Script\Lib\Script_DAISY_Lib_ENV_01_Capabilities.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本及统一编排脚本的参数解析器 |
@@ -834,9 +835,10 @@ BitLocker 状态；不得未经检查公开分享。
   schema 4 发布指纹复核新增默认开启的可选参数，数据库解析快速识别可延迟完整文件摘要并
   显示未复核警告，正式导出仍恢复摘要和 SQLite 完整性检查。稳定投影不导出 `entry_id`
   作为跨库身份，大表以 `fetchmany()` 分批读取；RAW 原始载荷逐行核对 zlib、长度、SHA-256
-  和 UTF-8 JSON。技术 CSV／JSONL 共用一次模块遍历，生成输入／产物摘要 manifest，并在
-  唯一 staging 完成后 no-clobber 发布。旧 `export-report` 的 CSV／XLSX 顺序和值没有切换；
-  HTML、新版 XLSX、新 CLI 和 GUI 仍未完成。
+  和 UTF-8 JSON。HTML／XLSX／CSV／JSONL 共用一次模块遍历，生成输入／产物摘要 manifest，
+  并在唯一 staging 完成后 no-clobber 发布。HTML 为带 nonce CSP、无外部资源、限定预览的
+  自包含报告；XLSX 使用流式 sheet parts，首张概览，支持冻结、筛选、拆表和字符串公式
+  防护。旧 `export-report` 的 CSV／XLSX 顺序和值没有切换；新 CLI 和 GUI 仍未完成。
 - v1.6.0 阶段 3 已实现独立 schema 4 状态层：新表保持 schema 3 业务表超集，新增 session、
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用

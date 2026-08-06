@@ -1043,5 +1043,35 @@ mtime 前后相同。所有报告只写入 `.test_runtime\v1_6_0\real_parse_tech
 干净通过。输入变化用例最初增加 1 ns，被 Windows 文件系统时间粒度舍入；改为增加 1 秒
 后真实触发拒绝发布。产品代码没有为迎合错误断言而放宽检测。
 
-HTML、新版 XLSX、`parse-db` CLI、GUI 模块卡片和 1080p／字号矩阵仍未实施；本节不把
+截至第十二检查点，HTML、新版 XLSX、`parse-db` CLI、GUI 模块卡片和 1080p／字号矩阵仍未实施；本节不把
 技术 writer 检查点称为完整“数据库解析”交付。
+
+## 二十三、阶段 7：人读 HTML 与流式 XLSX（第十三检查点）
+
+本检查点让 HTML／XLSX／CSV／JSONL 共用同一次稳定模块遍历：
+
+- HTML 使用 nonce CSP，无 `unsafe-inline`、远程资源或 `file://`，数据库内容全部转义；
+- HTML 固定最多 200 行模块预览，显示真实总数、截断、兼容降级、0／NULL 和完整值边界；
+- Diff 首页使用变化状态结论，快照首页使用 Issues 证据，不混用两类语义；
+- XLSX 首张为报告概览，后续流式 sheet parts 支持冻结、筛选、语义列宽、行上限拆表和名称
+  去重；所有数据库值为 `inlineStr`，不写公式元素；
+- RAW 在 HTML／XLSX 只显示前 200 行，205 行夹具的 manifest 仍记录总数 205；
+- 取消中途写入的 XLSX parts、总 staging 和最终报告全部不存在。
+
+| 批次 | 结果 | 关键证据 |
+|---|---:|---|
+| HTML／XLSX 专项 | 6／6 | CSP、转义、控制字符、有限预览、Diff 结论、XLSX 结构与取消 |
+| 技术执行层回归 | 5／5 | 四格式接入后 CSV／JSONL、manifest 与 no-clobber 不回退 |
+| 旧 Parse／DBS-41 | 11／11 | 旧 CSV／XLSX 和旧 CLI 完全保持 |
+| 真实人读导出 | 10／10 | schema 3／4、四方向和变化 Diff 的 HTML／XLSX 结构通过 |
+| 真实输入身份 | 10／10 | SHA-256、大小、mtime 前后相同 |
+
+HTML 专项使用标准 `HTMLParser` 确认数据库中的 `<script>`／`<img onerror>` 仅为文本，报告
+只有一个带固定 nonce 的静态脚本，所有 `href` 只指向报告内部锚点。XLSX 专项对 ZIP 做
+CRC 检查，并用 XML 解析器逐个读取 package XML；工作表含冻结 pane 与 autoFilter，且没有
+`<f>`。公式前缀文件名保持普通字符串；强制 48 字符显示上限时 XLSX 显示截断，JSONL 的
+180 字符嵌套原值仍完整。
+
+真实批次读取前一检查点的 10 个数据库，只在 `.test_runtime\v1_6_0\real_parse_human_*`
+生成报告，不访问数据库记录的源路径。`parse-db` CLI 与 GUI 尚未完成，本节不作为阶段 7
+完成证据。

@@ -1150,6 +1150,7 @@ class TestGuiArguments(unittest.TestCase):
                 "Script_DAISY_Lib_DBS_14_Raw_Evidence.py",
                 "Script_DAISY_Lib_DBS_15_Parse_Projection.py",
                 "Script_DAISY_Lib_DBS_16_Parse_Run.py",
+                "Script_DAISY_Lib_DBS_17_Parse_Human.py",
                 "Script_DAISY_Lib_ENV_01_Capabilities.py",
                 "Script_DAISY_Lib_STG_01_Core.py",
                 "Script_DAISY_Lib_STG_02_Windows.py",

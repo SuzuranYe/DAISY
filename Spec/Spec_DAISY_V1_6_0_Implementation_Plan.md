@@ -1240,7 +1240,7 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 4 | 完成 | worker、暂停／保存退出／停止、动态 timeout、扫描发布链、scan CLI 和现有扫描 GUI 接线已落地 |
 | 5 | 进行中 | 统一核验、旧入口投影、RAW 核验／Full 扫描链及 ENV／Full GUI 能力接线已完成；核验页最终 GUI 与真实 RAW 夹具仍未完成 |
 | 6 | 完成 | schema 3／4 四方向 Diff 已切到 Reader 规范化投影，冻结输出 DDL，能力不足不伪装 |
-| 7 | 进行中 | 数据库解析识别、15／6 模块、稳定投影、RAW 校验、技术 CSV／JSONL、manifest 与安全发布已完成；HTML／XLSX、CLI 和 GUI 待完成 |
+| 7 | 进行中 | 数据库解析识别、15／6 模块、四格式 writer、manifest 与安全发布已完成；CLI 和 GUI 待完成 |
 | 8～9 | 未开始完成性实施 | 四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
 
 最近一次完整发现式回归是在扫描 GUI 检查点后执行，结果为 465／465；同一阶段的 State、
@@ -1497,8 +1497,37 @@ CSV／XLSX 字节与 CLI 退出码仍通过 11／11。真实只读验证进一�
 `-W error` 下干净通过。执行层输入变化测试最初只调整 1 ns，Windows 文件系统粒度将其
 舍入而未触发；改为 1 秒后通过。这两项均是测试证据修正，不是把产品失败改写为成功。
 
-HTML、新版 XLSX、`parse-db` CLI、数据库解析 GUI 与打开结果动作尚未实现，DBP-07～09、
+截至第二检查点，HTML、新版 XLSX、`parse-db` CLI、数据库解析 GUI 与打开结果动作尚未实现，DBP-07～09、
 DBP-11 的人读／工作簿部分以及 GUI 矩阵仍未完成；阶段 7 继续标记为进行中。
+
+### 17.17 数据库解析 HTML／XLSX 检查点
+
+阶段 7 第三检查点让四种格式共享同一次模块遍历，没有回退为“先导出全部 CSV，再转成
+工作簿”：
+
+- `Report.html` 是无网络依赖的自包含 UTF-8 报告；每模块最多 200 行预览，显示总行数和
+  截断事实，提供固定目录、折叠、客户端预览筛选、打印 CSS 和窄窗口响应布局；
+- 数据库文本只进入 HTML 转义后的文本节点，静态 CSS／JS 使用 nonce CSP，不使用
+  `unsafe-inline`，不生成 `file://` 或外部资源 URL；路径只可复制，不会被自动访问；
+- 快照首页诚实区分问题记录 0 与 NULL；Diff 首页按 file status 汇总非 unchanged 记录，
+  不误用“未选择问题摘要”的快照结论；
+- `Report_Excel.xlsx` 直接流式写 worksheet XML；首张“报告概览”，后续所选模块支持中文＋
+  原字段表头、冻结、筛选、语义列宽、1,048,576 行上限自动拆表和 31 字符工作表名去重；
+- 数据库文本统一写为 `inlineStr`，测试确认所有 worksheet 无 `<f>` 元素；公式前缀保持文本，
+  XML 禁止控制字符转为可见表示。单元格显示上限与截断数进入概览，技术 JSONL 仍保留
+  完整嵌套值；RAW HTML／XLSX 最多显示 200 行，总数不缩水；
+- 取消在写 sheet part 时生效，本次 parts、staging 和最终报告全部清理；HTML／XLSX 摘要
+  同样进入 manifest，并与 CSV／JSONL 一起通过 no-clobber 发布。
+
+专项自动化 6／6，覆盖 HTML CSP／转义／有限预览／Diff 结论、XLSX 拆表／CRC／XML／公式
+防护、四格式单次投影、RAW 205→200 显示边界和取消清理。技术执行层 5／5 与旧 Parse
+11／11 继续通过。对此前 10 个真实 schema 3／4／Diff 数据库又完成 10／10 人读摘要导出；
+每份 HTML 经解析确认无外部资源，每份 XLSX 的 ZIP CRC 与所有 XML 均通过，manifest 产物
+摘要一致，10 个输入 SHA-256／大小／mtime 前后不变。输出只位于
+`.test_runtime\v1_6_0\real_parse_human_*`，没有访问库内源路径。
+
+统一 `parse-db` CLI、GUI 数据库检测／模块卡片／格式选择、运行面板切换和打开结果仍未
+实现；本检查点不能称数据库解析产品入口已经完成。
 
 ## 十八、完成定义
 
