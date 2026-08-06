@@ -29,6 +29,74 @@ DATA_CONTRACT = "daisy-snapshot-v3"
 PATH_KEY_RULE = 1
 FILENAME_LAYOUT_VERSION = 2
 
+WINDOWS_WORKER_ERROR_MODE_FLAGS = (
+    0x0001   # SEM_FAILCRITICALERRORS
+    | 0x0002  # SEM_NOGPFAULTERRORBOX
+    | 0x8000  # SEM_NOOPENFILEERRORBOX
+)
+
+
+def configure_windows_worker_error_mode(
+    *,
+    _platform: str | None = None,
+    _get_error_mode=None,
+    _set_error_mode=None,
+) -> dict[str, object]:
+    """请求 Windows 让任务 worker 后代以返回码报告 native 故障。
+
+    该函数只应在非 Tk 的任务进程启动处调用。注入参数仅供不改变测试进程
+    实际错误模式的单元测试使用。
+    """
+    current_platform = sys.platform if _platform is None else _platform
+    required = WINDOWS_WORKER_ERROR_MODE_FLAGS
+    if current_platform != "win32":
+        return {
+            "status": "not_applicable",
+            "required_flags": required,
+            "previous_mode": None,
+            "effective_mode": None,
+            "detail": None,
+        }
+    if (_get_error_mode is None) != (_set_error_mode is None):
+        raise ValueError("错误模式测试 API 必须同时提供 get 与 set")
+    try:
+        if _get_error_mode is None:
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            getter = kernel32.GetErrorMode
+            getter.argtypes = []
+            getter.restype = ctypes.c_uint
+            setter = kernel32.SetErrorMode
+            setter.argtypes = [ctypes.c_uint]
+            setter.restype = ctypes.c_uint
+        else:
+            getter = _get_error_mode
+            setter = _set_error_mode
+        before = int(getter()) & 0xFFFFFFFF
+        setter(before | required)
+        after = int(getter()) & 0xFFFFFFFF
+    except Exception as exc:
+        # 平台 API 的任何失败都只能降级提示，不能阻止扫描任务启动。
+        return {
+            "status": "error",
+            "required_flags": required,
+            "previous_mode": None,
+            "effective_mode": None,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+    missing = required & ~after
+    return {
+        "status": "configured" if not missing else "degraded",
+        "required_flags": required,
+        "previous_mode": before,
+        "effective_mode": after,
+        "detail": (
+            None if not missing
+            else f"Windows 错误模式缺少标志 0x{missing:08X}"
+        ),
+    }
+
 
 def report_metadata(tool_name: str) -> dict[str, str]:
     """返回报告文件共用的生成工具身份，不涉及数据库 schema。"""
@@ -1840,6 +1908,7 @@ def discover_tool(name: str, explicit: str | None) -> str:
 
 
 def _run(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    configure_windows_worker_error_mode()
     return subprocess.run(args, capture_output=True, timeout=timeout)
 
 

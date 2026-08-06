@@ -1037,11 +1037,23 @@ class ExifToolWorker:
 
 def ffprobe_full(ffprobe_path: str, file_path: str,
                  timeout: float = FF_TIMEOUT_S) -> dict:
-    r = subprocess.run([ffprobe_path] + FF_ARGS + [file_path],
-                       capture_output=True, timeout=timeout)
+    core.configure_windows_worker_error_mode()
+    run_kwargs: dict[str, object] = {
+        "capture_output": True, "timeout": timeout}
+    if os.name == "nt":
+        run_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NO_WINDOW", 0)
+    r = subprocess.run(
+        [ffprobe_path] + FF_ARGS + [file_path], **run_kwargs)
     if r.returncode != 0:
-        raise RuntimeError("ffprobe 失败：" +
-                           r.stderr.decode("utf-8", "replace")[:200])
+        returncode = int(r.returncode)
+        unsigned = returncode & 0xFFFFFFFF
+        if returncode < 0 or unsigned >= 0x80000000:
+            summary = f"ffprobe 异常退出（0x{unsigned:08X}）"
+        else:
+            summary = f"ffprobe 失败（退出码 {returncode}）"
+        error = r.stderr.decode("utf-8", "replace").strip()[:200]
+        raise RuntimeError(summary + (f"：{error}" if error else ""))
     return json.loads(r.stdout.decode("utf-8", "replace"))
 
 

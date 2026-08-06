@@ -18,9 +18,12 @@ _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR]
 
+import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as legacy
 import Script_DAISY_Lib_DBS_12_Verify_Tools as verifytools
+import Script_DAISY_MAIN as entry
 
 
 _RUNTIME_ROOT = os.path.join(
@@ -76,6 +79,110 @@ class _Fixture(unittest.TestCase):
         with open(path, "wb") as handle:
             handle.write(payload)
         return path
+
+
+class TestWindowsNativeFailureBoundary(unittest.TestCase):
+    def test_error_mode_preserves_existing_flags_and_adds_required_flags(self) \
+            -> None:
+        state = [0x0040]
+
+        def get_mode() -> int:
+            return state[0]
+
+        def set_mode(value: int) -> int:
+            previous = state[0]
+            state[0] = value
+            return previous
+
+        outcome = core.configure_windows_worker_error_mode(
+            _platform="win32",
+            _get_error_mode=get_mode,
+            _set_error_mode=set_mode,
+        )
+        self.assertEqual(outcome["status"], "configured")
+        self.assertEqual(outcome["previous_mode"], 0x0040)
+        self.assertEqual(
+            outcome["effective_mode"],
+            0x0040 | core.WINDOWS_WORKER_ERROR_MODE_FLAGS,
+        )
+
+    def test_error_mode_reports_degraded_and_non_windows_is_noop(self) \
+            -> None:
+        degraded = core.configure_windows_worker_error_mode(
+            _platform="win32",
+            _get_error_mode=lambda: 0,
+            _set_error_mode=lambda _value: 0,
+        )
+        self.assertEqual(degraded["status"], "degraded")
+        self.assertIn("0x", str(degraded["detail"]))
+
+        other = core.configure_windows_worker_error_mode(
+            _platform="linux")
+        self.assertEqual(other["status"], "not_applicable")
+        self.assertIsNone(other["effective_mode"])
+
+    @unittest.skipUnless(os.name == "nt", "仅 Windows 具有进程错误模式")
+    def test_real_windows_child_inherits_required_error_mode(self) -> None:
+        outcome = core.configure_windows_worker_error_mode()
+        self.assertEqual(outcome["status"], "configured", outcome)
+        child = subprocess.run(
+            _python_command(
+                "import ctypes;"
+                "k=ctypes.WinDLL('kernel32',use_last_error=True);"
+                "k.GetErrorMode.restype=ctypes.c_uint;"
+                "print(int(k.GetErrorMode()))"),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10.0,
+            check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        child_mode = int(child.stdout.decode("ascii").strip())
+        self.assertEqual(
+            child_mode & core.WINDOWS_WORKER_ERROR_MODE_FLAGS,
+            core.WINDOWS_WORKER_ERROR_MODE_FLAGS,
+        )
+
+    def test_unified_entry_never_changes_tk_process_error_mode(self) -> None:
+        with mock.patch.object(
+                core, "configure_windows_worker_error_mode") as configure:
+            entry._configure_task_worker_runtime("gui")
+            configure.assert_not_called()
+            configure.return_value = {
+                "status": "configured", "detail": None}
+            entry._configure_task_worker_runtime("verify")
+            configure.assert_called_once_with()
+
+    def test_legacy_ffprobe_hides_window_and_labels_native_crash(self) \
+            -> None:
+        success = subprocess.CompletedProcess(
+            args=["ffprobe"], returncode=0, stdout=b'{"streams":[]}',
+            stderr=b"")
+        with (
+            mock.patch.object(dbmeta.core, "configure_windows_worker_error_mode"),
+            mock.patch.object(dbmeta.os, "name", "nt"),
+            mock.patch.object(dbmeta.subprocess, "run", return_value=success)
+            as runner,
+        ):
+            self.assertEqual(
+                dbmeta.ffprobe_full("ffprobe.exe", "fixture.mp4"),
+                {"streams": []},
+            )
+        self.assertEqual(
+            runner.call_args.kwargs["creationflags"],
+            getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        crashed = subprocess.CompletedProcess(
+            args=["ffprobe"], returncode=0xC0000005,
+            stdout=b"", stderr=b"")
+        with (
+            mock.patch.object(dbmeta.core, "configure_windows_worker_error_mode"),
+            mock.patch.object(dbmeta.os, "name", "nt"),
+            mock.patch.object(dbmeta.subprocess, "run", return_value=crashed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "0xC0000005"):
+                dbmeta.ffprobe_full("ffprobe.exe", "fixture.mp4")
 
 
 class TestControlledExternalTool(_Fixture):

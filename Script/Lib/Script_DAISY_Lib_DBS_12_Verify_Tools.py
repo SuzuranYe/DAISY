@@ -168,6 +168,7 @@ def run_controlled_tool(
     if not math.isfinite(threshold_seconds) or threshold_seconds <= 0:
         raise ValueError("timeout_seconds 必须是大于 0 的有限数")
 
+    core.configure_windows_worker_error_mode()
     factory = _popen_factory or subprocess.Popen
     kwargs: dict[str, object] = {
         "stdin": subprocess.DEVNULL,

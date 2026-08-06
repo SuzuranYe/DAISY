@@ -61,6 +61,26 @@ COMMAND_ARGUMENT_PREFIXES = {
 }
 
 
+def _configure_task_worker_runtime(command: str) -> None:
+    """为非 GUI 任务设置局部 native 故障边界；失败时保留可见警告。"""
+    if command == "gui":
+        return
+    try:
+        import Script_DAISY_Lib_DBS_01_Core as core
+    except ImportError:
+        # 由后续模块导入保留统一的“包不完整”人读错误。
+        return
+
+    outcome = core.configure_windows_worker_error_mode()
+    if outcome["status"] in ("error", "degraded"):
+        print(
+            "警告：Windows 子工具错误框抑制未完全启用："
+            f"{outcome['detail'] or outcome['status']}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def guide() -> str:
     try:
         import Script_DAISY_Lib_DBS_01_Core as core
@@ -147,6 +167,7 @@ def main() -> int:
               f"是否齐全（清单见 README.md）",
               file=sys.stderr)
         return 2
+    _configure_task_worker_runtime(cmd)
     sys.argv = [
         module_name + ".py",
         *COMMAND_ARGUMENT_PREFIXES.get(cmd, ()),

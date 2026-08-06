@@ -841,6 +841,13 @@ BitLocker 状态；不得未经检查公开分享。
   防护。统一 `parse-db --database` 已提供三种内容预设、可重复／逗号分隔模块选择和四格式
   选择，输出模块进度并安全发布报告；`export-report --snapshot／--diff` 仍走冻结参数和
   writer，CSV／XLSX 顺序和值没有切换。数据库解析 GUI 仍未完成。
+- v1.6.0 外部原生工具故障边界不改变 SQLite 契约。统一入口仅在非 GUI 任务 worker 中
+  设置 Windows `SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+  SEM_NOOPENFILEERRORBOX`；Tk 主进程、注册表和系统 WER 配置不修改。旧 Full 的 FFprobe
+  调用增加 `CREATE_NO_WINDOW`，并把 Windows 高位退出状态记录为十六进制工具崩溃；新版
+  核验监督器沿用精确句柄、输出上限、timeout 和回收。工具崩溃只能说明本次解析未完成，
+  不能直接证明文件损坏。受控测试已确认标志由任务进程后代继承，但尚未故意制造真实
+  access violation，因此发布前仍需在不越出工作区的安全边界内补足系统错误 UI 验证。
 - v1.6.0 阶段 3 已实现独立 schema 4 状态层：新表保持 schema 3 业务表超集，新增 session、
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用
