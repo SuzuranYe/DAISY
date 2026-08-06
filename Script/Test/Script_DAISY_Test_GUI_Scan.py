@@ -249,6 +249,20 @@ class TestScanControlProtocol(unittest.TestCase):
         self.assertEqual(payloads[1]["worker_pid"], 9182)
         self.assertEqual(payloads[1]["decision"], "skip_and_record")
 
+    def test_control_messages_are_isolated_between_gui_instances(self) -> None:
+        first, first_process = self._control_app()
+        second, second_process = self._control_app()
+        second.process_task_key = "verify"
+        self.assertEqual(first._send_scan_control("stop"), 1)
+        self.assertEqual(second._send_scan_control("pause"), 1)
+        first_command = dbrun.decode_control_line(first_process.stdin.getvalue())
+        second_command = dbrun.decode_control_line(
+            second_process.stdin.getvalue())
+        self.assertEqual(first_command.action, "stop")
+        self.assertEqual(second_command.action, "pause")
+        self.assertEqual(first.scan_control_sequence, 1)
+        self.assertEqual(second.scan_control_sequence, 1)
+
     def test_lifecycle_buttons_follow_running_and_paused_states(self) -> None:
         app = object.__new__(gui.DaisyApp)
         app.process = object()
@@ -880,6 +894,348 @@ class TestRealTkScanControls(unittest.TestCase):
             3 * len(families) * len(gui._UI_FONT_SIZE_OPTIONS)
             * len(geometries),
         )
+
+    def test_database_parse_failure_clears_stale_modules_and_keeps_diagnostics(
+        self,
+    ) -> None:
+        temporary = tempfile.TemporaryDirectory(
+            prefix="parse_failure_", dir=_RUNTIME_ROOT)
+        self.addCleanup(temporary.cleanup)
+        tree = os.path.join(temporary.name, "Tree")
+        snapshots = os.path.join(temporary.name, "Snapshots")
+        os.makedirs(tree)
+        os.makedirs(snapshots)
+        tree_fixture.write(tree, "有效.txt", b"valid")
+        snapshot = tree_fixture.build_snapshot(
+            tree, snapshots, "ParseFailure", hash_mode="none")
+        invalid = tree_fixture.write(
+            temporary.name, "Invalid.sqlite", b"not a sqlite database")
+
+        def wait_for_detection() -> None:
+            deadline = time.monotonic() + 10
+            while self.app.parse_detection_active \
+                    and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.root.update()
+            self.assertFalse(self.app.parse_detection_active)
+
+        self.app._select_task("parse_db", save_current=False)
+        self.app.values["database"].set(snapshot)
+        self.app._detect_parse_database()
+        wait_for_detection()
+        self.assertIsNotNone(self.app.parse_inspection)
+        self.assertTrue(self.app.values["parse_modules"].cards)
+
+        self.app.values["database"].set(invalid)
+        with patch.object(gui.messagebox, "showerror") as shown:
+            self.app._detect_parse_database()
+            wait_for_detection()
+        shown.assert_called_once()
+        self.assertIsNone(self.app.parse_inspection)
+        pool = self.app.values["parse_modules"]
+        self.assertIsInstance(pool, gui.ParseModulePool)
+        self.assertIsNone(pool.inspection)
+        self.assertEqual(pool.cards, [])
+        self.assertNotIn(
+            "parse_modules", self.app.saved_values.get("parse_db", {}))
+        self.assertTrue(self.app.settings_expanded)
+        self.assertTrue(self.app.progress_expanded)
+        self.assertTrue(self.app.log_expanded)
+        self.assertEqual(
+            self.app.progress_stage_label.cget("text"), "数据库识别失败")
+
+    def test_database_parse_detection_shows_progress_before_result(self) \
+            -> None:
+        temporary = tempfile.TemporaryDirectory(
+            prefix="parse_pending_", dir=_RUNTIME_ROOT)
+        self.addCleanup(temporary.cleanup)
+        tree = os.path.join(temporary.name, "Tree")
+        snapshots = os.path.join(temporary.name, "Snapshots")
+        os.makedirs(tree)
+        os.makedirs(snapshots)
+        tree_fixture.write(tree, "等待.txt", b"pending")
+        snapshot = tree_fixture.build_snapshot(
+            tree, snapshots, "ParsePending", hash_mode="none")
+        inspection = gui.dbparse.inspect_parse_database(
+            snapshot, verify_integrity=False)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def delayed_inspection(_path, *, verify_integrity):
+            self.assertFalse(verify_integrity)
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("测试未释放数据库识别线程")
+            return inspection
+
+        self.app._select_task("parse_db", save_current=False)
+        self.app.values["database"].set(snapshot)
+        with patch.object(
+                gui.dbparse, "inspect_parse_database",
+                side_effect=delayed_inspection):
+            self.app._detect_parse_database()
+            self.assertTrue(entered.wait(2))
+            self.root.update()
+            self.assertTrue(self.app.parse_detection_active)
+            self.assertFalse(self.app.settings_expanded)
+            self.assertTrue(self.app.progress_expanded)
+            self.assertTrue(self.app.log_expanded)
+            self.assertEqual(str(self.app.run_button.cget("state")), "disabled")
+            release.set()
+            deadline = time.monotonic() + 10
+            while self.app.parse_detection_active \
+                    and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            self.root.update()
+        self.assertFalse(self.app.parse_detection_active)
+        self.assertTrue(self.app.settings_expanded)
+        self.assertFalse(self.app.progress_expanded)
+        self.assertFalse(self.app.log_expanded)
+
+    def test_visible_binary_fields_use_toggle_buttons_not_comboboxes(
+        self,
+    ) -> None:
+        self.assertEqual(self.app.binary_control_style, "buttons")
+        self.app._apply_runtime_capabilities({
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID:
+                TestRawCapabilityPresentation.available_payload(),
+            },
+        })
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        checked = 0
+        for task_key in gui._TASK_MENU_ORDER:
+            task = gui.TASK_BY_KEY[task_key]
+            binary_specs = [
+                spec for spec in task.fields
+                if (not spec.top_menu and spec.kind == "choice_flag"
+                    and {value for _label, value in spec.choices}
+                    == {False, True})
+            ]
+            saved = {}
+            for spec in binary_specs:
+                for key, allowed in spec.active_when:
+                    saved[key] = allowed[0]
+            self.app.saved_values[task_key] = saved
+            self.app._select_task(task_key, save_current=False)
+            self.root.update()
+            widgets = list(descendants(self.app.form_inner))
+            active_values = gui._task_values(task, saved)
+            expected = {
+                spec.key for spec in binary_specs
+                if gui._field_active(spec, active_values)
+            }
+            toggles = {
+                getattr(widget, "_daisy_field_key", None): widget
+                for widget in widgets
+                if isinstance(widget, gui.BooleanToggleButton)
+            }
+            combobox_keys = {
+                getattr(widget, "_daisy_field_key", None)
+                for widget in widgets
+                if isinstance(widget, gui.ttk.Combobox)
+            }
+            self.assertEqual(expected, expected & toggles.keys(), task_key)
+            self.assertFalse(expected & combobox_keys, task_key)
+            for key in expected:
+                toggle = toggles[key]
+                expected_colour = (
+                    gui._GREEN_DARK if toggle.get() else gui._AMBER)
+                self.assertEqual(
+                    toggle.button.cget("background"), expected_colour,
+                    f"{task_key}.{key}",
+                )
+                checked += 1
+        self.assertGreaterEqual(checked, 4)
+
+    def test_binary_style_switch_preserves_value_preview_and_same_selection(
+        self,
+    ) -> None:
+        self.app._select_task("scan", save_current=False)
+        self.root.update()
+        toggle = self.app.values["collect_file_id"]
+        self.assertIsInstance(toggle, gui.BooleanToggleButton)
+        toggle._toggle()
+        self.assertFalse(toggle.get())
+        preview = self.app.preview_var.get()
+        self.assertIn("--no-file-id", preview)
+
+        with patch.object(gui, "save_gui_preferences") as saved:
+            self.app._set_binary_control_style("dropdowns")
+        self.root.update()
+        saved.assert_called_once()
+        self.assertEqual(self.app.binary_control_style, "dropdowns")
+        self.assertEqual(self.app.binary_control_style_var.get(), "dropdowns")
+        self.assertIsInstance(
+            self.app.values["collect_file_id"], gui.tk.StringVar)
+        self.assertFalse(self.app._collect_values()["collect_file_id"])
+        self.assertEqual(self.app.preview_var.get(), preview)
+
+        combobox = next(
+            widget for widget in self.app.form_inner.winfo_children()
+            for widget in self._descendants(widget)
+            if (isinstance(widget, gui.ttk.Combobox)
+                and getattr(widget, "_daisy_field_key", None)
+                == "collect_file_id")
+        )
+        displayed = combobox.get()
+        self.assertTrue(displayed)
+        combobox.set(displayed)
+        combobox.event_generate("<<ComboboxSelected>>")
+        self.root.update()
+        self.assertTrue(combobox.winfo_exists())
+        self.assertEqual(combobox.get(), displayed)
+        self.assertEqual(self.app.preview_var.get(), preview)
+
+        self.app._set_binary_control_style("buttons", persist=False)
+        self.root.update()
+        restored = self.app.values["collect_file_id"]
+        self.assertIsInstance(restored, gui.BooleanToggleButton)
+        self.assertFalse(restored.get())
+        self.assertEqual(self.app.preview_var.get(), preview)
+
+    def test_dropdown_binary_style_keeps_raw_capability_gate(self) -> None:
+        self.app._set_binary_control_style("dropdowns", persist=False)
+        self.app.saved_values["verify"] = {"format_scope": "all"}
+        self.app._select_task("verify", save_current=False)
+        self.root.update()
+        raw_combo = next(
+            widget for widget in self._descendants(self.app.form_inner)
+            if (isinstance(widget, gui.ttk.Combobox)
+                and getattr(widget, "_daisy_field_key", None)
+                == "raw_deep_validation")
+        )
+        self.assertEqual(str(raw_combo.cget("state")), "disabled")
+        self.assertFalse(self.app._collect_values()["raw_deep_validation"])
+
+        self.app._apply_runtime_capabilities({
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID:
+                TestRawCapabilityPresentation.available_payload(),
+            },
+        })
+        self.app._build_form()
+        self.root.update()
+        raw_combo = next(
+            widget for widget in self._descendants(self.app.form_inner)
+            if (isinstance(widget, gui.ttk.Combobox)
+                and getattr(widget, "_daisy_field_key", None)
+                == "raw_deep_validation")
+        )
+        self.assertEqual(str(raw_combo.cget("state")), "readonly")
+
+    def test_binary_styles_font_size_geometry_and_scaling_matrix(self) -> None:
+        self.app._apply_runtime_capabilities({
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID:
+                TestRawCapabilityPresentation.available_payload(),
+            },
+        })
+        base_scaling = float(self.root.tk.call("tk", "scaling"))
+        geometries = ((1840, 1020), (1366, 768), (1100, 850))
+        pages = (
+            ("scan", "collect_file_id", {}),
+            ("verify", "raw_deep_validation", {"format_scope": "all"}),
+        )
+        checks = 0
+        try:
+            for _style_label, style in gui._BINARY_CONTROL_STYLE_OPTIONS:
+                self.app._set_binary_control_style(style, persist=False)
+                for scaling in (1.0, 1.5):
+                    self.root.tk.call(
+                        "tk", "scaling", base_scaling * scaling)
+                    for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
+                        self.app._set_ui_font(
+                            size_delta=size_delta, persist=False)
+                        for width, height in geometries:
+                            self.root.geometry(f"{width}x{height}+0+0")
+                            for task_key, field_key, saved in pages:
+                                self.app.saved_values[task_key] = dict(saved)
+                                self.app._select_task(
+                                    task_key, save_current=False)
+                                self.root.update()
+                                context = (
+                                    f"style={style} scale={scaling} "
+                                    f"size={size_delta} geometry={width}x{height} "
+                                    f"task={task_key}"
+                                )
+                                value_source = self.app.values[field_key]
+                                if style == "buttons":
+                                    self.assertIsInstance(
+                                        value_source,
+                                        gui.BooleanToggleButton,
+                                        context,
+                                    )
+                                    control = value_source.button
+                                else:
+                                    self.assertIsInstance(
+                                        value_source, gui.tk.StringVar, context)
+                                    control = next(
+                                        widget for widget in self._descendants(
+                                            self.app.form_inner)
+                                        if (isinstance(widget, gui.ttk.Combobox)
+                                            and getattr(
+                                                widget,
+                                                "_daisy_field_key",
+                                                None,
+                                            ) == field_key)
+                                    )
+                                    self.assertTrue(control.get(), context)
+                                self.assertGreaterEqual(
+                                    control.winfo_width() + 1,
+                                    control.winfo_reqwidth(),
+                                    context,
+                                )
+                                content_height = (
+                                    self.app._form_content_height())
+                                viewport_height = (
+                                    self.app.form_canvas.winfo_height())
+                                if content_height <= viewport_height:
+                                    self.assertFalse(
+                                        self.app.form_scroll.winfo_manager(),
+                                        context,
+                                    )
+                                else:
+                                    self.assertEqual(
+                                        self.app.form_scroll.winfo_manager(),
+                                        "pack",
+                                        context,
+                                    )
+                                    self.app.form_canvas.yview_moveto(1.0)
+                                    self.root.update_idletasks()
+                                    self.assertGreater(
+                                        float(self.app.form_canvas.yview()[0]),
+                                        0.0,
+                                        context,
+                                    )
+                                checks += 1
+        finally:
+            self.root.tk.call("tk", "scaling", base_scaling)
+            self.app._set_ui_font(size_delta=0, persist=False)
+            self.app._set_binary_control_style("buttons", persist=False)
+            self.root.geometry("1840x1020+0+0")
+            self.root.update()
+        self.assertEqual(
+            checks,
+            len(gui._BINARY_CONTROL_STYLE_OPTIONS)
+            * 2
+            * len(gui._UI_FONT_SIZE_OPTIONS)
+            * len(geometries)
+            * len(pages),
+        )
+
+    @staticmethod
+    def _descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from TestRealTkScanControls._descendants(child)
 
 
 class TestRecoveryPreferences(unittest.TestCase):

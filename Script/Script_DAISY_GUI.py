@@ -189,6 +189,11 @@ _WINDOW_SIZE_OPTIONS = (
     ("1600 × 900", (1600, 900)),
     ("1366 × 768", (1366, 768)),
 )
+_BINARY_CONTROL_STYLE_OPTIONS = (
+    ("按钮模式（默认）", "buttons"),
+    ("下拉菜单模式", "dropdowns"),
+)
+_DEFAULT_BINARY_CONTROL_STYLE = "buttons"
 _COLOUR_STRIP_HEIGHT = 4
 
 _TOOL_FIELD_BY_NAME = {
@@ -276,6 +281,7 @@ def default_gui_preferences() -> dict[str, object]:
         "window_size": list(_DEFAULT_WINDOW_SIZE),
         "font_family": _UI_FONT_FAMILY,
         "font_size_delta": 0,
+        "binary_control_style": _DEFAULT_BINARY_CONTROL_STYLE,
         "confirm_close_when_idle": True,
         "last_task_key": "env_check",
         "recovery_scans": [],
@@ -310,6 +316,13 @@ def load_gui_preferences(
     allowed_deltas = {delta for _label, delta in _UI_FONT_SIZE_OPTIONS}
     if isinstance(size_delta, int) and size_delta in allowed_deltas:
         preferences["font_size_delta"] = size_delta
+
+    binary_control_style = loaded.get("binary_control_style")
+    allowed_binary_control_styles = {
+        value for _label, value in _BINARY_CONTROL_STYLE_OPTIONS
+    }
+    if binary_control_style in allowed_binary_control_styles:
+        preferences["binary_control_style"] = binary_control_style
 
     confirm_close = loaded.get("confirm_close_when_idle")
     if isinstance(confirm_close, bool):
@@ -3447,6 +3460,8 @@ class DaisyApp:
         self.ui_font_family = str(self.gui_preferences["font_family"])
         self.ui_font_size_delta = int(
             self.gui_preferences["font_size_delta"])
+        self.binary_control_style = str(
+            self.gui_preferences["binary_control_style"])
         self.confirm_close_when_idle = bool(
             self.gui_preferences["confirm_close_when_idle"])
         self.recovery_scans = list(
@@ -3776,6 +3791,7 @@ class DaisyApp:
             "window_size": list(self.default_window_size),
             "font_family": self.ui_font_family,
             "font_size_delta": self.ui_font_size_delta,
+            "binary_control_style": self.binary_control_style,
             "confirm_close_when_idle": self.confirm_close_when_idle,
             "last_task_key": self.task.key,
             "recovery_scans": list(getattr(self, "recovery_scans", ())),
@@ -3947,6 +3963,40 @@ class DaisyApp:
             self.normal_min_size = (min(760, width), min(640, height))
             self.root.minsize(*self.normal_min_size)
             self.root.geometry(_window_geometry_string(width, height, x, y))
+        if persist:
+            self._save_gui_preferences()
+
+    def _set_binary_control_style(
+        self, style: str, *, persist: bool = True,
+    ) -> None:
+        """切换二态字段控件，同时保留当前页已输入但未运行的值。"""
+        allowed = {
+            value for _label, value in _BINARY_CONTROL_STYLE_OPTIONS
+        }
+        current = getattr(
+            self, "binary_control_style", _DEFAULT_BINARY_CONTROL_STYLE)
+        if style not in allowed or self._task_is_active():
+            if hasattr(self, "binary_control_style_var"):
+                self.binary_control_style_var.set(current)
+            return
+        if style == current:
+            if hasattr(self, "binary_control_style_var"):
+                self.binary_control_style_var.set(current)
+            return
+
+        scroll_fraction = 0.0
+        if hasattr(self, "form_canvas"):
+            try:
+                scroll_fraction = float(self.form_canvas.yview()[0])
+            except (IndexError, tk.TclError, TypeError, ValueError):
+                scroll_fraction = 0.0
+        if getattr(self, "values", None):
+            self._save_current_values()
+        self.binary_control_style = style
+        if hasattr(self, "binary_control_style_var"):
+            self.binary_control_style_var.set(style)
+        if hasattr(self, "form_inner"):
+            self._build_form(scroll_fraction)
         if persist:
             self._save_gui_preferences()
 
@@ -4534,6 +4584,23 @@ class DaisyApp:
             )
         font_menu.add_cascade(label="字号", menu=font_size_menu)
         settings_menu.add_cascade(label="界面字体", menu=font_menu)
+
+        binary_style_menu = tk.Menu(settings_menu, **base_menu_options)
+        self.binary_control_style_menu = binary_style_menu
+        self.binary_control_style_var = tk.StringVar(
+            value=self.binary_control_style)
+        for label, value in _BINARY_CONTROL_STYLE_OPTIONS:
+            binary_style_menu.add_radiobutton(
+                label=label,
+                variable=self.binary_control_style_var,
+                value=value,
+                command=lambda selected=value:
+                self._set_binary_control_style(selected),
+            )
+        settings_menu.add_cascade(
+            label="开关选项样式", menu=binary_style_menu)
+        self.binary_control_style_menu_index = int(
+            settings_menu.index("end"))
 
         settings_menu.add_separator()
         self.confirm_close_when_idle_var = tk.BooleanVar(
@@ -5892,6 +5959,10 @@ class DaisyApp:
             for entry_index in getattr(
                     self, "advanced_locked_menu_entries", ()):
                 self.advanced_menu.entryconfigure(entry_index, state=state)
+        if hasattr(self, "settings_menu") and hasattr(
+                self, "binary_control_style_menu_index"):
+            self.settings_menu.entryconfigure(
+                self.binary_control_style_menu_index, state=state)
 
     def _select_task(self, task_key: str, save_current: bool = True) -> None:
         if save_current:
@@ -6254,6 +6325,13 @@ class DaisyApp:
                 row += 1
 
             current = saved.get(spec.key, spec.default)
+            field_help = spec.help
+            field_enabled = True
+            if spec.key == "raw_deep_validation":
+                field_enabled, raw_reason = raw_runtime_capability_status(
+                    self.runtime_capabilities)
+                if not field_enabled:
+                    field_help = f"{spec.help} 当前不可用：{raw_reason}"
             field_label = tk.Label(
                 self.form_inner, text=spec.label, bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9, "bold"), anchor="ne",
@@ -6295,32 +6373,27 @@ class DaisyApp:
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
             elif (spec.kind == "choice_flag"
+                  and self.binary_control_style == "buttons"
                   and {value for _label, value in self._field_choices(spec)}
                   == {False, True}):
-                toggle_enabled = True
-                toggle_help = spec.help
-                if spec.key == "raw_deep_validation":
-                    toggle_enabled, raw_reason = raw_runtime_capability_status(
-                        self.runtime_capabilities)
-                    if not toggle_enabled:
-                        toggle_help = f"{spec.help} 当前不可用：{raw_reason}"
                 widget = BooleanToggleButton(
                     cell, choices=self._field_choices(spec),
                     initial=current, on_change=self._update_preview,
-                    enabled=toggle_enabled,
+                    enabled=field_enabled,
                 )
                 widget._daisy_field_key = spec.key  # type: ignore[attr-defined]
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
-                if toggle_help:
-                    attach_tooltip(widget, toggle_help)
-                    attach_tooltip(widget.button, toggle_help)
+                if field_help:
+                    attach_tooltip(widget, field_help)
+                    attach_tooltip(widget.button, field_help)
             elif spec.kind in ("choice", "choice_flag", "disk_choice"):
                 choices = self._field_choices(spec)
                 var = tk.StringVar(
                     value=self._choice_display(spec, current))
                 widget = ttk.Combobox(
-                    cell, textvariable=var, state="readonly",
+                    cell, textvariable=var,
+                    state="readonly" if field_enabled else "disabled",
                     style="Daisy.TCombobox",
                     values=[label for label, _value in choices],
                 )
@@ -6414,10 +6487,10 @@ class DaisyApp:
                             "以只读方式识别数据库版本、类型与可导出模块。",
                         )
 
-            if spec.help:
-                attach_tooltip(field_label, spec.help)
-                attach_tooltip(cell, spec.help)
-                attach_tooltip(widget, spec.help)
+            if field_help:
+                attach_tooltip(field_label, field_help)
+                attach_tooltip(cell, field_help)
+                attach_tooltip(widget, field_help)
             row += 1
 
         if self.task.key == "env_check":
@@ -6590,6 +6663,8 @@ class DaisyApp:
             )
             self._append_log(
                 f"数据库识别失败：{error or '未知错误'}\n", "error")
+            if self.task.key == "parse_db":
+                self._build_form()
             self._set_settings_expanded(True)
             self._set_progress_expanded(True)
             self._set_log_expanded(True)

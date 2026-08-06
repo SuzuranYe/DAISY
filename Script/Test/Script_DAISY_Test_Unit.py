@@ -37,6 +37,7 @@ class TestGuiArguments(unittest.TestCase):
             "window_size": [1600, 900],
             "font_family": "Segoe UI",
             "font_size_delta": 1,
+            "binary_control_style": "dropdowns",
             "confirm_close_when_idle": False,
             "last_task_key": "verify",
         })
@@ -58,6 +59,7 @@ class TestGuiArguments(unittest.TestCase):
                     "window_size": [10, 20],
                     "font_family": "",
                     "font_size_delta": 99,
+                    "binary_control_style": "unknown",
                     "confirm_close_when_idle": "no",
                     "last_task_key": "storage_list",
                 }, handle)
@@ -87,6 +89,7 @@ class TestGuiArguments(unittest.TestCase):
         app.default_window_size = (1920, 1080)
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
+        app.binary_control_style = "dropdowns"
         app.confirm_close_when_idle = True
         app.task = gui.TASK_BY_KEY["verify"]
         app.saved_values = {
@@ -101,6 +104,7 @@ class TestGuiArguments(unittest.TestCase):
 
         payload = save.call_args.args[0]
         self.assertEqual(payload["last_task_key"], "verify")
+        self.assertEqual(payload["binary_control_style"], "dropdowns")
         self.assertNotIn("saved_values", payload)
         self.assertNotIn("snapshot", payload)
         self.assertNotIn("root_map", payload)
@@ -1454,6 +1458,7 @@ class TestGuiArguments(unittest.TestCase):
         app.default_window_size = (1920, 1080)
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
+        app.binary_control_style = "buttons"
         app.confirm_close_when_idle = True
         app._available_ui_font_families = lambda: (
             "Microsoft YaHei UI", "Segoe UI")
@@ -1527,7 +1532,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "cascade"],
-            ["默认窗口大小", "界面字体"],
+            ["默认窗口大小", "界面字体", "开关选项样式"],
+        )
+        self.assertEqual(
+            [entry["label"] for entry in app.binary_control_style_menu.entries
+             if entry["kind"] == "radiobutton"],
+            ["按钮模式（默认）", "下拉菜单模式"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
@@ -2332,9 +2342,12 @@ class TestGuiArguments(unittest.TestCase):
     def test_real_tk_reopens_last_page_without_form_values(self):
         preferences = gui.default_gui_preferences()
         preferences["last_task_key"] = "verify"
+        preferences["binary_control_style"] = "dropdowns"
         root, app = self._real_tk_app(preferences)
 
         self.assertEqual(app.task.key, "verify")
+        self.assertEqual(app.binary_control_style, "dropdowns")
+        self.assertEqual(app.binary_control_style_var.get(), "dropdowns")
         self.assertEqual(app.saved_values, {})
         self.assertEqual(app.values["snapshot"].get(), "")
         self.assertEqual(app.values["root_map"].get("1.0", "end-1c"), "")
@@ -2342,35 +2355,39 @@ class TestGuiArguments(unittest.TestCase):
             app.gui_preferences["last_task_key"], "verify")
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_1080p_default_forms_fit_without_scrolling(self):
+    def test_real_tk_1080p_both_binary_styles_fit_without_scrolling(self):
         root, app = self._real_tk_app()
         app._select_task("full_scan", save_current=False)
         root.update()
         description_heights = set()
-        for task in gui.TASKS:
-            app._select_task(task.key, save_current=False)
-            root.update()
-            bounds = app.form_canvas.bbox("all")
-            content_height = (
-                0 if bounds is None else int(bounds[3]) - int(bounds[1]))
-            viewport_height = int(app.form_canvas.winfo_height())
-            self.assertLessEqual(
-                content_height, viewport_height,
-                f"{task.key} 默认表单超出 1080P 可视区",
-            )
-            self.assertFalse(
-                app.form_scroll.winfo_manager(),
-                f"{task.key} 内容未溢出时不应显示滚动条",
-            )
-            for delta in (-120, -120, 120, 120):
-                app._scroll_form(types.SimpleNamespace(delta=delta, num=0))
-            root.update_idletasks()
-            self.assertEqual(
-                tuple(float(value) for value in app.form_canvas.yview()),
-                (0.0, 1.0),
-                f"{task.key} 内容未溢出时不应响应纵向滚动",
-            )
-            description_heights.add(app.desc_label.winfo_reqheight())
+        for _label, style in gui._BINARY_CONTROL_STYLE_OPTIONS:
+            app._set_binary_control_style(style, persist=False)
+            for task in gui.TASKS:
+                app._select_task(task.key, save_current=False)
+                root.update()
+                context = f"{task.key} · {style}"
+                bounds = app.form_canvas.bbox("all")
+                content_height = (
+                    0 if bounds is None else int(bounds[3]) - int(bounds[1]))
+                viewport_height = int(app.form_canvas.winfo_height())
+                self.assertLessEqual(
+                    content_height, viewport_height,
+                    f"{context} 默认表单超出 1080P 可视区",
+                )
+                self.assertFalse(
+                    app.form_scroll.winfo_manager(),
+                    f"{context} 内容未溢出时不应显示滚动条",
+                )
+                for delta in (-120, -120, 120, 120):
+                    app._scroll_form(
+                        types.SimpleNamespace(delta=delta, num=0))
+                root.update_idletasks()
+                self.assertEqual(
+                    tuple(float(value) for value in app.form_canvas.yview()),
+                    (0.0, 1.0),
+                    f"{context} 内容未溢出时不应响应纵向滚动",
+                )
+                description_heights.add(app.desc_label.winfo_reqheight())
         self.assertEqual(
             len(description_heights), 1,
             "各页面副标题应保持统一单行高度",
@@ -2707,11 +2724,22 @@ class TestGuiArguments(unittest.TestCase):
                     and int(child.grid_info().get("column", -1)) == 1)
             )
             targets = [field_label, cell, *self._tk_descendants(cell)]
+
+            def tooltip_matches(target):
+                text = getattr(
+                    getattr(target, "_daisy_tooltip", None), "text", None)
+                if spec.key == "raw_deep_validation":
+                    return (
+                        isinstance(text, str)
+                        and text.startswith(spec.help)
+                        and "当前不可用" in text
+                        and "尚未检测" in text
+                    )
+                return text == spec.help
+
             matching = [
                 target for target in targets
-                if getattr(
-                    getattr(target, "_daisy_tooltip", None),
-                    "text", None) == spec.help
+                if tooltip_matches(target)
             ]
             context = f"{task.key}.{spec.key}"
             self.assertNotIn("*", field_label.cget("text"), context)

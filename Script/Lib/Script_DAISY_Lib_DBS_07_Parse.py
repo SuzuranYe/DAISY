@@ -1028,9 +1028,15 @@ def parse_module_statuses(
             and len(row_counts) == len(required)
             else None
         )
+        reason_fallbacks = {
+            "empty": "已执行但没有记录",
+            "unavailable": "此数据库未记录或未执行该能力",
+            "incompatible": "当前读取器不兼容该能力",
+            "invalid": "能力记录无效",
+        }
         reasons = [
             f"{capability.capability_id}={capability.state}："
-            f"{capability.reason or '未记录原因'}"
+            f"{capability.reason or reason_fallbacks.get(capability.state, '状态原因未知')}"
             for capability in required
             if capability.state != "available"
         ]

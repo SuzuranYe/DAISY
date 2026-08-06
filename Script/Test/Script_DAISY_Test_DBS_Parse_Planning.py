@@ -131,6 +131,8 @@ class TestParsePlanning(unittest.TestCase):
         self.assertEqual(modules["overview"].state, "available")
         self.assertEqual(modules["issues"].state, "empty")
         self.assertFalse(modules["issues"].selectable)
+        self.assertIn("已执行但没有记录", modules["issues"].reason)
+        self.assertNotIn("未记录原因", modules["issues"].reason)
         self.assertEqual(modules["raw_payloads"].state, "available")
         self.assertEqual(modules["run_history"].state, "available")
 
