@@ -1,6 +1,7 @@
 # DAISY v1.6.0 数据库解析设计
 
-状态：实施中；只读识别、模块目录和选择计划已实现，writer／CLI／GUI 尚未完成
+状态：实施中；只读识别、模块目录、稳定投影及技术 CSV／JSONL 执行层已实现，
+HTML／XLSX／CLI／GUI 尚未完成
 
 目标版本：v1.6.0
 
@@ -301,3 +302,23 @@ empty／unavailable 会返回状态和原因。`raw_payloads` 带固定隐私提
 本检查点只完成内部服务，不新增半成品 `parse-db` 命令，也不改 GUI。下一检查点必须完成
 流式投影、raw payload 校验、manifest、staging 和 no-clobber，之后才建立新 CLI；HTML、
 新版 XLSX 和模块卡片仍按后续检查点实施。
+
+### 11.2 稳定投影与技术导出检查点
+
+快照 15 个模块和 Diff 6 个模块现都有版本化字段投影。大表只使用游标 `fetchmany()`；
+投影不把 SQLite `entry_id` 当作跨数据库身份，运行历史使用 root label、相对路径、阶段和
+attempt number 组成可读键。schema 4 的运行历史能力同时统计旧 manifest／event 与新的
+session、attempt、performance、format、checkpoint 和 runtime 表；这只改变只读能力事实，
+不修改扫描器或任何 DDL。
+
+RAW 原始载荷逐行解压并验证声明长度、SHA-256 和 UTF-8 JSON；解压失败、长度不符、摘要
+不符和 JSON 损坏分别返回明确错误，不静默跳过。技术 CSV 与 JSONL 对同一模块只遍历一次：
+CSV 保持 UTF-8 无 BOM、LF、稳定字段和完整原值，JSONL 使用 `daisy-parse-jsonl-v1` 信封并
+保留嵌套类型。`Report_manifest.json` 使用 `daisy-parse-report-v1`，记录输入身份、计划、
+字段、行数、投影版本及每个产物的 SHA-256／大小。
+
+正式导出恢复完整文件指纹、SQLite 完整性和外键检查，在一致只读事务内运行；开始和结束
+分别计算输入 SHA-256／大小／mtime。所有文件先写入报告目录的唯一 staging，取消、查询
+异常、投影异常、输入变化或目标冲突均精确清理本次 staging；成功时以目录重命名发布为
+`<数据库基名>_Report_<UTC>`，既有报告不覆盖。旧 `export-report` 仍走冻结实现。HTML、
+新版 XLSX、统一 CLI 与 GUI 未完成，因此本检查点仍不是 DBS-41 完成交付。

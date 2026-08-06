@@ -64,6 +64,8 @@ v1.6.0 开发分支另有不占编号的统一编排脚本
 | ExifTool／FFprobe／7-Zip 精确子进程监督 | `Script\Lib\Script_DAISY_Lib_DBS_12_Verify_Tools.py` |
 | rawpy／LibRaw 隔离能力与每文件深度解码 | `Script\Lib\Script_DAISY_Lib_DBS_13_Raw.py` |
 | RAW 恢复 JSONL、最终伴随 JSON 与 Markdown 投影 | `Script\Lib\Script_DAISY_Lib_DBS_14_Raw_Evidence.py` |
+| 数据库解析稳定字段与流式业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_15_Parse_Projection.py` |
+| 数据库解析技术 writer、manifest、staging 与 no-clobber 发布 | `Script\Lib\Script_DAISY_Lib_DBS_16_Parse_Run.py` |
 | Python 可选运行能力统一探测 | `Script\Lib\Script_DAISY_Lib_ENV_01_Capabilities.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本及统一编排脚本的参数解析器 |
@@ -825,13 +827,16 @@ BitLocker 状态；不得未经检查公开分享。
   Quick／No-Hash 明确未执行的模块是 `unavailable/NULL`，不得伪装为无问题或无记录。
   能力的语义状态与物理投影是否可查询分别记录；旧固定导出可读取结构完整的 schema 3
   空表，但新模块选择界面不得据此把未执行模块列为可选。
-- v1.6.0 阶段 7 的第一检查点已建立数据库解析目录：快照 15 个模块、Diff 6 个模块，模块
+- v1.6.0 阶段 7 已完成前两个检查点：数据库解析目录包含快照 15 个模块、Diff 6 个模块，模块
   状态只来自统一 Reader；`human-summary`／`full-audit`／`custom` 内容预设与 HTML／XLSX／
   CSV／JSONL 格式正交。只有 available 可由预设或全选选中，empty／unavailable／
   incompatible 保留 `0`／`NULL` 差异和原因。原始载荷模块固定显示隐私提示。Reader 的
   schema 4 发布指纹复核新增默认开启的可选参数，数据库解析快速识别可延迟完整文件摘要并
-  显示未复核警告，正式导出仍必须恢复摘要和 SQLite 完整性检查。旧 `export-report` 的
-  CSV／XLSX 顺序和值尚未切换；流式 writer、新 CLI 和 GUI 仍未完成。
+  显示未复核警告，正式导出仍恢复摘要和 SQLite 完整性检查。稳定投影不导出 `entry_id`
+  作为跨库身份，大表以 `fetchmany()` 分批读取；RAW 原始载荷逐行核对 zlib、长度、SHA-256
+  和 UTF-8 JSON。技术 CSV／JSONL 共用一次模块遍历，生成输入／产物摘要 manifest，并在
+  唯一 staging 完成后 no-clobber 发布。旧 `export-report` 的 CSV／XLSX 顺序和值没有切换；
+  HTML、新版 XLSX、新 CLI 和 GUI 仍未完成。
 - v1.6.0 阶段 3 已实现独立 schema 4 状态层：新表保持 schema 3 业务表超集，新增 session、
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用

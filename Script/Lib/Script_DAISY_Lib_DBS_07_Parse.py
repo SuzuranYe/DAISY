@@ -857,6 +857,7 @@ _SNAPSHOT_MODULES = (
     ParseModuleSpec(
         "raw_payloads", "原始数据", "snapshot", ("raw_payloads",),
         schema3_fallback=True,
+        formats=frozenset(("html", "xlsx", "jsonl")),
         privacy_level="sensitive_raw",
         description="ExifTool／ffprobe canonical JSON 原始载荷",
         legacy_export=False,

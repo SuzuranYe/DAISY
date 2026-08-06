@@ -998,5 +998,50 @@ schema 4 快速识别仍检查发布文件名模式，但可延迟整个数据�
 停止其它进程。一次临时真实断言脚本因误写不存在的 `assertion()` 在断言前退出；改用原生
 `assert` 后同批次 2／2 通过，该失误不是产品代码失败。
 
-流式 CSV／JSONL、raw payload 校验、manifest、staging、no-clobber、HTML、新版 XLSX、
+截至第十一检查点，流式 CSV／JSONL、raw payload 校验、manifest、staging、no-clobber、HTML、新版 XLSX、
 `parse-db` CLI 和 GUI 均未完成，本节证据不能被表述为数据库解析功能已交付。
+
+## 二十二、阶段 7：稳定投影与技术导出（第十二检查点）
+
+本检查点新增稳定投影与内部技术导出执行层，不修改扫描器、Diff 写入、schema 3／4 DDL
+或数据库生成流程，也不切换旧 `export-report`：
+
+- 快照 15 个模块、Diff 6 个模块均以显式稳定字段输出，大表使用 `fetchmany()`，没有
+  `SELECT *`／`t.*`／`fetchall()`；
+- RAW payload 按行核对 zlib、长度、SHA-256 和 UTF-8 JSON，四类损坏均有独立失败证据；
+- schema 3 运行历史读取旧 manifest／event；schema 4 同时读取 session、attempt、性能、
+  格式、状态、checkpoint 和 runtime，记录键不使用 `entry_id`；
+- CSV／JSONL 共用一次模块遍历；CSV 为 UTF-8 无 BOM、LF、稳定表头和完整值，JSONL 保留
+  中文与嵌套类型；
+- manifest 记录输入、计划、模块、字段、行数和所有产物摘要；一致只读事务、输入双摘要、
+  取消、异常清理和目录 no-clobber 发布均有测试。
+
+结果如下；批次之间未重复计入本表的 82 项检查点联合总数：
+
+| 批次 | 结果 | 关键证据 |
+|---|---:|---|
+| 旧 Parse／DBS-41 | 11／11 | 原 CSV／XLSX 字节、模块顺序、旧 CLI 退出码不变 |
+| 新解析规划 | 5／5 | 15／6 模块、预设、格式映射和不可用状态 |
+| 稳定投影 | 5／5 | 全模块字段、schema 3／4 history、Diff、取消、RAW 四类损坏 |
+| 技术导出执行层 | 5／5 | CSV／JSONL／manifest、单次遍历、冲突、取消、异常、输入变化 |
+| Reader | 22／22 | schema 4 history 聚合、默认准入与 v1.4.1 只读兼容 |
+| Issues | 10／10 | 既有固定板块与 0／NULL 语义不回退 |
+| 跨版本 Diff | 8／8 | 四方向业务投影与冻结 Diff DDL |
+| 核验兼容 | 4／4 | 旧抽样和问题投影不漂移 |
+| 既有 no-clobber | 11／11 | 旧发布与冲突语义不回退 |
+| 受控规范登记 | 1／1 | 新 Lib、测试清单与技术规范一致 |
+| 检查点联合总数 | 82／82 | `python -B -W error`，失败 0、跳过 0 |
+
+真实验证复用了前一检查点在工作区生成的数据库，不访问数据库记录的源路径：2 个 schema 3
+Quick、2 个 schema 4 Quick、4 个 schema 方向 Diff 和 2 个双向变化 Diff，合计 10／10
+逐模块遍历通过；同一批数据库再完成 10／10 完整审计技术导出。每份报告的 CSV 编码／LF、
+JSONL 每行 JSON、manifest 契约及产物 SHA-256 均回读验证，10 个输入的 SHA-256、大小和
+mtime 前后相同。所有报告只写入 `.test_runtime\v1_6_0\real_parse_technical_*`。
+
+测试过程发现并诚实处理了两项测试证据问题：首个临时真实遍历命令未显式关闭 SHA 输入
+文件，产生 `ResourceWarning`，未纳入正式结果；改为独立脚本和 `with open` 后 10／10
+干净通过。输入变化用例最初增加 1 ns，被 Windows 文件系统时间粒度舍入；改为增加 1 秒
+后真实触发拒绝发布。产品代码没有为迎合错误断言而放宽检测。
+
+HTML、新版 XLSX、`parse-db` CLI、GUI 模块卡片和 1080p／字号矩阵仍未实施；本节不把
+技术 writer 检查点称为完整“数据库解析”交付。

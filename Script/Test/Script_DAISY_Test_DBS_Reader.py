@@ -562,6 +562,8 @@ class TestDatabaseReader(_ReaderFixture):
             "daisy-resume-v1", descriptor.identity["resume_contract"])
         self.assertEqual(
             "available", descriptor.capability("run_sessions").state)
+        self.assertEqual(
+            "available", descriptor.capability("run_history").state)
         format_capability = descriptor.capability("format_checks")
         self.assertEqual("unavailable", format_capability.state)
         self.assertIsNone(format_capability.row_count)

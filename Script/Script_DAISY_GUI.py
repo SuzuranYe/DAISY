@@ -148,6 +148,8 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_Scan_Raw.py",
     "Script_DAISY_Test_DBS_Parse.py",
     "Script_DAISY_Test_DBS_Parse_Planning.py",
+    "Script_DAISY_Test_DBS_Parse_Projection.py",
+    "Script_DAISY_Test_DBS_Parse_Run.py",
     "Script_DAISY_Test_DBS_State.py",
     "Script_DAISY_Test_DBS_Hash_Worker.py",
     "Script_DAISY_Test_DBS_Run.py",

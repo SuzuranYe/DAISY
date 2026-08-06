@@ -504,6 +504,18 @@ _BUSINESS_CAPABILITIES = (
     "format_checks",
 )
 
+_SCHEMA4_RUN_HISTORY_TABLES = (
+    "snapshot_manifest",
+    "run_events",
+    "run_sessions",
+    "entry_attempts",
+    "read_performance",
+    "format_checks",
+    "run_state_events",
+    "stage_checkpoints",
+    "snapshot_runtime",
+)
+
 _ENTRY_PROJECTION_TABLES = (
     ("hashes", "hashes", (
         "hash_pk", "entry_id", "source_snapshot_uuid",
@@ -892,6 +904,35 @@ def _capability_map(
     return capabilities
 
 
+def _schema4_run_history_capability(
+    con: sqlite3.Connection,
+) -> DatabaseCapability:
+    """把 schema 4 的续传／运行表纳入统一运行历史能力。"""
+    try:
+        row_count = sum(
+            int(con.execute(
+                f"SELECT COUNT(*) FROM {_quote_identifier(table)}"
+            ).fetchone()[0])
+            for table in _SCHEMA4_RUN_HISTORY_TABLES
+        )
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        return DatabaseCapability(
+            "run_history",
+            "运行历史",
+            "incompatible",
+            None,
+            f"schema 4 运行历史记录数无法安全读取：{exc}",
+        )
+    return DatabaseCapability(
+        "run_history",
+        "运行历史",
+        "empty" if row_count == 0 else "available",
+        row_count,
+        None,
+        True,
+    )
+
+
 def _nested_object(
     parent: dict[str, object], key: str, label: str, warnings: list[str],
 ) -> dict[str, object]:
@@ -1178,6 +1219,9 @@ def inspect_connection(
         capabilities = _capability_map(
             con, tables, columns, SNAPSHOT_CAPABILITY_SPECS, lifecycle,
             capability_overrides)
+        if schema_version == 4 and lifecycle == "sealed":
+            capabilities["run_history"] = \
+                _schema4_run_history_capability(con)
         status = (
             str(runtime["run_state"]) if runtime is not None
             else str(scan_status)

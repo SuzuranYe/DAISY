@@ -1240,7 +1240,7 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 4 | 完成 | worker、暂停／保存退出／停止、动态 timeout、扫描发布链、scan CLI 和现有扫描 GUI 接线已落地 |
 | 5 | 进行中 | 统一核验、旧入口投影、RAW 核验／Full 扫描链及 ENV／Full GUI 能力接线已完成；核验页最终 GUI 与真实 RAW 夹具仍未完成 |
 | 6 | 完成 | schema 3／4 四方向 Diff 已切到 Reader 规范化投影，冻结输出 DDL，能力不足不伪装 |
-| 7 | 进行中 | 数据库解析的快速／完整识别、15／6 模块目录、状态、预设与格式计划已完成；writer、CLI 和 GUI 待完成 |
+| 7 | 进行中 | 数据库解析识别、15／6 模块、稳定投影、RAW 校验、技术 CSV／JSONL、manifest 与安全发布已完成；HTML／XLSX、CLI 和 GUI 待完成 |
 | 8～9 | 未开始完成性实施 | 四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
 
 最近一次完整发现式回归是在扫描 GUI 检查点后执行，结果为 465／465；同一阶段的 State、
@@ -1462,8 +1462,43 @@ schema 4 快速识别新增可选的延迟指纹路径：发布命名模式仍�
 显式安全联合批次为 71／71；GUI 自检清单、参数映射和技术规范契约为 3／3。各批次有重叠，
 不能相加冒充唯一用例数。
 
-当前尚未实现流式 writer、raw payload 解压校验、manifest、staging、no-clobber、HTML、
+截至第十一检查点尚未实现流式 writer、raw payload 解压校验、manifest、staging、no-clobber、HTML、
 新版 XLSX、`parse-db` CLI 或 GUI 卡片，因此阶段 7 仍是进行中，不能称 DBS-41 重构完成。
+
+### 17.16 数据库解析投影与技术导出检查点
+
+阶段 7 第二检查点完成了内部投影和技术导出执行层，仍未把半成品暴露为 CLI 或 GUI：
+
+- 快照 15 个模块与 Diff 6 个模块均使用固定字段投影；大表只有 `fetchmany()`，源码中没有
+  新增 `SELECT *`／`t.*`／`fetchall()`；逻辑路径以 root label＋相对路径表达，SQLite
+  `entry_id` 不作为导出身份；
+- RAW payload 逐行验证 zlib、声明长度、SHA-256 和 UTF-8 JSON，四类损坏分别失败；
+- schema 4 `run_history` 能力诚实汇总 manifest／event 及 session、attempt、performance、
+  format、state、checkpoint、runtime 表；该修改只在统一 Reader 中计算只读能力，不触碰
+  扫描、Diff 写入、schema 3／4 DDL 或生成数据库流程；
+- CSV 与 JSONL 对同一模块只遍历一次。CSV 为 UTF-8 无 BOM、LF、稳定字段和完整值；JSONL
+  使用 `daisy-parse-jsonl-v1` 信封并保留嵌套类型；
+- `daisy-parse-report-v1` manifest 记录输入身份、计划、模块、投影版本、字段、行数和产物
+  SHA-256／大小；正式执行前恢复完整指纹、SQLite 与外键检查；
+- 一次任务持有一致只读事务，开始和结束核对输入 SHA-256／大小／mtime；取消和 SQLite
+  progress handler 共用同一取消信号；成功前只写输出目录内的唯一 staging，输入变化、
+  投影异常、取消或目标冲突均不发布并精确清理，目录发布使用 no-clobber 重命名。
+
+自动化检查点联合批次为 82／82：旧 Parse 11、规划 5、投影 5、技术执行 5、Reader 22、
+Issues 10、跨版本 Diff 8、核验兼容 4、既有 no-clobber 11、受控规范登记 1。旧 DBS-41 的
+CSV／XLSX 字节与 CLI 退出码仍通过 11／11。真实只读验证进一步遍历 2 个 schema 3 Quick、
+2 个 schema 4 Quick、3→3／3→4／4→3／4→4 四组静态 Diff 和 2 组双向变更 Diff：10／10
+稳定投影通过；随后 10／10 分别生成完整审计技术报告，所有 CSV／JSONL／manifest 摘要
+回读通过，10 个输入数据库的 SHA-256、大小和 mtime 前后相同。真实导出只读取这些已生成
+数据库，不访问库内记录的源路径；输出只在 `.test_runtime\v1_6_0`。
+
+第一次真实遍历辅助命令虽完成 3／3，但因测试辅助 SHA 写法未显式关闭文件产生
+`ResourceWarning`；它没有进入上述正式证据，改为显式 `with open` 后完整 10／10 在
+`-W error` 下干净通过。执行层输入变化测试最初只调整 1 ns，Windows 文件系统粒度将其
+舍入而未触发；改为 1 秒后通过。这两项均是测试证据修正，不是把产品失败改写为成功。
+
+HTML、新版 XLSX、`parse-db` CLI、数据库解析 GUI 与打开结果动作尚未实现，DBP-07～09、
+DBP-11 的人读／工作簿部分以及 GUI 矩阵仍未完成；阶段 7 继续标记为进行中。
 
 ## 十八、完成定义
 

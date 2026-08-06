@@ -898,20 +898,26 @@ def _analyze_snapshot_connection(
 def analyze_snapshot_issue_connection(
     con: sqlite3.Connection,
     *,
+    descriptor: dbreader.DatabaseDescriptor | None = None,
     database: str = "<connection>",
     row_limit: int = DETAIL_LIMIT,
 ) -> dict[str, object]:
     """分析调用方持有的只读发布连接；不关闭连接、不修改数据库。"""
     limit = _validate_row_limit(row_limit)
-    descriptor = dbreader.inspect_connection(
-        con,
-        path="<connection>",
-        expected_type="snapshot",
-        require_sealed=True,
-    )
+    current = descriptor
+    if current is None:
+        current = dbreader.inspect_connection(
+            con,
+            path="<connection>",
+            expected_type="snapshot",
+            require_sealed=True,
+        )
+    elif current.database_type != "snapshot" or not current.sealed:
+        raise core.PreflightError(
+            "Issues 连接分析只接受完整封存快照描述符")
     return _analyze_snapshot_connection(
         con,
-        descriptor,
+        current,
         database=database,
         row_limit=limit,
     )
