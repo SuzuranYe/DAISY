@@ -318,6 +318,34 @@ roots、dirs、entries 当前属性、当前有效哈希、规范化元数据、
 投影；`snapshot_business_projection_digest()` 使用带类型标记的逐行编码比较，不把整表
 载入内存。BLOB 以实际字节长度和 SHA-256 进入投影，不能只相信库内声明摘要。
 
+### 9.1 跨版本 Diff 投影
+
+Diff 输入统一投影标识为 `daisy-diff-input-v1`。DBS-21 不再查询快照物理表；只有
+`Script_DAISY_Lib_DBS_05_Reader.snapshot_diff_projection()` 可以把 schema 3／4 转成
+以下稳定视图：快照身份、root、目录、文件、有效 SHA-256 及来源事件、File ID、原始元数据
+摘要和能力状态。ExifTool 原始载荷的易变路径／访问时间过滤也属于 Reader 投影，不在 Diff
+业务层复制 SQL 或解压规则。
+
+文件和目录是结构对比的必要能力；哈希、原始元数据、格式校验、运行会话、尝试与性能是
+可选证据。可选表缺失或列不兼容时，结构对比仍可进行，但对应能力必须是
+`unavailable`／`incompatible`，不能读取残留行或推断一致。双侧能力折叠规则为：
+
+- 双侧 `available`：`comparable`；
+- 双侧 `empty`：`empty`，表示双方均有执行／结构证据但没有记录，不等于逐文件结果一致；
+- 文件／目录的 `available` 与 `empty` 仍可做集合对比；
+- 其它混合状态或任一侧 unavailable／incompatible：`unavailable`，并保留双侧原因。
+
+哈希不足只产生 `hash_missing`／`insufficient`，不得污染 added／deleted 等结构结论。原始
+元数据一侧缺失时 `metadata_changed=NULL`；`counts_json.metadata_evidence` 把 paired 但不可比
+与 added／deleted 的 not applicable 分开。schema 4 的 `format_checks`、session、attempt 和
+性能证据当前只进入能力说明，不映射为既有 11 种文件状态；否则会把工具／运行差异误报为
+文件变化。未来若要增加对应 Diff 状态，必须另行升级输出契约。
+
+`DIFF_DDL` 及 Diff 自身 `schema_version=3` 继续按 v1.4.1 冻结。跨版本来源只写入既有
+`old_schema_version`／`new_schema_version`；投影标识、双侧能力和元数据证据摘要写入既有
+`counts_json`，不新增表、列或状态枚举。整个对比前后，两份输入快照的 SHA-256、大小和
+mtime 必须保持不变。
+
 ## 十、阶段 3 验收
 
 - schema 3 DDL 哈希保持既有固定值；

@@ -141,6 +141,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_Verify_Tools.py",
     "Script_DAISY_Test_DBS_Verify_CLI.py",
     "Script_DAISY_Test_DBS_Verify_Compatibility.py",
+    "Script_DAISY_Test_DBS_Diff_Compatibility.py",
     "Script_DAISY_Test_DBS_Verify_Raw.py",
     "Script_DAISY_Test_DBS_Raw.py",
     "Script_DAISY_Test_DBS_Raw_Evidence.py",

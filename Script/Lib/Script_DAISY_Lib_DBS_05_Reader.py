@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sqlite3
 from typing import Iterable, Iterator
+import zlib
 
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_08_State as state_contract
@@ -223,6 +224,51 @@ class ProjectionRow:
     section: str
     key: tuple[object, ...]
     values: tuple[object, ...]
+
+
+SNAPSHOT_DIFF_PROJECTION = "daisy-diff-input-v1"
+
+_DIFF_PROJECTION_CAPABILITIES = (
+    "files",
+    "directories",
+    "hashes",
+    "raw_payloads",
+    "format_checks",
+    "run_sessions",
+    "entry_attempts",
+    "read_performance",
+)
+
+_DIFF_PROJECTION_REQUIRED = {
+    "roots": (
+        "root_id", "root_label", "root_path", "enum_status",
+    ),
+    "dirs": (
+        "root_id", "rel_path", "path_key", "enum_status",
+    ),
+    "entries": (
+        "entry_id", "root_id", "rel_path", "path_key", "size_bytes",
+        "modified_at_utc", "attributes", "is_placeholder", "meta_status",
+        "hash_status", "volume_serial", "file_index_hex",
+    ),
+}
+
+_DIFF_HASH_COLUMNS = frozenset((
+    "entry_id", "algorithm", "hash_hex", "origin",
+    "source_snapshot_uuid", "source_computed_at_utc",
+    "finished_at_utc", "status",
+))
+
+_DIFF_RAW_PAYLOAD_COLUMNS = frozenset((
+    "entry_id", "provider", "payload_zlib", "payload_sha256",
+    "provider_version",
+))
+
+_VOLATILE_EXIFTOOL_TAGS = frozenset((
+    "sourcefile",
+    "directory",
+    "fileaccessdate",
+))
 
 
 @dataclass(frozen=True)
@@ -1195,6 +1241,255 @@ def inspect_connection(
         identity=identity,
         warnings=tuple(warnings),
     )
+
+
+def _diff_projection_capabilities(
+    descriptor: DatabaseDescriptor,
+) -> dict[str, dict[str, object]]:
+    """冻结 Diff 输入会用到的能力状态，并校验专用投影列。"""
+    result: dict[str, dict[str, object]] = {}
+    for capability_id in _DIFF_PROJECTION_CAPABILITIES:
+        capability = descriptor.capability(capability_id)
+        result[capability_id] = {
+            "state": capability.state,
+            "row_count": capability.row_count,
+            "reason": capability.reason,
+            "queryable": capability.queryable,
+        }
+    for capability_id, table, required in (
+        ("hashes", "hashes", _DIFF_HASH_COLUMNS),
+        ("raw_payloads", "raw_payloads", _DIFF_RAW_PAYLOAD_COLUMNS),
+    ):
+        if table not in descriptor.tables:
+            continue
+        missing = sorted(
+            required - descriptor.columns.get(table, frozenset()))
+        if not missing:
+            continue
+        result[capability_id] = {
+            "state": "incompatible",
+            "row_count": None,
+            "reason": (
+                "Diff 规范化投影缺少列："
+                + "、".join(f"{table}.{column}" for column in missing)
+            ),
+            "queryable": False,
+        }
+    return result
+
+
+def snapshot_root_labels(
+    con: sqlite3.Connection,
+    descriptor: DatabaseDescriptor | None = None,
+) -> tuple[str, ...]:
+    """只读返回稳定 root 标签，供命名／预览使用，避免调用方复制 SQL。"""
+    current = descriptor or inspect_connection(con)
+    if current.database_type != "snapshot" or not current.sealed:
+        raise core.PreflightError("root 标签只接受完整封存快照")
+    _require_structure(
+        current.tables,
+        current.columns,
+        "roots",
+        ("root_label",),
+        "快照 root 标签",
+    )
+    return tuple(
+        str(row[0]) for row in con.execute(
+            "SELECT root_label FROM roots ORDER BY root_label COLLATE BINARY")
+    )
+
+
+def snapshot_diff_projection(
+    con: sqlite3.Connection,
+    descriptor: DatabaseDescriptor | None = None,
+) -> dict[str, object]:
+    """读取版本化 Diff 输入投影；schema 分支只允许存在于 Reader。"""
+    current = descriptor or inspect_connection(con)
+    if current.database_type != "snapshot" or not current.sealed:
+        raise core.PreflightError("Diff 规范化投影只接受完整封存快照")
+    for table, required in _DIFF_PROJECTION_REQUIRED.items():
+        _require_structure(
+            current.tables,
+            current.columns,
+            table,
+            required,
+            "Diff 规范化投影",
+        )
+    capabilities = _diff_projection_capabilities(current)
+
+    roots = {
+        int(root_id): {
+            "label": str(label),
+            "path": str(path),
+            "enum": str(enum_status),
+        }
+        for root_id, label, path, enum_status in con.execute(
+            "SELECT root_id,root_label,root_path,enum_status"
+            " FROM roots ORDER BY root_id"
+        )
+    }
+    directories: dict[int, dict[str, dict[str, object]]] = {}
+    for root_id, rel_path, path_key, enum_status in con.execute(
+            "SELECT root_id,rel_path,path_key,enum_status"
+            " FROM dirs ORDER BY root_id,path_key,rel_path"):
+        directories.setdefault(int(root_id), {})[str(path_key)] = {
+            "rel": str(rel_path),
+            "enum": str(enum_status),
+        }
+
+    hashes: dict[int, dict[str, object]] = {}
+    hash_capability = capabilities["hashes"]
+    if hash_capability["state"] in ("available", "empty"):
+        for (entry_id, hash_hex, origin, source_uuid, source_time,
+             finished_time, status) in con.execute(
+                "SELECT entry_id,hash_hex,origin,source_snapshot_uuid,"
+                " source_computed_at_utc,finished_at_utc,status FROM hashes"
+                " WHERE algorithm='sha256' ORDER BY entry_id"):
+            hashes[int(entry_id)] = {
+                "hex": str(hash_hex),
+                "origin": str(origin),
+                "src": (source_uuid, source_time),
+                "fin": finished_time,
+                "status": str(status),
+            }
+
+    payloads: dict[int, dict[str, tuple[object, object]]] = {}
+    payload_capability = capabilities["raw_payloads"]
+    if payload_capability["state"] in ("available", "empty"):
+        for entry_id, provider, payload_sha, provider_version in con.execute(
+                "SELECT entry_id,provider,payload_sha256,provider_version"
+                " FROM raw_payloads ORDER BY entry_id,provider"):
+            payloads.setdefault(int(entry_id), {})[str(provider)] = (
+                payload_sha,
+                provider_version,
+            )
+
+    snapshot_uuid = str(current.identity["snapshot_uuid"])
+    entries: dict[int, dict[str, list[dict[str, object]]]] = {}
+    hash_count: dict[str, int] = {}
+    hash_fileids: dict[str, list[tuple[object, object]]] = {}
+    hash_events: dict[str, set[tuple[object, object]]] = {}
+    for (entry_id, root_id, rel_path, path_key, size_bytes, modified_at,
+         attributes, is_placeholder, meta_status, hash_status,
+         volume_serial, file_index_hex) in con.execute(
+            "SELECT entry_id,root_id,rel_path,path_key,size_bytes,"
+            " modified_at_utc,attributes,is_placeholder,meta_status,"
+            " hash_status,volume_serial,file_index_hex FROM entries"
+            " ORDER BY root_id,path_key,rel_path,entry_id"):
+        normalized_entry_id = int(entry_id)
+        hash_record = hashes.get(normalized_entry_id)
+        valid_hash = (
+            hash_record
+            if hash_record is not None
+            and hash_record["status"] == "valid"
+            else None
+        )
+        entry = {
+            "eid": normalized_entry_id,
+            "rid": int(root_id),
+            "rel": str(rel_path),
+            "pk": str(path_key),
+            "size": size_bytes,
+            "mtime": modified_at,
+            "attrs": attributes,
+            "ph": is_placeholder,
+            "unstable": (
+                meta_status == "unstable"
+                or hash_status == "unstable"
+                or (
+                    hash_record is not None
+                    and hash_record["status"] == "unstable"
+                )
+            ),
+            "hash": valid_hash,
+            "payloads": payloads.get(normalized_entry_id) or {},
+            "vs": volume_serial,
+            "fih": file_index_hex,
+        }
+        entries.setdefault(int(root_id), {}).setdefault(
+            str(path_key), []).append(entry)
+        if valid_hash is None:
+            continue
+        hash_hex = str(valid_hash["hex"])
+        hash_count[hash_hex] = hash_count.get(hash_hex, 0) + 1
+        event = (
+            (snapshot_uuid, valid_hash["fin"])
+            if valid_hash["origin"] == "computed"
+            else tuple(valid_hash["src"])
+        )
+        hash_events.setdefault(hash_hex, set()).add(event)
+        if volume_serial and file_index_hex:
+            hash_fileids.setdefault(hash_hex, []).append(
+                (volume_serial, file_index_hex))
+
+    return {
+        "projection": SNAPSHOT_DIFF_PROJECTION,
+        "path": current.path,
+        "file": os.path.basename(current.path),
+        "uuid": snapshot_uuid,
+        "schema": current.schema_version,
+        "pk_rule": current.path_key_rule,
+        "coverage": current.identity.get("hash_coverage"),
+        "roots": roots,
+        "dirs": directories,
+        "entries": entries,
+        "hash_count": hash_count,
+        "hash_fileids": hash_fileids,
+        "hash_events": hash_events,
+        "n_payload": (
+            payload_capability["row_count"]
+            if payload_capability["state"] in ("available", "empty")
+            else None
+        ),
+        "capabilities": capabilities,
+    }
+
+
+def _drop_volatile_exiftool_tags(value: object) -> object:
+    """复制 JSON 结构，同时移除访问时间与提取目标路径等环境字段。"""
+    if isinstance(value, dict):
+        return {
+            key: _drop_volatile_exiftool_tags(item)
+            for key, item in value.items()
+            if not (
+                isinstance(key, str)
+                and key.rsplit(":", 1)[-1].casefold()
+                in _VOLATILE_EXIFTOOL_TAGS
+            )
+        }
+    if isinstance(value, list):
+        return [_drop_volatile_exiftool_tags(item) for item in value]
+    return value
+
+
+def snapshot_exiftool_comparison_digest(
+    con: sqlite3.Connection,
+    entry_id: int,
+) -> str | None:
+    """返回排除环境字段后的 ExifTool 比较摘要；异常时保守返回 None。"""
+    try:
+        row = con.execute(
+            "SELECT payload_zlib FROM raw_payloads"
+            " WHERE entry_id=? AND provider='exiftool'",
+            (int(entry_id),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        raw = zlib.decompress(row[0])
+        document = json.loads(raw.decode("utf-8"))
+        stable = _drop_volatile_exiftool_tags(document)
+        canonical = json.dumps(
+            stable,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (OSError, TypeError, ValueError, UnicodeError, zlib.error):
+        return None
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _projection_columns(

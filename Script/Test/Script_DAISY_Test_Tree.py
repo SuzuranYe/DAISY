@@ -47,8 +47,15 @@ def build_snapshot(tree_dir: str, out_dir: str, name: str, label: str = "T",
     钩子签名：pre_enum(con, tree_dir)、post_enum(con, tree_dir)、pre_finalize(con)。
     """
     partial = os.path.join(out_dir, f"Scan_{name}.partial.sqlite")
-    con = core.create_partial_snapshot(partial, [(label, tree_dir)],
-                                       config={"phase": "test-tree"})
+    con = core.create_partial_snapshot(
+        partial,
+        [(label, tree_dir)],
+        config={
+            "phase": "full",
+            "hash": hash_mode,
+            "metadata_storage": "complete",
+        },
+    )
     if pre_enum:
         pre_enum(con, tree_dir)
     core.enumerate_and_reconcile(con)

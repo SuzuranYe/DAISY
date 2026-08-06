@@ -5,13 +5,11 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sqlite3
 import sys
 import uuid as uuid_mod
-import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Script_DAISY_Lib_DBS_01_Core as core
@@ -108,7 +106,10 @@ CREATE INDEX idx_diff_group  ON diff_entries(group_id);
 
 
 # === 准入与载入 ===
-def _check_and_open(path: str, force: bool) -> tuple[sqlite3.Connection, int]:
+def _check_and_open(
+    path: str,
+    force: bool,
+) -> tuple[sqlite3.Connection, dbreader.DatabaseDescriptor, int]:
     path = os.path.abspath(path)
     if path.endswith(".partial.sqlite") or not path.endswith(".sqlite"):
         raise core.PreflightError(f"输入必须是封存快照 .sqlite：{path}")
@@ -129,11 +130,11 @@ def _check_and_open(path: str, force: bool) -> tuple[sqlite3.Connection, int]:
         path, expected_type="snapshot")
     try:
         dbreader.require_queryable_capabilities(
-            descriptor, "files", "directories", "hashes", "raw_payloads")
+            descriptor, "files", "directories")
     except Exception:
         con.close()
         raise
-    return con, forced
+    return con, descriptor, forced
 
 
 def _event(side_uuid: str, hrec: dict) -> tuple:
@@ -144,63 +145,11 @@ def _event(side_uuid: str, hrec: dict) -> tuple:
 
 
 def load_side(path: str, force: bool = False) -> dict:
-    con, forced = _check_and_open(path, force)
+    con, descriptor, forced = _check_and_open(path, force)
     try:
-        uuid_, schema_v, pk_rule, coverage = con.execute(
-            "SELECT snapshot_uuid, schema_version, path_key_rule,"
-            " hash_coverage FROM snapshot_info").fetchone()
-        roots = {rid: {"label": lb, "path": rp, "enum": st}
-                 for rid, lb, rp, st in con.execute(
-                     "SELECT root_id, root_label, root_path, enum_status"
-                     " FROM roots")}
-        dirs: dict = {}
-        for rid, rel, pk, st in con.execute(
-                "SELECT root_id, rel_path, path_key, enum_status FROM dirs"):
-            dirs.setdefault(rid, {})[pk] = {"rel": rel, "enum": st}
-        hashes: dict = {}
-        for eid, hx, origin, su, st_, fin, hst in con.execute(
-                "SELECT entry_id, hash_hex, origin, source_snapshot_uuid,"
-                " source_computed_at_utc, finished_at_utc, status FROM hashes"
-                " WHERE algorithm='sha256'"):
-            hashes[eid] = {"hex": hx, "origin": origin, "src": (su, st_),
-                           "fin": fin, "status": hst}
-        payloads: dict = {}
-        n_payload = 0
-        for eid, prov, sha, ver in con.execute(
-                "SELECT entry_id, provider, payload_sha256, provider_version"
-                " FROM raw_payloads"):
-            payloads.setdefault(eid, {})[prov] = (sha, ver)
-            n_payload += 1
-        entries: dict = {}
-        hash_count: dict = {}
-        hash_fileids: dict = {}
-        hash_events: dict = {}
-        for (eid, rid, rel, pk, size, mtime, attrs, ph, ms, hs, vs,
-             fih) in con.execute(
-                "SELECT entry_id, root_id, rel_path, path_key, size_bytes,"
-                " modified_at_utc, attributes, is_placeholder, meta_status,"
-                " hash_status, volume_serial, file_index_hex FROM entries"):
-            h = hashes.get(eid)
-            valid = h if (h and h["status"] == "valid") else None
-            e = {"eid": eid, "rid": rid, "rel": rel, "pk": pk, "size": size,
-                 "mtime": mtime, "attrs": attrs, "ph": ph,
-                 "unstable": (ms == "unstable" or hs == "unstable"
-                              or (h is not None and h["status"] == "unstable")),
-                 "hash": valid, "payloads": payloads.get(eid) or {},
-                 "vs": vs, "fih": fih}
-            entries.setdefault(rid, {}).setdefault(pk, []).append(e)
-            if valid:
-                hx = valid["hex"]
-                hash_count[hx] = hash_count.get(hx, 0) + 1
-                hash_events.setdefault(hx, set()).add(_event(uuid_, valid))
-                if vs and fih:
-                    hash_fileids.setdefault(hx, []).append((vs, fih))
-        return {"path": path, "file": os.path.basename(path), "uuid": uuid_,
-                "schema": schema_v, "pk_rule": pk_rule, "coverage": coverage,
-                "roots": roots, "dirs": dirs, "entries": entries,
-                "hash_count": hash_count, "hash_fileids": hash_fileids,
-                "hash_events": hash_events, "n_payload": n_payload,
-                "forced": forced}
+        projection = dbreader.snapshot_diff_projection(con, descriptor)
+        projection["forced"] = forced
+        return projection
     finally:
         con.close()
 
@@ -234,13 +183,6 @@ def _under(pk: str, failed: list[str]) -> bool:
 
 
 _META_EXIFTOOL_PENDING = object()
-_VOLATILE_EXIFTOOL_TAGS = {
-    "sourcefile",
-    "directory",
-    "fileaccessdate",
-}
-
-
 def _meta_eval(po: dict, pn: dict):
     """先比较摘要与版本；同版 ExifTool 差异延后排除环境字段复核。"""
     common = set(po) & set(pn)
@@ -257,50 +199,6 @@ def _meta_eval(po: dict, pn: dict):
             continue
         return 1
     return _META_EXIFTOOL_PENDING if exiftool_pending else 0
-
-
-def _drop_volatile_exiftool_tags(value):
-    """复制 JSON 结构，同时移除访问时间与提取目标路径等环境字段。"""
-    if isinstance(value, dict):
-        return {
-            key: _drop_volatile_exiftool_tags(item)
-            for key, item in value.items()
-            if not (
-                isinstance(key, str)
-                and key.rsplit(":", 1)[-1].casefold()
-                in _VOLATILE_EXIFTOOL_TAGS
-            )
-        }
-    if isinstance(value, list):
-        return [_drop_volatile_exiftool_tags(item) for item in value]
-    return value
-
-
-def _stable_exiftool_digest(con: sqlite3.Connection, entry_id: int,
-                            cache: dict[int, str | None]) -> str | None:
-    """按需计算排除易变标签后的摘要；载荷异常时返回 None，维持保守判异。"""
-    if entry_id in cache:
-        return cache[entry_id]
-    row = con.execute(
-        "SELECT payload_zlib FROM raw_payloads"
-        " WHERE entry_id=? AND provider='exiftool'", (entry_id,)
-    ).fetchone()
-    digest = None
-    if row is not None:
-        try:
-            raw = zlib.decompress(row[0])
-            document = json.loads(raw.decode("utf-8"))
-            stable = _drop_volatile_exiftool_tags(document)
-            canonical = json.dumps(
-                stable, ensure_ascii=False, sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            digest = hashlib.sha256(canonical).hexdigest()
-        except (OSError, sqlite3.Error, TypeError, ValueError,
-                UnicodeError, zlib.error):
-            pass
-    cache[entry_id] = digest
-    return digest
 
 
 def _resolve_exiftool_candidates(old_path: str, new_path: str,
@@ -320,10 +218,16 @@ def _resolve_exiftool_candidates(old_path: str, new_path: str,
         raise
     try:
         for row, old_eid, new_eid in candidates:
-            old_digest = _stable_exiftool_digest(
-                old_con, old_eid, old_cache)
-            new_digest = _stable_exiftool_digest(
-                new_con, new_eid, new_cache)
+            if old_eid not in old_cache:
+                old_cache[old_eid] = \
+                    dbreader.snapshot_exiftool_comparison_digest(
+                        old_con, old_eid)
+            if new_eid not in new_cache:
+                new_cache[new_eid] = \
+                    dbreader.snapshot_exiftool_comparison_digest(
+                        new_con, new_eid)
+            old_digest = old_cache[old_eid]
+            new_digest = new_cache[new_eid]
             same = old_digest is not None and old_digest == new_digest
             row["metadata_changed"] = 0 if same else 1
             if same and row["status"] == "metadata_extraction_changed":
@@ -344,6 +248,49 @@ def _hardlink_sets(fileids: list[tuple]) -> int:
     for fid in fileids:
         seen[fid] = seen.get(fid, 0) + 1
     return sum(1 for c in seen.values() if c >= 2)
+
+
+def _comparison_capabilities(old: dict, new: dict) -> dict[str, dict]:
+    """把双侧能力折叠成明确的可比／证据不足结论。"""
+    result: dict[str, dict] = {}
+    capability_ids = sorted(
+        set(old["capabilities"]) | set(new["capabilities"]))
+    for capability_id in capability_ids:
+        old_capability = old["capabilities"].get(capability_id, {})
+        new_capability = new["capabilities"].get(capability_id, {})
+        old_state = str(old_capability.get("state") or "unavailable")
+        new_state = str(new_capability.get("state") or "unavailable")
+        structurally_comparable = capability_id in ("files", "directories")
+        if old_state == "available" and new_state == "available":
+            comparison_state = "comparable"
+        elif old_state == "empty" and new_state == "empty":
+            comparison_state = "empty"
+        elif structurally_comparable \
+                and old_state in ("available", "empty") \
+                and new_state in ("available", "empty"):
+            comparison_state = "comparable"
+        else:
+            comparison_state = "unavailable"
+        reasons = []
+        if comparison_state == "unavailable":
+            for side_name, state, capability in (
+                ("old", old_state, old_capability),
+                ("new", new_state, new_capability),
+            ):
+                if state == "available":
+                    continue
+                reason = str(capability.get("reason") or (
+                    "已执行但没有记录" if state == "empty" else
+                    "未记录原因"
+                ))
+                reasons.append(f"{side_name}={state}：{reason}")
+        result[capability_id] = {
+            "state": comparison_state,
+            "old": old_state,
+            "new": new_state,
+            "reason": "；".join(reasons) if reasons else None,
+        }
+    return result
 
 
 def _classify_pair(old: dict, new: dict, o: dict, n: dict) -> tuple:
@@ -383,10 +330,11 @@ def compare(old_path: str, new_path: str, out_path: str,
     """执行对比，写出 Diff 数据库，返回计数摘要。"""
     old = load_side(old_path, force)
     new = load_side(new_path, force)
-    core.require_readable_schema_version(
-        old["schema"], f"旧快照 {old['file']}")
-    core.require_readable_schema_version(
-        new["schema"], f"新快照 {new['file']}")
+    for side_name, side in (("旧", old), ("新", new)):
+        if side.get("projection") != dbreader.SNAPSHOT_DIFF_PROJECTION:
+            raise core.PreflightError(
+                f"{side_name}侧快照未生成受支持的 Diff 规范化投影")
+    comparison_capabilities = _comparison_capabilities(old, new)
     if old["pk_rule"] != new["pk_rule"]:
         raise core.PreflightError(
             f"path_key_rule 双侧不等（硬性项）："
@@ -710,6 +658,20 @@ def compare(old_path: str, new_path: str, out_path: str,
     dir_counts: dict = {}
     for r in dir_rows:
         dir_counts[r["status"]] = dir_counts.get(r["status"], 0) + 1
+    paired_rows = [
+        row for row in rows
+        if row["old_rel_path"] is not None
+        and row["new_rel_path"] is not None
+    ]
+    metadata_evidence = {
+        "changed": sum(1 for row in rows
+                       if row["metadata_changed"] == 1),
+        "unchanged": sum(1 for row in rows
+                         if row["metadata_changed"] == 0),
+        "unavailable": sum(1 for row in paired_rows
+                           if row["metadata_changed"] is None),
+        "not_applicable": len(rows) - len(paired_rows),
+    }
     counts = {"status_evidence": se_counts, "dirs_status": dir_counts,
               "subtrees": {"old": sum(1 for s in subtree_rows
                                       if s["side"] == "old"),
@@ -717,6 +679,10 @@ def compare(old_path: str, new_path: str, out_path: str,
                                       if s["side"] == "new")},
               "snapshot_schemas": {"old": old["schema"],
                                    "new": new["schema"]},
+              "projection": {"old": old["projection"],
+                             "new": new["projection"]},
+              "comparison_capabilities": comparison_capabilities,
+              "metadata_evidence": metadata_evidence,
               "payload_rows": {"old": old["n_payload"],
                                "new": new["n_payload"]}}
     root_mapping = {"pairs": [[olb, nlb] for _, _, olb, nlb in pairs],
@@ -772,4 +738,5 @@ def compare(old_path: str, new_path: str, out_path: str,
     return {"out": out_path, "counts": counts, "root_mapping": root_mapping,
             "subtrees": subtree_rows,
             "forced": 1 if (old["forced"] or new["forced"]) else 0,
-            "coverage": (old["coverage"], new["coverage"])}
+            "coverage": (old["coverage"], new["coverage"]),
+            "capabilities": comparison_capabilities}

@@ -139,9 +139,7 @@ def main() -> int:
         _c, descriptor = dbreader.open_database(
             args.new, expected_type="snapshot")
         try:
-            dbreader.require_capabilities(descriptor, "files")
-            labels = [r[0] for r in _c.execute(
-                "SELECT root_label FROM roots ORDER BY root_label")]
+            labels = list(dbreader.snapshot_root_labels(_c, descriptor))
         finally:
             _c.close()
     except core.PreflightError:
@@ -177,6 +175,32 @@ def main() -> int:
         print(f"问题报告：{issue_report}")
     print(f"hash_coverage：旧={res['coverage'][0]} 新={res['coverage'][1]}"
           + ("｜forced=1（不完整输入）" if res["forced"] else ""))
+    schemas = counts.get("snapshot_schemas") or {}
+    projection = counts.get("projection") or {}
+    print(
+        f"快照 schema：旧={schemas.get('old')} 新={schemas.get('new')}"
+        f"｜规范化投影：旧={projection.get('old')}"
+        f" 新={projection.get('new')}"
+    )
+    print("证据能力：")
+    for capability_id, title in (
+        ("hashes", "内容哈希"),
+        ("raw_payloads", "原始元数据"),
+        ("format_checks", "格式校验"),
+    ):
+        capability = res["capabilities"].get(capability_id) or {}
+        state = {
+            "comparable": "可比",
+            "empty": "双方无记录",
+            "unavailable": "不可比",
+        }.get(str(capability.get("state")), "未知")
+        detail = (
+            f"；{capability['reason']}" if capability.get("reason") else "")
+        print(
+            f"  {title}: {state}"
+            f"（旧={capability.get('old')}，新={capability.get('new')}）"
+            f"{detail}"
+        )
     print("状态 × evidence：")
     for status in ("unchanged", "stat_changed_content_same",
                    "metadata_extraction_changed", "content_changed", "added",

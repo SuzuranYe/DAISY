@@ -1239,7 +1239,8 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 3 | 完成 | schema 4、session、attempt、lease、恢复状态机和数据契约已落地 |
 | 4 | 完成 | worker、暂停／保存退出／停止、动态 timeout、扫描发布链、scan CLI 和现有扫描 GUI 接线已落地 |
 | 5 | 进行中 | 统一核验、旧入口投影、RAW 核验／Full 扫描链及 ENV／Full GUI 能力接线已完成；核验页最终 GUI 与真实 RAW 夹具仍未完成 |
-| 6～9 | 未开始完成性实施 | 跨版本 Diff、数据库解析、四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
+| 6 | 完成 | schema 3／4 四方向 Diff 已切到 Reader 规范化投影，冻结输出 DDL，能力不足不伪装 |
+| 7～9 | 未开始完成性实施 | 数据库解析、四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
 
 最近一次完整发现式回归是在扫描 GUI 检查点后执行，结果为 465／465；同一阶段的 State、
 Run、CLI、GUI scan 定向结果分别为 22／22、51／51、10／10、19／19。统一核验核心随后
@@ -1407,6 +1408,39 @@ Issues／GUI／发布联合 161／161；RAW、ENV 与真实 Tk 相关批次连�
 这里仅完成现有 Full 页和 ENV-01 接线。四入口重组后的“核验”页还需在阶段 8～9 暴露同一
 RAW 从属开关；RAW-05 要求的许可／SHA-256 冻结真实 RAW 夹具与真实 LibRaw 解码仍是发布
 阻断。因此不能把本节测试写成真实 RAW 兼容证明，也不能据此更新 v1.6.0 版本号或 tag。
+
+### 17.14 schema 3／4 跨版本 Diff 检查点
+
+DBS-21 的快照载入已从物理表 SQL 切换到 Reader 的 `daisy-diff-input-v1`。Reader 统一读取
+schema 3／4 的 root、目录、文件、有效哈希来源、File ID 和 Raw Payload 摘要，并逐项携带
+hashes、raw payloads、format checks、session、attempt 与性能能力状态；Diff 层只消费该
+投影。ExifTool 易变字段过滤也移入 Reader，避免业务层再次打开物理表复制规则。
+
+结构能力仍是准入硬条件；哈希或 Raw Payload 表缺失时不再拒绝整个 Diff。哈希不足只产生
+`hash_missing`，Raw Payload 不可比保持 `metadata_changed=NULL`；格式校验与运行证据当前
+只进入能力说明，不冒充文件变化。`counts_json` 增加投影、双侧能力和 metadata evidence，
+但 `DIFF_DDL`、Diff `schema_version=3`、11 种文件状态及 v1.4.1 DDL 摘要均未改变。
+
+新增专项使用工作区合成档案创建业务等价的合法 schema 3／发布 schema 4 快照，覆盖
+3→3、3→4、4→3、4→4、方向互换、移动／复制／硬链接、显式多 root 映射、未配对 root、
+枚举失败双向传播、哈希／Raw Payload／格式能力不足、可选证据表缺失、CLI 发布和输入
+SHA-256／大小／mtime 不变。专项 8／8、Diff／Reader／CLI／no-clobber 定向 72／72 通过。
+跨版本专项随后连续 3 轮均为 8／8，失败 0、跳过 0。
+更宽的 246 项只读消费者联合批次首次暴露 2 个既有契约清单遗漏，其余 244 项通过；补齐 GUI
+参数期望和受控模块／技术规范登记后，完全相同的批次复跑为 246／246，用时 242.705 秒。
+该批次没有执行会自动发现工作区外真实工具的旧用例。
+
+经用户明确授权后，另以只读 `TEMP\测试文件`（37 文件、2 目录、7,681,279,487 字节）执行
+真实兼容验证。Git tag `v1.4.1` 的提交 `0fddc09feafa757135138f45150715fbeefa60c2`
+被原样导出到 `.test_runtime`，旧代码和当前代码各自独立生成 2 份 schema 3／4 Quick 快照；
+3→3、3→4、4→3、4→4 均得到 37 个 `hash_missing` 和 2 个未变化目录，4 个输入的 SHA-256、
+大小和 mtime 全部不变。随后只在 `.test_runtime` 的真实文件副本中制造移动、移出、替换和
+新增；3→4／4→3 都得到 content changed、added、deleted、moved 各 1 项及 hash missing 2 项，
+反向路径断言通过，7 个来源文件的 SHA-256、大小和 mtime 不变。
+
+这批真实验证不等于 Full／格式／RAW 全链验证：当前 Python 3.14 的隔离能力探测明确返回
+`rawpy` 未安装，本机 PATH 也没有 7-Zip，因此没有伪造 RAW 成功结论，也没有为绕过预检而
+使用假工具。RAW-05 和真实 Full／格式工具链继续是发布阻断。
 
 ## 十八、完成定义
 

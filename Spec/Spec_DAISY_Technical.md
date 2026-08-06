@@ -60,6 +60,11 @@ v1.6.0 开发分支另有不占编号的统一编排脚本
 | 核验快照准入、stat／哈希、格式判据和报告服务 | `Script\Lib\Script_DAISY_Lib_DBS_06_Verify.py` |
 | 数据库解析模块注册表、CSV 与旧 Excel writer | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
 | schema 3／4 快照 Issues 只读分析与分板块 Markdown | `Script\Lib\Script_DAISY_Lib_DBS_10_Issues.py` |
+| 统一核验阶段、控制、报告和退出码投影 | `Script\Lib\Script_DAISY_Lib_DBS_11_Verify_Run.py` |
+| ExifTool／FFprobe／7-Zip 精确子进程监督 | `Script\Lib\Script_DAISY_Lib_DBS_12_Verify_Tools.py` |
+| rawpy／LibRaw 隔离能力与每文件深度解码 | `Script\Lib\Script_DAISY_Lib_DBS_13_Raw.py` |
+| RAW 恢复 JSONL、最终伴随 JSON 与 Markdown 投影 | `Script\Lib\Script_DAISY_Lib_DBS_14_Raw_Evidence.py` |
+| Python 可选运行能力统一探测 | `Script\Lib\Script_DAISY_Lib_ENV_01_Capabilities.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本及统一编排脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
@@ -513,6 +518,18 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
 - `insufficient`：证据不足。
 
 移动、复制和硬链接使用全快照 SHA-256 多重集进行分组；无哈希时才可能退回 File ID 启发式。
+
+### 10.3 跨版本只读投影
+
+v1.6.0 开发分支的 DBS-21 支持 schema 3／4 的旧旧、旧新、新旧和新新四种方向。输入先由
+统一 Reader 转成 `daisy-diff-input-v1`，Diff 业务层不直接查询快照物理表。交换方向时，
+added／deleted、old／new 路径、schema 和未配对 root 必须一起反转；枚举失败范围在任一方向
+都保持 `unknown`。
+
+文件／目录是必要能力；哈希、Raw Payload、格式校验和运行证据是可选能力。哈希缺失只降低
+内容证据，Raw Payload 一侧缺失时元数据结论为 NULL。格式校验与 session／attempt 差异只
+写能力说明，不套用现有文件变化状态。Diff 输出仍使用冻结的 schema 3 `DIFF_DDL`，来源
+schema、投影标识和能力结论写入既有身份列与 `counts_json`，不改变 v1.4.1 的表列契约。
 
 ## 十一、STG 物理硬盘信息登记
 
