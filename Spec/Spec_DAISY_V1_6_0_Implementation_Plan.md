@@ -951,6 +951,8 @@ rawpy／LibRaw 使用两层夹具：故障、timeout、MemoryError 和 native-li
 | VER-10 | 暂停、停止、current item、动态 timeout 在两类核验中工作 |
 | VER-11 | RAW 深检只能依附格式核验；哈希、普通格式和 RAW 三类状态／结论分别统计 |
 | VER-12 | schema 3／4 当前文件均可做 RAW 深检，输入库不写入，结果只进入核验报告 |
+| VER-13 | FFprobe／ExifTool／7-Zip 的 native 异常退出码单独归类为工具崩溃，不误判为文件损坏 |
+| VER-14 | 旧 Full 元数据采集与新核验均不显示控制台／系统错误框；成功输出和旧错误落库语义不漂移 |
 
 ### 11.8 数据库解析
 
@@ -1022,6 +1024,7 @@ rawpy／LibRaw 使用两层夹具：故障、timeout、MemoryError 和 native-li
 | GUI-25 | 细线 V 形下箭头清楚且热区足够，重选同项不清空文字 |
 | GUI-26 | 扫描与核验的 RAW 深检开关层级一致；能力不可用时禁用且整卡悬停显示原因 |
 | GUI-27 | RAW worker 崩溃／timeout 对话期间窗口、日志、进度和安全关闭仍响应 |
+| GUI-28 | 受控 FFprobe native 崩溃不弹出 Windows 错误框、不阻塞 Tk；日志和任务总结仍给出工具、退出码与当前文件 |
 
 ### 11.11 安全、并发与回归
 
@@ -1034,6 +1037,7 @@ rawpy／LibRaw 使用两层夹具：故障、timeout、MemoryError 和 native-li
 | SEC-05 | 输出 no-clobber、staging 路径验证和取消清理范围 |
 | SEC-06 | 报告路径、GPS、设备和 raw metadata 隐私提示 |
 | SEC-07 | rawpy 仅在精确子进程导入／解码；测试不枚举或影响任何其它 Python／DAISY 进程 |
+| SEC-08 | native 崩溃抑制仅作用于本任务 worker 及其后代，不改注册表、系统 WER 设置或 Tk 主进程错误模式 |
 | REG-01 | v1.5.1 全部既有自动化测试继续通过或有逐项批准的语义更新 |
 | REG-02 | schema 3 DDL 冻结哈希保持；新 schema DDL 有独立固定哈希 |
 | REG-03 | 完整自动回归连续两轮，关键兼容／worker／Tk 测试连续三轮 |
@@ -1187,6 +1191,39 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 结论：RAW 深检可实现，但必须以进程隔离、严格错误分类、真实解码夹具和数据库零改动为
 发布门槛；在这些证据齐全前保持默认关闭且不得宣称已支持。
 
+### 15.12 外部原生工具崩溃与 Windows 错误框
+
+现场出现过一次带“内存不能为 read”一类文字的应用程序错误弹窗。用户关闭弹窗后没有
+观察到主任务直接退出，但当时没有保存准确进程名、路径、触发文件、退出码或系统事件，
+所以只能确认存在 native 异常风险，不能断言是 `ffmpeg.exe`、`ffprobe.exe` 或文件损坏。
+静态审查确认 DAISY 的媒体信息入口调用的是 FFmpeg 套件中的 `ffprobe.exe`；新版核验监督器
+已经使用 `CREATE_NO_WINDOW` 并识别异常退出码，旧 Full 元数据入口仍直接使用
+`subprocess.run`，两条路径尚未形成一致边界。
+
+`CREATE_NO_WINDOW` 只能消除控制台窗口，不能单独保证 Windows Error Reporting 或通用保护
+错误框不出现。Windows 的进程错误模式会被子进程继承，但它是进程级状态；因此不能在
+多线程 Tk 主进程中临时设置再恢复。实施采用以下边界：
+
+1. GUI 仍只启动并监管自己的任务 worker，不在 Tk 主进程修改错误模式；
+2. Windows 任务 worker 在启动扫描线程和第三方工具前一次性设置
+   `SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX`，后代工具继承；
+   非 Windows 平台为显式 no-op；
+3. 所有实际工具调用继续使用 `stdin=DEVNULL`、输出上限、持续排空、动态 timeout、
+   `CREATE_NO_WINDOW` 和本次 `Popen` 精确句柄；不按进程名查找或终止任何进程；
+4. 正常非零退出、timeout、启动失败、输出无效和 native 崩溃分别分类。`0xC0000005` 等异常
+   状态只能产生“工具崩溃／本文件未完成解析”，不能直接产生“文件损坏”；
+5. 单文件工具崩溃后回收本次子进程，保留当前文件、工具版本、无符号十六进制退出码、耗时
+   和有限 stderr，随后按未完成解析继续任务。重复崩溃需要汇总提示，不能连续弹系统框；
+6. 不新增或迁移 SQLite 表。旧 Full 继续使用既有错误状态和续传语义；新增的人读解释只进入
+   日志、任务总结或伴随 Issues 板块，且不得把工具故障放进“格式损坏”计数；
+7. 不修改注册表、系统 WER 配置或其它应用行为。若 worker 无法设置局部错误模式，应记录
+   能力降级并继续使用进程隔离，不能伪称已经验证“绝不弹窗”。
+
+测试分三层：纯注入覆盖 Windows 异常码分类；工作区受控替身覆盖成功、普通非零、timeout、
+输出截断和崩溃后的继续／回收；最后仅用本测试精确创建并等待的隐藏子进程执行 Windows
+错误框抑制专项，连续三轮验证 Tk 响应、无遗留 worker、成功数据库投影不变。真实 access
+violation 专项可能触发系统 UI，必须先有显式路径守卫和测试退出兜底，不能混入普通回归。
+
 ## 十六、需求追踪表
 
 | 需求 | 设计章节 | 实施阶段 | 主要测试 |
@@ -1208,6 +1245,7 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 当前文件显示与刷新 | 5.4 | 4、8 | GUI-10、HSH-02 |
 | 速度异常进入同一 Issues | 5.5、6 | 4、8 | RPT-07～09 |
 | unsupported 只记总数 | 3.2、6 | 5、8 | SCN-05、VER-08、RPT-03 |
+| 外部工具崩溃不弹系统框、不拖垮任务且不误判文件 | 15.12 | 5、8、9 | VER-13～14、GUI-28、SEC-08 |
 | Issues 人读精简 | 6 | 8 | RPT-01～06 |
 | Issues 按证据域分板块，未执行为 NULL | 6 | 8 | RPT-10、11 |
 | v1.5.1 UI／体验契约完整回归 | 3.6 | 8、9 | GUI-11～25、REG-01 |
