@@ -31,6 +31,9 @@
 - 不把“未实际识别的文件格式”从数据库证据中删除；只允许改变
   `Issues.md` 的人读筛选。
 - 不以截图“看起来正常”替代控件几何、状态和可达性断言。
+- 不实现或宣称已验证 v1.5.2 计划中的新续传状态机、失败重试、工具 session、哈希
+  timeout／跳过或慢区自动分析；这些项目见
+  [v1.5.2 可靠性待办](Spec_DAISY_V1_5_2_Backlog.md)。
 
 ## 2. 进程与数据隔离
 
@@ -265,6 +268,7 @@ v1.5.1 只有同时满足以下条件才可验收：
 | S9 | 数据库与完整回归，第 2 轮 | 281／281 | 通过 | 86.602 秒；文档更新后的独立重跑 |
 | S10 | 两个 GUI 入口、编码、换行、链接与 diff | 15／15 | 通过 | 2 个入口、9 个文本文件、3 个链接目标和 1 项 diff 检查 |
 | S11 | 六字标题、对齐与页面恢复增补 | 4／4＋96／96 | 通过 | 4 个新增用例；4 个字体×3 级字号×8 个页面对齐组合 |
+| S12 | 最终发布候选复核 | 5／5＋93／93＋281／281 | 通过 | 语法 5／5；GUI／真实 Tk 76.701 秒；完整回归 87.569 秒 |
 
 矩阵表中的“组合／用例数”表示本批次实际执行且通过的断言单元；M1、M2 的
 单元是一组“字体／字号／尺寸或缩放／页面”组合，不等同于 `unittest` 方法数。
@@ -292,6 +296,39 @@ v1.5.1 只有同时满足以下条件才可验收：
 - 最终检查中的 PowerShell 结果汇总命令曾在解析阶段因管道写法错误退出；修正检查
   命令后完整通过。该次失败没有加载或执行 DAISY 被测代码，也未计入产品失败数。
 
+### 9.2 执行环境与命令
+
+- 操作系统：Windows；Python 3.14；Tcl／Tk 8.6；Windows Per-Monitor V2 DPI 感知。
+- 最终自动化结果：失败 0，跳过 0。测试没有调用真实档案扫描、真实物理硬盘检测、
+  WinGet 安装或缓存清理。
+
+语法检查：
+
+```powershell
+python -B -m py_compile .\Script\Script_DAISY_GUI.py `
+  .\Script\Lib\Script_DAISY_Lib_DBS_01_Core.py `
+  .\Script\Lib\Script_DAISY_Lib_STG_01_Core.py `
+  .\Script\Test\Script_DAISY_Test_Unit.py `
+  .\Script\Test\Script_DAISY_Test_Storage_Unit.py
+```
+
+GUI 与真实 Tk 完整测试类：
+
+```powershell
+python -B -m unittest -v `
+  Script.Test.Script_DAISY_Test_Unit.TestGuiArguments
+```
+
+完整回归；最终连续执行两次：
+
+```powershell
+python -B -m unittest discover -s .\Script\Test `
+  -p "Script_DAISY_Test_*.py" -v
+```
+
+发布前另执行 `git diff --check`，并逐文件验证变更文本为严格 UTF-8、无 BOM、仅 LF；
+Markdown 相对链接必须解析到仓库内现存文件。
+
 ## 10. 最终交付
 
 最终交付必须同时包含：
@@ -301,3 +338,4 @@ v1.5.1 只有同时满足以下条件才可验收：
 - STG 三个 JSON 的精确职责说明。
 - 数据库契约未改变的审计结论。
 - 未执行项目的明确说明；不得把“未测试”写成“通过”。
+- 指向最终发布提交的 annotated tag `v1.5.1`，以及已推送的 `origin/Codex` 分支。
