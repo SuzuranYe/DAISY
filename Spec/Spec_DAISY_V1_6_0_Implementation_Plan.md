@@ -660,6 +660,15 @@ Windows lease 探测同步修正为同时检查精确 PID 的 `GetExitCodeProces
 
 检查点：GUI 不再单列格式校验，旧 CLI 和 v1.4.1 核验继续工作。
 
+当前进度：统一核验的第一层只读业务模型已经完成。它以 Reader 能力探测接收 schema 3／4
+封存快照，全量 stat 始终执行；哈希和格式分别支持关闭／抽样／全量，抽样种子与比例互不
+复用。新哈希结论要求读取前后 size／mtime 稳定、独立摘要完整且 worker 干净回收；旧库
+没有有效基准时明确记为不可核验。人读 Markdown 与技术 JSON 使用同一报告模型，未知／
+unsupported 格式只记录总数且不泄露路径。进程内暂停／继续／停止、内置 ZIP／PDF 的精确
+子进程 timeout 以及 no-clobber 报告发布已由 10 项专项测试覆盖；没有启用自定义 native
+Job。外部 ExifTool／FFprobe／7-Zip 的直接句柄监督、统一 CLI、旧入口投影对照和 GUI 合并
+尚未完成，因此阶段 5 仍为进行中。
+
 ### 阶段 6：跨版本对比
 
 1. Diff 切换到规范化投影。

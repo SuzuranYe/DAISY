@@ -136,6 +136,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Storage_Read_Only.py",
     "Script_DAISY_Test_DBS_Reader.py",
     "Script_DAISY_Test_DBS_Verify.py",
+    "Script_DAISY_Test_DBS_Verify_Unified.py",
     "Script_DAISY_Test_DBS_Parse.py",
     "Script_DAISY_Test_DBS_State.py",
     "Script_DAISY_Test_DBS_Hash_Worker.py",
