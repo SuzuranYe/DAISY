@@ -1,0 +1,274 @@
+# DAISY v1.6.0 数据与恢复契约
+
+## 一、范围与兼容边界
+
+本文冻结 v1.6.0 新建快照的数据库、续传和发布语义。实现与测试不得用应用版本、文件名
+或 GUI 状态代替数据库契约。
+
+- v1.4.1/schema 3 的 `SNAPSHOT_DDL` 和 `DIFF_DDL` 字节及语义永久冻结；
+- v1.6.0 只读接纳合格的 schema 3 封存快照和 Diff；
+- v1.6.0 新扫描使用 schema 4，不在 schema 3 库上 `ALTER TABLE`；
+- v1.4.1 partial 只做只读诊断，不接管、不写入、不升级；
+- 不承诺 v1.4.1 程序读取 schema 4；
+- schema 4 先保持 schema 3 的业务表，再增加独立运行证据表。
+
+## 二、冻结标识
+
+| 标识 | 值 |
+|---|---|
+| 快照 schema | `4` |
+| 旧库最低兼容 schema | `3` |
+| data contract | `daisy-snapshot-v4` |
+| resume contract | `daisy-resume-v1` |
+| projection contract | `daisy-snapshot-projection-v1` |
+| filename layout | `3` |
+| schema 4 最低读取器 | `1.6.0` |
+| lease 心跳间隔 | `5s` |
+| lease 有效期 | `30s` |
+
+`snapshot_info.scan_status` 在 schema 4 中仍只承担粗粒度兼容状态：
+
+| 运行状态 | `scan_status` | `database_integrity` |
+|---|---|---|
+| `running`／`pause_requested`／`sealing` | `running` | `pending` |
+| `paused`／`stopped`／`failed_recoverable` | `interrupted` | `pending` |
+| `failed_terminal` | `interrupted` | `failed` 或 `pending` |
+| `sealed_unpublished`／`published` | `complete` | `ok` |
+
+完整状态只读 `snapshot_runtime.run_state`，不得向 schema 3 的旧枚举偷偷加入新值。
+
+## 三、schema 4 新表
+
+### 3.1 `run_sessions`
+
+一行表示一次初始运行或一次恢复运行。恢复不会覆盖旧 session。
+
+| 列 | 约束与语义 |
+|---|---|
+| `session_id` | 32 位小写十六进制 UUID，主键 |
+| `session_number` | 从 1 开始，库内唯一递增 |
+| `parent_session_id` | 恢复来源；初始 session 为 `NULL` |
+| `session_kind` | `initial`／`resume` |
+| `session_status` | `active`／`paused`／`saved`／`stopped`／`completed`／`failed`／`abandoned` |
+| `started_at_utc`、`updated_at_utc`、`ended_at_utc` | session 时间线 |
+| `hostname`、`pid`、`process_start_token` | 精确 owner 身份，PID 不能单独作为身份 |
+| `lease_id` | 本次所有权租约 UUID |
+| `lease_acquired_at_utc`、`lease_heartbeat_at_utc`、`lease_expires_at_utc` | 租约证据 |
+| `scanner_version`、`resume_contract` | 创建和恢复契约 |
+| `config_json`、`tools_json` | 本 session 实际配置与工具 |
+| `end_reason` | 保存退出、停止、失败、发布或异常终止原因 |
+
+### 3.2 `snapshot_runtime`
+
+单例行 `id=1`，是 partial 的当前运行事实。
+
+| 列 | 约束与语义 |
+|---|---|
+| `snapshot_uuid` | 对应 `snapshot_info.snapshot_uuid` |
+| `schema_version` | 固定为 `4` |
+| `data_contract`、`min_reader_version` | `daisy-snapshot-v4`／`1.6.0` |
+| `resume_contract`、`projection_contract` | 冻结标识 |
+| `filename_layout_version` | 固定为 `3` |
+| `run_state` | 第四节冻结枚举 |
+| `state_revision` | 从 1 开始；每次转换加 1，用于 compare-and-swap |
+| `resume_hint` | `none`／`suggest`／`manual_only` |
+| `active_session_id` | 当前或最后一个 session |
+| `current_stage` | 当前阶段；没有时为 `NULL` |
+| `created_at_utc`、`updated_at_utc`、`last_checkpoint_at_utc` | 当前状态时间 |
+| `output_dir` | 规范化绝对输出目录 |
+| `partial_path` | 规范化绝对 partial 路径 |
+| `publish_stem_path` | 不含摘要后缀的发布绝对路径 |
+| `event_log_path` | 临时 JSONL 绝对路径 |
+| `published_path` | 仅发布副本为最终绝对路径，否则 `NULL` |
+| `last_error_code`、`last_error_message` | 最近状态级错误 |
+
+恢复必须核对 `partial_path`、输出目录、发布 stem、resume contract 和 filename layout；任一
+不一致都只诊断，不猜测修补。
+
+### 3.3 `stage_checkpoints`
+
+固定阶段为 `enumerate`、`hash`、`metadata`、`format`、`rescan`、`verify_hash`、
+`verify_format`、`seal`、`publish`。每阶段只有一个当前行。
+
+状态为 `pending`、`running`、`pause_requested`、`paused`、`completed`、`skipped`、
+`failed_recoverable` 或 `failed_terminal`。记录 session、项目／字节进度、错误数、当前
+`entry_id`、起止／检查点时间及限量 JSON 摘要。不得逐块写库。
+
+### 3.4 `run_state_events`
+
+这是状态转换的数据库内权威日志。每行记录 session 内序号、时间、事件、前后状态、
+`state_revision` 和 JSON 载荷。外部 `.events.jsonl` 仅用于运行中可观察性，不得凌驾于
+已提交的数据库状态。
+
+### 3.5 `entry_attempts`
+
+历史尝试与当前结果分离，唯一键为 `(entry_id, stage, attempt_number)`。
+
+- `stage`：`hash`、`metadata`、`format`、`verify_hash`、`verify_format`；
+- `status`：`running`、`succeeded`、`invalid`、`error`、`timeout`、`unstable`、
+  `unsupported`、`skipped_policy`、`cancelled`、`abandoned`；
+- 记录 session、工具、开始／最后进展／结束时间、源 size／mtime、已读字节、最终偏移、
+  stall 次数和最长 stall；
+- `decision`：`none`、`continue_waiting`、`skip_and_record`、`stop_and_resume`；
+- `decision_source`：`none`、`user`、`default`、`advanced_policy`、`shutdown`；
+- `end_reason`、错误码／错误消息和限量结果 JSON 保存可审计结论。
+
+更新当前哈希、元数据或格式结果前可以删除上一次派生行，但不得删除历史 attempt。
+
+### 3.6 `read_performance`
+
+一行对应一次 attempt 的低频摘要，`attempt_id` 唯一。至少记录 entry、session、阶段、
+`origin`、文件大小、已读字节、总耗时、活跃读取耗时、stall 统计、首次／末次 stall
+偏移、最终偏移和结束原因。
+
+候选置信度只允许 `none`、`low`、`high`。候选原因必须使用“读取性能异常候选”措辞；
+不得把逻辑路径推断为物理坏区。
+
+### 3.7 `format_checks`
+
+一行表示一个 entry 的当前格式结果，历史在 `entry_attempts`。
+
+- `status`：`pending`、`processing`、`valid`、`invalid`、`unsupported`、`timeout`、
+  `error`、`unstable`、`skipped_policy`；
+- `coverage`：`sample`／`full`；
+- 记录当前 attempt、validator、工具、`stat_match`、详情、时间和结果 revision；
+- 未开启格式校验时保持空表，Reader 报 `unavailable`，不能伪装为执行后 `0` 问题。
+
+## 四、运行状态机
+
+冻结状态：
+
+- `running`；
+- `pause_requested`；
+- `paused`；
+- `stopped`；
+- `sealing`；
+- `sealed_unpublished`；
+- `published`；
+- `failed_recoverable`；
+- `failed_terminal`。
+
+允许的转换如下；表外转换必须拒绝并保持数据库字节语义不变。
+
+| 当前 | 允许目标 |
+|---|---|
+| `running` | `pause_requested`、`stopped`、`sealing`、`failed_recoverable`、`failed_terminal` |
+| `pause_requested` | `running`、`paused`、`stopped`、`failed_recoverable`、`failed_terminal` |
+| `paused` | `running`、`stopped`、`failed_recoverable`、`failed_terminal` |
+| `stopped` | `running`（仅手动恢复）、`failed_terminal` |
+| `sealing` | `sealed_unpublished`、`failed_recoverable`、`failed_terminal` |
+| `sealed_unpublished` | `published`、`failed_recoverable` |
+| `failed_recoverable` | `running`、`stopped`、`failed_terminal` |
+| `published` | 无 |
+| `failed_terminal` | 无 |
+
+每次转换在一个 SQLite 事务中同时完成：
+
+1. 以 `run_state + state_revision` 做 compare-and-swap；
+2. 更新 `snapshot_runtime`；
+3. 映射粗粒度 `snapshot_info` 状态；
+4. 更新 session；
+5. 写 `run_state_events`；
+6. 提交后才向 GUI 确认成功。
+
+## 五、用户动作语义
+
+### 5.1 暂停／继续
+
+`running → pause_requested → paused`。只有工作领取停止、当前事务到达安全边界且当前
+attempt 可解释后才能进入 `paused`。同 session 继续为 `paused → running`，lease 保留。
+
+### 5.2 保存进度并退出
+
+到达 `paused` 后把 session 标为 `saved`，`resume_hint=suggest`，提交并关闭数据库，再按
+lease ID 释放锁。下次只显示恢复卡片，不自动读取。
+
+### 5.3 停止任务
+
+转换到 `stopped`，session 标为 `stopped`，`resume_hint=manual_only`。partial 保留；启动
+时不主动推荐，但用户可明确选择手动恢复。
+
+### 5.4 突然终止恢复
+
+确认旧 lease 无效后，在一个恢复事务中：
+
+1. 把 `entry_attempts.status=running` 改为 `abandoned`；
+2. 把对应 `entries.hash_status/meta_status=processing` 还原为 `pending`；
+3. 把 `format_checks.status=processing` 还原为 `pending`；
+4. 清空阶段的当前 entry，并把未完成阶段标为可恢复失败；
+5. 旧 session 标为 `abandoned`；
+6. 当前状态改为 `failed_recoverable`，`resume_hint=suggest`；
+7. 用户确认后创建新的 `resume` session，再进入 `running`。
+
+当前文件从头处理；不序列化 hashlib 或外部工具进程状态。
+
+## 六、lease 与进程身份
+
+锁文件和数据库 session 使用相同 `lease_id`。锁文件写入 host、PID、进程启动 token、
+session、获取／心跳／过期时间。
+
+- 同 host、PID 存活且启动 token 相同：始终视为活 owner，即使心跳暂时过期也拒绝接管；
+- 同 host、PID 存活但 token 不同：PID 已复用，旧 lease 可在明确恢复时接管；
+- 同 host、PID 不存在：旧 lease 可在明确恢复时接管；
+- 异机 owner：过期前拒绝，过期后才允许明确接管；
+- 损坏锁：普通启动拒绝，只允许用户明确恢复；
+- refresh 和 release 都必须匹配 lease ID，禁止一个窗口删除另一个窗口的锁。
+
+锁刷新使用同目录临时文件加原子替换。实现和测试只操作当前任务的精确锁路径，不按进程
+名枚举或终止任何其它进程。
+
+## 七、事件尾部恢复
+
+数据库事件是权威证据。读取临时 JSONL 时：
+
+- 完整合法行全部接纳；
+- 仅当最后一行没有换行且 JSON 截断时，忽略这一尾行并记录 `truncated_tail`；
+- 中间坏行或已经换行的坏尾行视为损坏，禁止静默跳过；
+- 重放不得覆盖数据库中已存在的 session 序号。
+
+## 八、封存与发布失败恢复
+
+不得先在唯一 partial 中写 `published` 再尝试不可控移动。冻结流程为：
+
+1. partial：`running → sealing`；
+2. 完成复扫、外键和 SQLite 完整性验证；
+3. partial：`sealing → sealed_unpublished`，提交并关闭；
+4. 以 SQLite backup／受控复制创建同目录发布副本；
+5. 仅在副本中写 `published`、最终路径和完成 session；
+6. 关闭副本后计算摘要并以 no-clobber 原子发布；
+7. 发布成功后删除 partial 和其精确 lease；
+8. 任一步失败都保留原 partial 为 `sealed_unpublished` 或 `failed_recoverable`，不覆盖旧产物。
+
+因此最终封存数据库自述为 `published`；发布失败的 partial 仍可重新发布，不必重扫档案。
+
+## 九、Reader 与投影
+
+- schema 3 继续使用既有 fallback，未来表为 `unavailable/NULL`；
+- schema 4 必须具备本文件全部新表和必要列，不能只改 `schema_version=4` 冒充；
+- schema 4 封存输入只有 `snapshot_runtime.run_state=published` 才属于普通 sealed；
+- `sealed_unpublished` 只能进入恢复／发布入口；
+- Diff、核验和解析通过版本化投影读取，不在业务代码散落 schema 分支。
+
+一次完成与多次恢复的业务投影必须相同。允许差异白名单仅包括：
+
+- snapshot／session／attempt／lease 身份；
+- 开始、结束、观察和性能时间；
+- run events、attempt 次数、stall 与恢复原因；
+- 工作文件名及最终时间戳名称；
+- 不影响当前业务结果的工具运行时证据。
+
+roots、dirs、entries 当前属性、当前有效哈希、规范化元数据、格式当前结果、错误分类和能力
+结论不得因暂停或跨重启恢复而变化。
+
+## 十、阶段 3 验收
+
+- schema 3 DDL 哈希保持既有固定值；
+- schema 4 DDL 有独立固定哈希与表／列契约测试；
+- 非法状态转换、旧 revision 和错误 session 均原子拒绝；
+- 三种退出语义及 resume hint 正确；
+- 活锁、死锁、PID 复用、异机未过期／过期和损坏锁使用纯合成测试；
+- running attempt 恢复为 abandoned，当前 processing 结果回到 pending；
+- JSONL 截断尾部可恢复，中间坏行拒绝；
+- 发布副本失败不覆盖目标且原 partial 可重试；
+- schema 3 封存库在所有消费者执行前后 SHA-256 不变；
+- 一次完成与多 session 的业务投影相同，差异只落入白名单。

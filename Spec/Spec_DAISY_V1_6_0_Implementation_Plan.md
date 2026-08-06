@@ -536,6 +536,8 @@ HTML／XLSX。raw payload 解压和摘要校验属于模块投影，不属于通
 
 ### 阶段 3：schema、session 与状态机
 
+冻结实现契约见 [v1.6.0 数据与恢复契约](Spec_DAISY_V1_6_0_Data_Contract.md)。
+
 1. 冻结新 schema DDL、data contract、resume contract 和 filename layout。
 2. 实现 run session、attempt、format check、performance summary 候选表。
 3. 实现状态转换表、锁租约／心跳、事件截断恢复、输出目录身份和封存失败恢复。
