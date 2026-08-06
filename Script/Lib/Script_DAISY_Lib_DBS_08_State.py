@@ -935,7 +935,7 @@ def mark_paused(
         resume_hint="suggest" if for_exit else "none",
         session_status="saved" if for_exit else "paused",
         end_session=for_exit,
-        end_reason="saved_exit" if for_exit else None,
+        end_reason="save_exit" if for_exit else None,
         payload={"for_exit": bool(for_exit)},
         now_utc=now_utc,
     )
@@ -962,6 +962,66 @@ def continue_running(
         session_status="active",
         now_utc=now_utc,
     )
+
+
+def save_paused_for_exit(
+    con: sqlite3.Connection,
+    *,
+    now_utc: str | None = None,
+) -> RuntimeSnapshot:
+    """把同会话 paused 安全结束为可建议恢复的保存点。"""
+    runtime = load_runtime(con)
+    if runtime.run_state != "paused":
+        raise core.PreflightError(
+            f"状态 {runtime.run_state} 不能保存退出")
+    session = con.execute(
+        "SELECT session_status,ended_at_utc FROM run_sessions"
+        " WHERE session_id=?",
+        (runtime.active_session_id,),
+    ).fetchone()
+    if session is None or session[0] != "paused" or session[1] is not None:
+        raise core.PreflightError(
+            "只有尚未结束的 paused session 可以保存退出")
+    now = _now_text(now_utc)
+    next_revision = runtime.state_revision + 1
+    with con:
+        changed = con.execute(
+            "UPDATE snapshot_runtime SET state_revision=?,"
+            " resume_hint='suggest',updated_at_utc=?,"
+            " last_checkpoint_at_utc=? WHERE id=1 AND run_state='paused'"
+            " AND state_revision=? AND active_session_id=?",
+            (
+                next_revision,
+                now,
+                now,
+                runtime.state_revision,
+                runtime.active_session_id,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise core.PreflightError(
+                "paused 保存退出时状态已变化，未提交")
+        session_changed = con.execute(
+            "UPDATE run_sessions SET session_status='saved',"
+            " updated_at_utc=?,ended_at_utc=?,end_reason='save_exit'"
+            " WHERE session_id=? AND session_status='paused'"
+            " AND ended_at_utc IS NULL",
+            (now, now, runtime.active_session_id),
+        ).rowcount
+        if session_changed != 1:
+            raise core.PreflightError(
+                "paused 保存退出时 session 已变化，未提交")
+        _append_state_event(
+            con,
+            runtime.active_session_id,
+            now,
+            "paused_saved_for_exit",
+            "paused",
+            "paused",
+            next_revision,
+            {"resume_hint": "suggest"},
+        )
+    return load_runtime(con)
 
 
 def stop_run(

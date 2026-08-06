@@ -1,10 +1,14 @@
 """DAISY v1.6.0 schema 4 partial 与 lease 生命周期测试。"""
 from __future__ import annotations
 
+import io
+import json
 import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 
@@ -12,8 +16,10 @@ _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 _SCRIPT_DIR = os.path.dirname(_TEST_DIR)
 _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
-sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR]
+_FIXTURE_DIR = os.path.join(_TEST_DIR, "Fixtures")
+sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR, _FIXTURE_DIR]
 
+import DBS_Hash_Worker_Fixture as worker_fixture
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_08_State as dbstate
 import Script_DAISY_Lib_DBS_09_Run as dbrun
@@ -21,6 +27,238 @@ import Script_DAISY_Lib_DBS_09_Run as dbrun
 
 _RUNTIME_ROOT = os.path.join(
     _REPO_ROOT, ".test_runtime", "v1_6_0", "run_lifecycle")
+
+
+def _wait_for_eof(inbox: dbrun.ControlInbox) -> None:
+    deadline = time.monotonic() + 2.0
+    while not inbox.eof and time.monotonic() < deadline:
+        time.sleep(0.005)
+    if not inbox.eof:
+        raise AssertionError("控制输入线程未在期限内读到 EOF")
+
+
+class TestControlProtocol(unittest.TestCase):
+    def test_all_actions_round_trip_as_one_utf8_json_line(self) -> None:
+        commands = (
+            dbrun.ControlCommand(1, "pause"),
+            dbrun.ControlCommand(2, "continue", request_id="继续-2"),
+            dbrun.ControlCommand(3, "save_exit"),
+            dbrun.ControlCommand(4, "stop"),
+            dbrun.ControlCommand(
+                5,
+                "timeout_decision",
+                worker_pid=4242,
+                decision="skip_and_record",
+            ),
+        )
+        for command in commands:
+            with self.subTest(action=command.action):
+                encoded = dbrun.encode_control_command(command)
+                self.assertTrue(encoded.endswith(b"\n"))
+                self.assertEqual(1, encoded.count(b"\n"))
+                self.assertEqual(command, dbrun.decode_control_line(encoded))
+
+    def test_decoder_rejects_malformed_or_ambiguous_messages(self) -> None:
+        bad_messages = (
+            b"",
+            b"not-json\n",
+            b"[]\n",
+            b'{"protocol":"other","sequence":1,"action":"pause"}\n',
+            b'{"protocol":"daisy-control-v1","sequence":true,'
+            b'"action":"pause"}\n',
+            b'{"protocol":"daisy-control-v1","sequence":1,'
+            b'"action":"unknown"}\n',
+            b'{"protocol":"daisy-control-v1","sequence":1,'
+            b'"action":"timeout_decision"}\n',
+            b'{"protocol":"daisy-control-v1","sequence":1,'
+            b'"action":"pause","worker_pid":1}\n',
+            b'{"protocol":"daisy-control-v1","sequence":1,'
+            b'"action":"pause"}\n\n',
+            b"\xff\n",
+            b"x" * (dbrun.CONTROL_MAX_LINE_BYTES + 1),
+        )
+        for message in bad_messages:
+            with self.subTest(message=message[:40]):
+                with self.assertRaises(ValueError):
+                    dbrun.decode_control_line(message)
+
+    def test_inbox_orders_messages_and_rejects_stale_sequence(self) -> None:
+        first = dbrun.encode_control_command(
+            dbrun.ControlCommand(1, "pause"))
+        third = dbrun.encode_control_command(
+            dbrun.ControlCommand(3, "stop"))
+        second = dbrun.encode_control_command(
+            dbrun.ControlCommand(2, "continue"))
+        rejected = []
+        stream = io.BytesIO(first + first + b"broken\n" + third + second)
+        inbox = dbrun.ControlInbox(
+            stream, on_rejected=rejected.append)
+        inbox.start()
+        _wait_for_eof(inbox)
+        self.assertEqual(
+            [(1, "pause"), (3, "stop")],
+            [(item.sequence, item.action) for item in inbox.poll()],
+        )
+        self.assertEqual(
+            ["stale_sequence", "invalid_message", "stale_sequence"],
+            [item.code for item in rejected],
+        )
+        self.assertFalse(stream.closed)
+
+
+class TestRunCommandRouter(unittest.TestCase):
+    def test_running_lifecycle_action_is_first_wins(self) -> None:
+        receipts = []
+        router = dbrun.RunCommandRouter(on_receipt=receipts.append)
+        barrier = threading.Barrier(3)
+        results = []
+
+        def route(command: dbrun.ControlCommand) -> None:
+            barrier.wait()
+            results.append(router.route(command))
+
+        threads = (
+            threading.Thread(
+                target=route,
+                args=(dbrun.ControlCommand(1, "pause"),),
+            ),
+            threading.Thread(
+                target=route,
+                args=(dbrun.ControlCommand(2, "stop"),),
+            ),
+        )
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+        self.assertEqual([False, True], sorted(
+            receipt.accepted for receipt in results))
+        self.assertIn(
+            router.hash_control.current()[0], ("pause", "stop"))
+        self.assertEqual(2, len(receipts))
+
+    def test_timeout_decision_is_bound_to_current_worker(self) -> None:
+        router = dbrun.RunCommandRouter()
+        control = router.hash_control
+        control.bind_worker(4242)
+        try:
+            self.assertTrue(control.open_timeout_decision(4242))
+            stale = router.route(dbrun.ControlCommand(
+                1,
+                "timeout_decision",
+                worker_pid=4343,
+                decision="skip_and_record",
+            ))
+            accepted = router.route(dbrun.ControlCommand(
+                2,
+                "timeout_decision",
+                worker_pid=4242,
+                decision="skip_and_record",
+            ))
+            self.assertFalse(stale.accepted)
+            self.assertTrue(accepted.accepted)
+            choice = control.resolve_timeout_decision(
+                4242, "continue_waiting")
+            self.assertEqual(("skip_and_record", "user"), (
+                choice.decision, choice.source))
+        finally:
+            control.unbind_worker(4242)
+
+    def test_paused_wait_accepts_one_action_then_replaces_worker_control(
+        self,
+    ) -> None:
+        router = dbrun.RunCommandRouter()
+        old_control = router.hash_control
+        router.enter_paused()
+        rejected = router.route(dbrun.ControlCommand(1, "pause"))
+        accepted = router.route(dbrun.ControlCommand(2, "continue"))
+        duplicate = router.route(dbrun.ControlCommand(3, "stop"))
+        self.assertFalse(rejected.accepted)
+        self.assertTrue(accepted.accepted)
+        self.assertFalse(duplicate.accepted)
+        self.assertEqual("continue", router.wait_paused_action(0.01))
+        new_control = router.begin_running()
+        self.assertEqual("running", router.state)
+        self.assertIsNot(old_control, new_control)
+        self.assertIsNone(new_control.current())
+
+    def test_ended_router_wakes_pause_wait_and_rejects_commands(self) -> None:
+        router = dbrun.RunCommandRouter()
+        router.enter_paused()
+        result = []
+        waiting = threading.Thread(
+            target=lambda: result.append(router.wait_paused_action(2.0)))
+        waiting.start()
+        router.end()
+        waiting.join(timeout=1.0)
+        self.assertFalse(waiting.is_alive())
+        self.assertEqual([None], result)
+        receipt = router.route(dbrun.ControlCommand(1, "continue"))
+        self.assertEqual((False, "run_ended"), (
+            receipt.accepted, receipt.reason))
+
+
+class TestControlInbox(unittest.TestCase):
+    def test_inbox_discards_oversized_tail_and_bounds_queue(self) -> None:
+        valid = dbrun.encode_control_command(
+            dbrun.ControlCommand(2, "save_exit"))
+        rejected = []
+        stream = io.BytesIO(
+            b"x" * (dbrun.CONTROL_MAX_LINE_BYTES + 50) + b"\n" + valid)
+        inbox = dbrun.ControlInbox(
+            stream, max_queue=1, on_rejected=rejected.append)
+        inbox.start()
+        _wait_for_eof(inbox)
+        self.assertEqual((dbrun.ControlCommand(2, "save_exit"),),
+                         inbox.poll())
+        self.assertEqual(["line_too_long"], [item.code for item in rejected])
+
+        rejected = []
+        stream = io.BytesIO(
+            dbrun.encode_control_command(dbrun.ControlCommand(1, "pause"))
+            + dbrun.encode_control_command(dbrun.ControlCommand(2, "stop"))
+        )
+        inbox = dbrun.ControlInbox(
+            stream, max_queue=1, on_rejected=rejected.append)
+        inbox.start()
+        _wait_for_eof(inbox)
+        self.assertEqual((dbrun.ControlCommand(1, "pause"),), inbox.poll())
+        self.assertEqual(["queue_full"], [item.code for item in rejected])
+
+    def test_callback_delivery_does_not_fill_poll_queue(self) -> None:
+        delivered = []
+        rejected = []
+        payload = json.dumps({
+            "protocol": dbrun.CONTROL_PROTOCOL,
+            "sequence": 1,
+            "action": "continue",
+        }).encode("utf-8") + b"\n"
+        stream = io.BytesIO(payload)
+        inbox = dbrun.ControlInbox(
+            stream,
+            on_command=delivered.append,
+            on_rejected=rejected.append,
+        )
+        inbox.start()
+        _wait_for_eof(inbox)
+        inbox.stop()
+        self.assertEqual([dbrun.ControlCommand(1, "continue")], delivered)
+        self.assertEqual((), inbox.poll())
+        self.assertEqual([], rejected)
+        self.assertFalse(stream.closed)
+
+    def test_inbox_rejects_unterminated_final_json_object(self) -> None:
+        rejected = []
+        encoded = dbrun.encode_control_command(
+            dbrun.ControlCommand(1, "pause")).rstrip(b"\n")
+        inbox = dbrun.ControlInbox(
+            io.BytesIO(encoded), on_rejected=rejected.append)
+        inbox.start()
+        _wait_for_eof(inbox)
+        self.assertEqual((), inbox.poll())
+        self.assertEqual(
+            ["unterminated_line"], [item.code for item in rejected])
 
 
 class _RunFixture(unittest.TestCase):
@@ -60,6 +298,132 @@ class _RunFixture(unittest.TestCase):
         }
         arguments.update(overrides)
         return dbrun.create_run(**arguments)
+
+    def add_hash_entry(self, handle: dbrun.RunHandle) -> str:
+        path = os.path.join(self.root_path, "fixture.bin")
+        with open(path, "wb") as stream:
+            stream.write(b"abc")
+        observed = core.now_utc_iso()
+        modified = core.ns_to_utc_iso(os.stat(path).st_mtime_ns)
+        handle.connection.execute(
+            "INSERT INTO dirs"
+            " (dir_id,root_id,rel_path,path_key,enum_status,observed_at_utc)"
+            " VALUES (1,1,'','','ok',?)",
+            (observed,),
+        )
+        handle.connection.execute(
+            "INSERT INTO entries"
+            " (entry_id,root_id,dir_id,rel_path,path_key,name,extension,"
+            " media_kind,size_bytes,modified_at_utc,attributes,observed_at_utc,"
+            " meta_status,hash_status) VALUES"
+            " (1,1,1,'fixture.bin','fixture.bin','fixture.bin','bin','other',"
+            " 3,?,0,?,'not_applicable','pending')",
+            (modified, observed),
+        )
+        handle.connection.commit()
+        return path
+
+
+class TestControlledHashStage(_RunFixture):
+    def _run_paused_action(self, action: str):
+        handle = self.create()
+        self.add_hash_entry(handle)
+        router = dbrun.RunCommandRouter()
+        events = []
+        worker_starts = 0
+        sequence = 0
+
+        def on_event(event, **_payload) -> None:
+            nonlocal worker_starts, sequence
+            events.append(event)
+            if event == "worker_started":
+                worker_starts += 1
+                if worker_starts == 1:
+                    sequence += 1
+                    receipt = router.route(dbrun.ControlCommand(
+                        sequence, "pause"))
+                    self.assertTrue(receipt.accepted)
+            elif event == "run_paused":
+                sequence += 1
+                receipt = router.route(dbrun.ControlCommand(
+                    sequence, action))
+                self.assertTrue(receipt.accepted)
+
+        try:
+            stats = dbrun.run_hash_stage_controlled(
+                handle.connection,
+                "full",
+                router,
+                stall_seconds=1.0,
+                timeout_seconds=2.0,
+                on_event=on_event,
+                poll_seconds=0.005,
+                paused_wait_seconds=0.01,
+            )
+            runtime = dbstate.load_runtime(handle.connection)
+            attempts = handle.connection.execute(
+                "SELECT attempt_number,status FROM entry_attempts"
+                " ORDER BY attempt_number"
+            ).fetchall()
+            session = handle.connection.execute(
+                "SELECT session_status,ended_at_utc,end_reason"
+                " FROM run_sessions WHERE session_id=?",
+                (runtime.active_session_id,),
+            ).fetchone()
+            checkpoint = handle.connection.execute(
+                "SELECT state,checkpoint_json FROM stage_checkpoints"
+                " WHERE stage='hash'"
+            ).fetchone()
+            return stats, runtime, attempts, tuple(session), tuple(checkpoint), \
+                events, router
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_pause_then_continue_retries_file_in_same_session(self) -> None:
+        (stats, runtime, attempts, session, checkpoint,
+         events, router) = self._run_paused_action("continue")
+        self.assertEqual(("completed", 1, 1), (
+            stats["state"], stats["processed"], stats["done"]))
+        self.assertEqual(("running", "none"), (
+            runtime.run_state, runtime.resume_hint))
+        self.assertEqual(
+            [(1, "cancelled"), (2, "succeeded")], attempts)
+        self.assertEqual("active", session[0])
+        self.assertIsNone(session[1])
+        self.assertEqual("completed", checkpoint[0])
+        self.assertEqual(
+            1, events.count("run_paused"))
+        self.assertEqual(1, events.count("run_resumed"))
+        self.assertEqual("running", router.state)
+
+    def test_pause_then_save_ends_session_and_keeps_pending_file(self) \
+            -> None:
+        (stats, runtime, attempts, session, checkpoint,
+         events, router) = self._run_paused_action("save_exit")
+        self.assertEqual("save_exit", stats["state"])
+        self.assertEqual(("paused", "suggest"), (
+            runtime.run_state, runtime.resume_hint))
+        self.assertEqual([(1, "cancelled")], attempts)
+        self.assertEqual(("saved", "save_exit"), (
+            session[0], session[2]))
+        self.assertIsNotNone(session[1])
+        self.assertEqual("paused", checkpoint[0])
+        self.assertEqual(1, events.count("run_saved"))
+        self.assertEqual("ended", router.state)
+
+    def test_pause_then_stop_requires_manual_resume(self) -> None:
+        (stats, runtime, attempts, session, checkpoint,
+         events, router) = self._run_paused_action("stop")
+        self.assertEqual("stopped", stats["state"])
+        self.assertEqual(("stopped", "manual_only"), (
+            runtime.run_state, runtime.resume_hint))
+        self.assertEqual([(1, "cancelled")], attempts)
+        self.assertEqual(("stopped", "user_stop"), (
+            session[0], session[2]))
+        self.assertIsNotNone(session[1])
+        self.assertEqual("failed_recoverable", checkpoint[0])
+        self.assertEqual(1, events.count("run_stopped"))
+        self.assertEqual("ended", router.state)
 
 
 class TestRunCreation(_RunFixture):

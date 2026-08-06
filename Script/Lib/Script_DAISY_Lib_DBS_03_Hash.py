@@ -192,21 +192,30 @@ class AtomicTimeoutDecision:
                     default_decision, default_source)
             return self._choice
 
+    def current(self) -> TimeoutChoice | None:
+        with self._lock:
+            return self._choice
+
 
 class HashWorkerControl:
-    """控制线程写入一次暂停或停止请求；第一个请求胜出。"""
+    """控制线程写入生命周期动作与当前 worker 的 timeout 决策。"""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._action: tuple[str, str] | None = None
+        self._worker_pid: int | None = None
+        self._timeout_open = False
+        self._timeout_choice: TimeoutChoice | None = None
+        self._timeout_terminal = False
 
     def _request(self, action: str, source: str) -> bool:
-        if action not in ("pause", "stop"):
+        if action not in ("pause", "save_exit", "stop"):
             raise ValueError(f"未知 worker 控制动作：{action}")
         if source not in dbstate.DECISION_SOURCES or source == "none":
             raise ValueError(f"未知 worker 控制来源：{source}")
         with self._lock:
-            if self._action is not None:
+            if self._action is not None or self._timeout_choice is not None \
+                    or self._timeout_terminal:
                 return False
             self._action = (action, source)
             return True
@@ -214,12 +223,111 @@ class HashWorkerControl:
     def request_pause(self, source: str = "user") -> bool:
         return self._request("pause", source)
 
+    def request_save_exit(self, source: str = "user") -> bool:
+        return self._request("save_exit", source)
+
     def request_stop(self, source: str = "user") -> bool:
         return self._request("stop", source)
 
     def current(self) -> tuple[str, str] | None:
         with self._lock:
             return self._action
+
+    def bind_worker(self, worker_pid: int) -> None:
+        process_id = int(worker_pid)
+        if process_id <= 0:
+            raise ValueError("worker PID 必须大于 0")
+        with self._lock:
+            if self._worker_pid not in (None, process_id):
+                raise RuntimeError("控制器仍绑定到另一个 worker")
+            self._worker_pid = process_id
+            self._timeout_open = False
+            self._timeout_choice = None
+            self._timeout_terminal = False
+
+    def unbind_worker(self, worker_pid: int) -> None:
+        with self._lock:
+            if self._worker_pid == int(worker_pid):
+                self._worker_pid = None
+                self._timeout_open = False
+                self._timeout_choice = None
+                self._timeout_terminal = False
+
+    def open_timeout_decision(self, worker_pid: int) -> bool:
+        """只为当前 worker 打开决定窗口；已打开时保留现有选择。"""
+        with self._lock:
+            if self._worker_pid != int(worker_pid) or self._action is not None \
+                    or self._timeout_terminal:
+                return False
+            self._timeout_open = True
+            return True
+
+    def close_timeout_decision(self, worker_pid: int) -> None:
+        """关闭当前 worker 的决定窗口，并丢弃尚未执行的过时选择。"""
+        with self._lock:
+            if self._worker_pid == int(worker_pid):
+                self._timeout_open = False
+                self._timeout_choice = None
+                self._timeout_terminal = False
+
+    def request_timeout_decision(
+        self,
+        worker_pid: int,
+        decision: str,
+        source: str = "user",
+    ) -> bool:
+        if decision not in HASH_TIMEOUT_DECISIONS:
+            raise ValueError(f"未知 timeout 决策：{decision}")
+        if source not in dbstate.DECISION_SOURCES or source == "none":
+            raise ValueError(f"未知 timeout 决策来源：{source}")
+        with self._lock:
+            if self._worker_pid != int(worker_pid):
+                return False
+            if not self._timeout_open or self._timeout_choice is not None \
+                    or self._action is not None:
+                return False
+            self._timeout_choice = TimeoutChoice(decision, source)
+            return True
+
+    def take_timeout_decision(
+        self,
+        worker_pid: int,
+    ) -> TimeoutChoice | None:
+        with self._lock:
+            if self._worker_pid != int(worker_pid) or not self._timeout_open:
+                return None
+            choice = self._timeout_choice
+            self._timeout_choice = None
+            if choice is not None:
+                self._timeout_open = False
+                self._timeout_terminal = (
+                    choice.decision != "continue_waiting")
+            return choice
+
+    def resolve_timeout_decision(
+        self,
+        worker_pid: int,
+        default_decision: str,
+        preferred: TimeoutChoice | None = None,
+    ) -> TimeoutChoice:
+        if default_decision not in HASH_TIMEOUT_DECISIONS:
+            raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+        default_source = (
+            "default" if default_decision == "continue_waiting"
+            else "advanced_policy"
+        )
+        with self._lock:
+            if self._worker_pid != int(worker_pid):
+                raise RuntimeError("timeout 决策不属于当前 worker")
+            if not self._timeout_open:
+                raise RuntimeError("当前 worker 没有打开 timeout 决策窗口")
+            choice = self._timeout_choice or preferred or TimeoutChoice(
+                default_decision, default_source)
+            self._timeout_open = False
+            self._timeout_choice = None
+            self._timeout_terminal = (
+                choice.decision != "continue_waiting")
+            return choice
 
 
 @dataclass(frozen=True)
@@ -412,6 +520,12 @@ def run_hash_worker(
         raise
     send.close()
     worker_pid = int(process.pid)
+    try:
+        owned_control.bind_worker(worker_pid)
+    except Exception:
+        receive.close()
+        _finish_owned_worker(process, terminate=True)
+        raise
     emit("worker_started", file=label, worker_pid=worker_pid)
     pipe_closed = False
 
@@ -447,7 +561,11 @@ def run_hash_worker(
             action = owned_control.current()
             if action is not None:
                 control_action, control_source = action
-                outcome = "paused" if control_action == "pause" else "stopped"
+                outcome = {
+                    "pause": "paused",
+                    "save_exit": "save_exit",
+                    "stop": "stopped",
+                }[control_action]
                 decision = "stop_and_resume"
                 decision_source = control_source
                 terminate = True
@@ -489,6 +607,7 @@ def run_hash_worker(
                         last_progress_at = time.monotonic()
                         timeout_window_started = last_progress_at
                         stall_reported = False
+                        owned_control.close_timeout_decision(worker_pid)
                         if on_progress is not None:
                             try:
                                 on_progress(bytes_read, size_bytes, label)
@@ -559,19 +678,49 @@ def run_hash_worker(
                 if first_stall_offset is None:
                     first_stall_offset = bytes_read
                 last_stall_offset = bytes_read
+                owned_control.open_timeout_decision(worker_pid)
                 emit(
                     "stall",
                     file=label,
+                    worker_pid=worker_pid,
                     idle_seconds=round(idle, 3),
                     final_offset=bytes_read,
                 )
 
+            pending_choice = (
+                owned_control.take_timeout_decision(worker_pid)
+                if stall_reported else None
+            )
+            if pending_choice is not None:
+                decision = pending_choice.decision
+                decision_source = pending_choice.source
+                emit(
+                    "stall_decided",
+                    file=label,
+                    worker_pid=worker_pid,
+                    decision=decision,
+                    decision_source=decision_source,
+                    threshold_count=threshold_count,
+                )
+                if decision == "continue_waiting":
+                    timeout_window_started = time.monotonic()
+                    owned_control.open_timeout_decision(worker_pid)
+                    continue
+                terminate = True
+                outcome = (
+                    "timeout" if decision == "skip_and_record"
+                    else "stopped"
+                )
+                break
+
             timeout_idle = now - timeout_window_started
             if timeout_idle >= threshold_seconds:
                 threshold_count += 1
+                owned_control.open_timeout_decision(worker_pid)
                 emit(
                     "threshold_reached",
                     file=label,
+                    worker_pid=worker_pid,
                     threshold_seconds=threshold_seconds,
                     idle_seconds=round(idle, 3),
                     final_offset=bytes_read,
@@ -582,6 +731,7 @@ def run_hash_worker(
                     try:
                         on_threshold({
                             "file": label,
+                            "worker_pid": worker_pid,
                             "size_bytes": size_bytes,
                             "bytes_read": bytes_read,
                             "threshold_seconds": threshold_seconds,
@@ -593,18 +743,26 @@ def run_hash_worker(
                             file=label,
                             error=str(exc),
                         )
-                choice = arbiter.resolve(default_decision)
+                if owned_control.current() is not None:
+                    continue
+                choice = owned_control.resolve_timeout_decision(
+                    worker_pid,
+                    default_decision,
+                    preferred=arbiter.current(),
+                )
                 decision = choice.decision
                 decision_source = choice.source
                 emit(
                     "threshold_decided",
                     file=label,
+                    worker_pid=worker_pid,
                     decision=decision,
                     decision_source=decision_source,
                     threshold_count=threshold_count,
                 )
                 if decision == "continue_waiting":
                     timeout_window_started = time.monotonic()
+                    owned_control.open_timeout_decision(worker_pid)
                     continue
                 terminate = True
                 outcome = (
@@ -623,8 +781,11 @@ def run_hash_worker(
                 break
     finally:
         receive.close()
-        exitcode, reaped = _finish_owned_worker(
-            process, terminate=terminate or outcome != "completed")
+        try:
+            exitcode, reaped = _finish_owned_worker(
+                process, terminate=terminate or outcome != "completed")
+        finally:
+            owned_control.unbind_worker(worker_pid)
 
     elapsed_seconds = max(0.0, time.monotonic() - started)
     longest_stall_seconds = max(
@@ -698,6 +859,7 @@ def _validated_worker_hash(
         reason = {
             "timeout": "no_progress_timeout",
             "paused": "pause_requested",
+            "save_exit": "save_exit_requested",
             "stopped": "stop_and_resume",
             "crashed": "worker_crashed_without_result",
         }.get(outcome.outcome, "worker_failed_without_result")
@@ -833,7 +995,7 @@ def process_hash_attempt_v4(
     result_status = str(result["status"])
     error_code = None
     error_message = None
-    if outcome.outcome == "paused" or outcome.outcome == "stopped":
+    if outcome.outcome in ("paused", "save_exit", "stopped"):
         attempt_status = "cancelled"
     elif outcome.outcome == "timeout":
         attempt_status = "timeout"
@@ -899,8 +1061,9 @@ def process_hash_attempt_v4(
         performance=performance,
         _current_writer=write_current,
     )
-    if outcome.outcome == "paused":
-        dbstate.request_pause(con, for_exit=save_on_pause)
+    if outcome.outcome in ("paused", "save_exit"):
+        for_exit = outcome.outcome == "save_exit" or save_on_pause
+        dbstate.request_pause(con, for_exit=for_exit)
         dbstate.update_stage_checkpoint(
             con,
             "hash",
@@ -908,7 +1071,7 @@ def process_hash_attempt_v4(
             current_entry_id=None,
             checkpoint={"reason": "worker_pause"},
         )
-        dbstate.mark_paused(con, for_exit=save_on_pause)
+        dbstate.mark_paused(con, for_exit=for_exit)
         dbstate.update_stage_checkpoint(
             con,
             "hash",
@@ -1050,8 +1213,9 @@ def _apply_hash_stage_control(
     save_on_pause: bool,
 ) -> str:
     action, _source = control_action
-    if action == "pause":
-        dbstate.request_pause(con, for_exit=save_on_pause)
+    if action in ("pause", "save_exit"):
+        for_exit = action == "save_exit" or save_on_pause
+        dbstate.request_pause(con, for_exit=for_exit)
         dbstate.update_stage_checkpoint(
             con,
             "hash",
@@ -1059,7 +1223,7 @@ def _apply_hash_stage_control(
             current_entry_id=None,
             checkpoint={"reason": "stage_pause"},
         )
-        dbstate.mark_paused(con, for_exit=save_on_pause)
+        dbstate.mark_paused(con, for_exit=for_exit)
         dbstate.update_stage_checkpoint(
             con,
             "hash",
@@ -1067,7 +1231,7 @@ def _apply_hash_stage_control(
             current_entry_id=None,
             checkpoint={"reason": "stage_pause"},
         )
-        return "paused"
+        return "save_exit" if action == "save_exit" else "paused"
     dbstate.update_stage_checkpoint(
         con,
         "hash",
@@ -1296,7 +1460,7 @@ def process_hash_stage_v4(
             )
             stats["bytes_read"] = (
                 int(stats["bytes_read"]) + outcome.bytes_read)
-            if outcome.outcome in ("paused", "stopped"):
+            if outcome.outcome in ("paused", "save_exit", "stopped"):
                 stats["state"] = outcome.outcome
                 break
             attempt_status = con.execute(

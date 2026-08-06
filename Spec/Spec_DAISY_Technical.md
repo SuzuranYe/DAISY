@@ -813,6 +813,12 @@ BitLocker 状态；不得未经检查公开分享。
   session。恢复与心跳只以 `mode=rw` 打开现有数据库，损坏 lease 仅能由明确恢复接管，
   且接管后重新核对 session／状态／配置。该层只操作调用方给出的精确路径与 PID，不枚举
   或终止其它进程。
+- `DBS_09_Run.py` 的阶段 4 控制子层使用 `daisy-control-v1` 单行 UTF-8 JSONL，把 GUI
+  的暂停、继续、保存退出、停止和 timeout 决定路由到当前运行段。消息有 4096 bytes
+  上限和严格递增序号；生命周期动作为 first-wins，timeout 决定绑定当前 worker PID。
+  同会话暂停后的继续会创建新控制对象并从当前文件起点重试；稍后保存退出通过受审计的
+  `paused_saved_for_exit` 动作结束 session。该控制子层已通过合成 worker 测试，但尚未
+  接入现行 DBS-11 生产入口或 GUI。
 
 ### 12.2 信息架构与字段命名
 

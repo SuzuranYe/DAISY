@@ -9,16 +9,23 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import queue
 import sqlite3
 import threading
 from typing import Callable
 import uuid
 
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_08_State as dbstate
 
 
 LEASE_SUFFIX = ".lease"
+CONTROL_PROTOCOL = "daisy-control-v1"
+CONTROL_MAX_LINE_BYTES = 4096
+CONTROL_ACTIONS = frozenset((
+    "pause", "continue", "save_exit", "stop", "timeout_decision",
+))
 
 
 @dataclass(frozen=True)
@@ -45,8 +52,346 @@ class RunHandle:
     resumed: bool
 
 
+@dataclass(frozen=True)
+class ControlCommand:
+    sequence: int
+    action: str
+    worker_pid: int | None = None
+    decision: str | None = None
+    request_id: str | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "protocol": CONTROL_PROTOCOL,
+            "sequence": self.sequence,
+            "action": self.action,
+        }
+        if self.worker_pid is not None:
+            payload["worker_pid"] = self.worker_pid
+        if self.decision is not None:
+            payload["decision"] = self.decision
+        if self.request_id is not None:
+            payload["request_id"] = self.request_id
+        return payload
+
+
+@dataclass(frozen=True)
+class ControlRejection:
+    code: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class ControlReceipt:
+    sequence: int
+    action: str
+    accepted: bool
+    reason: str
+
+
 def _normalized(path: str) -> str:
     return os.path.normpath(os.path.abspath(os.fspath(path)))
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} 必须是正整数")
+    return value
+
+
+def decode_control_line(line: str | bytes) -> ControlCommand:
+    """严格解析一行 GUI→任务控制消息，不接受未知协议或多行内容。"""
+    if isinstance(line, bytes):
+        if len(line) > CONTROL_MAX_LINE_BYTES:
+            raise ValueError("控制消息超过长度上限")
+        try:
+            text = line.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("控制消息不是 UTF-8") from exc
+    else:
+        text = str(line)
+        if len(text.encode("utf-8")) > CONTROL_MAX_LINE_BYTES:
+            raise ValueError("控制消息超过长度上限")
+    if text.endswith("\r\n"):
+        text = text[:-2]
+    elif text.endswith("\n"):
+        text = text[:-1]
+    if not text or "\n" in text or "\r" in text or "\x00" in text:
+        raise ValueError("控制消息必须是单行非空 JSON")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("控制消息不是有效 JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("控制消息必须是 JSON 对象")
+    if payload.get("protocol") != CONTROL_PROTOCOL:
+        raise ValueError("控制协议不兼容")
+    sequence = _positive_int(payload.get("sequence"), "sequence")
+    action = payload.get("action")
+    if action not in CONTROL_ACTIONS:
+        raise ValueError(f"未知控制动作：{action}")
+    request_id = payload.get("request_id")
+    if request_id is not None:
+        if not isinstance(request_id, str) or not (1 <= len(request_id) <= 128):
+            raise ValueError("request_id 必须是 1～128 字符字符串")
+
+    worker_pid = payload.get("worker_pid")
+    decision = payload.get("decision")
+    if action == "timeout_decision":
+        worker_pid = _positive_int(worker_pid, "worker_pid")
+        if decision not in (
+            "continue_waiting", "skip_and_record", "stop_and_resume",
+        ):
+            raise ValueError(f"未知 timeout 决策：{decision}")
+    elif worker_pid is not None or decision is not None:
+        raise ValueError("只有 timeout_decision 可以携带 worker_pid/decision")
+    return ControlCommand(
+        sequence=sequence,
+        action=str(action),
+        worker_pid=worker_pid,
+        decision=decision,
+        request_id=request_id,
+    )
+
+
+def encode_control_command(command: ControlCommand) -> bytes:
+    """编码为单行 UTF-8 JSONL，并复用严格解析器自校验。"""
+    encoded = (
+        json.dumps(
+            command.as_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ) + "\n"
+    ).encode("utf-8")
+    decode_control_line(encoded)
+    return encoded
+
+
+class ControlInbox:
+    """后台读取一个已知输入流；不关闭、不替换调用方的 stdin。"""
+
+    def __init__(
+        self,
+        stream,
+        *,
+        max_queue: int = 64,
+        on_command: Callable[[ControlCommand], None] | None = None,
+        on_rejected: Callable[[ControlRejection], None] | None = None,
+    ) -> None:
+        if max_queue <= 0:
+            raise ValueError("控制队列上限必须大于 0")
+        self._stream = stream
+        self._queue: queue.Queue[ControlCommand] = queue.Queue(max_queue)
+        self._on_command = on_command
+        self._on_rejected = on_rejected
+        self._last_sequence = 0
+        self._stop = threading.Event()
+        self._eof = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def eof(self) -> bool:
+        return self._eof.is_set()
+
+    def _reject(self, code: str, detail: str) -> None:
+        if self._on_rejected is not None:
+            try:
+                self._on_rejected(ControlRejection(code, detail))
+            except Exception:
+                pass
+
+    @staticmethod
+    def _has_line_end(value: str | bytes) -> bool:
+        return value.endswith(b"\n") if isinstance(value, bytes) \
+            else value.endswith("\n")
+
+    def _discard_line_tail(self) -> None:
+        while not self._stop.is_set():
+            tail = self._stream.readline(CONTROL_MAX_LINE_BYTES + 1)
+            if not tail or self._has_line_end(tail):
+                return
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                line = self._stream.readline(CONTROL_MAX_LINE_BYTES + 1)
+                if not line:
+                    return
+                if self._stop.is_set():
+                    return
+                byte_length = (
+                    len(line) if isinstance(line, bytes)
+                    else len(str(line).encode("utf-8"))
+                )
+                if byte_length > CONTROL_MAX_LINE_BYTES:
+                    if not self._has_line_end(line):
+                        self._discard_line_tail()
+                    self._reject("line_too_long", "控制消息超过长度上限")
+                    continue
+                if not self._has_line_end(line):
+                    self._reject(
+                        "unterminated_line", "控制消息缺少 JSONL 换行边界")
+                    return
+                try:
+                    command = decode_control_line(line)
+                except ValueError as exc:
+                    self._reject("invalid_message", str(exc))
+                    continue
+                if command.sequence <= self._last_sequence:
+                    self._reject(
+                        "stale_sequence",
+                        f"sequence={command.sequence} 不大于"
+                        f" {self._last_sequence}",
+                    )
+                    continue
+                self._last_sequence = command.sequence
+                if self._on_command is not None:
+                    try:
+                        self._on_command(command)
+                    except Exception as exc:
+                        self._reject("command_callback_failed", str(exc))
+                    continue
+                try:
+                    self._queue.put_nowait(command)
+                except queue.Full:
+                    self._reject("queue_full", "控制队列已满")
+        except (OSError, ValueError) as exc:
+            self._reject("stream_failed", str(exc))
+        finally:
+            self._eof.set()
+
+    def start(self) -> None:
+        if self._thread is not None:
+            raise RuntimeError("控制输入线程已启动")
+        self._thread = threading.Thread(
+            target=self._run,
+            name="DAISY-ControlInbox",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def poll(self) -> tuple[ControlCommand, ...]:
+        commands = []
+        while True:
+            try:
+                commands.append(self._queue.get_nowait())
+            except queue.Empty:
+                return tuple(commands)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+
+class RunCommandRouter:
+    """把已验证命令路由到当前哈希 worker 或 paused 等待点。"""
+
+    def __init__(
+        self,
+        *,
+        on_receipt: Callable[[ControlReceipt], None] | None = None,
+    ) -> None:
+        self._condition = threading.Condition()
+        self._state = "running"
+        self._hash_control = dbhash.HashWorkerControl()
+        self._paused_action: str | None = None
+        self._on_receipt = on_receipt
+
+    @property
+    def state(self) -> str:
+        with self._condition:
+            return self._state
+
+    @property
+    def hash_control(self) -> dbhash.HashWorkerControl:
+        with self._condition:
+            return self._hash_control
+
+    def _emit_receipt(self, receipt: ControlReceipt) -> None:
+        if self._on_receipt is not None:
+            try:
+                self._on_receipt(receipt)
+            except Exception:
+                pass
+
+    def route(self, command: ControlCommand) -> ControlReceipt:
+        with self._condition:
+            state = self._state
+            if state == "ended":
+                accepted, reason = False, "run_ended"
+            elif state == "paused":
+                if command.action not in ("continue", "save_exit", "stop"):
+                    accepted, reason = False, "not_valid_while_paused"
+                elif self._paused_action is not None:
+                    accepted, reason = False, "paused_action_already_decided"
+                else:
+                    self._paused_action = command.action
+                    self._condition.notify_all()
+                    accepted, reason = True, "accepted"
+            elif command.action == "continue":
+                accepted, reason = False, "not_paused"
+            elif command.action == "pause":
+                accepted = self._hash_control.request_pause()
+                reason = "accepted" if accepted else "action_already_decided"
+            elif command.action == "save_exit":
+                accepted = self._hash_control.request_save_exit()
+                reason = "accepted" if accepted else "action_already_decided"
+            elif command.action == "stop":
+                accepted = self._hash_control.request_stop()
+                reason = "accepted" if accepted else "action_already_decided"
+            elif command.action == "timeout_decision":
+                assert command.worker_pid is not None
+                assert command.decision is not None
+                accepted = self._hash_control.request_timeout_decision(
+                    command.worker_pid,
+                    command.decision,
+                )
+                reason = (
+                    "accepted" if accepted
+                    else "worker_or_decision_mismatch"
+                )
+            else:
+                accepted, reason = False, "unsupported_action"
+        receipt = ControlReceipt(
+            command.sequence, command.action, accepted, reason)
+        self._emit_receipt(receipt)
+        return receipt
+
+    def enter_paused(self) -> None:
+        with self._condition:
+            if self._state != "running":
+                raise RuntimeError(
+                    f"状态 {self._state} 不能进入 paused 等待点")
+            self._state = "paused"
+            self._paused_action = None
+
+    def wait_paused_action(self, timeout: float | None = None) -> str | None:
+        with self._condition:
+            if self._state != "paused":
+                raise RuntimeError("当前不在 paused 等待点")
+            self._condition.wait_for(
+                lambda: self._paused_action is not None
+                or self._state == "ended",
+                timeout,
+            )
+            return self._paused_action
+
+    def begin_running(self) -> dbhash.HashWorkerControl:
+        with self._condition:
+            if self._state != "paused":
+                raise RuntimeError(
+                    f"状态 {self._state} 不能开始新的运行段")
+            self._state = "running"
+            self._paused_action = None
+            self._hash_control = dbhash.HashWorkerControl()
+            return self._hash_control
+
+    def end(self) -> None:
+        with self._condition:
+            self._state = "ended"
+            self._condition.notify_all()
 
 
 def lease_path_for_partial(partial_path: str) -> str:
@@ -434,3 +779,120 @@ def close_handle(handle: RunHandle, *, release_lease: bool) -> None:
     if release_lease:
         dbstate.release_lease_file(
             handle.lease_path, handle.lease.lease_id)
+
+
+def run_hash_stage_controlled(
+    con: sqlite3.Connection,
+    mode: str,
+    router: RunCommandRouter,
+    *,
+    previous: dbhash.PreviousSnapshot | None = None,
+    retry_mode: str = "pending",
+    chunk_bytes: int = core.HASH_CHUNK_BYTES,
+    stall_seconds: float = dbhash.HASH_STALL_SECONDS,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    show_current_file: bool = False,
+    on_progress: Callable[[int, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
+    poll_seconds: float = 0.05,
+    paused_wait_seconds: float = 0.25,
+    max_files: int | None = None,
+    _worker_target=None,
+) -> dict[str, object]:
+    """运行可交互哈希阶段，并在文件边界处理暂停后的动作。"""
+    if paused_wait_seconds <= 0:
+        raise ValueError("paused 等待轮询间隔必须大于 0")
+    if router.state != "running":
+        raise core.PreflightError(
+            f"哈希阶段要求 running 控制器，实际为 {router.state}")
+
+    def emit(event: str, **payload: object) -> None:
+        if on_event is not None:
+            try:
+                on_event(event, **payload)
+            except Exception:
+                pass
+
+    while True:
+        stats = dbhash.process_hash_stage_v4(
+            con,
+            mode,
+            previous=previous,
+            retry_mode=retry_mode,
+            chunk_bytes=chunk_bytes,
+            stall_seconds=stall_seconds,
+            timeout_seconds=timeout_seconds,
+            default_decision=default_decision,
+            control=router.hash_control,
+            save_on_pause=False,
+            show_current_file=show_current_file,
+            on_progress=on_progress,
+            on_event=on_event,
+            on_threshold=on_threshold,
+            poll_seconds=poll_seconds,
+            max_files=max_files,
+            _worker_target=_worker_target,
+        )
+        outcome = str(stats["state"])
+        if outcome == "completed":
+            return stats
+        if outcome in ("save_exit", "stopped"):
+            router.end()
+            emit(
+                "run_saved" if outcome == "save_exit" else "run_stopped",
+                stage="hash",
+                state=outcome,
+            )
+            return stats
+        if outcome != "paused":
+            raise core.PreflightError(
+                f"哈希阶段返回未知控制状态：{outcome}")
+
+        runtime = dbstate.load_runtime(con)
+        if runtime.run_state != "paused" or runtime.resume_hint != "none":
+            raise core.PreflightError(
+                "同会话暂停点状态不一致，拒绝继续控制循环")
+        router.enter_paused()
+        emit("run_paused", stage="hash", state="paused")
+
+        action = None
+        while action is None:
+            action = router.wait_paused_action(paused_wait_seconds)
+            if action is None and router.state == "ended":
+                raise core.PreflightError("控制器在 paused 等待期间结束")
+
+        if action == "continue":
+            dbstate.continue_running(con)
+            router.begin_running()
+            emit("run_resumed", stage="hash", state="running")
+            continue
+        if action == "save_exit":
+            dbstate.save_paused_for_exit(con)
+            dbstate.update_stage_checkpoint(
+                con,
+                "hash",
+                "paused",
+                current_entry_id=None,
+                checkpoint={"reason": "save_exit_after_pause"},
+            )
+            router.end()
+            stats["state"] = "save_exit"
+            emit("run_saved", stage="hash", state="save_exit")
+            return stats
+        if action == "stop":
+            dbstate.update_stage_checkpoint(
+                con,
+                "hash",
+                "failed_recoverable",
+                current_entry_id=None,
+                checkpoint={"reason": "user_stop_after_pause"},
+            )
+            dbstate.stop_run(con, reason="user_stop")
+            router.end()
+            stats["state"] = "stopped"
+            emit("run_stopped", stage="hash", state="stopped")
+            return stats
+        raise core.PreflightError(f"paused 等待点收到未知动作：{action}")

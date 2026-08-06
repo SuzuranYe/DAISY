@@ -207,6 +207,27 @@ lease ID 释放锁。下次只显示恢复卡片，不自动读取。
 
 当前文件从头处理；不序列化 hashlib 或外部工具进程状态。
 
+### 5.5 任务控制协议
+
+GUI 与 v1.6.0 任务子进程之间使用 `daisy-control-v1` 单行 UTF-8 JSONL。每条消息不超过
+4096 bytes，包含严格递增的正整数 `sequence` 和动作；过长、损坏、重复、倒序或未知协议
+消息必须拒绝，不能猜测执行。动作固定为 `pause`、`continue`、`save_exit`、`stop` 和
+`timeout_decision`。`timeout_decision` 还必须携带当前受控 worker 的正整数 PID，以及
+`continue_waiting`、`skip_and_record`、`stop_and_resume` 之一。
+
+生命周期动作以先到者为准。运行中只接受一次暂停／保存退出／停止；进入安全暂停点后只
+接受一次继续／保存退出／停止。每次继续都创建新的进程控制对象，上一文件 worker 的 PID
+和 timeout 决定不能泄漏到下一次尝试。timeout 决定与当前 worker PID 绑定；旧 PID、已
+结束 worker 或第二个决定均拒绝；读取恢复进展后关闭旧决定窗口并丢弃未执行选择。终止型
+timeout 决定和生命周期动作也以先提交者为准，不能同时返回两个成功回执。用户决定与高级
+默认值通过同一原子入口竞争，默认值不能覆盖已经提交的用户选择。
+
+用户可以先暂停，再决定保存退出。此时数据库仍保持 `paused`，但必须以 CAS 增加
+`state_revision`，写入 `paused_saved_for_exit` 事件，把 session 从 `paused` 改为 `saved`
+并设置 `resume_hint=suggest`。这是一个受审计的 session 收尾动作，不是允许任意
+`paused → paused` 状态转换；重复执行必须整体拒绝。控制输入读取器不关闭调用方提供的
+stdin，也不枚举或控制其它进程。
+
 ## 六、lease 与进程身份
 
 锁文件和数据库 session 使用相同 `lease_id`。锁文件写入 host、PID、进程启动 token、

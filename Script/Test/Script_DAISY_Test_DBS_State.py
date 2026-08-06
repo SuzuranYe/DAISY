@@ -297,7 +297,7 @@ class TestRunStateMachine(_StateFixture):
                 " FROM run_sessions WHERE session_id=?",
                 (_SESSION_ID,),
             ).fetchone()
-            self.assertEqual(("saved", _LATER, "saved_exit"), tuple(session))
+            self.assertEqual(("saved", _LATER, "save_exit"), tuple(session))
             with self.assertRaisesRegex(core.PreflightError, "已结束"):
                 state.continue_running(con)
             resumed = state.start_resume_session(
@@ -312,6 +312,39 @@ class TestRunStateMachine(_StateFixture):
                 now_utc=_LATER,
             )
             self.assertEqual("running", resumed.run_state)
+        finally:
+            con.close()
+
+    def test_paused_session_can_be_saved_for_later_resume(self) -> None:
+        con = sqlite3.connect(":memory:")
+        try:
+            self.initialize(con)
+            state.request_pause(con, now_utc=_LATER)
+            paused = state.mark_paused(con, now_utc=_LATER)
+            saved = state.save_paused_for_exit(con, now_utc=_LATER)
+            self.assertEqual(("paused", "suggest"), (
+                saved.run_state, saved.resume_hint))
+            self.assertEqual(paused.state_revision + 1,
+                             saved.state_revision)
+            session = con.execute(
+                "SELECT session_status,ended_at_utc,end_reason"
+                " FROM run_sessions WHERE session_id=?",
+                (_SESSION_ID,),
+            ).fetchone()
+            self.assertEqual(("saved", _LATER, "save_exit"), tuple(session))
+            event = con.execute(
+                "SELECT event,from_state,to_state,state_revision"
+                " FROM run_state_events ORDER BY event_id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(
+                ("paused_saved_for_exit", "paused", "paused",
+                 saved.state_revision),
+                tuple(event),
+            )
+            with self.assertRaisesRegex(
+                    core.PreflightError, "尚未结束"):
+                state.save_paused_for_exit(con)
+            self.assertEqual(saved, state.load_runtime(con))
         finally:
             con.close()
 

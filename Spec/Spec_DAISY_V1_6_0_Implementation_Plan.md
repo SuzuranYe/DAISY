@@ -1,6 +1,6 @@
 # DAISY v1.6.0 需求、修改与测试计划
 
-状态：实施中（阶段 0～1 已完成；阶段 2 进行中）
+状态：实施中（阶段 0～3 已完成；阶段 4 进行中）
 
 编制日期：2026-08-06
 
@@ -581,6 +581,14 @@ partial 和 `<partial>.lease`，提供不写库的恢复预览、活 owner 拒�
 session；不会卡在“旧 session 未结束但 paused 不可恢复”的状态。恢复和心跳严格以
 `mode=rw` 打开既有数据库，不会在路径竞态中创建空库；损坏 lease 可见但只允许明确接管，
 接管后再次读取 active session、状态和配置，不能把接管前预览当作写入依据。
+
+第三个子检查点已实现 GUI／任务控制协议与哈希阶段的同会话控制循环。控制消息使用有
+长度上限、严格递增序号的 UTF-8 JSONL；暂停／保存退出／停止由同一个 first-wins 原子
+入口仲裁，timeout 决定还绑定当前 worker PID，旧 worker 的决定不能误用于新文件。运行
+中暂停先安全取消当前 attempt 并保留 pending；暂停后继续会换用新的控制对象并从文件
+起点重试；暂停后保存会以 CAS 增加 revision、结束当前 session 并建议下次恢复；暂停后
+停止则进入 `stopped + manual_only`。输入读取器不关闭调用方 stdin，测试只回收自己持有
+的 worker 句柄。
 
 本检查点尚未把现行 DBS-11 生产编排切换到 schema 4，也尚未实现 GUI timeout 决策框、
 恢复卡片和完整扫描各阶段的暂停衔接。因此 `SCANNER_VERSION=1.5.1`、

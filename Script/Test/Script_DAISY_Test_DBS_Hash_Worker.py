@@ -133,8 +133,123 @@ class TestHashTimeoutPolicy(unittest.TestCase):
         self.assertEqual(("continue_waiting", "default"), (
             default.decision, default.source))
 
+    def test_worker_bound_choice_beats_default_and_stale_pid_is_rejected(
+        self,
+    ) -> None:
+        control = dbhash.HashWorkerControl()
+        control.bind_worker(1234)
+        try:
+            self.assertTrue(control.open_timeout_decision(1234))
+            self.assertFalse(control.request_timeout_decision(
+                4321, "skip_and_record"))
+            self.assertTrue(control.request_timeout_decision(
+                1234, "continue_waiting"))
+            choice = control.resolve_timeout_decision(
+                1234, "skip_and_record")
+            self.assertEqual(("continue_waiting", "user"), (
+                choice.decision, choice.source))
+            self.assertTrue(control.open_timeout_decision(1234))
+            default = control.resolve_timeout_decision(
+                1234, "continue_waiting")
+            self.assertEqual(("continue_waiting", "default"), (
+                default.decision, default.source))
+        finally:
+            control.unbind_worker(1234)
+
+    def test_timeout_choice_only_exists_during_current_worker_window(
+        self,
+    ) -> None:
+        control = dbhash.HashWorkerControl()
+        control.bind_worker(1234)
+        try:
+            self.assertFalse(control.request_timeout_decision(
+                1234, "skip_and_record"))
+            self.assertFalse(control.open_timeout_decision(4321))
+            self.assertTrue(control.open_timeout_decision(1234))
+            terminal = control.resolve_timeout_decision(
+                1234, "skip_and_record")
+            self.assertEqual(("skip_and_record", "advanced_policy"), (
+                terminal.decision, terminal.source))
+            self.assertFalse(control.request_timeout_decision(
+                1234, "continue_waiting"))
+            self.assertFalse(control.open_timeout_decision(1234))
+
+            control.unbind_worker(1234)
+            control.bind_worker(1234)
+            self.assertTrue(control.open_timeout_decision(1234))
+            self.assertTrue(control.request_timeout_decision(
+                1234, "skip_and_record"))
+            control.close_timeout_decision(1234)
+            self.assertIsNone(control.take_timeout_decision(1234))
+        finally:
+            control.unbind_worker(1234)
+
+    def test_terminal_timeout_choice_and_lifecycle_action_are_first_wins(
+        self,
+    ) -> None:
+        control = dbhash.HashWorkerControl()
+        control.bind_worker(1234)
+        try:
+            self.assertTrue(control.open_timeout_decision(1234))
+            self.assertTrue(control.request_timeout_decision(
+                1234, "skip_and_record"))
+            self.assertFalse(control.request_pause())
+            choice = control.take_timeout_decision(1234)
+            self.assertEqual("skip_and_record", choice.decision)
+            self.assertFalse(control.request_stop())
+        finally:
+            control.unbind_worker(1234)
+
+        control = dbhash.HashWorkerControl()
+        control.bind_worker(1234)
+        try:
+            self.assertTrue(control.open_timeout_decision(1234))
+            self.assertTrue(control.request_pause())
+            self.assertFalse(control.request_timeout_decision(
+                1234, "skip_and_record"))
+        finally:
+            control.unbind_worker(1234)
+
+    def test_first_lifecycle_action_wins_and_save_exit_is_distinct(self) \
+            -> None:
+        control = dbhash.HashWorkerControl()
+        self.assertTrue(control.request_save_exit())
+        self.assertFalse(control.request_pause())
+        self.assertFalse(control.request_stop())
+        self.assertEqual(("save_exit", "user"), control.current())
+
 
 class TestHashWorkerSupervisor(_WorkerFixture):
+    def test_stall_choice_targets_current_worker_and_skips_immediately(
+        self,
+    ) -> None:
+        control = dbhash.HashWorkerControl()
+        accepted = []
+
+        def choose_on_stall(event, **payload) -> None:
+            if event == "stall":
+                accepted.append(control.request_timeout_decision(
+                    payload["worker_pid"], "skip_and_record"))
+
+        outcome = dbhash.run_hash_worker(
+            self.path,
+            expected_size=3,
+            stall_seconds=0.02,
+            timeout_seconds=1.0,
+            control=control,
+            on_event=choose_on_stall,
+            poll_seconds=0.005,
+            _worker_target=worker_fixture.blocking_worker,
+        )
+        self.assertEqual([True], accepted)
+        self.assertEqual(("timeout", "skip_and_record", "user"), (
+            outcome.outcome, outcome.decision, outcome.decision_source))
+        self.assertEqual(0, outcome.threshold_count)
+        self.assertTrue(outcome.worker_reaped)
+        events = [item["event"] for item in outcome.events]
+        self.assertIn("stall_decided", events)
+        self.assertNotIn("threshold_reached", events)
+
     def test_real_worker_hashes_known_vector_and_is_reaped(self) -> None:
         outcome = dbhash.run_hash_worker(
             self.path,
@@ -262,6 +377,37 @@ class TestHashWorkerSupervisor(_WorkerFixture):
 
 
 class TestSchema4HashAttempt(_WorkerFixture):
+    def test_save_exit_action_is_not_conflated_with_same_session_pause(
+        self,
+    ) -> None:
+        con = self.state_connection()
+        control = dbhash.HashWorkerControl()
+
+        def save_after_start(event, **_payload) -> None:
+            if event == "worker_started":
+                control.request_save_exit()
+
+        try:
+            outcome = dbhash.process_hash_attempt_v4(
+                con,
+                1,
+                self.path,
+                control=control,
+                on_event=save_after_start,
+                _worker_target=worker_fixture.blocking_worker,
+            )
+            self.assertEqual("save_exit", outcome.outcome)
+            runtime = dbstate.load_runtime(con)
+            self.assertEqual(("paused", "suggest"), (
+                runtime.run_state, runtime.resume_hint))
+            self.assertEqual("saved", con.execute(
+                "SELECT session_status FROM run_sessions"
+            ).fetchone()[0])
+            self.assertEqual("pending", con.execute(
+                "SELECT hash_status FROM entries").fetchone()[0])
+        finally:
+            con.close()
+
     def test_success_commits_attempt_current_hash_and_performance(self) -> None:
         con = self.state_connection()
         try:
