@@ -45,14 +45,14 @@ STG-11 在底层自动执行同等完整核验。
 
 | 内容 | 最终权威 |
 |---|---|
-| 快照 SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_01_Core.py` 中的 `SNAPSHOT_DDL` |
+| schema 3 快照 SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_01_Core.py` 中的 `SNAPSHOT_DDL` |
+| schema 4 DDL、session、attempt、lease、恢复与发布 | `Script\Lib\Script_DAISY_Lib_DBS_08_State.py` 及 `Spec\Spec_DAISY_V1_6_0_Data_Contract.md` |
 | Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_04_Diff.py` 中的 `DIFF_DDL` |
 | 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_DBS_02_Meta.py` |
 | 哈希、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
-| 数据库类型、schema 与模块能力探测 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
+| 数据库类型、schema、模块能力与业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
 | 核验快照准入、stat／哈希、格式判据和报告服务 | `Script\Lib\Script_DAISY_Lib_DBS_06_Verify.py` |
 | 数据库解析模块注册表、CSV 与旧 Excel writer | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
-| v1.6.0 schema 4、session、lease 与恢复状态 | `Spec\Spec_DAISY_V1_6_0_Data_Contract.md` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
@@ -795,6 +795,12 @@ BitLocker 状态；不得未经检查公开分享。
   Quick／No-Hash 明确未执行的模块是 `unavailable/NULL`，不得伪装为无问题或无记录。
   能力的语义状态与物理投影是否可查询分别记录；旧固定导出可读取结构完整的 schema 3
   空表，但新模块选择界面不得据此把未执行模块列为可选。
+- v1.6.0 阶段 3 已实现独立 schema 4 状态层：新表保持 schema 3 业务表超集，新增 session、
+  attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
+  副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用
+  流式业务投影比较一次完成与多 session 恢复；运行身份、attempt 和观察时间不进入业务
+  投影。现行 DBS-11 生产入口在 worker 接入前仍使用冻结 schema 3，不能把状态层专项通过
+  误写成扫描入口已经切换。
 
 ### 12.2 信息架构与字段命名
 

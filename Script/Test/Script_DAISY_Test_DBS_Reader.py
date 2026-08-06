@@ -23,6 +23,7 @@ sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR, _MODULE_DIR]
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_04_Diff as dbdiff
 import Script_DAISY_Lib_DBS_05_Reader as reader
+import Script_DAISY_Lib_DBS_08_State as state
 import Script_DAISY_Module_DBS_31_Check_Hash as hashcheck
 import Script_DAISY_Module_DBS_32_Check_Format as formatcheck
 import Script_DAISY_Module_DBS_41_Export_Report as exportreport
@@ -208,6 +209,55 @@ class _ReaderFixture(unittest.TestCase):
         finally:
             con.close()
         return path
+
+    def snapshot_v4(
+        self,
+        *,
+        format_validation: str = "off",
+        publish: bool = True,
+    ) -> str:
+        partial = os.path.join(self.base, "v160_Full.partial.sqlite")
+        publish_stem = os.path.join(
+            self.base, "v160_Full_20260806_080000")
+        event_path = os.path.join(self.base, "v160_Full.events.jsonl")
+        con = sqlite3.connect(partial)
+        try:
+            state.initialize_v4_connection(
+                con,
+                [("夹具", os.path.join(self.base, "archive"))],
+                {
+                    "phase": "full",
+                    "hash": "full",
+                    "metadata_storage": "complete",
+                    "format_validation": format_validation,
+                },
+                output_dir=self.base,
+                partial_path=partial,
+                publish_stem_path=publish_stem,
+                event_log_path=event_path,
+                snapshot_uuid="a" * 32,
+                session_id="b" * 32,
+                lease_id="c" * 32,
+                hostname="fixture-host",
+                pid=4242,
+                process_start_token="fixture-start",
+                now_utc="2026-08-06T00:00:00.000000Z",
+            )
+            state.begin_sealing(
+                con, now_utc="2026-08-06T00:01:00.000000Z")
+            state.mark_sealed_unpublished(
+                con, now_utc="2026-08-06T00:01:00.000000Z")
+        finally:
+            con.close()
+        if not publish:
+            return partial
+        staging = os.path.join(self.base, "v160.publish.partial.sqlite")
+        result = state.publish_sealed_snapshot(
+            partial,
+            staging,
+            now_utc="2026-08-06T00:01:00.000000Z",
+        )
+        return result.final_path
 
     def diff(self, name: str = "v141_diff.sqlite") -> str:
         path = os.path.join(self.base, name)
@@ -499,6 +549,64 @@ class TestDatabaseReader(_ReaderFixture):
         probe = reader.probe_database(path)
         self.assertFalse(probe.valid)
         self.assertIn("schema_version=4", probe.error)
+
+    def test_schema4_published_identity_and_capabilities(self) -> None:
+        path = self.snapshot_v4(format_validation="off")
+        descriptor = reader.inspect_database(path)
+        self.assertEqual(4, descriptor.schema_version)
+        self.assertEqual("sealed", descriptor.lifecycle)
+        self.assertEqual("published", descriptor.status)
+        self.assertEqual("daisy-snapshot-v4", descriptor.data_contract)
+        self.assertEqual("published", descriptor.identity["run_state"])
+        self.assertEqual(
+            "daisy-resume-v1", descriptor.identity["resume_contract"])
+        self.assertEqual(
+            "available", descriptor.capability("run_sessions").state)
+        format_capability = descriptor.capability("format_checks")
+        self.assertEqual("unavailable", format_capability.state)
+        self.assertIsNone(format_capability.row_count)
+        self.assertIn("未执行格式校验", format_capability.reason)
+
+    def test_schema4_enabled_but_empty_format_checks_is_honest_empty(self) \
+            -> None:
+        path = self.snapshot_v4(format_validation="all")
+        descriptor = reader.inspect_database(path)
+        capability = descriptor.capability("format_checks")
+        self.assertEqual("empty", capability.state)
+        self.assertEqual(0, capability.row_count)
+        self.assertTrue(capability.queryable)
+
+    def test_schema4_sealed_unpublished_is_recovery_only(self) -> None:
+        path = self.snapshot_v4(publish=False)
+        probe = reader.probe_database(path)
+        self.assertFalse(probe.valid)
+        self.assertIn("run_state=sealed_unpublished", probe.error)
+        descriptor = reader.inspect_database(path, require_sealed=False)
+        self.assertEqual("sealed_unpublished", descriptor.lifecycle)
+        self.assertEqual("sealed_unpublished", descriptor.kind)
+        self.assertEqual("invalid", descriptor.capability("files").state)
+
+    def test_schema4_requires_the_frozen_schema3_business_superset(self) \
+            -> None:
+        path = self.snapshot_v4(publish=False)
+        con = sqlite3.connect(path)
+        con.execute("DROP TABLE photo_metadata")
+        con.commit()
+        con.close()
+        probe = reader.probe_database(path, require_sealed=False)
+        self.assertFalse(probe.valid)
+        self.assertIn("缺少 schema 3 业务表", probe.error)
+        self.assertIn("photo_metadata", probe.error)
+
+    def test_schema4_published_filename_pattern_and_fingerprint_are_checked(
+        self,
+    ) -> None:
+        path = self.snapshot_v4()
+        wrong_path = os.path.join(self.base, "renamed.sqlite")
+        os.rename(path, wrong_path)
+        probe = reader.probe_database(wrong_path)
+        self.assertFalse(probe.valid)
+        self.assertIn("不符合冻结路径模式", probe.error)
 
     def test_existing_table_with_missing_columns_is_incompatible(self) -> None:
         path = self.snapshot()

@@ -141,11 +141,10 @@ OK
 阶段 0～2 已完成。证据证明统一能力探测层可只读接纳 v1.4.1/schema 3，并且没有改变
 schema 3 快照／Diff DDL 或既有输出投影。
 
-以下内容仍未完成，不能因 Reader 已落地而宣称 v1.6.0 完成：
+以下内容仍未完成，不能因 Reader 和后文的状态层已落地而宣称 v1.6.0 完成：
 
-- 新 session／attempt／性能／格式校验证据 schema；
-- 暂停、保存退出和跨重启恢复状态机；
-- 哈希隔离 worker 与动态无进展 timeout；
+- schema 4 状态层尚未接入 DBS-11 生产扫描入口；
+- 哈希隔离 worker、运行时暂停安全边界与动态无进展 timeout；
 - Full 可选格式校验、核验合并和跨新 schema Diff；
 - 数据库解析、Issues 新板块和 GUI 四入口；
 - v1.6.0 最终版本号、发布回归、合并、推送与标签。
@@ -227,4 +226,50 @@ Ran 308 tests in 91.228s
 OK
 ```
 
-失败 0，跳过 0。阶段 2 全部完成；阶段 3 才开始引入 v1.6.0 新 schema 与状态机。
+失败 0，跳过 0。阶段 2 全部完成；阶段 3 的后续结果如下。
+
+## 七、阶段 3：schema、session 与恢复状态机（完成）
+
+新增 `Script_DAISY_Lib_DBS_08_State.py`，但尚未切换现行 DBS-11 扫描入口。该层提供：
+
+- schema 4 对 schema 3 业务表的超集，以及 `run_sessions`、`snapshot_runtime`、
+  `stage_checkpoints`、`run_state_events`、`entry_attempts`、`read_performance` 和
+  `format_checks`；
+- `run_state + state_revision` compare-and-swap、暂停／保存退出／停止的不同语义、
+  新 resume session 和异常 attempt 回到文件边界；
+- host、PID、进程启动 token 与 lease ID 联合所有权，活 owner、死 owner、PID 复用、
+  异机未过期／过期、损坏锁和非 owner refresh／release；
+- 仅容忍最后一个未换行截断 JSON 的事件日志读取；
+- `sealed_unpublished` 原件、SQLite backup 发布副本、副本内 `published`、真实副本摘要
+  命名和 no-clobber 发布；失败不覆盖目标并保留原 partial；
+- Reader 对真正 schema 4 结构、粗粒度状态、data／resume／projection contract、发布文件名
+  模式和字节指纹的只读验证；
+- 不含 session／attempt／lease／观察时间的流式业务投影与类型稳定摘要。
+
+自审发现，若数据库内保存含自身 SHA-256 后缀的最终文件名，写入该文件名会再次改变
+数据库 SHA-256，形成不可解的自引用。因此契约改为保存
+`published_path_pattern=发布 stem_<SHA256-high32-uppercase>.sqlite`；实际文件名只在发布
+副本关闭后由真实字节摘要产生。该原则与 schema 3 的 filename pattern 一致。
+
+冻结哈希：
+
+| 项目 | SHA-256 |
+|---|---|
+| schema 3 `SNAPSHOT_DDL` | `9d162b401617a9242393ba2dcf32445be6437799553abb4c5923c527dc0963a7` |
+| schema 4 `SNAPSHOT_DDL_V4` | `c8e3bbbd899818bc9653fcc5a27594b3a650d44643e838c23d4db4f9c66e1d34` |
+
+状态层专项 20 项、Reader 专项 21 项全部通过。状态层覆盖非法／旧 revision／错误 session
+原子拒绝、三种退出语义、attempt 事务回滚、性能候选措辞、格式历史、异常恢复、JSONL、
+lease 分类及文件操作、发布成功／失败，以及一次完成与保存退出后恢复的业务投影等价。
+Reader 新增 5 项 schema 4 用例，仍保留全部 v1.4.1 只读不变测试。
+
+阶段 3 完整发现式回归结果：
+
+```text
+Ran 333 tests in 94.343s
+OK
+```
+
+失败 0，跳过 0。既有 Verify 19 项、Parse 11 项及真实 Tk 构造、窗口／字号矩阵、滚动和
+下拉选择测试均继续通过。现行 `SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 与 schema 3
+扫描 DDL 没有在本阶段改变；生产切换必须等阶段 4 worker 与安全暂停边界完成。

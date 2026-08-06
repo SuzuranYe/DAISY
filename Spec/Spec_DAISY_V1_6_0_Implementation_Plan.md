@@ -132,6 +132,10 @@ Quick 保持只登记目录与 stat、不读取内容、不调用外部解析工
 - 精确比例、校验规则和工具版本以 config／manifest／库内证据为准，文件名不是权威；
 - 新标记使用新的 `filename_layout_version`，读取 v1.4.1 layout 2 时不得靠文件名猜能力。
 
+数据库只能记录发布 stem 与 `_<SHA256-high32-uppercase>.sqlite` 路径模式，不能记录含自身
+摘要的最终文件名；否则写入文件名会再次改变数据库 SHA-256，形成自引用。实际文件名由
+关闭后的发布副本摘要决定，并由 Reader 交叉核对。
+
 格式不支持不是问题：只记录去重文件总数。已知格式损坏、截断、缺流、CRC 错误、timeout、
 工具崩溃和读取错误仍要保留证据并进入 Issues。格式问题不阻止数据库完整封存；“扫描
 完成”和“源文件存在问题”是两个不同状态。
@@ -545,6 +549,11 @@ HTML／XLSX。raw payload 解压和摘要校验属于模块投影，不属于通
 5. 建立一次完成与多阶段恢复的业务投影比较。
 
 检查点：数据契约和恢复状态机完成。
+
+当前进度：第 1～5 项的独立状态层与 Reader 适配已完成。schema 4 DDL、session、attempt、
+format check、performance summary、CAS 状态转换、lease、JSONL 截断、异常恢复、受控发布
+副本和流式业务投影已有专项及完整回归。现行 DBS-11 入口暂不切换，待阶段 4 的 worker、
+暂停安全边界和 timeout 一起接入，避免半套状态机改变既有 schema 3 扫描行为。
 
 ### 阶段 4：哈希 worker、暂停与 timeout
 

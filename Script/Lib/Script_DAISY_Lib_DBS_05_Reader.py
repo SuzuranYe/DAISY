@@ -7,19 +7,96 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_08_State as state_contract
 
 
 CAPABILITY_STATES = frozenset((
     "available", "empty", "unavailable", "incompatible", "invalid",
 ))
 DATABASE_TYPES = frozenset(("snapshot", "diff"))
+READABLE_SNAPSHOT_SCHEMAS = frozenset((3, 4))
+
+_SCHEMA4_CORE_TABLES = frozenset((
+    "archive_members",
+    "archive_metadata",
+    "audio_streams",
+    "dirs",
+    "document_metadata",
+    "entries",
+    "errors",
+    "hashes",
+    "metadata_diagnostics",
+    "photo_metadata",
+    "raw_payloads",
+    "roots",
+    "run_events",
+    "snapshot_info",
+    "snapshot_manifest",
+    "video_gps_points",
+    "video_metadata",
+    "video_streams",
+    "working_metadata",
+))
+
+
+_SCHEMA4_REQUIRED = {
+    "run_sessions": (
+        "session_id", "session_number", "parent_session_id", "session_kind",
+        "session_status", "started_at_utc", "updated_at_utc", "ended_at_utc",
+        "hostname", "pid", "process_start_token", "lease_id",
+        "lease_acquired_at_utc", "lease_heartbeat_at_utc",
+        "lease_expires_at_utc", "scanner_version", "resume_contract",
+        "config_json", "tools_json", "end_reason",
+    ),
+    "snapshot_runtime": (
+        "id", "snapshot_uuid", "schema_version", "data_contract",
+        "min_reader_version", "resume_contract", "projection_contract",
+        "filename_layout_version", "run_state", "state_revision",
+        "resume_hint", "active_session_id", "current_stage", "created_at_utc",
+        "updated_at_utc", "last_checkpoint_at_utc", "output_dir",
+        "partial_path", "publish_stem_path", "event_log_path",
+        "published_path_pattern", "last_error_code", "last_error_message",
+    ),
+    "stage_checkpoints": (
+        "stage", "stage_order", "state", "session_id", "items_done",
+        "items_total", "bytes_done", "bytes_total", "error_count",
+        "current_entry_id", "started_at_utc", "updated_at_utc",
+        "finished_at_utc", "checkpoint_json",
+    ),
+    "run_state_events": (
+        "event_id", "session_id", "session_event_seq", "occurred_at_utc",
+        "event", "from_state", "to_state", "state_revision", "payload_json",
+    ),
+    "entry_attempts": (
+        "attempt_id", "entry_id", "session_id", "stage", "attempt_number",
+        "status", "tool_name", "tool_version", "started_at_utc",
+        "last_progress_at_utc", "ended_at_utc", "source_size_bytes",
+        "source_modified_at_utc", "bytes_read", "final_offset", "stall_count",
+        "max_stall_seconds", "decision", "decision_source", "end_reason",
+        "error_code", "error_message", "result_json",
+    ),
+    "read_performance": (
+        "performance_id", "attempt_id", "entry_id", "session_id", "stage",
+        "origin", "size_bytes", "bytes_read", "elapsed_seconds",
+        "active_read_seconds", "stall_count", "longest_stall_seconds",
+        "first_stall_offset", "last_stall_offset", "final_offset",
+        "ended_reason", "candidate_confidence", "candidate_reason",
+        "recorded_at_utc",
+    ),
+    "format_checks": (
+        "entry_id", "attempt_id", "status", "coverage", "validator",
+        "tool_name", "tool_version", "stat_match", "detail",
+        "checked_at_utc", "result_revision",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -137,6 +214,15 @@ class DatabaseProbe:
                 self.descriptor.as_dict() if self.descriptor else None
             ),
         }
+
+
+@dataclass(frozen=True)
+class ProjectionRow:
+    """不含运行身份与观察时间的稳定业务投影行。"""
+
+    section: str
+    key: tuple[object, ...]
+    values: tuple[object, ...]
 
 
 @dataclass(frozen=True)
@@ -354,6 +440,67 @@ _SNAPSHOT_METADATA_CAPABILITIES = (
     "archives",
 )
 
+_BUSINESS_CAPABILITIES = (
+    "overview",
+    "issues",
+    "files",
+    "directories",
+    "hashes",
+    "photo_metadata",
+    "video_metadata",
+    "video_gps",
+    "media_streams",
+    "working_metadata",
+    "document_metadata",
+    "archives",
+    "raw_payloads",
+    "diagnostics",
+    "format_checks",
+)
+
+_ENTRY_PROJECTION_TABLES = (
+    ("hashes", "hashes", (
+        "hash_pk", "entry_id", "source_snapshot_uuid",
+        "source_computed_at_utc", "started_at_utc", "finished_at_utc",
+    )),
+    ("photo_metadata", "photo_metadata", (
+        "entry_id", "parsed_at_utc",
+    )),
+    ("video_metadata", "video_metadata", (
+        "entry_id", "parsed_at_utc",
+    )),
+    ("video_gps", "video_gps_points", (
+        "gps_point_pk", "entry_id",
+    )),
+    ("media_streams", "video_streams", (
+        "stream_pk", "entry_id",
+    )),
+    ("media_streams", "audio_streams", (
+        "stream_pk", "entry_id",
+    )),
+    ("working_metadata", "working_metadata", (
+        "entry_id", "parsed_at_utc",
+    )),
+    ("document_metadata", "document_metadata", (
+        "entry_id", "parsed_at_utc",
+    )),
+    ("archives", "archive_metadata", (
+        "entry_id", "parsed_at_utc",
+    )),
+    ("archives", "archive_members", (
+        "entry_id",
+    )),
+    ("raw_payloads", "raw_payloads", (
+        "payload_pk", "entry_id", "parsed_at_utc",
+    )),
+    ("diagnostics", "metadata_diagnostics", (
+        "diagnostic_pk", "entry_id", "observed_at_utc",
+    )),
+    ("format_checks", "format_checks", (
+        "entry_id", "attempt_id", "checked_at_utc", "result_revision",
+    )),
+)
+
 
 def _quote_identifier(value: str) -> str:
     return '"' + str(value).replace('"', '""') + '"'
@@ -460,6 +607,171 @@ def _require_structure(
             f"{artifact} 的 {table} 缺少必要列：{'、'.join(missing)}")
 
 
+def _require_snapshot_schema(schema_version: object, artifact: str) -> int:
+    try:
+        version = int(schema_version)
+    except (TypeError, ValueError) as exc:
+        raise core.PreflightError(
+            f"{artifact} schema_version={schema_version!r} 无法解释") from exc
+    if version not in READABLE_SNAPSHOT_SCHEMAS:
+        supported = "、".join(
+            str(value) for value in sorted(READABLE_SNAPSHOT_SCHEMAS))
+        raise core.PreflightError(
+            f"{artifact} schema_version={version} 非 Reader 可读范围"
+            f"（{supported}）")
+    return version
+
+
+def _require_schema4_structure(
+    tables: frozenset[str],
+    columns: dict[str, frozenset[str]],
+) -> None:
+    missing_core = sorted(_SCHEMA4_CORE_TABLES - tables)
+    if missing_core:
+        raise core.PreflightError(
+            "schema_version=4 结构不完整：缺少 schema 3 业务表："
+            + "、".join(missing_core))
+    for table, required_columns in _SCHEMA4_REQUIRED.items():
+        try:
+            _require_structure(
+                tables,
+                columns,
+                table,
+                required_columns,
+                "schema_version=4 快照",
+            )
+        except core.PreflightError as exc:
+            raise core.PreflightError(
+                f"schema_version=4 结构不完整：{exc}") from exc
+
+
+def _schema4_runtime(
+    con: sqlite3.Connection,
+    snapshot_uuid: object,
+    scan_status: object,
+    database_integrity: object,
+) -> dict[str, object]:
+    try:
+        row = con.execute(
+            "SELECT snapshot_uuid,schema_version,data_contract,"
+            " min_reader_version,resume_contract,projection_contract,"
+            " filename_layout_version,run_state,state_revision,resume_hint,"
+            " active_session_id,current_stage,output_dir,partial_path,"
+            " publish_stem_path,event_log_path,published_path_pattern"
+            " FROM snapshot_runtime WHERE id=1"
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise core.PreflightError(
+            f"schema_version=4 运行身份无法读取：{exc}") from exc
+    if row is None:
+        raise core.PreflightError(
+            "schema_version=4 快照缺少 snapshot_runtime id=1")
+    keys = (
+        "snapshot_uuid", "schema_version", "data_contract",
+        "min_reader_version", "resume_contract", "projection_contract",
+        "filename_layout_version", "run_state", "state_revision",
+        "resume_hint", "active_session_id", "current_stage", "output_dir",
+        "partial_path", "publish_stem_path", "event_log_path",
+        "published_path_pattern",
+    )
+    runtime = dict(zip(keys, tuple(row)))
+    expected = {
+        "snapshot_uuid": str(snapshot_uuid),
+        "schema_version": state_contract.SCHEMA_VERSION,
+        "data_contract": state_contract.DATA_CONTRACT,
+        "min_reader_version": state_contract.MIN_READER_VERSION,
+        "resume_contract": state_contract.RESUME_CONTRACT,
+        "projection_contract": state_contract.PROJECTION_CONTRACT,
+        "filename_layout_version": state_contract.FILENAME_LAYOUT_VERSION,
+    }
+    mismatches = [
+        f"{key}={runtime[key]!r}（应为 {value!r}）"
+        for key, value in expected.items()
+        if runtime[key] != value
+    ]
+    if mismatches:
+        raise core.PreflightError(
+            "schema_version=4 契约身份不一致：" + "；".join(mismatches))
+    run_state = str(runtime["run_state"])
+    if run_state not in state_contract.RUN_STATES:
+        raise core.PreflightError(
+            f"schema_version=4 run_state 无法解释：{run_state}")
+    if runtime["resume_hint"] not in state_contract.RESUME_HINTS:
+        raise core.PreflightError(
+            "schema_version=4 resume_hint 无法解释："
+            + str(runtime["resume_hint"]))
+    try:
+        revision = int(runtime["state_revision"])
+    except (TypeError, ValueError) as exc:
+        raise core.PreflightError(
+            "schema_version=4 state_revision 无法解释") from exc
+    if revision <= 0:
+        raise core.PreflightError(
+            "schema_version=4 state_revision 必须大于 0")
+
+    coarse_status = str(scan_status)
+    coarse_integrity = str(database_integrity)
+    if run_state in ("sealed_unpublished", "published"):
+        expected_coarse = ("complete", "ok")
+        valid_coarse = (coarse_status, coarse_integrity) == expected_coarse
+    elif run_state in (
+            "paused", "stopped", "failed_recoverable"):
+        expected_coarse = ("interrupted", "pending")
+        valid_coarse = (coarse_status, coarse_integrity) == expected_coarse
+    elif run_state == "failed_terminal":
+        expected_coarse = ("interrupted", "pending／failed")
+        valid_coarse = (
+            coarse_status == "interrupted"
+            and coarse_integrity in ("pending", "failed")
+        )
+    else:
+        expected_coarse = ("running", "pending")
+        valid_coarse = (coarse_status, coarse_integrity) == expected_coarse
+    if not valid_coarse:
+        raise core.PreflightError(
+            "schema_version=4 粗粒度状态与 run_state 不一致："
+            f"run_state={run_state}，scan_status={coarse_status}，"
+            f"database_integrity={coarse_integrity}，应为 {expected_coarse}")
+    return runtime
+
+
+def _validate_published_filename(
+    path: str,
+    runtime: dict[str, object],
+    warnings: list[str],
+) -> None:
+    pattern_value = runtime.get("published_path_pattern")
+    if not pattern_value:
+        raise core.PreflightError(
+            "schema_version=4 published 快照缺少 published_path_pattern")
+    pattern = os.path.abspath(str(pattern_value))
+    placeholder = "<SHA256-high32-uppercase>"
+    if pattern.count(placeholder) != 1:
+        raise core.PreflightError(
+            "schema_version=4 published_path_pattern 无法解释")
+    if path == "<connection>":
+        warnings.append("连接未提供文件路径，未核对 published 文件名指纹")
+        return
+    expected_prefix, expected_suffix = os.path.basename(pattern).split(
+        placeholder)
+    basename = os.path.basename(path)
+    if not (
+            basename.startswith(expected_prefix)
+            and basename.endswith(expected_suffix)
+            and len(basename) == len(expected_prefix) + 8 + len(expected_suffix)):
+        raise core.PreflightError(
+            "schema_version=4 published 文件名不符合冻结路径模式："
+            f"{basename}；模式：{os.path.basename(pattern)}")
+    if os.path.normcase(os.path.dirname(pattern)) != os.path.normcase(
+            os.path.dirname(os.path.abspath(path))):
+        warnings.append("published 快照已离开原输出目录；文件名与内容指纹仍会核对")
+    fingerprint = core.filename_sha256_high32_matches(path)
+    if fingerprint is not True:
+        detail = "缺少摘要后缀" if fingerprint is None else "摘要后缀不匹配"
+        raise core.PreflightError(
+            f"schema_version=4 published 文件名{detail}：{basename}")
+
+
 def _capability_map(
     con: sqlite3.Connection,
     tables: frozenset[str],
@@ -544,6 +856,7 @@ def _snapshot_capability_overrides(
     config: dict[str, object],
     manifest: dict[str, object],
     hash_coverage: object,
+    schema_version: int,
     warnings: list[str],
 ) -> tuple[dict[str, tuple[str, str]], dict[str, object]]:
     """按 v1.4.1 内嵌执行证据区分“执行后为空”和“根本未执行”。"""
@@ -626,6 +939,30 @@ def _snapshot_capability_overrides(
             "缺少可解释的原始载荷保留策略",
         )
 
+    format_value = (
+        profile.get("format_validation")
+        or config.get("format_validation")
+        or manifest_config.get("format_validation")
+    )
+    format_mode = (
+        str(format_value).strip().casefold()
+        if format_value is not None else None
+    )
+    if schema_version == 4:
+        if format_mode in ("off", "none", "disabled", "false", "0"):
+            overrides["format_checks"] = (
+                "unavailable",
+                "本次快照未执行格式校验",
+            )
+        elif format_mode in (
+                "sample", "all", "full", "sampled", "enabled", "true", "1"):
+            pass
+        else:
+            overrides["format_checks"] = (
+                "incompatible",
+                "schema 4 缺少可解释的格式校验执行配置",
+            )
+
     evidence = {
         "scan_kind": scan_kind,
         "hash_coverage": normalized_coverage or None,
@@ -633,6 +970,7 @@ def _snapshot_capability_overrides(
         "raw_payload_retained": (
             raw_retained if isinstance(raw_retained, bool) else None
         ),
+        "format_validation": format_mode,
     }
     return overrides, evidence
 
@@ -703,22 +1041,41 @@ def inspect_connection(
         (snapshot_uuid, schema_version, path_key_rule, scan_status,
          database_integrity, hash_coverage, source_version,
          config_json) = tuple(row)
-        core.require_readable_schema_version(schema_version, "快照数据库")
+        schema_version = _require_snapshot_schema(
+            schema_version, "快照数据库")
         if path_key_rule != core.PATH_KEY_RULE:
             raise core.PreflightError(
                 f"快照 path_key_rule={path_key_rule} 非本工具支持的"
                 f" {core.PATH_KEY_RULE}")
-        lifecycle = (
-            "sealed" if scan_status == "complete"
-            and database_integrity == "ok" else "partial"
-        )
-        if scan_status == "complete" and database_integrity != "ok":
-            lifecycle = "invalid"
+        runtime: dict[str, object] | None = None
+        if schema_version == 4:
+            _require_schema4_structure(tables, columns)
+            runtime = _schema4_runtime(
+                con, snapshot_uuid, scan_status, database_integrity)
+            run_state = str(runtime["run_state"])
+            if run_state == "published":
+                lifecycle = "sealed"
+            elif run_state == "sealed_unpublished":
+                lifecycle = "sealed_unpublished"
+            elif run_state == "failed_terminal":
+                lifecycle = "invalid"
+            else:
+                lifecycle = "partial"
+        else:
+            lifecycle = (
+                "sealed" if scan_status == "complete"
+                and database_integrity == "ok" else "partial"
+            )
+            if scan_status == "complete" and database_integrity != "ok":
+                lifecycle = "invalid"
         if require_sealed and lifecycle != "sealed":
+            runtime_detail = (
+                f"，run_state={runtime['run_state']}" if runtime else ""
+            )
             raise core.PreflightError(
                 "快照尚未完整封存："
                 f"scan_status={scan_status}，"
-                f"database_integrity={database_integrity}")
+                f"database_integrity={database_integrity}{runtime_detail}")
         config = _read_json_object(config_json, "config_json", warnings)
         manifest: dict[str, object] = {}
         if ("snapshot_manifest" in tables
@@ -729,13 +1086,17 @@ def inspect_connection(
             if manifest_row is not None:
                 manifest = _read_json_object(
                     manifest_row[0], "manifest_json", warnings)
-        data_contract = manifest.get("data_contract") or config.get(
-            "data_contract")
-        min_reader = manifest.get("min_reader_version") or config.get(
-            "min_reader_version")
+        if runtime is not None:
+            data_contract = runtime["data_contract"]
+            min_reader = runtime["min_reader_version"]
+        else:
+            data_contract = manifest.get("data_contract") or config.get(
+                "data_contract")
+            min_reader = manifest.get("min_reader_version") or config.get(
+                "min_reader_version")
         capability_overrides, execution_evidence = \
             _snapshot_capability_overrides(
-                config, manifest, hash_coverage, warnings)
+                config, manifest, hash_coverage, schema_version, warnings)
         identity = {
             "snapshot_uuid": snapshot_uuid,
             "scanner_version": source_version,
@@ -743,10 +1104,27 @@ def inspect_connection(
             "database_integrity": database_integrity,
             **execution_evidence,
         }
+        if runtime is not None:
+            identity.update({
+                "run_state": runtime["run_state"],
+                "state_revision": runtime["state_revision"],
+                "resume_hint": runtime["resume_hint"],
+                "active_session_id": runtime["active_session_id"],
+                "resume_contract": runtime["resume_contract"],
+                "projection_contract": runtime["projection_contract"],
+                "filename_layout_version": runtime[
+                    "filename_layout_version"],
+            })
+            if runtime["run_state"] == "published":
+                _validate_published_filename(
+                    normalized_path, runtime, warnings)
         capabilities = _capability_map(
             con, tables, columns, SNAPSHOT_CAPABILITY_SPECS, lifecycle,
             capability_overrides)
-        status = str(scan_status)
+        status = (
+            str(runtime["run_state"]) if runtime is not None
+            else str(scan_status)
+        )
     else:
         _require_structure(
             tables, columns, "diff_info", _DIFF_CORE_COLUMNS,
@@ -764,10 +1142,8 @@ def inspect_connection(
         (diff_uuid, schema_version, old_schema_version, new_schema_version,
          old_uuid, new_uuid, source_version) = tuple(row)
         core.require_readable_schema_version(schema_version, "Diff 数据库")
-        core.require_readable_schema_version(
-            old_schema_version, "Diff 旧侧快照")
-        core.require_readable_schema_version(
-            new_schema_version, "Diff 新侧快照")
+        _require_snapshot_schema(old_schema_version, "Diff 旧侧快照")
+        _require_snapshot_schema(new_schema_version, "Diff 新侧快照")
         is_partial_name = normalized_path.casefold().endswith(
             ".partial.sqlite")
         lifecycle = "partial" if is_partial_name else "sealed"
@@ -819,6 +1195,209 @@ def inspect_connection(
         identity=identity,
         warnings=tuple(warnings),
     )
+
+
+def _projection_columns(
+    con: sqlite3.Connection,
+    table: str,
+    excluded: Iterable[str],
+) -> tuple[str, ...]:
+    excluded_set = set(excluded)
+    return tuple(
+        str(row[1]) for row in con.execute(
+            f"PRAGMA table_info({_quote_identifier(table)})")
+        if str(row[1]) not in excluded_set
+    )
+
+
+def _qualified_columns(alias: str, columns: Iterable[str]) -> str:
+    return ",".join(
+        f"{alias}.{_quote_identifier(column)}" for column in columns)
+
+
+def _projection_order(alias: str, columns: Iterable[str]) -> str:
+    values = [
+        f"{alias}.{_quote_identifier(column)}" for column in columns]
+    return ("," + ",".join(values)) if values else ""
+
+
+def _iter_entry_projection_table(
+    con: sqlite3.Connection,
+    section: str,
+    table: str,
+    excluded: Iterable[str],
+) -> Iterator[ProjectionRow]:
+    columns = _projection_columns(con, table, excluded)
+    selected = _qualified_columns("t", columns)
+    selected_sql = "," + selected if selected else ""
+    sql = (
+        "SELECT r.root_label,e.rel_path"
+        + selected_sql
+        + f" FROM {_quote_identifier(table)} t"
+        " JOIN entries e ON e.entry_id=t.entry_id"
+        " JOIN roots r ON r.root_id=e.root_id"
+        " ORDER BY r.root_label COLLATE BINARY,"
+        " e.path_key COLLATE BINARY,e.rel_path COLLATE BINARY"
+        + _projection_order("t", columns)
+    )
+    for row in con.execute(sql):
+        values = tuple(row)
+        yield ProjectionRow(section, values[:2], values[2:])
+
+
+def iter_snapshot_business_projection(
+    con: sqlite3.Connection,
+    descriptor: DatabaseDescriptor | None = None,
+) -> Iterator[ProjectionRow]:
+    """流式输出跨 session 稳定业务投影；不含身份、attempt 或观察时间。"""
+    current = descriptor or inspect_connection(con)
+    if current.database_type != "snapshot" or not current.sealed:
+        raise core.PreflightError("业务投影只接受完整封存快照")
+
+    for capability_id in _BUSINESS_CAPABILITIES:
+        capability = current.capability(capability_id)
+        yield ProjectionRow(
+            "capabilities",
+            (capability_id,),
+            (capability.state, capability.row_count),
+        )
+
+    identity = current.identity
+    row = con.execute(
+        "SELECT hash_coverage,has_file_issues,has_unstable_entries,"
+        " has_enumeration_gaps FROM snapshot_info WHERE id=1"
+    ).fetchone()
+    yield ProjectionRow(
+        "snapshot",
+        ("business_profile",),
+        (
+            current.path_key_rule,
+            row[0],
+            int(row[1]),
+            int(row[2]),
+            int(row[3]),
+            identity.get("scan_kind"),
+            identity.get("metadata_storage"),
+            identity.get("raw_payload_retained"),
+            identity.get("format_validation"),
+        ),
+    )
+
+    if "roots" in current.tables:
+        columns = _projection_columns(con, "roots", ("root_id",))
+        selected = _qualified_columns("r", columns)
+        sql = (
+            "SELECT " + selected + " FROM roots r"
+            " ORDER BY r.root_label COLLATE BINARY,r.root_path COLLATE BINARY"
+            + _projection_order("r", columns)
+        )
+        for root in con.execute(sql):
+            values = tuple(root)
+            yield ProjectionRow("roots", values[:2], values[2:])
+
+    directories = current.capability("directories")
+    if directories.state in ("available", "empty"):
+        columns = _projection_columns(
+            con,
+            "dirs",
+            ("dir_id", "root_id", "parent_dir_id", "rel_path",
+             "observed_at_utc"),
+        )
+        selected = _qualified_columns("d", columns)
+        selected_sql = "," + selected if selected else ""
+        sql = (
+            "SELECT r.root_label,d.rel_path,p.rel_path"
+            + selected_sql
+            + " FROM dirs d JOIN roots r ON r.root_id=d.root_id"
+            " LEFT JOIN dirs p ON p.dir_id=d.parent_dir_id"
+            " ORDER BY r.root_label COLLATE BINARY,d.path_key COLLATE BINARY,"
+            " d.rel_path COLLATE BINARY"
+            + _projection_order("d", columns)
+        )
+        for directory in con.execute(sql):
+            values = tuple(directory)
+            yield ProjectionRow("directories", values[:2], values[2:])
+
+    files = current.capability("files")
+    if files.state in ("available", "empty"):
+        columns = _projection_columns(
+            con,
+            "entries",
+            ("entry_id", "root_id", "dir_id", "rel_path",
+             "observed_at_utc"),
+        )
+        selected = _qualified_columns("e", columns)
+        selected_sql = "," + selected if selected else ""
+        sql = (
+            "SELECT r.root_label,e.rel_path"
+            + selected_sql
+            + " FROM entries e JOIN roots r ON r.root_id=e.root_id"
+            " ORDER BY r.root_label COLLATE BINARY,e.path_key COLLATE BINARY,"
+            " e.rel_path COLLATE BINARY"
+            + _projection_order("e", columns)
+        )
+        for entry in con.execute(sql):
+            values = tuple(entry)
+            yield ProjectionRow("entries", values[:2], values[2:])
+
+    for capability_id, table, excluded in _ENTRY_PROJECTION_TABLES:
+        capability = current.capability(capability_id)
+        if capability.state not in ("available", "empty"):
+            continue
+        yield from _iter_entry_projection_table(
+            con, table, table, excluded)
+
+    diagnostics = current.capability("diagnostics")
+    if diagnostics.state in ("available", "empty"):
+        sql = (
+            "SELECT COALESCE(re.root_label,rd.root_label),"
+            " COALESCE(e.rel_path,d.rel_path),x.stage,x.error_code,x.message"
+            " FROM errors x"
+            " LEFT JOIN entries e ON e.entry_id=x.entry_id"
+            " LEFT JOIN roots re ON re.root_id=e.root_id"
+            " LEFT JOIN dirs d ON d.dir_id=x.dir_id"
+            " LEFT JOIN roots rd ON rd.root_id=d.root_id"
+            " ORDER BY 1 COLLATE BINARY,2 COLLATE BINARY,"
+            " x.stage COLLATE BINARY,x.error_code COLLATE BINARY,"
+            " x.message COLLATE BINARY"
+        )
+        for error in con.execute(sql):
+            values = tuple(error)
+            yield ProjectionRow("errors", values[:2], values[2:])
+
+
+def _encoded_projection_value(value: object) -> list[object]:
+    if value is None:
+        return ["null"]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        content = bytes(value)
+        return ["bytes", len(content), hashlib.sha256(content).hexdigest()]
+    if isinstance(value, bool):
+        return ["bool", value]
+    if isinstance(value, int):
+        return ["int", str(value)]
+    if isinstance(value, float):
+        return ["float", value.hex()]
+    return ["text", str(value)]
+
+
+def snapshot_business_projection_digest(
+    con: sqlite3.Connection,
+    descriptor: DatabaseDescriptor | None = None,
+) -> str:
+    """以类型稳定的逐行编码计算业务投影摘要，不整表载入内存。"""
+    digest = hashlib.sha256()
+    for row in iter_snapshot_business_projection(con, descriptor):
+        record = [
+            row.section,
+            [_encoded_projection_value(value) for value in row.key],
+            [_encoded_projection_value(value) for value in row.values],
+        ]
+        payload = json.dumps(
+            record, ensure_ascii=False, separators=(",", ":"))
+        digest.update(payload.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _connect_read_only(path: str) -> tuple[sqlite3.Connection, str]:

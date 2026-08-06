@@ -1135,6 +1135,7 @@ class TestGuiArguments(unittest.TestCase):
                 "Script_DAISY_Lib_DBS_05_Reader.py",
                 "Script_DAISY_Lib_DBS_06_Verify.py",
                 "Script_DAISY_Lib_DBS_07_Parse.py",
+                "Script_DAISY_Lib_DBS_08_State.py",
                 "Script_DAISY_Lib_STG_01_Core.py",
                 "Script_DAISY_Lib_STG_02_Windows.py",
                 "Script_DAISY_Lib_STG_03_Smartctl.py",

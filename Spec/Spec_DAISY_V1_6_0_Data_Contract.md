@@ -25,6 +25,8 @@
 | schema 4 最低读取器 | `1.6.0` |
 | lease 心跳间隔 | `5s` |
 | lease 有效期 | `30s` |
+| schema 3 `SNAPSHOT_DDL` SHA-256 | `9d162b401617a9242393ba2dcf32445be6437799553abb4c5923c527dc0963a7` |
+| schema 4 `SNAPSHOT_DDL_V4` SHA-256 | `c8e3bbbd899818bc9653fcc5a27594b3a650d44643e838c23d4db4f9c66e1d34` |
 
 `snapshot_info.scan_status` 在 schema 4 中仍只承担粗粒度兼容状态：
 
@@ -79,7 +81,7 @@
 | `partial_path` | 规范化绝对 partial 路径 |
 | `publish_stem_path` | 不含摘要后缀的发布绝对路径 |
 | `event_log_path` | 临时 JSONL 绝对路径 |
-| `published_path` | 仅发布副本为最终绝对路径，否则 `NULL` |
+| `published_path_pattern` | 仅发布副本记录绝对路径模式 `发布 stem_<SHA256-high32-uppercase>.sqlite`，否则 `NULL` |
 | `last_error_code`、`last_error_message` | 最近状态级错误 |
 
 恢复必须核对 `partial_path`、输出目录、发布 stem、resume contract 和 filename layout；任一
@@ -234,12 +236,17 @@ session、获取／心跳／过期时间。
 2. 完成复扫、外键和 SQLite 完整性验证；
 3. partial：`sealing → sealed_unpublished`，提交并关闭；
 4. 以 SQLite backup／受控复制创建同目录发布副本；
-5. 仅在副本中写 `published`、最终路径和完成 session；
+5. 仅在副本中写 `published`、最终路径模式和完成 session；
 6. 关闭副本后计算摘要并以 no-clobber 原子发布；
 7. 发布成功后删除 partial 和其精确 lease；
 8. 任一步失败都保留原 partial 为 `sealed_unpublished` 或 `failed_recoverable`，不覆盖旧产物。
 
 因此最终封存数据库自述为 `published`；发布失败的 partial 仍可重新发布，不必重扫档案。
+
+最终路径不能原样写进数据库：文件名后缀来自数据库自身 SHA-256，写入最终文件名又会改变
+该 SHA-256，形成不可解的自引用。数据库只记录冻结 stem 和摘要占位模式；实际文件名在
+副本关闭并计算摘要后产生，Reader 再核对模式及文件名字节指纹。这与 schema 3 的
+`snapshot_filename_pattern` 原则一致。
 
 ## 九、Reader 与投影
 
@@ -259,6 +266,10 @@ session、获取／心跳／过期时间。
 
 roots、dirs、entries 当前属性、当前有效哈希、规范化元数据、格式当前结果、错误分类和能力
 结论不得因暂停或跨重启恢复而变化。
+
+`Script_DAISY_Lib_DBS_05_Reader.iter_snapshot_business_projection()` 以 cursor 流式输出该
+投影；`snapshot_business_projection_digest()` 使用带类型标记的逐行编码比较，不把整表
+载入内存。BLOB 以实际字节长度和 SHA-256 进入投影，不能只相信库内声明摘要。
 
 ## 十、阶段 3 验收
 
