@@ -625,6 +625,9 @@ def resume_run(
     if preview.run_state in ("published", "failed_terminal"):
         raise core.PreflightError(
             f"状态 {preview.run_state} 不能恢复")
+    if preview.run_state == "sealed_unpublished":
+        raise core.PreflightError(
+            "sealed partial 只能使用只发布恢复入口，禁止重新扫描")
     if preview.run_state == "stopped" and not manual:
         raise core.PreflightError("stopped partial 需要用户明确手动恢复")
     next_session = session_id or uuid.uuid4().hex
@@ -649,6 +652,9 @@ def resume_run(
         if runtime.run_state in ("published", "failed_terminal"):
             raise core.PreflightError(
                 f"状态 {runtime.run_state} 不能恢复")
+        if runtime.run_state == "sealed_unpublished":
+            raise core.PreflightError(
+                "sealed partial 只能使用只发布恢复入口，禁止重新扫描")
         if runtime.run_state == "stopped" and not manual:
             raise core.PreflightError(
                 "stopped partial 需要用户明确手动恢复")
@@ -662,7 +668,7 @@ def resume_run(
             runtime.event_log_path,
         )
         interrupted = runtime.run_state in (
-            "running", "pause_requested", "sealing", "sealed_unpublished",
+            "running", "pause_requested", "sealing",
         ) or (runtime.run_state == "paused"
               and not session_ended)
         if interrupted:
@@ -698,6 +704,106 @@ def resume_run(
         except (OSError, core.PreflightError):
             pass
         raise
+
+
+def resume_publication_run(
+    partial_path: str,
+    *,
+    scanner_version: str = dbstate.MIN_READER_VERSION,
+    session_id: str | None = None,
+    lease_id: str | None = None,
+    pid_alive: Callable[[int], bool] | None = None,
+    process_token: Callable[[int], str | None] | None = None,
+) -> RunHandle:
+    """接管 sealed partial，只创建发布重试 session，不重新扫描源目录。"""
+    preview = inspect_resume(
+        partial_path,
+        pid_alive=pid_alive,
+        process_token=process_token,
+    )
+    if preview.run_state != "sealed_unpublished":
+        raise core.PreflightError(
+            f"状态 {preview.run_state} 不是待发布 sealed partial")
+    next_session = session_id or uuid.uuid4().hex
+    next_lease = lease_id or uuid.uuid4().hex
+    lease = dbstate.acquire_lease_file(
+        preview.lease_path,
+        next_session,
+        takeover=True,
+        lease_id=next_lease,
+        pid_alive=pid_alive,
+        token_probe=process_token,
+    )
+    con = None
+    try:
+        con = _readwrite_connection(preview.partial_path)
+        con.execute("PRAGMA foreign_keys=ON")
+        con.execute("PRAGMA journal_mode=WAL")
+        runtime = dbstate.load_runtime(con)
+        if runtime.run_state != "sealed_unpublished":
+            raise core.PreflightError(
+                f"发布恢复时状态已变为 {runtime.run_state}")
+        if runtime.active_session_id != preview.active_session_id:
+            raise core.PreflightError(
+                "partial 在发布预览后更换了 active session，拒绝接管")
+        _ended, config, tools = _session_payload(
+            con, runtime.active_session_id)
+        dbstate.validate_resume_identity(
+            con,
+            runtime.output_dir,
+            runtime.partial_path,
+            runtime.publish_stem_path,
+            runtime.event_log_path,
+        )
+        runtime = dbstate.start_publication_retry_session(
+            con,
+            config=config,
+            tools=tools,
+            scanner_version=scanner_version,
+            session_id=next_session,
+            lease_id=next_lease,
+            hostname=lease.host,
+            pid=lease.pid,
+            process_start_token=lease.process_start_token,
+        )
+        if runtime.active_session_id != lease.session_id:
+            raise core.PreflightError(
+                "发布恢复 session 与 lease session 不一致")
+        return RunHandle(
+            con,
+            preview.partial_path,
+            preview.lease_path,
+            lease,
+            True,
+        )
+    except Exception:
+        if con is not None:
+            con.close()
+        try:
+            dbstate.release_lease_file(
+                preview.lease_path, lease.lease_id)
+        except (OSError, core.PreflightError):
+            pass
+        raise
+
+
+def record_publication_retry_failure(
+    handle: RunHandle,
+    error_message: str,
+) -> None:
+    """在连接可能已关闭时，仍只写回同一 sealed partial 的失败证据。"""
+    opened = None
+    try:
+        try:
+            dbstate.load_runtime(handle.connection)
+            con = handle.connection
+        except sqlite3.Error:
+            con = _readwrite_connection(handle.partial_path)
+            opened = con
+        dbstate.fail_publication_retry(con, error_message)
+    finally:
+        if opened is not None:
+            opened.close()
 
 
 def heartbeat_once(
@@ -744,6 +850,10 @@ class LeaseHeartbeat:
     def error(self) -> BaseException | None:
         return self._error
 
+    @property
+    def alive(self) -> bool:
+        return bool(self._thread is not None and self._thread.is_alive())
+
     def start(self) -> None:
         if self._thread is not None:
             raise RuntimeError("lease heartbeat 已启动")
@@ -773,10 +883,13 @@ class LeaseHeartbeat:
                     except Exception:
                         pass
 
-    def stop(self) -> None:
+    def stop(self, timeout_seconds: float = 2.0) -> bool:
+        if timeout_seconds <= 0:
+            raise ValueError("lease heartbeat 停止等待必须大于 0")
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=timeout_seconds)
+        return not self.alive
 
 
 def close_handle(handle: RunHandle, *, release_lease: bool) -> None:
@@ -1631,6 +1744,7 @@ def run_hash_stage_controlled(
         if boundary != "running":
             return {"state": boundary}
 
+    _emit_control_event(on_event, "stage_started", stage="hash")
     while True:
         stats = dbhash.process_hash_stage_v4(
             con,
@@ -1653,6 +1767,16 @@ def run_hash_stage_controlled(
         )
         outcome = str(stats["state"])
         if outcome == "completed":
+            if mode == "none":
+                _emit_control_event(
+                    on_event,
+                    "stage_skipped",
+                    stage="hash",
+                    reason="hash_mode_none",
+                )
+            else:
+                _emit_control_event(
+                    on_event, "stage_finished", stage="hash", **stats)
             return stats
         if outcome in ("save_exit", "stopped"):
             router.end()
@@ -1674,6 +1798,8 @@ def run_hash_stage_controlled(
             paused_wait_seconds=paused_wait_seconds,
         )
         if result == "running":
+            _emit_control_event(
+                on_event, "stage_restarted", stage="hash")
             continue
         stats["state"] = result
         return stats
@@ -1902,6 +2028,12 @@ def run_independent_hash_stage_controlled(
             current_entry_id=None,
             checkpoint={"reason": "hash_mode_none"},
         )
+        _emit_control_event(
+            on_event,
+            "stage_skipped",
+            stage="verify_hash",
+            reason="hash_mode_none",
+        )
         return {
             "state": "completed",
             "eligible": 0,
@@ -1923,12 +2055,23 @@ def run_independent_hash_stage_controlled(
     if checkpoint is not None and checkpoint[0] in ("completed", "skipped"):
         saved = _json_object(checkpoint[1], "verify_hash checkpoint_json")
         saved["state"] = "completed"
+        _emit_control_event(
+            on_event,
+            "stage_finished" if checkpoint[0] == "completed"
+            else "stage_skipped",
+            stage="verify_hash",
+            **({} if checkpoint[0] == "completed" else {
+                "reason": "checkpoint_already_terminal",
+            }),
+        )
         return saved
     if not isinstance(powershell_path, str) or not powershell_path:
         raise core.PreflightError("独立抽验缺少冻结 PowerShell 路径")
     if not isinstance(powershell_version, str) or not powershell_version:
         raise core.PreflightError("独立抽验缺少冻结 PowerShell 版本")
 
+    _emit_control_event(
+        on_event, "stage_started", stage="verify_hash")
     eligible, selected = _verify_hash_candidates(con, ratio, min_count)
     selected_ids = {row[0] for row in selected}
     latest = {
@@ -2393,6 +2536,7 @@ def run_scan_evidence_stages(
     hash_stall_seconds: float = dbhash.HASH_STALL_SECONDS,
     hash_timeout_seconds: float | None = None,
     hash_default_decision: str = "continue_waiting",
+    hash_retry_mode: str = "pending",
     hash_poll_seconds: float = 0.05,
     _hash_worker_target=None,
 ) -> dict[str, object]:
@@ -2415,6 +2559,9 @@ def run_scan_evidence_stages(
         raise core.PreflightError("Quick 冻结配置不能启用哈希")
     if hash_mode not in ("none", "incremental", "full"):
         raise core.PreflightError(f"冻结的哈希模式无效：{hash_mode!r}")
+    if hash_retry_mode not in ("pending", "transient", "all_unsuccessful"):
+        raise core.PreflightError(
+            f"哈希重试范围无效：{hash_retry_mode!r}")
     format_mode = str(
         config.get("format_validation") or "off"
     ).strip().casefold()
@@ -2520,6 +2667,7 @@ def run_scan_evidence_stages(
             hash_mode,
             router,
             previous=previous,
+            retry_mode=hash_retry_mode,
             stall_seconds=hash_stall_seconds,
             timeout_seconds=hash_timeout_seconds,
             default_decision=hash_default_decision,
@@ -2985,6 +3133,7 @@ def run_scan_completion_stages(
     on_event: Callable[..., None] | None = None,
     on_threshold: Callable[
         [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
+    before_seal: Callable[[], None] | None = None,
     _independent_runner=None,
     _primary_runner=None,
 ) -> dict[str, object]:
@@ -3040,6 +3189,8 @@ def run_scan_completion_stages(
         **performance,
     )
     _skip_scan_verify_format_stage(con)
+    if before_seal is not None:
+        before_seal()
     publication = seal_and_publish_scan(
         handle,
         staging_path=staging_path,
@@ -3067,12 +3218,14 @@ def run_scan_to_publication(
     hash_stall_seconds: float = dbhash.HASH_STALL_SECONDS,
     hash_timeout_seconds: float | None = None,
     hash_default_decision: str = "continue_waiting",
+    hash_retry_mode: str = "pending",
     hash_poll_seconds: float = 0.05,
     staging_path: str | None = None,
     manifest: dict[str, object] | None = None,
     issue_report_builder=dbissues.build_snapshot_issue_report_from_connection,
     on_threshold: Callable[
         [dict[str, object], dbhash.AtomicTimeoutDecision], None] | None = None,
+    before_seal: Callable[[], None] | None = None,
     _hash_worker_target=None,
     _independent_runner=None,
     _primary_runner=None,
@@ -3088,6 +3241,7 @@ def run_scan_to_publication(
         hash_stall_seconds=hash_stall_seconds,
         hash_timeout_seconds=hash_timeout_seconds,
         hash_default_decision=hash_default_decision,
+        hash_retry_mode=hash_retry_mode,
         hash_poll_seconds=hash_poll_seconds,
         _hash_worker_target=_hash_worker_target,
     )
@@ -3112,6 +3266,7 @@ def run_scan_to_publication(
         on_progress=on_progress,
         on_event=on_event,
         on_threshold=on_threshold,
+        before_seal=before_seal,
         _independent_runner=_independent_runner,
         _primary_runner=_primary_runner,
     )

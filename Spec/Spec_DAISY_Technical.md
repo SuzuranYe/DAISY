@@ -22,8 +22,8 @@ DAISY v1.5.1 的信息能力分为两个并列功能域：
 写入 DBS 的 SQLite，DBS 也不把物理盘资料嵌入快照；当前版本不自动建立文件条目
 与物理硬盘档案之间的关联。
 
-现行编号、六字名称、GUI、CLI 与 `Script/Module` 脚本必须一一对应。以下 8 项
-就是完整的用户功能模块集合，也必须恰好对应 8 个 Module 脚本：
+现行编号、六字名称、GUI、CLI 与对应任务脚本必须一一对应。以下 8 项是
+v1.5.1 的完整用户功能模块集合：
 
 | 编号 | 六字名称 | CLI | Module 脚本 |
 |---|---|---|---|
@@ -41,6 +41,11 @@ DAISY v1.5.1 的信息能力分为两个并列功能域：
 准备模式，也不另占编号或脚本。归档核验不再提供独立用户命令；创建 ZIP 后仍由
 STG-11 在底层自动执行同等完整核验。
 
+v1.6.0 开发分支另有不占编号的统一编排脚本
+`Script_DAISY_Module_DBS_10_Scan.py`，由新命令 `scan` 调用。它不是第 9 个业务
+模块，而是 Full／Quick 共用的 schema 4 新建、恢复、控制和发布入口；旧
+`full-scan`／`quick-scan` 在兼容期内仍指向原任务脚本。
+
 文档解释意图和不变量，代码保存容易漂移的精确定义：
 
 | 内容 | 最终权威 |
@@ -56,7 +61,7 @@ STG-11 在底层自动执行同等完整核验。
 | 数据库解析模块注册表、CSV 与旧 Excel writer | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
 | schema 3／4 快照 Issues 只读分析与分板块 Markdown | `Script\Lib\Script_DAISY_Lib_DBS_10_Issues.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
-| CLI 参数及默认值 | 上表对应任务脚本的参数解析器 |
+| CLI 参数及默认值 | 上表对应任务脚本及统一编排脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
 | STG 物理盘只读登记与 ZIP 协议 | 本文第十一节及 `Script\Lib\Script_DAISY_Lib_STG_*.py` |
 
@@ -807,14 +812,15 @@ BitLocker 状态；不得未经检查公开分享。
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用
   流式业务投影比较一次完成与多 session 恢复；运行身份、attempt 和观察时间不进入业务
-  投影。schema 4 内部生产链已经能够从证据采集运行到发布，但现行 DBS-11 CLI 和 GUI
-  尚未切换，仍使用冻结 schema 3；不得把内部编排通过误写成用户入口已经切换。
+  投影。schema 4 生产链已经通过新 `scan` CLI 从证据采集运行到发布；旧
+  `full-scan`／`quick-scan` 和现行 GUI 仍使用冻结 schema 3。不得把新 CLI 通过误写成
+  GUI 或旧兼容命令也已切换。
 - v1.6.0 阶段 4 的第一检查点已在哈希库中实现 spawn 工作进程、启动握手、30 秒 stall、
   90 秒／9 GiB 动态无进展 timeout、三种原子处置、精确句柄回收、逐文件 checkpoint、
   attempt 与低频性能摘要。schema 4 哈希当前结果与历史 attempt 在同一 SQLite 事务提交；
   暂停或停止中的当前文件不保存 `hashlib` 内部状态，恢复时从文件起点重做。该内核已接入
-  `DBS_09_Run.py` 的 schema 4 内部生产链，但尚未接入现行 DBS-11 CLI 和 GUI，因此
-  schema 3 扫描语义及版本常量仍未改变。
+  `DBS_09_Run.py` 的 schema 4 生产链，并由 `scan` CLI 调用；现行 GUI 与旧兼容命令
+  尚未接入，因此 schema 3 扫描语义及 Core 版本常量仍未改变。
 - `DBS_09_Run.py` 进一步封装 schema 4 partial 的 no-clobber 预留、只读恢复预览、
   `<partial>.lease` 明确接管和数据库／lease 双端心跳。partial、publish stem 与 event log
   必须互不相同；同会话暂停后进程消失时，旧 session 先转为 abandoned，再创建 resume
@@ -826,7 +832,7 @@ BitLocker 状态；不得未经检查公开分享。
   上限和严格递增序号；生命周期动作为 first-wins，timeout 决定绑定当前 worker PID。
   同会话暂停后的继续会创建新控制对象并从当前文件起点重试；稍后保存退出通过受审计的
   `paused_saved_for_exit` 动作结束 session。该控制子层已通过合成 worker 测试，但尚未
-  接入现行 DBS-11 生产入口或 GUI。
+  接入 `scan --control-stdin` 生产入口；GUI 尚未把自己的按钮接到该通道。
 - 同一运行层已为枚举、元数据和复扫提供显式受控包装：枚举暂停后重跑临时树对账，元数据
   在单文件提交后停下并从数据库状态恢复全局进度，复扫保存已观察变化后可重跑。数值进度
   以 500 ms、当前文件以 100 ms 限频；当前文件开关关闭时不调用生产回调。Core／Meta 的
@@ -854,8 +860,23 @@ BitLocker 状态；不得未经检查公开分享。
 - schema 4 发布层可接收只读 Issues builder：先在 `mode=ro` 发布副本上分析并复核摘要
   未变化，再以 UTF-8 无 BOM、LF、no-clobber 创建 sidecar，最后发布 SQLite。报告或
   SQLite 任一目标冲突均不覆盖；SQLite 发布失败时只删除本次新建的 sidecar，保留 sealed
-  partial 供恢复。该能力已接入 schema 4 内部生产链；现行 DBS-11 CLI／GUI 尚未切换，
-  因而仍不能据此宣称 v1.6.0 用户流程已完成切换。
+  partial 供恢复。该能力已接入 schema 4 生产链和新 `scan` CLI；旧兼容命令与 GUI
+  尚未切换，因而仍不能据此宣称 v1.6.0 用户流程已完成切换。
+
+- `Script_DAISY_Module_DBS_10_Scan.py` 是 schema 4 的首个生产编排入口。新建时冻结
+  Full／Quick、格式校验、90 秒／9 GiB 无进展策略和工具身份；恢复前先做只读预览，
+  有效 owner 会在源目录或工具预检前被拒绝，stopped 必须显式 `--manual-resume`。
+  `--control-stdin` 只读取 `daisy-control-v1` JSONL，不关闭调用方 stdin；本任务的
+  lease 心跳在封存前停止并确认线程已退出，避免后台写入改变最终字节；事件日志创建或
+  写入失败会阻断扫描／封存。Quick 不调用外部工具，Full 默认关闭格式校验；发布成功、
+  保存退出、手动停止分别返回 0、75、130。旧命令仍按 v1.5.1/schema 3 执行，直到兼容
+  包装和 GUI 在后续检查点共同切换。
+- `sealed_unpublished` 不得通过普通 `resume_run` 降级回扫描阶段。`scan --resume` 会改用
+  只发布恢复：在读取源目录或运行工具预检前识别 sealed 状态，创建单独 resume session，
+  停止精确心跳后直接从 sealed partial 建立发布副本。失败 session 保留并可再次重试；
+  成功库的 manifest 会同步 session 数和发布重试次数，并明确
+  `source_rescanned=false`。因此目标冲突后的恢复不依赖源文件仍在线，也不会改写扫描业务
+  证据。
 
 ### 12.2 信息架构与字段命名
 

@@ -32,6 +32,8 @@ COMMANDS = {
             "图形界面：填写参数、查看进度与实时日志"),
     "env-check": ("Script_DAISY_Module_ENV_01_Env_Check",
                   "ENV-01 运行环境检测：工具发现、版本、冒烟与只读断言"),
+    "scan": ("Script_DAISY_Module_DBS_10_Scan",
+             "统一扫描：Full／Quick、暂停恢复与 schema 4 快照"),
     "full-scan": ("Script_DAISY_Module_DBS_11_Full_Scan",
                   "DBS-11 完整档案扫描：文件树、元数据与哈希快照"),
     "quick-scan": ("Script_DAISY_Module_DBS_12_Quick_Scan",
@@ -86,6 +88,8 @@ def guide() -> str:
         "",
         "典型流程：",
         "  图形界面        python .\\Script\\Script_DAISY_MAIN.py gui",
+        "  新版统一扫描    python .\\Script\\Script_DAISY_MAIN.py scan --mode full --root \"E:\\档案2024\"",
+        "  恢复扫描        python .\\Script\\Script_DAISY_MAIN.py scan --resume .\\Output\\Snapshots\\任务.partial.sqlite",
         "  首次完整扫描    python .\\Script\\Script_DAISY_MAIN.py full-scan --root \"E:\\档案2024\""
         "   （默认完整 SHA-256）",
         "  接盘快速扫描    python .\\Script\\Script_DAISY_MAIN.py quick-scan --root \"E:\\档案2024\"",

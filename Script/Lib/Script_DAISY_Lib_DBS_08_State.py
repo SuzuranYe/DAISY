@@ -1259,6 +1259,251 @@ def start_resume_session(
     return load_runtime(con)
 
 
+def start_publication_retry_session(
+    con: sqlite3.Connection,
+    *,
+    config: dict[str, object],
+    tools: dict[str, object],
+    scanner_version: str = MIN_READER_VERSION,
+    session_id: str | None = None,
+    lease_id: str | None = None,
+    hostname: str | None = None,
+    pid: int | None = None,
+    process_start_token: str | None = None,
+    now_utc: str | None = None,
+) -> RuntimeSnapshot:
+    """为 sealed partial 创建只发布 session，不退回扫描或改写业务证据。"""
+    runtime = load_runtime(con)
+    if runtime.run_state != "sealed_unpublished":
+        raise core.PreflightError(
+            f"当前状态 {runtime.run_state} 不能只重试发布")
+    old_session = con.execute(
+        "SELECT ended_at_utc FROM run_sessions WHERE session_id=?",
+        (runtime.active_session_id,),
+    ).fetchone()
+    if old_session is None:
+        raise core.PreflightError("sealed partial 缺少 active session")
+    now = _now_text(now_utc)
+    new_session = _require_compact_uuid(
+        session_id or _new_id(), "session_id")
+    new_lease = _require_compact_uuid(
+        lease_id or _new_id(), "lease_id")
+    host = str(hostname or socket.gethostname())
+    process_id = int(os.getpid() if pid is None else pid)
+    if process_id <= 0:
+        raise core.PreflightError("session PID 必须大于 0")
+    expires = _add_seconds(now, LEASE_TTL_SECONDS)
+    session_number = int(con.execute(
+        "SELECT COALESCE(MAX(session_number),0) FROM run_sessions"
+    ).fetchone()[0]) + 1
+    next_revision = runtime.state_revision + 1
+    effective_config = dict(config)
+    effective_config.update({
+        "data_contract": DATA_CONTRACT,
+        "min_reader_version": MIN_READER_VERSION,
+        "resume_contract": RESUME_CONTRACT,
+        "projection_contract": PROJECTION_CONTRACT,
+        "filename_layout_version": FILENAME_LAYOUT_VERSION,
+    })
+    with con:
+        if old_session[0] is None:
+            con.execute(
+                "UPDATE run_sessions SET session_status='failed',"
+                " updated_at_utc=?,ended_at_utc=?,"
+                " end_reason='publication_owner_replaced'"
+                " WHERE session_id=? AND ended_at_utc IS NULL",
+                (now, now, runtime.active_session_id),
+            )
+        con.execute(
+            "INSERT INTO run_sessions"
+            " (session_id,session_number,parent_session_id,session_kind,"
+            " session_status,started_at_utc,updated_at_utc,hostname,pid,"
+            " process_start_token,lease_id,lease_acquired_at_utc,"
+            " lease_heartbeat_at_utc,lease_expires_at_utc,scanner_version,"
+            " resume_contract,config_json,tools_json)"
+            " VALUES (?,?,?,'resume','active',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                new_session,
+                session_number,
+                runtime.active_session_id,
+                now,
+                now,
+                host,
+                process_id,
+                process_start_token,
+                new_lease,
+                now,
+                now,
+                expires,
+                scanner_version,
+                RESUME_CONTRACT,
+                json.dumps(effective_config, ensure_ascii=False),
+                json.dumps(tools, ensure_ascii=False),
+            ),
+        )
+        changed = con.execute(
+            "UPDATE snapshot_runtime SET state_revision=?,resume_hint='none',"
+            " active_session_id=?,current_stage='publish',updated_at_utc=?,"
+            " last_checkpoint_at_utc=?,last_error_code=NULL,"
+            " last_error_message=NULL WHERE id=1"
+            " AND run_state='sealed_unpublished' AND state_revision=?",
+            (next_revision, new_session, now, now, runtime.state_revision),
+        ).rowcount
+        if changed != 1:
+            raise core.PreflightError(
+                "发布恢复时状态已变化，新 session 未提交")
+        con.execute(
+            "UPDATE stage_checkpoints SET state='running',session_id=?,"
+            " updated_at_utc=?,finished_at_utc=NULL,current_entry_id=NULL,"
+            " checkpoint_json=? WHERE stage='publish'",
+            (
+                new_session,
+                now,
+                json.dumps({
+                    "method": "sqlite_backup_no_clobber",
+                    "retry": True,
+                }, ensure_ascii=False),
+            ),
+        )
+        _append_state_event(
+            con,
+            new_session,
+            now,
+            "publication_retry_started",
+            "sealed_unpublished",
+            "sealed_unpublished",
+            next_revision,
+            {"parent_session_id": runtime.active_session_id},
+        )
+        _refresh_sealed_runtime_documents(con)
+    return load_runtime(con)
+
+
+def fail_publication_retry(
+    con: sqlite3.Connection,
+    error_message: str,
+    *,
+    now_utc: str | None = None,
+) -> RuntimeSnapshot:
+    """结束当前只发布 session，同时保持 sealed partial 可再次发布。"""
+    runtime = load_runtime(con)
+    if runtime.run_state != "sealed_unpublished":
+        raise core.PreflightError(
+            f"当前状态 {runtime.run_state} 不能记录发布重试失败")
+    session = con.execute(
+        "SELECT ended_at_utc FROM run_sessions WHERE session_id=?",
+        (runtime.active_session_id,),
+    ).fetchone()
+    if session is None or session[0] is not None:
+        raise core.PreflightError("发布重试 session 已结束或不存在")
+    now = _now_text(now_utc)
+    next_revision = runtime.state_revision + 1
+    detail = str(error_message)[:2000]
+    with con:
+        changed = con.execute(
+            "UPDATE snapshot_runtime SET state_revision=?,"
+            " resume_hint='suggest',updated_at_utc=?,"
+            " last_checkpoint_at_utc=?,last_error_code='publish_retry_failed',"
+            " last_error_message=? WHERE id=1"
+            " AND run_state='sealed_unpublished' AND state_revision=?",
+            (next_revision, now, now, detail, runtime.state_revision),
+        ).rowcount
+        if changed != 1:
+            raise core.PreflightError(
+                "发布失败记录检测到状态竞态")
+        con.execute(
+            "UPDATE stage_checkpoints SET state='failed_recoverable',"
+            " updated_at_utc=?,finished_at_utc=?,current_entry_id=NULL,"
+            " checkpoint_json=? WHERE stage='publish'",
+            (
+                now,
+                now,
+                json.dumps({
+                    "reason": "publish_retry_failed",
+                    "error": detail,
+                }, ensure_ascii=False),
+            ),
+        )
+        con.execute(
+            "UPDATE run_sessions SET session_status='failed',"
+            " updated_at_utc=?,ended_at_utc=?,"
+            " end_reason='publish_retry_failed'"
+            " WHERE session_id=? AND ended_at_utc IS NULL",
+            (now, now, runtime.active_session_id),
+        )
+        _append_state_event(
+            con,
+            runtime.active_session_id,
+            now,
+            "publication_retry_failed",
+            "sealed_unpublished",
+            "sealed_unpublished",
+            next_revision,
+            {"error": detail},
+        )
+        _refresh_sealed_runtime_documents(con)
+    return load_runtime(con)
+
+
+def _refresh_sealed_runtime_documents(con: sqlite3.Connection) -> None:
+    """同步 sealed 后新增的 session 计数，不改写文件业务投影。"""
+    sessions = int(con.execute(
+        "SELECT COUNT(*) FROM run_sessions").fetchone()[0])
+    retry_sessions = int(con.execute(
+        "SELECT COUNT(*) FROM run_state_events"
+        " WHERE event='publication_retry_started'"
+    ).fetchone()[0])
+    failed_retries = int(con.execute(
+        "SELECT COUNT(*) FROM run_state_events"
+        " WHERE event='publication_retry_failed'"
+    ).fetchone()[0])
+
+    counts_row = con.execute(
+        "SELECT counts_json FROM snapshot_info WHERE id=1"
+    ).fetchone()
+    if counts_row is not None and counts_row[0]:
+        try:
+            counts = json.loads(str(counts_row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise core.PreflightError(
+                "sealed snapshot_info.counts_json 无法解析") from exc
+        if not isinstance(counts, dict):
+            raise core.PreflightError(
+                "sealed snapshot_info.counts_json 必须是对象")
+        counts["sessions"] = sessions
+        con.execute(
+            "UPDATE snapshot_info SET counts_json=? WHERE id=1",
+            (json.dumps(counts, ensure_ascii=False),),
+        )
+
+    manifest_row = con.execute(
+        "SELECT manifest_json FROM snapshot_manifest WHERE id=1"
+    ).fetchone()
+    if manifest_row is None:
+        return
+    try:
+        manifest = json.loads(str(manifest_row[0]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise core.PreflightError(
+            "sealed snapshot manifest_json 无法解析") from exc
+    if not isinstance(manifest, dict):
+        raise core.PreflightError(
+            "sealed snapshot manifest_json 必须是对象")
+    counts = manifest.get("counts")
+    if not isinstance(counts, dict):
+        raise core.PreflightError("sealed manifest 缺少 counts 对象")
+    counts["sessions"] = sessions
+    manifest["publication_recovery"] = {
+        "retry_sessions": retry_sessions,
+        "failed_retries": failed_retries,
+        "source_rescanned": False,
+    }
+    con.execute(
+        "UPDATE snapshot_manifest SET manifest_json=? WHERE id=1",
+        (json.dumps(manifest, ensure_ascii=False),),
+    )
+
+
 def update_stage_checkpoint(
     con: sqlite3.Connection,
     stage: str,
@@ -1344,7 +1589,6 @@ def recover_interrupted(
     runtime = load_runtime(con)
     if runtime.run_state not in (
         "running", "pause_requested", "paused", "sealing",
-        "sealed_unpublished",
     ):
         raise core.PreflightError(
             f"状态 {runtime.run_state} 不需要异常终止恢复")

@@ -1843,9 +1843,12 @@ class TestRunHeartbeat(_RunFixture):
         heartbeat = dbrun.LeaseHeartbeat(handle, interval_seconds=60)
         try:
             heartbeat.start()
-            heartbeat.stop()
+            self.assertTrue(heartbeat.alive)
+            self.assertTrue(heartbeat.stop())
             self.assertIsNone(heartbeat.error)
-            self.assertFalse(heartbeat._thread.is_alive())
+            self.assertFalse(heartbeat.alive)
+            with self.assertRaisesRegex(ValueError, "必须大于 0"):
+                heartbeat.stop(0)
         finally:
             dbrun.close_handle(handle, release_lease=True)
 

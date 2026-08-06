@@ -562,17 +562,28 @@ class TestAttemptsAndRecovery(_StateFixture):
         finally:
             con.close()
 
-    def test_sealed_unpublished_crash_can_reenter_recovery(self) -> None:
+    def test_sealed_unpublished_uses_publish_only_retry_sessions(self) -> None:
         con = sqlite3.connect(":memory:")
         try:
             self.initialize(con)
+            con.execute(
+                "UPDATE snapshot_info SET counts_json=? WHERE id=1",
+                (json.dumps({"sessions": 1}),),
+            )
+            con.execute(
+                "INSERT INTO snapshot_manifest"
+                " (id,manifest_version,manifest_json,embedded_at_utc)"
+                " VALUES (1,1,?,?)",
+                (json.dumps({"counts": {"sessions": 1}}), _NOW),
+            )
+            con.commit()
             state.begin_sealing(con)
             state.mark_sealed_unpublished(con)
-            recovered = state.recover_interrupted(
-                con, reason="publish_owner_lost")
-            self.assertEqual(
-                "failed_recoverable", recovered.runtime.run_state)
-            resumed = state.start_resume_session(
+            with self.assertRaisesRegex(
+                    core.PreflightError, "不需要异常终止恢复"):
+                state.recover_interrupted(
+                    con, reason="publish_owner_lost")
+            resumed = state.start_publication_retry_session(
                 con,
                 config={},
                 tools={},
@@ -582,8 +593,61 @@ class TestAttemptsAndRecovery(_StateFixture):
                 pid=4343,
                 process_start_token="resume-start",
             )
-            self.assertEqual("running", resumed.run_state)
+            self.assertEqual("sealed_unpublished", resumed.run_state)
             self.assertEqual("publish", resumed.current_stage)
+            self.assertEqual(
+                [(1, "failed"), (2, "active")],
+                con.execute(
+                    "SELECT session_number,session_status FROM run_sessions"
+                    " ORDER BY session_number"
+                ).fetchall(),
+            )
+            manifest = json.loads(con.execute(
+                "SELECT manifest_json FROM snapshot_manifest WHERE id=1"
+            ).fetchone()[0])
+            self.assertEqual(2, manifest["counts"]["sessions"])
+            self.assertEqual(1, manifest["publication_recovery"][
+                "retry_sessions"])
+            failed = state.fail_publication_retry(
+                con, "fixture conflict")
+            self.assertEqual(("sealed_unpublished", "suggest"), (
+                failed.run_state, failed.resume_hint))
+            self.assertEqual("failed_recoverable", con.execute(
+                "SELECT state FROM stage_checkpoints WHERE stage='publish'"
+            ).fetchone()[0])
+            manifest = json.loads(con.execute(
+                "SELECT manifest_json FROM snapshot_manifest WHERE id=1"
+            ).fetchone()[0])
+            self.assertEqual(1, manifest["publication_recovery"][
+                "failed_retries"])
+            retried = state.start_publication_retry_session(
+                con,
+                config={},
+                tools={},
+                session_id="c" * 32,
+                lease_id="d" * 32,
+                hostname="fixture-host",
+                pid=4444,
+                process_start_token="retry-start",
+            )
+            self.assertEqual(("sealed_unpublished", "none"), (
+                retried.run_state, retried.resume_hint))
+            self.assertEqual(
+                [(1, "failed"), (2, "failed"), (3, "active")],
+                con.execute(
+                    "SELECT session_number,session_status FROM run_sessions"
+                    " ORDER BY session_number"
+                ).fetchall(),
+            )
+            manifest = json.loads(con.execute(
+                "SELECT manifest_json FROM snapshot_manifest WHERE id=1"
+            ).fetchone()[0])
+            self.assertEqual(3, manifest["counts"]["sessions"])
+            self.assertEqual({
+                "retry_sessions": 2,
+                "failed_retries": 1,
+                "source_rescanned": False,
+            }, manifest["publication_recovery"])
         finally:
             con.close()
 

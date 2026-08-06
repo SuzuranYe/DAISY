@@ -578,3 +578,47 @@ SHA-256 相同，进程退出码为 0 且精确句柄已回收；没有读取任
 本检查点完成的是可供新入口调用的 schema 4 内部生产链。现行 DBS-11 CLI、统一核验
 CLI、GUI timeout／恢复／发布界面和 sealed partial 的重启后发布恢复入口仍待后续接线；
 因此阶段 4／5 和 v1.6.0 整体均未完成，也不能更新 README 为已发布功能。
+
+### 9.3 统一扫描生产 CLI（第四检查点）
+
+新增不占 DBS 编号的 `scan` 编排命令和
+`Script_DAISY_Module_DBS_10_Scan.py`。旧 `full-scan`／`quick-scan` 暂不改写，避免
+兼容包装和 GUI 尚未完成时改变既有 schema 3 自动化。新入口已实现：
+
+- 新建 Full／Quick schema 4 partial；Full 默认格式校验关闭，Quick 硬拒绝哈希、元数据、
+  格式校验及外部工具参数；`Fmt-Sample`／`Fmt-All` 只用于新 filename layout 3；
+- 冻结 30 秒 stall、`max(90, ceil(size / 9 GiB) * 90)` 无进展规则和默认处置；恢复不能
+  覆盖冻结配置，哈希重试范围和当前文件显示只作为当前 session 的显式运行选项；
+- 恢复先只读识别状态、lease、roots、config 和 tools。有效本机／异机 owner 在访问源根或
+  工具冒烟前拒绝；stopped 只有 `--manual-resume` 能接管；冻结工具路径或版本改变即拒绝；
+- `--control-stdin` 使用现有 `daisy-control-v1` 严格 UTF-8 JSONL inbox，控制回执和拒绝均
+  进入 GUI 事件；stdin 由调用方持有，扫描入口不关闭；
+- 只刷新本任务精确 partial／lease。心跳错误请求保存退出，封存前通过 `before_seal`
+  最多等待 10 秒并确认线程退出；未退出即拒绝封存。事件日志创建或写入失败也拒绝开始／
+  封存，避免静默丢失运行证据；
+- 阶段事件转换为 9 段 GUI 进度，当前文件和 threshold 仍为独立结构化事件；成功、保存
+  退出和停止的退出码分别为 0、75、130；失败只保留本任务 partial 和可审计恢复边界；
+- 事件日志逐次短打开写入，封存完成后不再重建已删除日志。发布成功后 partial、lease、
+  event log 和 publishing staging 均无残留。
+- `sealed_unpublished` 使用只发布恢复，不进入普通 resume／扫描链。恢复 session、失败和
+  重试写入 `run_state_events`，manifest 同步 session／重试计数并明确未复扫源目录。测试
+  在第一次发布冲突后删除源夹具，第二个进程仍从 sealed partial 完成发布并保留原条目。
+
+定向验证全部把 `TEMP`／`TMP` 指向工作区 `.test_runtime\v1_6_0` 下的独立目录：
+
+| 批次 | 结果 | 用时 |
+|---|---:|---:|
+| 统一扫描 CLI 专项 | 10／10 | 1.525s |
+| CLI＋State＋Run＋Publication 联合回归 | 90／90 | 7.351s |
+| CLI 模块清单断言 | 1／1 | 0.001s |
+| 完整发现式回归 A | 446／446 | 101.143s |
+| 完整发现式回归 B | 446／446 | 101.572s |
+
+专项以工作区内中文小文件真实启动一个受控 Quick 子进程，验证源 SHA-256 不变、schema 4
+最终库 published、第二个 resume session 完成以及无 partial／lease／event／staging 残留；
+另验证 stopped 未获明确授权时数据库 SHA-256 不变。两轮完整回归分别固定到工作区
+`.test_runtime\v1_6_0\scan_cli_checkpoint_a\temp` 和
+`.test_runtime\v1_6_0\scan_cli_checkpoint_b\temp`，均失败 0、跳过 0，并把 `ResourceWarning`
+视为错误。测试没有运行 Full 外部工具采集、真实硬盘检测或工作区外扫描，也没有枚举、
+停止、附加或复用其它进程。GUI 接线和突然终止控制子进程端到端故障注入仍是阶段 4 的
+剩余阻断项。

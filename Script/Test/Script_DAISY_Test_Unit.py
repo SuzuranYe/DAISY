@@ -3132,6 +3132,10 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(os.path.isfile(module_path))
             with open(module_path, encoding="utf-8") as handle:
                 self.assertIn(" ".join(nav.split()), handle.read())
+        scan_module = "Script_DAISY_Module_DBS_10_Scan"
+        self.assertEqual(entry.COMMANDS["scan"][0], scan_module)
+        self.assertTrue(os.path.isfile(os.path.join(
+            _MODULE, scan_module + ".py")))
         self.assertEqual(len(gui._TASK_MENU_ORDER), 8)
         self.assertEqual(
             sorted(
@@ -3139,7 +3143,10 @@ class TestGuiArguments(unittest.TestCase):
                 if name.startswith("Script_DAISY_Module_")
                 and name.endswith(".py")
             ),
-            sorted(module + ".py" for *_prefix, module in expected),
+            sorted([
+                *(module + ".py" for *_prefix, module in expected),
+                scan_module + ".py",
+            ]),
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,

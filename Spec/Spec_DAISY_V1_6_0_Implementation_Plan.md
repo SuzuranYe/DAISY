@@ -612,9 +612,25 @@ session；不会卡在“旧 session 未结束但 paused 不可恢复”的状�
 相近大小的当前 computed 成功读取，至少 8 个／组且至少 1 MiB，以中位数、MAD、吞吐比例
 和 stall 阈值区分 low／high；排除 reused，高置信度进入同一 Issues，且不推断物理坏区。
 
-现行 DBS-11 CLI 和 GUI 仍未切换到该内部链，GUI timeout 决策框、恢复卡片和完整用户流程
-也尚未接入。因此 `SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 及既有 schema 3 入口
-继续保持不变；阶段 4 只有在生产 CLI／GUI、突然终止端到端恢复和组合测试通过后才算完成。
+第六个子检查点新增统一生产命令 `scan`，由
+`Script_DAISY_Module_DBS_10_Scan.py` 直接调用 schema 4 链。新建 Full／Quick、格式校验、
+动态 timeout 默认处置、当前文件、三种哈希重试范围和恢复参数均形成显式 CLI；恢复先做
+只读预览，有效 owner 在源目录／工具预检前即拒绝，stopped 必须显式手动恢复。生产入口
+启动本任务精确 lease 心跳，并通过 `before_seal` 在封存前停止，避免并发心跳写入最终字节；
+`--control-stdin` 把严格 JSONL 消息实时路由到运行控制器。工作区合成 Quick 已验证新建、
+保存后跨进程恢复、stopped 明确恢复、冻结参数拒绝、schema 4 发布和源文件摘要不变。
+心跳停止现在返回可验证结果，线程未退出或事件日志写入失败都会阻断封存。
+
+同一检查点补齐 sealed partial 的重启恢复：普通 `resume_run` 明确拒绝
+`sealed_unpublished`，专用发布恢复只创建新的 resume session 和精确 lease，不读取 root、
+不运行工具、不重新枚举或重做哈希。每次失败保持 sealed、结束当前发布 session 并允许下次
+重试；manifest 同步 session／重试计数和 `source_rescanned=false`。合成测试在封存后删除
+源夹具，仍能仅凭 sealed partial 成功发布，证明目标冲突恢复不依赖源文件。
+
+旧 `full-scan`／`quick-scan` CLI 和 GUI 仍未切换，以免在兼容包装与界面尚未完成时无提示
+改变既有 schema 3 自动化。GUI timeout 决策框、恢复卡片和完整用户流程也尚未接入。因此
+Core 的 `SCANNER_VERSION=1.5.1`、`SCHEMA_VERSION=3` 及既有 schema 3 入口继续保持不变；
+阶段 4 只有在 GUI 和突然终止控制子进程端到端组合测试通过后才算完成。
 
 ### 阶段 5：核验合并与 Full 可选格式校验
 
