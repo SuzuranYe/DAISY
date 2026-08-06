@@ -54,6 +54,7 @@ STG-11 在底层自动执行同等完整核验。
 | 数据库类型、schema、模块能力与业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
 | 核验快照准入、stat／哈希、格式判据和报告服务 | `Script\Lib\Script_DAISY_Lib_DBS_06_Verify.py` |
 | 数据库解析模块注册表、CSV 与旧 Excel writer | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
+| schema 3／4 快照 Issues 只读分析与分板块 Markdown | `Script\Lib\Script_DAISY_Lib_DBS_10_Issues.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
@@ -823,6 +824,16 @@ BitLocker 状态；不得未经检查公开分享。
   在单文件提交后停下并从数据库状态恢复全局进度，复扫保存已观察变化后可重跑。数值进度
   以 500 ms、当前文件以 100 ms 限频；当前文件开关关闭时不调用生产回调。Core／Meta 的
   schema 3 旧函数只增加默认关闭的末尾参数，未传回调的旧扫描路径不改变。
+- `DBS_10_Issues.py` 通过统一 Reader 只读分析 schema 3／4 快照，固定输出枚举、哈希、
+  Exif／元数据、格式、读取性能候选和运行证据六个板块。已执行且无问题为 `0`，未执行、
+  旧库未记录或能力不可解释为 `NULL`；unsupported／unknown／unrecognized format 只显示
+  去重总数，不显示路径也不单独触发报告。普通 warning、`[minor]` warning、validation
+  和低置信度性能样本折叠；明确损坏类 warning 或单文件至少 100 条折叠 warning 才进入
+  待复核候选。`CopyN` 在展示和家族计数中归一化为 `Copy#`，原始 SQLite 不改写。
+- schema 4 发布层可接收只读 Issues builder：先在 `mode=ro` 发布副本上分析并复核摘要
+  未变化，再以 UTF-8 无 BOM、LF、no-clobber 创建 sidecar，最后发布 SQLite。报告或
+  SQLite 任一目标冲突均不覆盖；SQLite 发布失败时只删除本次新建的 sidecar，保留 sealed
+  partial 供恢复。该能力尚未接入生产扫描封存入口，不能据此宣称 v1.6.0 已完成切换。
 
 ### 12.2 信息架构与字段命名
 

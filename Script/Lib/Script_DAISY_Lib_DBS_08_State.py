@@ -393,6 +393,7 @@ class PublicationResult:
     partial_removed: bool
     lease_released: bool
     warnings: tuple[str, ...]
+    issue_report_path: str | None = None
 
 
 _UNSET = object()
@@ -2225,6 +2226,60 @@ def _publish_no_clobber(working_path: str, final_path: str) -> None:
             f"发布失败，目标保持不动：{final_path}：{exc}") from exc
 
 
+def _write_issue_text_exclusive(path: str, content: str) -> None:
+    descriptor = None
+    created = False
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        created = True
+        with os.fdopen(
+                descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            descriptor = None
+            handle.write(content.replace("\r\n", "\n").replace("\r", "\n"))
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        if created:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+
+
+def _publish_with_issue_no_clobber(
+    working_path: str,
+    final_path: str,
+    issue_markdown: str | None,
+) -> str | None:
+    issue_path = (
+        core.artifact_issue_report_path(final_path)
+        if issue_markdown is not None else None
+    )
+    report_created = False
+    if issue_path is not None:
+        try:
+            _write_issue_text_exclusive(issue_path, issue_markdown)
+            report_created = True
+        except FileExistsError as exc:
+            raise core.PreflightError(
+                f"发布冲突：问题报告已存在且不会覆盖：{issue_path}"
+            ) from exc
+        except OSError as exc:
+            raise core.PreflightError(
+                f"问题报告无法创建：{issue_path}：{exc}") from exc
+    try:
+        _publish_no_clobber(working_path, final_path)
+    except Exception:
+        if report_created:
+            try:
+                os.remove(issue_path)
+            except OSError:
+                pass
+        raise
+    return issue_path
+
+
 def publish_sealed_snapshot(
     partial_path: str,
     staging_path: str,
@@ -2232,8 +2287,11 @@ def publish_sealed_snapshot(
     lease_path: str | None = None,
     lease_id: str | None = None,
     now_utc: str | None = None,
+    issue_report_builder: Callable[
+        [sqlite3.Connection, str], str | None
+    ] | None = None,
 ) -> PublicationResult:
-    """复制 sealed partial，在副本标记 published，再按副本摘要发布。"""
+    """复制并发布 sealed partial，可在发布前联动创建只读 Issues。"""
     if (lease_path is None) != (lease_id is None):
         raise ValueError("lease_path 与 lease_id 必须同时提供或同时省略")
     partial = _normalized(partial_path)
@@ -2249,6 +2307,7 @@ def publish_sealed_snapshot(
     source = None
     destination = None
     staging_created = False
+    issue_report_path = None
     try:
         source_uri = Path(partial).resolve(strict=True).as_uri() + "?mode=ro"
         source = sqlite3.connect(source_uri, uri=True)
@@ -2288,7 +2347,28 @@ def publish_sealed_snapshot(
             source_runtime.publish_stem_path
             + f"_{digest[:8].upper()}.sqlite"
         )
-        _publish_no_clobber(staging, final_path)
+        issue_markdown = None
+        if issue_report_builder is not None:
+            report_source = None
+            try:
+                report_uri = (
+                    Path(staging).resolve(strict=True).as_uri() + "?mode=ro")
+                report_source = sqlite3.connect(report_uri, uri=True)
+                issue_markdown = issue_report_builder(
+                    report_source, os.path.basename(final_path))
+                if issue_markdown is not None \
+                        and not isinstance(issue_markdown, str):
+                    raise TypeError(
+                        "issue_report_builder 必须返回 str 或 None")
+            finally:
+                if report_source is not None:
+                    report_source.close()
+            digest_after_report = core.sha256_file(staging)
+            if digest_after_report != digest:
+                raise core.PreflightError(
+                    "Issues 只读分析改变了发布副本，已拒绝发布")
+        issue_report_path = _publish_with_issue_no_clobber(
+            staging, final_path, issue_markdown)
         staging_created = False
     except Exception:
         if destination is not None:
@@ -2322,4 +2402,5 @@ def publish_sealed_snapshot(
         partial_removed=partial_removed,
         lease_released=lease_released,
         warnings=tuple(warnings),
+        issue_report_path=issue_report_path,
     )

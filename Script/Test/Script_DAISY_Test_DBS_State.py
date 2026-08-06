@@ -737,6 +737,7 @@ class TestSchema4Publication(_StateFixture):
         self.assertTrue(result.partial_removed)
         self.assertTrue(result.lease_released)
         self.assertEqual((), result.warnings)
+        self.assertIsNone(result.issue_report_path)
         self.assertFalse(os.path.exists(self.partial_path))
         self.assertFalse(os.path.exists(staging))
         self.assertFalse(os.path.exists(lock_path))
@@ -757,15 +758,29 @@ class TestSchema4Publication(_StateFixture):
             -> None:
         self.create_sealed_partial()
         staging = os.path.join(self.base, "publish.partial.sqlite")
+        report_calls = []
+
+        def report_builder(con, artifact_filename):
+            report_calls.append(artifact_filename)
+            self.assertEqual("published", state.load_runtime(con).run_state)
+            return "# 合成 Issues\n"
+
         with mock.patch.object(
                 state,
                 "_publish_no_clobber",
                 side_effect=core.PreflightError("fixture conflict")):
             with self.assertRaisesRegex(core.PreflightError, "fixture conflict"):
                 state.publish_sealed_snapshot(
-                    self.partial_path, staging, now_utc=_LATER)
+                    self.partial_path,
+                    staging,
+                    now_utc=_LATER,
+                    issue_report_builder=report_builder,
+                )
+        self.assertEqual(1, len(report_calls))
         self.assertTrue(os.path.isfile(self.partial_path))
         self.assertFalse(os.path.exists(staging))
+        self.assertFalse(any(
+            name.endswith("_Issues.md") for name in os.listdir(self.base)))
         con = sqlite3.connect(
             f"file:{self.partial_path}?mode=ro", uri=True)
         try:
@@ -773,6 +788,36 @@ class TestSchema4Publication(_StateFixture):
                 "sealed_unpublished", state.load_runtime(con).run_state)
         finally:
             con.close()
+
+    def test_issue_conflict_preserves_existing_report_and_sealed_partial(
+        self,
+    ) -> None:
+        self.create_sealed_partial()
+        staging = os.path.join(self.base, "publish.partial.sqlite")
+        conflict_path = None
+
+        def report_builder(_con, artifact_filename):
+            nonlocal conflict_path
+            final_path = os.path.join(self.base, artifact_filename)
+            conflict_path = core.artifact_issue_report_path(final_path)
+            with open(
+                    conflict_path, "x", encoding="utf-8", newline="\n") \
+                    as handle:
+                handle.write("existing\n")
+            return "new\n"
+
+        with self.assertRaisesRegex(core.PreflightError, "问题报告已存在"):
+            state.publish_sealed_snapshot(
+                self.partial_path,
+                staging,
+                now_utc=_LATER,
+                issue_report_builder=report_builder,
+            )
+        self.assertIsNotNone(conflict_path)
+        with open(conflict_path, encoding="utf-8") as handle:
+            self.assertEqual("existing\n", handle.read())
+        self.assertTrue(os.path.isfile(self.partial_path))
+        self.assertFalse(os.path.exists(staging))
 
     def test_no_clobber_helper_never_overwrites_existing_target(self) -> None:
         working = os.path.join(self.base, "working.sqlite")
