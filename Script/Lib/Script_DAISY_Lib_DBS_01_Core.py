@@ -66,6 +66,10 @@ class PreflightError(RuntimeError):
     """预检失败：环境不满足运行前提。"""
 
 
+class StageControlBoundary(RuntimeError):
+    """新运行层请求在当前可提交的文件／目录边界停止领取工作。"""
+
+
 def require_readable_schema_version(
     schema_version: int, artifact: str = "快照",
 ) -> int:
@@ -895,7 +899,8 @@ def enumerate_and_reconcile(con: sqlite3.Connection,
                             exclude_paths: set | None = None,
                             exclude_dirs: set | None = None,
                             on_progress=None,
-                            max_files: int | None = None) -> dict:
+                            max_files: int | None = None,
+                            should_stop=None) -> dict:
     """流式枚举全部 root → 与既有登记对账（可重跑；size/mtime 变者重置状态）。
 
     exclude_dirs：整子树排除，防止位于 root 内的当次输出目录被重新登记。
@@ -936,6 +941,9 @@ def enumerate_and_reconcile(con: sqlite3.Connection,
         stack = [("", to_extended_path(root_path))]
         try:
             while stack:
+                if should_stop is not None and should_stop():
+                    raise StageControlBoundary(
+                        "enumerate controlled stage boundary")
                 rel_dir, ext_dir = stack.pop()
                 try:
                     dir_attrs = os.stat(ext_dir, follow_symlinks=False).st_file_attributes
@@ -961,6 +969,9 @@ def enumerate_and_reconcile(con: sqlite3.Connection,
                     continue
                 files = subdirs = 0
                 for entry in it:
+                    if should_stop is not None and should_stop():
+                        raise StageControlBoundary(
+                            "enumerate controlled stage boundary")
                     rel = entry.name if rel_dir == "" else rel_dir + "\\" + entry.name
                     try:
                         st = entry.stat(follow_symlinks=False)
@@ -1015,7 +1026,7 @@ def enumerate_and_reconcile(con: sqlite3.Connection,
                 stats["dirs"] += 1
                 if len(d_buf) + len(e_buf) >= 1000:
                     flush()
-        except KeyboardInterrupt as exc:
+        except (KeyboardInterrupt, StageControlBoundary) as exc:
             interrupted = exc
         flush()
         con.execute("UPDATE roots SET enum_status=? WHERE root_id=?",
@@ -1085,24 +1096,61 @@ def enumerate_and_reconcile(con: sqlite3.Connection,
     return stats
 
 
-def rescan_check(con: sqlite3.Connection) -> int:
+def rescan_check(
+    con: sqlite3.Connection,
+    *,
+    should_stop=None,
+    on_progress=None,
+) -> int:
     """全量复扫 size/mtime，与登记比对；变化或消失者标 unstable。返回变化数。"""
     roots = dict(con.execute("SELECT root_id, root_path FROM roots").fetchall())
     changed_ids = []
-    for entry_id, root_id, rel, size, mtime in con.execute(
-            "SELECT entry_id, root_id, rel_path, size_bytes, modified_at_utc"
-            " FROM entries WHERE is_placeholder = 0"):
-        try:
-            st = os.stat(to_extended_path(os.path.join(roots[root_id], rel)),
-                         follow_symlinks=False)
-            if st.st_size != size or ns_to_utc_iso(st.st_mtime_ns) != mtime:
+    if should_stop is not None and should_stop():
+        raise StageControlBoundary("rescan controlled stage boundary")
+    total = None
+    if on_progress is not None:
+        total = con.execute(
+            "SELECT COUNT(*) FROM entries WHERE is_placeholder = 0"
+        ).fetchone()[0]
+
+    def commit_changes() -> None:
+        con.executemany("UPDATE entries SET meta_status='unstable',"
+                        " hash_status='unstable' WHERE entry_id=?",
+                        [(entry_id,) for entry_id in changed_ids])
+        con.commit()
+
+    cursor = con.execute(
+        "SELECT entry_id, root_id, rel_path, size_bytes, modified_at_utc"
+        " FROM entries WHERE is_placeholder = 0"
+    )
+    try:
+        for index, (entry_id, root_id, rel, size, mtime) in enumerate(
+                cursor, 1):
+            if should_stop is not None and should_stop():
+                active_cursor = cursor
+                cursor = None
+                active_cursor.close()
+                commit_changes()
+                raise StageControlBoundary(
+                    "rescan controlled stage boundary")
+            try:
+                st = os.stat(
+                    to_extended_path(os.path.join(roots[root_id], rel)),
+                    follow_symlinks=False,
+                )
+                if st.st_size != size \
+                        or ns_to_utc_iso(st.st_mtime_ns) != mtime:
+                    changed_ids.append(entry_id)
+            except OSError:
                 changed_ids.append(entry_id)
-        except OSError:
-            changed_ids.append(entry_id)
-    con.executemany("UPDATE entries SET meta_status='unstable',"
-                    " hash_status='unstable' WHERE entry_id=?",
-                    [(i,) for i in changed_ids])
-    con.commit()
+            if on_progress is not None:
+                on_progress(index, total, len(changed_ids))
+    finally:
+        if cursor is not None:
+            cursor.close()
+    commit_changes()
+    if should_stop is not None and should_stop():
+        raise StageControlBoundary("rescan controlled stage boundary")
     return len(changed_ids)
 
 

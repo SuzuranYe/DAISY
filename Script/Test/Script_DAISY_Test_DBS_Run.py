@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,6 +22,7 @@ sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR, _FIXTURE_DIR]
 
 import DBS_Hash_Worker_Fixture as worker_fixture
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_08_State as dbstate
 import Script_DAISY_Lib_DBS_09_Run as dbrun
 
@@ -424,6 +426,236 @@ class TestControlledHashStage(_RunFixture):
         self.assertEqual("failed_recoverable", checkpoint[0])
         self.assertEqual(1, events.count("run_stopped"))
         self.assertEqual("ended", router.state)
+
+
+class TestControlledStageBoundaries(_RunFixture):
+    def test_enumeration_pauses_at_boundary_then_restarts_cleanly(
+        self,
+    ) -> None:
+        for name in ("a.bin", "b.bin"):
+            with open(os.path.join(self.root_path, name), "wb") as stream:
+                stream.write(name.encode("ascii"))
+        handle = self.create()
+        router = dbrun.RunCommandRouter()
+        events = []
+
+        def on_event(event, **_payload) -> None:
+            events.append(event)
+            if event == "stage_started" \
+                    and events.count("stage_started") == 1:
+                receipt = router.route(
+                    dbrun.ControlCommand(1, "pause"))
+                self.assertTrue(receipt.accepted)
+            elif event == "run_paused":
+                self.assertEqual("pending", handle.connection.execute(
+                    "SELECT enum_status FROM roots").fetchone()[0])
+                self.assertEqual(0, handle.connection.execute(
+                    "SELECT COUNT(*) FROM entries").fetchone()[0])
+                receipt = router.route(
+                    dbrun.ControlCommand(2, "continue"))
+                self.assertTrue(receipt.accepted)
+
+        try:
+            stats = dbrun.run_enumeration_stage_controlled(
+                handle.connection,
+                router,
+                collect_file_id=False,
+                on_event=on_event,
+                on_progress=lambda _stats: None,
+                paused_wait_seconds=0.01,
+            )
+            self.assertEqual("completed", stats["state"])
+            self.assertEqual("running", dbstate.load_runtime(
+                handle.connection).run_state)
+            self.assertEqual("completed", handle.connection.execute(
+                "SELECT state FROM stage_checkpoints"
+                " WHERE stage='enumerate'").fetchone()[0])
+            self.assertEqual(2, stats["files"])
+            self.assertEqual(2, handle.connection.execute(
+                "SELECT COUNT(*) FROM entries").fetchone()[0])
+            self.assertEqual(1, events.count("run_paused"))
+            self.assertEqual(1, events.count("run_resumed"))
+            self.assertEqual(2, events.count("stage_started"))
+            self.assertEqual(1, events.count("stage_restarted"))
+            self.assertEqual(1, events.count("stage_finished"))
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_stage_boundary_save_exit_is_distinct_from_stop(self) -> None:
+        handle = self.create()
+        router = dbrun.RunCommandRouter()
+        tools = {
+            "exiftool": {"path": "must-not-start", "version": "fixture"},
+            "ffprobe": {"path": "must-not-start", "version": "fixture"},
+            "sevenzip": {"path": "must-not-start", "version": "fixture"},
+        }
+        try:
+            self.assertTrue(router.route(
+                dbrun.ControlCommand(1, "save_exit")).accepted)
+            stats = dbrun.run_metadata_stage_controlled(
+                handle.connection, tools, router)
+            runtime = dbstate.load_runtime(handle.connection)
+            self.assertEqual("save_exit", stats["state"])
+            self.assertEqual(("paused", "suggest"), (
+                runtime.run_state, runtime.resume_hint))
+            self.assertEqual("saved", handle.connection.execute(
+                "SELECT session_status FROM run_sessions").fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_stage_boundary_stop_requires_manual_resume(self) -> None:
+        handle = self.create()
+        router = dbrun.RunCommandRouter()
+        try:
+            self.assertTrue(router.route(
+                dbrun.ControlCommand(1, "stop")).accepted)
+            stats = dbrun.run_rescan_stage_controlled(
+                handle.connection, router)
+            runtime = dbstate.load_runtime(handle.connection)
+            self.assertEqual("stopped", stats["state"])
+            self.assertEqual(("stopped", "manual_only"), (
+                runtime.run_state, runtime.resume_hint))
+            self.assertEqual("stopped", handle.connection.execute(
+                "SELECT session_status FROM run_sessions").fetchone()[0])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_metadata_and_rescan_hooks_stop_before_new_work(self) -> None:
+        handle = self.create()
+        tools = {
+            "exiftool": {"path": "must-not-start", "version": "fixture"},
+            "ffprobe": {"path": "must-not-start", "version": "fixture"},
+            "sevenzip": {"path": "must-not-start", "version": "fixture"},
+        }
+        try:
+            with self.assertRaises(core.StageControlBoundary):
+                dbmeta.process_metadata_stage(
+                    handle.connection,
+                    tools,
+                    should_stop=lambda: True,
+                )
+            with self.assertRaises(core.StageControlBoundary):
+                core.rescan_check(
+                    handle.connection, should_stop=lambda: True)
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_metadata_pause_resume_uses_global_counts_and_current_opt_in(
+        self,
+    ) -> None:
+        for name in ("a.bin", "b.bin"):
+            with open(os.path.join(self.root_path, name), "wb") as stream:
+                stream.write(name.encode("ascii"))
+        handle = self.create()
+        core.enumerate_and_reconcile(
+            handle.connection, collect_file_id=False)
+        router = dbrun.RunCommandRouter()
+        events = []
+        extracted = []
+
+        class FakeExifToolWorker:
+            def __init__(self, _path) -> None:
+                pass
+
+            def extract(
+                _worker,
+                file_path,
+                photo_profile=False,
+                timeout=None,
+            ):
+                extracted.append(os.path.basename(file_path))
+                if len(extracted) == 1:
+                    receipt = router.route(
+                        dbrun.ControlCommand(1, "pause"))
+                    self.assertTrue(receipt.accepted)
+                return {"SourceFile": file_path}
+
+            @staticmethod
+            def close() -> None:
+                pass
+
+        def on_event(event, **payload) -> None:
+            events.append((event, payload))
+            if event == "run_paused":
+                receipt = router.route(
+                    dbrun.ControlCommand(2, "continue"))
+                self.assertTrue(receipt.accepted)
+
+        tools = {
+            "exiftool": {"path": "fixture", "version": "fixture"},
+            "ffprobe": {"path": "fixture", "version": "fixture"},
+            "sevenzip": {"path": "fixture", "version": "fixture"},
+        }
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", FakeExifToolWorker):
+                stats = dbrun.run_metadata_stage_controlled(
+                    handle.connection,
+                    tools,
+                    router,
+                    show_current_file=True,
+                    on_event=on_event,
+                    paused_wait_seconds=0.01,
+                )
+            self.assertEqual(("completed", 2, 2, 2), (
+                stats["state"], stats["total"], stats["processed"],
+                stats["done"],
+            ))
+            self.assertEqual(["a.bin", "b.bin"], extracted)
+            self.assertEqual(2, handle.connection.execute(
+                "SELECT COUNT(*) FROM raw_payloads").fetchone()[0])
+            checkpoint = handle.connection.execute(
+                "SELECT state,items_done,items_total"
+                " FROM stage_checkpoints WHERE stage='metadata'"
+            ).fetchone()
+            self.assertEqual(("completed", 2, 2), tuple(checkpoint))
+            names = [event for event, _payload in events]
+            self.assertEqual(1, names.count("run_paused"))
+            self.assertEqual(1, names.count("run_resumed"))
+            self.assertGreaterEqual(names.count("current_item"), 1)
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_metadata_current_item_producer_is_disabled_by_default(
+        self,
+    ) -> None:
+        with open(os.path.join(self.root_path, "only.bin"), "wb") as stream:
+            stream.write(b"fixture")
+        handle = self.create()
+        core.enumerate_and_reconcile(
+            handle.connection, collect_file_id=False)
+        events = []
+
+        class FakeExifToolWorker:
+            def __init__(self, _path) -> None:
+                pass
+
+            @staticmethod
+            def extract(file_path, photo_profile=False, timeout=None):
+                return {"SourceFile": file_path}
+
+            @staticmethod
+            def close() -> None:
+                pass
+
+        tools = {
+            "exiftool": {"path": "fixture", "version": "fixture"},
+            "ffprobe": {"path": "fixture", "version": "fixture"},
+            "sevenzip": {"path": "fixture", "version": "fixture"},
+        }
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", FakeExifToolWorker):
+                stats = dbrun.run_metadata_stage_controlled(
+                    handle.connection,
+                    tools,
+                    dbrun.RunCommandRouter(),
+                    on_event=lambda event, **_payload: events.append(event),
+                )
+            self.assertEqual("completed", stats["state"])
+            self.assertNotIn("current_item", events)
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
 
 
 class TestRunCreation(_RunFixture):

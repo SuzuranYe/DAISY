@@ -1,7 +1,8 @@
-"""DAISY schema 4 运行文件、恢复预览与 lease 生命周期。
+"""DAISY schema 4 运行文件、控制协议、阶段停点与 lease 生命周期。
 
-这里封装 partial 的独占创建和明确恢复，不负责扫描业务阶段。所有 lease 操作
-只使用调用方给出的精确路径和 lease ID，不枚举或终止其它进程。
+这里封装 partial 的独占创建和明确恢复，以及扫描阶段的控制边界。所有 lease
+和 worker 操作只使用调用方给出的精确路径、lease ID 与进程句柄，不枚举或
+终止其它进程。
 """
 from __future__ import annotations
 
@@ -12,10 +13,12 @@ from pathlib import Path
 import queue
 import sqlite3
 import threading
+import time
 from typing import Callable
 import uuid
 
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_08_State as dbstate
 
@@ -781,6 +784,437 @@ def close_handle(handle: RunHandle, *, release_lease: bool) -> None:
             handle.lease_path, handle.lease.lease_id)
 
 
+def _emit_control_event(
+    on_event: Callable[..., None] | None,
+    event: str,
+    **payload: object,
+) -> None:
+    if on_event is not None:
+        try:
+            on_event(event, **payload)
+        except Exception:
+            pass
+
+
+def _wait_after_pause(
+    con: sqlite3.Connection,
+    stage: str,
+    router: RunCommandRouter,
+    *,
+    on_event: Callable[..., None] | None,
+    paused_wait_seconds: float,
+) -> str:
+    if paused_wait_seconds <= 0:
+        raise ValueError("paused 等待轮询间隔必须大于 0")
+    runtime = dbstate.load_runtime(con)
+    if runtime.run_state != "paused" or runtime.resume_hint != "none":
+        raise core.PreflightError(
+            "同会话暂停点状态不一致，拒绝继续控制循环")
+    router.enter_paused()
+    _emit_control_event(
+        on_event, "run_paused", stage=stage, state="paused")
+
+    action = None
+    while action is None:
+        action = router.wait_paused_action(paused_wait_seconds)
+        if action is None and router.state == "ended":
+            raise core.PreflightError("控制器在 paused 等待期间结束")
+
+    if action == "continue":
+        dbstate.continue_running(con)
+        router.begin_running()
+        dbstate.update_stage_checkpoint(
+            con,
+            stage,
+            "running",
+            current_entry_id=None,
+            checkpoint={"reason": "continued_after_pause"},
+        )
+        _emit_control_event(
+            on_event, "run_resumed", stage=stage, state="running")
+        return "running"
+    if action == "save_exit":
+        dbstate.save_paused_for_exit(con)
+        dbstate.update_stage_checkpoint(
+            con,
+            stage,
+            "paused",
+            current_entry_id=None,
+            checkpoint={"reason": "save_exit_after_pause"},
+        )
+        router.end()
+        _emit_control_event(
+            on_event, "run_saved", stage=stage, state="save_exit")
+        return "save_exit"
+    if action == "stop":
+        dbstate.update_stage_checkpoint(
+            con,
+            stage,
+            "failed_recoverable",
+            current_entry_id=None,
+            checkpoint={"reason": "user_stop_after_pause"},
+        )
+        dbstate.stop_run(con, reason="user_stop")
+        router.end()
+        _emit_control_event(
+            on_event, "run_stopped", stage=stage, state="stopped")
+        return "stopped"
+    raise core.PreflightError(f"paused 等待点收到未知动作：{action}")
+
+
+def settle_pending_stage_control(
+    con: sqlite3.Connection,
+    stage: str,
+    router: RunCommandRouter,
+    *,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+) -> str:
+    """在非哈希阶段的安全边界提交一个待处理生命周期动作。"""
+    if stage not in dbstate.STAGES:
+        raise ValueError(f"未知阶段：{stage}")
+    if router.state != "running":
+        raise core.PreflightError(
+            f"阶段控制要求 running 控制器，实际为 {router.state}")
+    control_action = router.hash_control.current()
+    if control_action is None:
+        return "running"
+    action, _source = control_action
+    if action in ("pause", "save_exit"):
+        for_exit = action == "save_exit"
+        dbstate.request_pause(con, for_exit=for_exit)
+        dbstate.update_stage_checkpoint(
+            con,
+            stage,
+            "pause_requested",
+            current_entry_id=None,
+            checkpoint={"reason": "stage_control"},
+        )
+        dbstate.mark_paused(con, for_exit=for_exit)
+        dbstate.update_stage_checkpoint(
+            con,
+            stage,
+            "paused",
+            current_entry_id=None,
+            checkpoint={"reason": "stage_control"},
+        )
+        if for_exit:
+            router.end()
+            _emit_control_event(
+                on_event, "run_saved", stage=stage, state="save_exit")
+            return "save_exit"
+        return _wait_after_pause(
+            con,
+            stage,
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+
+    dbstate.update_stage_checkpoint(
+        con,
+        stage,
+        "failed_recoverable",
+        current_entry_id=None,
+        checkpoint={"reason": "stage_stop"},
+    )
+    dbstate.stop_run(con, reason="user_stop")
+    router.end()
+    _emit_control_event(
+        on_event, "run_stopped", stage=stage, state="stopped")
+    return "stopped"
+
+
+def _run_controlled_boundary_operation(
+    con: sqlite3.Connection,
+    stage: str,
+    router: RunCommandRouter,
+    operation: Callable[[Callable[[], bool]], object],
+    *,
+    on_event: Callable[..., None] | None,
+    paused_wait_seconds: float,
+) -> tuple[str, object | None]:
+    """执行可重跑阶段；收到控制时先落库，再按用户后续动作处理。"""
+    while True:
+        dbstate.update_stage_checkpoint(
+            con, stage, "running", current_entry_id=None)
+        boundary = settle_pending_stage_control(
+            con,
+            stage,
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+        if boundary != "running":
+            return boundary, None
+        _emit_control_event(
+            on_event, "stage_started", stage=stage)
+        try:
+            value = operation(
+                lambda: router.hash_control.current() is not None)
+        except core.StageControlBoundary:
+            if router.hash_control.current() is None:
+                raise core.PreflightError(
+                    f"阶段 {stage} 在没有控制动作时中断")
+            boundary = settle_pending_stage_control(
+                con,
+                stage,
+                router,
+                on_event=on_event,
+                paused_wait_seconds=paused_wait_seconds,
+            )
+            if boundary == "running":
+                _emit_control_event(
+                    on_event, "stage_restarted", stage=stage)
+                continue
+            return boundary, None
+        return "completed", value
+
+
+def run_enumeration_stage_controlled(
+    con: sqlite3.Connection,
+    router: RunCommandRouter,
+    *,
+    collect_file_id: bool = True,
+    exclude_paths: set | None = None,
+    exclude_dirs: set | None = None,
+    on_progress: Callable[[dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+    max_files: int | None = None,
+) -> dict[str, object]:
+    """运行可重跑枚举阶段；旧枚举器只在显式回调下增加停点。"""
+
+    def operation(should_stop: Callable[[], bool]) -> object:
+        def progress(stats: dict[str, object]) -> None:
+            dbstate.update_stage_checkpoint(
+                con,
+                "enumerate",
+                "running",
+                items_done=int(stats["files"]),
+                bytes_done=int(stats["bytes"]),
+                error_count=int(stats["dir_errors"]),
+            )
+            if on_progress is not None:
+                on_progress(dict(stats))
+
+        return core.enumerate_and_reconcile(
+            con,
+            collect_file_id=collect_file_id,
+            exclude_paths=exclude_paths,
+            exclude_dirs=exclude_dirs,
+            on_progress=progress,
+            max_files=max_files,
+            should_stop=should_stop,
+        )
+
+    state, value = _run_controlled_boundary_operation(
+        con,
+        "enumerate",
+        router,
+        operation,
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    if state != "completed":
+        return {"state": state}
+    stats = dict(value)
+    stats["state"] = "completed"
+    dbstate.update_stage_checkpoint(
+        con,
+        "enumerate",
+        "completed",
+        items_done=int(stats["files"]),
+        items_total=int(stats["files"]),
+        bytes_done=int(stats["bytes"]),
+        bytes_total=int(stats["bytes"]),
+        error_count=int(stats["dir_errors"]),
+        current_entry_id=None,
+    )
+    _emit_control_event(
+        on_event, "stage_finished", stage="enumerate", **stats)
+    return stats
+
+
+def run_metadata_stage_controlled(
+    con: sqlite3.Connection,
+    tools: dict[str, object],
+    router: RunCommandRouter,
+    *,
+    retain_original_metadata: bool = True,
+    timeout_policy: dict[str, object] | None = None,
+    show_current_file: bool = False,
+    on_progress: Callable[[int, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+) -> dict[str, object]:
+    """运行元数据阶段，并只在单文件处理边界接受生命周期动作。"""
+    total_entries = int(con.execute(
+        "SELECT COUNT(*) FROM entries"
+    ).fetchone()[0])
+    last_current_event = 0.0
+    last_progress_event = 0.0
+
+    def operation(should_stop: Callable[[], bool]) -> object:
+        already_done = int(con.execute(
+            "SELECT COUNT(*) FROM entries"
+            " WHERE meta_status NOT IN ('pending','processing')"
+        ).fetchone()[0])
+
+        def progress(index: int, stats: dict[str, object]) -> None:
+            nonlocal last_progress_event
+            overall_done = min(total_entries, already_done + int(index))
+            now = time.monotonic()
+            if now - last_progress_event < 0.5 \
+                    and overall_done != total_entries:
+                return
+            dbstate.update_stage_checkpoint(
+                con,
+                "metadata",
+                "running",
+                items_done=overall_done,
+                items_total=total_entries,
+                error_count=(
+                    int(stats["error"]) + int(stats["timeout"])),
+            )
+            if on_progress is not None:
+                current = dict(stats)
+                current["processed"] = overall_done
+                current["total"] = total_entries
+                on_progress(overall_done, current)
+            last_progress_event = now
+
+        def current_item(rel_path: str) -> None:
+            nonlocal last_current_event
+            now = time.monotonic()
+            if now - last_current_event >= 0.1:
+                _emit_control_event(
+                    on_event,
+                    "current_item",
+                    stage="metadata",
+                    item=rel_path,
+                )
+                last_current_event = now
+
+        return dbmeta.process_metadata_stage(
+            con,
+            tools,
+            retain_original_metadata=retain_original_metadata,
+            timeout_policy=timeout_policy,
+            on_progress=progress,
+            should_stop=should_stop,
+            on_current=current_item if show_current_file else None,
+        )
+
+    state, value = _run_controlled_boundary_operation(
+        con,
+        "metadata",
+        router,
+        operation,
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    if state != "completed":
+        return {"state": state}
+    stats = dict(value)
+    status_counts = {
+        str(status): int(count)
+        for status, count in con.execute(
+            "SELECT meta_status,COUNT(*) FROM entries GROUP BY meta_status")
+    }
+    processed = total_entries \
+        - status_counts.get("pending", 0) \
+        - status_counts.get("processing", 0)
+    stats.update({
+        "total": total_entries,
+        "processed": processed,
+        "done": status_counts.get("done", 0),
+        "error": status_counts.get("error", 0),
+        "timeout": status_counts.get("timeout", 0),
+        "unstable": status_counts.get("unstable", 0),
+        "not_applicable": status_counts.get("not_applicable", 0),
+        "skipped": status_counts.get("skipped", 0),
+    })
+    stats["state"] = "completed"
+    dbstate.update_stage_checkpoint(
+        con,
+        "metadata",
+        "completed",
+        items_done=processed,
+        items_total=total_entries,
+        error_count=int(stats["error"]) + int(stats["timeout"]),
+        current_entry_id=None,
+    )
+    _emit_control_event(
+        on_event, "stage_finished", stage="metadata", **stats)
+    return stats
+
+
+def run_rescan_stage_controlled(
+    con: sqlite3.Connection,
+    router: RunCommandRouter,
+    *,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+) -> dict[str, object]:
+    """运行可重跑复扫阶段，并在条目边界提交暂停／停止。"""
+    total = int(con.execute(
+        "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+    ).fetchone()[0])
+    last_progress_event = 0.0
+
+    def operation(should_stop: Callable[[], bool]) -> object:
+        def progress(done: int, current_total: int, changed: int) -> None:
+            nonlocal last_progress_event
+            now = time.monotonic()
+            if now - last_progress_event < 0.5 and done != current_total:
+                return
+            dbstate.update_stage_checkpoint(
+                con,
+                "rescan",
+                "running",
+                items_done=done,
+                items_total=current_total,
+                error_count=changed,
+            )
+            if on_progress is not None:
+                on_progress(done, current_total, changed)
+            last_progress_event = now
+
+        return core.rescan_check(
+            con, should_stop=should_stop, on_progress=progress)
+
+    state, value = _run_controlled_boundary_operation(
+        con,
+        "rescan",
+        router,
+        operation,
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    if state != "completed":
+        return {"state": state}
+    changed = int(value)
+    stats: dict[str, object] = {
+        "state": "completed",
+        "total": total,
+        "changed": changed,
+    }
+    dbstate.update_stage_checkpoint(
+        con,
+        "rescan",
+        "completed",
+        items_done=total,
+        items_total=total,
+        error_count=changed,
+        current_entry_id=None,
+    )
+    _emit_control_event(
+        on_event, "stage_finished", stage="rescan", **stats)
+    return stats
+
+
 def run_hash_stage_controlled(
     con: sqlite3.Connection,
     mode: str,
@@ -809,13 +1243,6 @@ def run_hash_stage_controlled(
         raise core.PreflightError(
             f"哈希阶段要求 running 控制器，实际为 {router.state}")
 
-    def emit(event: str, **payload: object) -> None:
-        if on_event is not None:
-            try:
-                on_event(event, **payload)
-            except Exception:
-                pass
-
     while True:
         stats = dbhash.process_hash_stage_v4(
             con,
@@ -841,7 +1268,8 @@ def run_hash_stage_controlled(
             return stats
         if outcome in ("save_exit", "stopped"):
             router.end()
-            emit(
+            _emit_control_event(
+                on_event,
                 "run_saved" if outcome == "save_exit" else "run_stopped",
                 stage="hash",
                 state=outcome,
@@ -850,49 +1278,14 @@ def run_hash_stage_controlled(
         if outcome != "paused":
             raise core.PreflightError(
                 f"哈希阶段返回未知控制状态：{outcome}")
-
-        runtime = dbstate.load_runtime(con)
-        if runtime.run_state != "paused" or runtime.resume_hint != "none":
-            raise core.PreflightError(
-                "同会话暂停点状态不一致，拒绝继续控制循环")
-        router.enter_paused()
-        emit("run_paused", stage="hash", state="paused")
-
-        action = None
-        while action is None:
-            action = router.wait_paused_action(paused_wait_seconds)
-            if action is None and router.state == "ended":
-                raise core.PreflightError("控制器在 paused 等待期间结束")
-
-        if action == "continue":
-            dbstate.continue_running(con)
-            router.begin_running()
-            emit("run_resumed", stage="hash", state="running")
+        result = _wait_after_pause(
+            con,
+            "hash",
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+        if result == "running":
             continue
-        if action == "save_exit":
-            dbstate.save_paused_for_exit(con)
-            dbstate.update_stage_checkpoint(
-                con,
-                "hash",
-                "paused",
-                current_entry_id=None,
-                checkpoint={"reason": "save_exit_after_pause"},
-            )
-            router.end()
-            stats["state"] = "save_exit"
-            emit("run_saved", stage="hash", state="save_exit")
-            return stats
-        if action == "stop":
-            dbstate.update_stage_checkpoint(
-                con,
-                "hash",
-                "failed_recoverable",
-                current_entry_id=None,
-                checkpoint={"reason": "user_stop_after_pause"},
-            )
-            dbstate.stop_run(con, reason="user_stop")
-            router.end()
-            stats["state"] = "stopped"
-            emit("run_stopped", stage="hash", state="stopped")
-            return stats
-        raise core.PreflightError(f"paused 等待点收到未知动作：{action}")
+        stats["state"] = result
+        return stats

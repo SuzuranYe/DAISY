@@ -1108,7 +1108,9 @@ def _merge_diagnostic_stats(stats: dict, counts: dict) -> None:
 def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                            retain_original_metadata: bool = True,
                            timeout_policy: dict | None = None,
-                           on_progress=None) -> dict:
+                           on_progress=None,
+                           should_stop=None,
+                           on_current=None) -> dict:
     core.ensure_metadata_diagnostics_table(con)
     et_ver = tools["exiftool"]["version"]
     ff_ver = tools["ffprobe"]["version"]
@@ -1139,9 +1141,18 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         "diagnostic_validation": 0,
         "exiftool_timeout_policy": selected_timeout_policy,
     }
+    if should_stop is not None and should_stop():
+        raise core.StageControlBoundary(
+            "metadata controlled stage boundary")
     worker = ExifToolWorker(tools["exiftool"]["path"])
     try:
         for i, (eid, rid, rel, ext, kind, size0, mtime0) in enumerate(todo, 1):
+            if should_stop is not None and should_stop():
+                con.commit()
+                raise core.StageControlBoundary(
+                    "metadata controlled stage boundary")
+            if on_current is not None:
+                on_current(rel)
             path = os.path.join(roots[rid], rel)
             ext_path = core.to_extended_path(path)
             et_timeout = exiftool_timeout_for_size(
@@ -1350,4 +1361,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         con.commit()
     finally:
         worker.close()
+    if should_stop is not None and should_stop():
+        raise core.StageControlBoundary(
+            "metadata controlled stage boundary")
     return stats
