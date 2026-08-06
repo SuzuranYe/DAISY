@@ -211,6 +211,7 @@ def default_gui_preferences() -> dict[str, object]:
         "font_family": _UI_FONT_FAMILY,
         "font_size_delta": 0,
         "confirm_close_when_idle": True,
+        "last_task_key": "env_check",
     }
 
 
@@ -246,6 +247,11 @@ def load_gui_preferences(
     confirm_close = loaded.get("confirm_close_when_idle")
     if isinstance(confirm_close, bool):
         preferences["confirm_close_when_idle"] = confirm_close
+
+    last_task_key = loaded.get("last_task_key")
+    if (isinstance(last_task_key, str)
+            and last_task_key in _RESTORABLE_TASK_KEYS):
+        preferences["last_task_key"] = last_task_key
     return preferences
 
 
@@ -937,31 +943,31 @@ TASKS = (
                 "output_dir", "环境报告目录", "--output-dir", "dir",
                 _DEFAULT_REPORTS_DIR,
                 help="默认指向项目内 Output\\Reports；也可选择其它完整路径。",
-                section="输出",
+                section="结果输出",
             ),
             FieldSpec(
-                "exiftool_path", "ExifTool 路径覆盖", "--exiftool-path",
+                "exiftool_path", "Exif工具", "--exiftool-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "ffprobe_path", "ffprobe 路径覆盖", "--ffprobe-path", "file",
+                "ffprobe_path", "视频工具", "--ffprobe-path", "file",
                 help="通常留空；手动指定成功后也会更新本窗口缓存。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "sevenzip_path", "7-Zip 路径覆盖", "--sevenzip-path",
+                "sevenzip_path", "压缩工具", "--sevenzip-path",
                 "file", help="通常留空；手动指定成功后也会更新本窗口缓存。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "powershell_path", "PowerShell 路径覆盖",
+                "powershell_path", "系统工具",
                 "--powershell-path", "file",
                 help="通常留空；会依次检查 PATH 与 Windows 常规安装位置。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "smartctl_path", "smartctl 路径覆盖", "--smartctl-path",
+                "smartctl_path", "硬盘工具", "--smartctl-path",
                 "file", help="通常留空；用于 STG 物理硬盘登记与只读核验。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
@@ -998,10 +1004,10 @@ TASKS = (
                 "roots", "档案根目录", "--root", "multidir", required=True,
                 help="使用“添加目录”建立列表；可修改为“label=路径”，也可用 ×"
                      " 单独移除，最多 9 个。",
-                section="输入", active_when=_FULL_NEW,
+                section="任务输入", active_when=_FULL_NEW,
             ),
             FieldSpec(
-                "root_batch_mode", "多目录生成方式", None, "choice",
+                "root_batch_mode", "生成方式", None, "choice",
                 _ROOT_BATCH_SEPARATE,
                 choices=(
                     ("分别生成：每个目录一个数据库（默认）",
@@ -1010,20 +1016,20 @@ TASKS = (
                 ),
                 help="分别模式按添加顺序逐项运行，单项失败后继续下一项；"
                      "停止会终止整个队列。",
-                section="输入", active_when=_FULL_NEW,
+                section="任务输入", active_when=_FULL_NEW,
             ),
             FieldSpec(
-                "resume", "partial 快照", "--resume", "file",
+                "resume", "续传快照", "--resume", "file",
                 required=True,
                 help="必须指向 .partial.sqlite；其内部参数是本次续传的权威配置。",
-                filetypes=_PARTIAL_TYPES, section="输入",
+                filetypes=_PARTIAL_TYPES, section="任务输入",
                 active_when=_FULL_RESUME,
             ),
             FieldSpec(
                 "output_dir", "快照目录", "--output-dir", "dir",
                 _DEFAULT_SNAPSHOTS_DIR,
                 help="默认指向项目内 Output\\Snapshots；也可选择其它完整路径。",
-                section="输出", active_when=_FULL_NEW,
+                section="结果输出", active_when=_FULL_NEW,
             ),
             FieldSpec(
                 "metadata_storage", "元数据范围",
@@ -1038,7 +1044,7 @@ TASKS = (
                 section="快照内容", active_when=_FULL_NEW,
             ),
             FieldSpec(
-                "collect_file_id", "NTFS File ID",
+                "collect_file_id", "NTFS标识",
                 "--no-file-id", "choice_flag", True,
                 choices=(
                     ("采集（默认）", True),
@@ -1056,17 +1062,17 @@ TASKS = (
                     ("完整 SHA-256（full）（默认）", "full"),
                 ),
                 help="默认完整 SHA-256，会读取每个文件内容；增量模式必须提供上一快照。",
-                section="哈希与稳定性", active_when=_FULL_NEW,
+                section="哈希设置", active_when=_FULL_NEW,
             ),
             FieldSpec(
                 "previous_snapshot", "上一封存快照", "--previous-snapshot",
                 "file", required=True,
                 help="仅增量哈希使用；作为可复用哈希的来源。",
-                filetypes=_SQLITE_TYPES, section="哈希与稳定性",
+                filetypes=_SQLITE_TYPES, section="哈希设置",
                 active_when=_FULL_INCREMENTAL,
             ),
             FieldSpec(
-                "verify_percent", "独立哈希抽验比例（%）",
+                "verify_percent", "哈希抽验",
                 "--verify-sample-percent", default="1.0",
                 help=(
                     "主 SHA-256 完成后，按比例抽取本次实际计算且有效的条目，"
@@ -1077,31 +1083,31 @@ TASKS = (
                 active_when=_FULL_HASHED,
             ),
             FieldSpec(
-                "map_root", "增量根标签映射", "--map-root", "multiline",
+                "map_root", "根标签映射", "--map-root", "multiline",
                 help="可选；每行“旧label=新label”。",
                 section="增量复用",
                 active_when=_FULL_INCREMENTAL,
             ),
             FieldSpec(
-                "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
+                "exiftool_path", "Exif工具", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "ffprobe_path", "ffprobe 路径", "--ffprobe-path", "file",
+                "ffprobe_path", "视频工具", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "sevenzip_path", "7-Zip 路径", "--sevenzip-path", "file",
+                "sevenzip_path", "压缩工具", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "powershell_path", "系统工具", "--powershell-path",
                 "file",
                 help="独立哈希抽验使用；留空时优先继承已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
@@ -1121,10 +1127,10 @@ TASKS = (
                 "roots", "档案根目录", "--root", "multidir", required=True,
                 help="使用“添加目录”建立列表；可修改为“label=路径”，也可用 ×"
                      " 单独移除，最多 9 个。",
-                section="输入",
+                section="任务输入",
             ),
             FieldSpec(
-                "root_batch_mode", "多目录生成方式", None, "choice",
+                "root_batch_mode", "生成方式", None, "choice",
                 _ROOT_BATCH_SEPARATE,
                 choices=(
                     ("分别生成：每个目录一个数据库（默认）",
@@ -1133,16 +1139,16 @@ TASKS = (
                 ),
                 help="分别模式按添加顺序逐项运行，单项失败后继续下一项；"
                      "停止会终止整个队列。",
-                section="输入",
+                section="任务输入",
             ),
             FieldSpec(
                 "output_dir", "快照目录", "--output-dir", "dir",
                 _DEFAULT_SNAPSHOTS_DIR,
                 help="默认指向项目内 Output\\Snapshots；也可选择其它完整路径。",
-                section="输出",
+                section="结果输出",
             ),
             FieldSpec(
-                "collect_file_id", "NTFS File ID", "--no-file-id",
+                "collect_file_id", "NTFS标识", "--no-file-id",
                 "choice_flag", True,
                 choices=(
                     ("采集（默认）", True),
@@ -1165,14 +1171,14 @@ TASKS = (
         (
             FieldSpec(
                 "snapshot", "封存快照", "--snapshot", "file",
-                required=True, filetypes=_SQLITE_TYPES, section="输入",
+                required=True, filetypes=_SQLITE_TYPES, section="任务输入",
             ),
             FieldSpec(
-                "root_map", "当前档案根目录", "--root", "multimapdir",
+                "root_map", "档案根目录", "--root", "multimapdir",
                 required=True,
                 help="必须指定。单根快照可直接添加当前文件夹；多根快照需逐项"
                      "填写“label=当前路径”，label 必须与快照一致。",
-                section="当前档案位置",
+                section="档案位置",
             ),
             FieldSpec(
                 "check_scope", "校验范围", None, "choice", "full",
@@ -1184,7 +1190,7 @@ TASKS = (
                 section="校验范围",
             ),
             FieldSpec(
-                "sample_percent", "抽样比例（%）", "--sample-percent",
+                "sample_percent", "抽样比例", "--sample-percent",
                 default="10.0", help="必须大于 0 且不超过 100。",
                 section="校验范围", active_when=_FORMAT_SAMPLE,
             ),
@@ -1192,28 +1198,28 @@ TASKS = (
                 "report_dir", "报告目录", "--report-dir", "dir",
                 _DEFAULT_REPORTS_DIR,
                 help="默认指向项目内 Output\\Reports；也可选择其它完整路径。",
-                section="输出",
+                section="结果输出",
             ),
             FieldSpec(
-                "exiftool_path", "ExifTool 路径", "--exiftool-path", "file",
+                "exiftool_path", "Exif工具", "--exiftool-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "ffprobe_path", "ffprobe 路径", "--ffprobe-path", "file",
+                "ffprobe_path", "视频工具", "--ffprobe-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "sevenzip_path", "7-Zip 路径", "--sevenzip-path", "file",
+                "sevenzip_path", "压缩工具", "--sevenzip-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "force", "文件名指纹缺失时降级继续", "--force",
+                "force", "指纹降级", "--force",
                 "choice_flag", False,
                 choices=(("不启用（默认）", False), ("启用", True)),
                 flag_value=True,
@@ -1232,39 +1238,39 @@ TASKS = (
         (
             FieldSpec(
                 "snapshot", "封存快照", "--snapshot", "file",
-                required=True, filetypes=_SQLITE_TYPES, section="输入",
+                required=True, filetypes=_SQLITE_TYPES, section="任务输入",
             ),
             FieldSpec(
-                "root_map", "当前档案根目录", "--root", "multimapdir",
+                "root_map", "档案根目录", "--root", "multimapdir",
                 required=True,
                 help="必须指定。单根快照可直接添加当前文件夹；多根快照需逐项"
                      "填写“label=当前路径”，label 必须与快照一致。",
-                section="当前档案位置",
+                section="档案位置",
             ),
             FieldSpec(
-                "check_scope", "巡检范围", "--full", "choice_flag", "sample",
+                "check_scope", "校验范围", "--full", "choice_flag", "sample",
                 choices=(
                     ("按比例抽样（默认）", "sample"),
                     ("全量重新计算 SHA-256", "full"),
                 ),
                 flag_value="full",
                 help="全量模式会读取所有有基准哈希的文件。",
-                section="巡检范围",
+                section="校验范围",
             ),
             FieldSpec(
-                "sample_percent", "哈希抽样比例（%）", "--sample-percent",
+                "sample_percent", "哈希抽样", "--sample-percent",
                 default="1.0", help="默认抽查 1% 的可哈希文件。",
                 section="哈希比例", top_menu=True,
                 active_when=_HASH_SAMPLE,
             ),
             FieldSpec(
-                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "powershell_path", "系统工具", "--powershell-path",
                 "file",
                 help="留空时优先继承 11／31 已验证路径，其次自动发现；填写则手动覆盖。",
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "force", "文件名指纹缺失时降级继续", "--force",
+                "force", "指纹降级", "--force",
                 "choice_flag", False,
                 choices=(("不启用（默认）", False), ("启用", True)),
                 flag_value=True,
@@ -1277,7 +1283,7 @@ TASKS = (
                 help="默认显示自动命名报告的输出目录；如需指定 JSON 文件名，"
                      "可点击浏览另存。",
                 filetypes=(("JSON 报告", "*.json"), ("全部文件", "*.*")),
-                section="输出",
+                section="结果输出",
             ),
         ),
     ),
@@ -1290,26 +1296,26 @@ TASKS = (
         "输入只读 · 生成 Diff 数据库",
         (
             FieldSpec(
-                "old", "旧（基准）快照", "--old", "file",
-                required=True, filetypes=_SQLITE_TYPES, section="输入",
+                "old", "基准快照", "--old", "file",
+                required=True, filetypes=_SQLITE_TYPES, section="对比输入",
             ),
             FieldSpec(
-                "new", "新快照", "--new", "file",
-                required=True, filetypes=_SQLITE_TYPES, section="输入",
+                "new", "对比快照", "--new", "file",
+                required=True, filetypes=_SQLITE_TYPES, section="对比输入",
             ),
             FieldSpec(
-                "output_dir", "Diff 目录", "--output-dir", "dir",
+                "output_dir", "差异目录", "--output-dir", "dir",
                 _DEFAULT_DIFFS_DIR,
                 help="默认指向项目内 Output\\Diffs；也可选择其它完整路径。",
-                section="输出",
+                section="结果输出",
             ),
             FieldSpec(
                 "map_root", "根标签映射", "--map-root", "multiline",
                 help="可选；每行“旧label=新label”。单根异名通常可自动配对。",
-                section="根标签配对",
+                section="标签配对",
             ),
             FieldSpec(
-                "force", "文件名指纹缺失时降级继续", "--force",
+                "force", "指纹降级", "--force",
                 "choice_flag", False,
                 choices=(("不启用（默认）", False), ("启用", True)),
                 flag_value=True,
@@ -1337,17 +1343,17 @@ TASKS = (
                     "Diff_summary.md、Diff_details.csv、Diff_subtrees.csv 等。"
                     "两者均附中文兼容 XLSX。"
                 ),
-                section="输入",
+                section="任务输入",
             ),
             FieldSpec(
                 "source_path", "输入数据库", None, "file",
-                required=True, filetypes=_SQLITE_TYPES, section="输入",
+                required=True, filetypes=_SQLITE_TYPES, section="任务输入",
             ),
             FieldSpec(
                 "output_dir", "报告目录", "--output-dir", "dir",
                 _DEFAULT_REPORTS_DIR,
                 help="默认指向项目内 Output\\Reports；也可选择其它完整路径。",
-                section="输出",
+                section="结果输出",
             ),
         ),
     ),
@@ -1360,13 +1366,13 @@ TASKS = (
         "需要管理员权限 · 物理盘只读 · 可能唤醒硬盘",
         (
             FieldSpec(
-                "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
+                "smartctl_path", "硬盘工具", "--smartctl-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "powershell_path", "系统工具", "--powershell-path",
                 "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
@@ -1393,10 +1399,10 @@ TASKS = (
                 "output_dir", "存储档案目录", "--output-dir", "dir",
                 _DEFAULT_STORAGE_DIR,
                 help="默认指向项目内 Output\\Storage；每块硬盘生成独立 ZIP。",
-                section="输出",
+                section="结果输出",
             ),
             FieldSpec(
-                "summary_txt", "外部简化 TXT", "--summary-txt",
+                "summary_txt", "简化文本", "--summary-txt",
                 "choice_flag", False,
                 choices=(
                     ("不生成（默认）", False),
@@ -1404,16 +1410,16 @@ TASKS = (
                 ),
                 flag_value=True,
                 help="完整结构化资料始终保存在 ZIP 的 JSON 成员中。",
-                section="输出",
+                section="结果输出",
             ),
             FieldSpec(
-                "smartctl_path", "smartctl 路径", "--smartctl-path", "file",
+                "smartctl_path", "硬盘工具", "--smartctl-path", "file",
                 help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
             ),
             FieldSpec(
-                "powershell_path", "PowerShell 路径", "--powershell-path",
+                "powershell_path", "系统工具", "--powershell-path",
                 "file", help="留空时优先使用本窗口已验证路径，其次自动发现。",
                 filetypes=_EXE_TYPES,
                 section="工具路径", top_menu=True,
@@ -1423,6 +1429,8 @@ TASKS = (
 )
 
 TASK_BY_KEY = {task.key: task for task in TASKS}
+_RESTORABLE_TASK_KEYS = frozenset(
+    task.key for task in TASKS if task.key != "storage_list")
 _HASH_PERCENTAGE_MENU_FIELDS = (
     ("full_scan", "verify_percent", "DBS-11 独立哈希抽验", True),
     ("check_hash", "sample_percent", "DBS-31 内容哈希抽样", False),
@@ -1493,6 +1501,7 @@ _PANEL_HEADER_PADX = 14
 _PANEL_ACTION_BUTTON_WIDTH = 12
 _PANEL_ACTION_BUTTON_GAP = 6
 _FORM_ACTION_BUTTON_WIDTH = 12
+_FORM_FIELD_TITLE_MAX_CHARS = 6
 _STORAGE_DISK_CHECKBOX_SIZE = 20
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
 
@@ -2047,22 +2056,22 @@ class DirectoryListEditor(tk.Frame):
 
         footer = tk.Frame(self, bg=_SURFACE)
         footer.grid(row=0, column=0, sticky="ew", padx=7, pady=(4, 2))
-        footer.grid_columnconfigure(1, weight=1)
+        footer.grid_columnconfigure(0, weight=1)
         self.add_button = ttk.Button(
             footer, text="添加目录", style="FormAction.TButton",
             width=_FORM_ACTION_BUTTON_WIDTH,
             command=self.add_directory,
         )
-        self.add_button.grid(row=0, column=0, sticky="w")
+        self.add_button.grid(row=0, column=1, sticky="e")
         attach_tooltip(
             self.add_button,
             f"选择并加入一个{self.title}；最多可添加 {self.max_items} 项。",
         )
         self.count_label = tk.Label(
             footer, bg=_SURFACE, fg=_MUTED,
-            font=("Microsoft YaHei UI", 8), anchor="e",
+            font=("Microsoft YaHei UI", 8), anchor="w",
         )
-        self.count_label.grid(row=0, column=1, sticky="e")
+        self.count_label.grid(row=0, column=0, sticky="w")
         self._render_rows()
 
     def _notify(self) -> None:
@@ -2648,7 +2657,8 @@ class DaisyApp:
             self.gui_preferences["font_size_delta"])
         self.confirm_close_when_idle = bool(
             self.gui_preferences["confirm_close_when_idle"])
-        self.task = TASKS[0]
+        self.task = TASK_BY_KEY[str(
+            self.gui_preferences["last_task_key"])]
         self.values: dict[
             str, tk.Variable | tk.Text | DirectoryListEditor
             | StorageDiskPool] = {}
@@ -2937,6 +2947,8 @@ class DaisyApp:
             except tk.TclError:
                 continue
         self._apply_style_fonts()
+        if hasattr(self, "form_inner"):
+            self._configure_form_label_column()
         self.settings_title_expanded_font = self._font_tuple(
             14 if self.compact_layout else 16, "bold")
         self.title_label.configure(font=(
@@ -2951,6 +2963,7 @@ class DaisyApp:
             "font_family": self.ui_font_family,
             "font_size_delta": self.ui_font_size_delta,
             "confirm_close_when_idle": self.confirm_close_when_idle,
+            "last_task_key": self.task.key,
         })
         try:
             save_gui_preferences(self.gui_preferences)
@@ -4511,6 +4524,7 @@ class DaisyApp:
         if save_current:
             self._save_current_values()
         self.task = TASK_BY_KEY[task_key]
+        self.gui_preferences["last_task_key"] = task_key
         if hasattr(self, "task_menu_var"):
             self.task_menu_var.set(task_key)
         self._refresh_task_navigation_selection()
@@ -4712,6 +4726,29 @@ class DaisyApp:
         )
         return row + 1
 
+    def _configure_form_label_column(
+        self, form_pad: int | None = None,
+    ) -> None:
+        """按全局六字标题体系固定标签列，避免切页时输入区左右跳动。"""
+        if form_pad is None:
+            form_pad = 16 if self.compact_layout else 22
+        label_gap = 11 if self.compact_layout else 14
+        labels = (
+            spec.label
+            for task in TASKS
+            for spec in task.fields
+            if not spec.top_menu
+        )
+        try:
+            label_font = tkfont.Font(
+                root=self.root, font=self._font_tuple(9, "bold"))
+            widest = max(label_font.measure(label) for label in labels)
+        except (tk.TclError, TypeError, ValueError):
+            widest = _FORM_FIELD_TITLE_MAX_CHARS * 12
+        self.form_inner.grid_columnconfigure(
+            0, weight=0, minsize=widest + form_pad + label_gap + 6)
+        self.form_inner.grid_columnconfigure(1, weight=1)
+
     def _build_form(self, scroll_fraction: float = 0.0) -> None:
         for child in self.form_inner.winfo_children():
             child.destroy()
@@ -4725,7 +4762,7 @@ class DaisyApp:
             spec for spec in self.task.fields
             if _field_active(spec, saved) and not spec.top_menu
         ]
-        self.form_inner.grid_columnconfigure(1, weight=1)
+        self._configure_form_label_column(form_pad)
         row = 0
 
         if self.task.key == _PROJECT_SELF_TEST_KEY:
@@ -4787,9 +4824,8 @@ class DaisyApp:
                 row += 1
 
             current = saved.get(spec.key, spec.default)
-            label = spec.label + ("  *" if spec.required else "")
             field_label = tk.Label(
-                self.form_inner, text=label, bg=_SURFACE, fg=_TEXT,
+                self.form_inner, text=spec.label, bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9, "bold"), anchor="ne",
             )
             field_label.grid(
@@ -4856,7 +4892,7 @@ class DaisyApp:
                         self._append_directory(s, w),
                     )
                     add_directory_button.grid(
-                        row=0, column=1, sticky="n", padx=(8, 0))
+                        row=0, column=1, sticky="ne", padx=(8, 0))
                     attach_tooltip(
                         add_directory_button,
                         f"选择一个目录并追加到“{spec.label}”列表。",
@@ -4879,7 +4915,8 @@ class DaisyApp:
                         width=_FORM_ACTION_BUTTON_WIDTH,
                         command=lambda s=spec, v=var: self._browse(s, v),
                     )
-                    browse_button.grid(row=0, column=1, padx=(8, 0))
+                    browse_button.grid(
+                        row=0, column=1, sticky="e", padx=(8, 0))
                     attach_tooltip(
                         browse_button,
                         (
@@ -5242,11 +5279,13 @@ class DaisyApp:
             return
         if not messagebox.askyesno(
                 "以管理员模式重新启动",
-                "当前窗口将关闭，并触发 Windows UAC 确认。尚未运行的"
-                "表单内容和本窗口日志不会保留。\n\n确定继续吗？",
+                "当前窗口将关闭，并触发 Windows UAC 确认。重启后会返回"
+                "当前功能页面，但表单内容和本窗口日志不会保留。\n\n"
+                "确定继续吗？",
                 icon="question", parent=self.root):
             self._refresh_environment_actions()
             return
+        self._save_gui_preferences()
         try:
             restart_as_windows_administrator()
         except OSError as exc:
@@ -6560,6 +6599,7 @@ class DaisyApp:
                 )):
             return
         if not active:
+            self._save_gui_preferences()
             self._destroy_root()
             return
 
@@ -6574,6 +6614,7 @@ class DaisyApp:
             icon="warning", parent=self.root,
         ):
             return
+        self._save_gui_preferences()
         self.stop_requested = True
         self._set_stop_state("disabled")
         if process is not None:

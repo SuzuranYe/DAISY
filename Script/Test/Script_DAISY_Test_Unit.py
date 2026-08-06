@@ -38,6 +38,7 @@ class TestGuiArguments(unittest.TestCase):
             "font_family": "Segoe UI",
             "font_size_delta": 1,
             "confirm_close_when_idle": False,
+            "last_task_key": "check_hash",
         })
         with tempfile.TemporaryDirectory() as temporary:
             path = os.path.join(temporary, "GUI_Settings.json")
@@ -58,9 +59,68 @@ class TestGuiArguments(unittest.TestCase):
                     "font_family": "",
                     "font_size_delta": 99,
                     "confirm_close_when_idle": "no",
+                    "last_task_key": "storage_list",
                 }, handle)
             loaded = gui.load_gui_preferences(path)
         self.assertEqual(loaded, gui.default_gui_preferences())
+
+    def test_page_preference_never_contains_form_values(self):
+        app = object.__new__(gui.DaisyApp)
+        app.gui_preferences = gui.default_gui_preferences()
+        app.default_window_size = (1920, 1080)
+        app.ui_font_family = "Microsoft YaHei UI"
+        app.ui_font_size_delta = 0
+        app.confirm_close_when_idle = True
+        app.task = gui.TASK_BY_KEY["check_hash"]
+        app.saved_values = {
+            "check_hash": {
+                "snapshot": r"E:\私人档案\snapshot.sqlite",
+                "root_map": r"E:\私人档案",
+            },
+        }
+
+        with patch.object(gui, "save_gui_preferences") as save:
+            app._save_gui_preferences()
+
+        payload = save.call_args.args[0]
+        self.assertEqual(payload["last_task_key"], "check_hash")
+        self.assertNotIn("saved_values", payload)
+        self.assertNotIn("snapshot", payload)
+        self.assertNotIn("root_map", payload)
+
+    def test_form_titles_follow_one_concise_naming_structure(self):
+        for task in gui.TASKS:
+            for spec in task.fields:
+                self.assertLessEqual(
+                    len(spec.label), gui._FORM_FIELD_TITLE_MAX_CHARS,
+                    f"{task.key}.{spec.key}: {spec.label}",
+                )
+                self.assertLessEqual(
+                    len(spec.section), gui._FORM_FIELD_TITLE_MAX_CHARS,
+                    f"{task.key}.{spec.key}: {spec.section}",
+                )
+                self.assertNotIn("*", spec.label)
+        self.assertTrue(all(
+            len(label) <= gui._FORM_FIELD_TITLE_MAX_CHARS
+            for label in gui._TASK_TOOLBAR_LABELS.values()
+        ))
+        expected = {
+            ("full_scan", "root_batch_mode"): "生成方式",
+            ("full_scan", "resume"): "续传快照",
+            ("full_scan", "collect_file_id"): "NTFS标识",
+            ("check_format", "root_map"): "档案根目录",
+            ("check_format", "force"): "指纹降级",
+            ("check_hash", "force"): "指纹降级",
+            ("diff", "old"): "基准快照",
+            ("diff", "new"): "对比快照",
+            ("storage_collect", "summary_txt"): "简化文本",
+        }
+        actual = {
+            (task.key, spec.key): spec.label
+            for task in gui.TASKS for spec in task.fields
+        }
+        for identity, label in expected.items():
+            self.assertEqual(actual[identity], label)
 
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
@@ -1480,6 +1540,7 @@ class TestGuiArguments(unittest.TestCase):
         app.run_jobs = []
         app.worker_starting = False
         app.confirm_close_when_idle = True
+        app._save_gui_preferences = Mock()
 
         with patch.object(
                 gui.messagebox, "askyesno", side_effect=(False, True)) \
@@ -1489,6 +1550,7 @@ class TestGuiArguments(unittest.TestCase):
             app._on_close()
 
         self.assertEqual(app.root.destroy_calls, 1)
+        app._save_gui_preferences.assert_called_once_with()
         self.assertEqual(confirm.call_count, 2)
         self.assertTrue(all(
             call.args[0] == "确认退出" for call in confirm.call_args_list
@@ -1508,10 +1570,12 @@ class TestGuiArguments(unittest.TestCase):
         app.run_jobs = []
         app.worker_starting = False
         app.confirm_close_when_idle = False
+        app._save_gui_preferences = Mock()
         with patch.object(gui.messagebox, "askyesno") as confirm:
             app._on_close()
         confirm.assert_not_called()
         self.assertEqual(app.root.destroy_calls, 1)
+        app._save_gui_preferences.assert_called_once_with()
 
     def test_administrator_restart_uses_current_python_and_canonical_gui(self):
         executable = os.path.abspath(r"C:\Python\pythonw.exe")
@@ -1566,6 +1630,7 @@ class TestGuiArguments(unittest.TestCase):
         app.is_administrator = False
         app.install_tool_buttons = {}
         app.admin_mode_switch = SwitchProbe()
+        app._save_gui_preferences = Mock()
         with (
             patch.object(gui.os, "name", "nt"),
             patch.object(gui.messagebox, "askyesno", return_value=True),
@@ -1573,9 +1638,11 @@ class TestGuiArguments(unittest.TestCase):
         ):
             app._request_admin_mode(True)
         restart.assert_called_once_with()
+        app._save_gui_preferences.assert_called_once_with()
         self.assertEqual(app.root.destroy_calls, 1)
 
         app.root.destroy_calls = 0
+        app._save_gui_preferences.reset_mock()
         with (
             patch.object(gui.os, "name", "nt"),
             patch.object(gui.messagebox, "askyesno", return_value=True),
@@ -1587,6 +1654,7 @@ class TestGuiArguments(unittest.TestCase):
         ):
             app._request_admin_mode(True)
         self.assertEqual(app.root.destroy_calls, 0)
+        app._save_gui_preferences.assert_called_once_with()
         shown.assert_called_once()
         self.assertEqual(app.admin_mode_switch.options["value"], False)
         self.assertEqual(app.admin_mode_switch.options["enabled"], True)
@@ -1612,12 +1680,14 @@ class TestGuiArguments(unittest.TestCase):
         app.confirm_close_when_idle = False
         app.stop_requested = False
         app._set_stop_state = lambda _state: None
+        app._save_gui_preferences = Mock()
 
         with patch.object(
                 gui.messagebox, "askyesno", side_effect=(True, False)) \
                 as declined:
             app._on_close()
         self.assertEqual(app.root.destroy_calls, 0)
+        app._save_gui_preferences.assert_not_called()
         self.assertEqual(
             [call.args[0] for call in declined.call_args_list],
             ["确认退出", "再次确认退出"],
@@ -1632,6 +1702,7 @@ class TestGuiArguments(unittest.TestCase):
             ["确认退出", "再次确认退出"],
         )
         self.assertEqual(app.root.destroy_calls, 1)
+        app._save_gui_preferences.assert_called_once_with()
 
     def test_top_task_navigation_entries_lock_together(self):
         class MenuProbe:
@@ -1999,7 +2070,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.queue_detail_label.options["text"], "0/3 · 队列已准备")
 
-    def _real_tk_app(self):
+    def _real_tk_app(self, preferences=None):
         gui._enable_dpi_awareness()
         try:
             root = gui.tk.Tk()
@@ -2032,9 +2103,13 @@ class TestGuiArguments(unittest.TestCase):
             except gui.tk.TclError:
                 pass
         self.addCleanup(destroy_root)
+        loaded_preferences = (
+            gui.default_gui_preferences()
+            if preferences is None else dict(preferences)
+        )
         with patch.object(
                 gui, "load_gui_preferences",
-                return_value=gui.default_gui_preferences()):
+                return_value=loaded_preferences):
             app = gui.DaisyApp(root)
         root.geometry("1840x1020+0+0")
         root.update()
@@ -2149,6 +2224,19 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(widget.winfo_manager(), "grid")
         self.assertEqual(root.winfo_width(), 1840)
         self.assertEqual(root.winfo_height(), 1020)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_reopens_last_page_without_form_values(self):
+        preferences = gui.default_gui_preferences()
+        preferences["last_task_key"] = "check_hash"
+        root, app = self._real_tk_app(preferences)
+
+        self.assertEqual(app.task.key, "check_hash")
+        self.assertEqual(app.saved_values, {})
+        self.assertEqual(app.values["snapshot"].get(), "")
+        self.assertEqual(app.values["root_map"].get("1.0", "end-1c"), "")
+        self.assertEqual(
+            app.gui_preferences["last_task_key"], "check_hash")
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_1080p_default_forms_fit_without_scrolling(self):
@@ -2304,6 +2392,73 @@ class TestGuiArguments(unittest.TestCase):
         )
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_titles_and_directory_actions_share_alignment(self):
+        root, app = self._real_tk_app()
+        def assert_page_alignment(context):
+            field_right_edges = set()
+            cell_left_edges = set()
+            for task_key in gui._TASK_TOOLBAR_LABELS:
+                app._select_task(task_key, save_current=False)
+                root.update()
+                task_values = gui._task_values(
+                    app.task, app.saved_values.get(task_key, {}))
+                active_specs = [
+                    spec for spec in app.task.fields
+                    if not spec.top_menu
+                    and gui._field_active(spec, task_values)
+                ]
+                for spec in active_specs:
+                    label = next(
+                        child for child in app.form_inner.winfo_children()
+                        if isinstance(child, gui.tk.Label)
+                        and child.cget("text") == spec.label
+                    )
+                    self.assertNotIn("*", label.cget("text"), context)
+                    self.assertGreaterEqual(
+                        label.winfo_width(), label.winfo_reqwidth(), context)
+                    field_right_edges.add(
+                        label.winfo_rootx() + label.winfo_width())
+                    row = int(label.grid_info()["row"])
+                    cell = next(
+                        child for child in app.form_inner.winfo_children()
+                        if isinstance(child, gui.tk.Frame)
+                        and int(child.grid_info().get("row", -1)) == row
+                        and int(child.grid_info().get("column", -1)) == 1
+                    )
+                    cell_left_edges.add(cell.winfo_rootx())
+            self.assertEqual(len(field_right_edges), 1, context)
+            self.assertEqual(len(cell_left_edges), 1, context)
+
+        combinations = 0
+        for family in app._available_ui_font_families():
+            for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
+                app._set_ui_font(
+                    family=family, size_delta=size_delta, persist=False)
+                assert_page_alignment(f"{family}／{size_delta:+d}")
+                combinations += 1
+        self.assertGreaterEqual(combinations, 6)
+
+        app._set_ui_font(
+            family=gui._UI_FONT_FAMILY, size_delta=0, persist=False)
+
+        app._select_task("full_scan", save_current=False)
+        root.update()
+        list_add = app.values["roots"].add_button
+        self.assertEqual(int(list_add.grid_info()["column"]), 1)
+        self.assertEqual(str(list_add.grid_info()["sticky"]), "e")
+
+        app._select_task("check_hash", save_current=False)
+        root.update()
+        mapping = app.values["root_map"]
+        mapped_add = next(
+            child for child in mapping.master.winfo_children()
+            if isinstance(child, gui.ttk.Button)
+            and child.cget("text") == "添加目录"
+        )
+        self.assertEqual(int(mapped_add.grid_info()["column"]), 1)
+        self.assertEqual(str(mapped_add.grid_info()["sticky"]), "ne")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_scrollbar_only_appears_for_actual_overflow(self):
         root, app = self._real_tk_app()
         app._set_default_window_size((1366, 768), persist=False)
@@ -2435,7 +2590,7 @@ class TestGuiArguments(unittest.TestCase):
             }
             app._select_task(task.key, save_current=False)
             root.update()
-            label_text = spec.label + ("  *" if spec.required else "")
+            label_text = spec.label
             field_label = next(
                 child for child in app.form_inner.winfo_children()
                 if (isinstance(child, gui.tk.Label)
@@ -2456,6 +2611,7 @@ class TestGuiArguments(unittest.TestCase):
                     "text", None) == spec.help
             ]
             context = f"{task.key}.{spec.key}"
+            self.assertNotIn("*", field_label.cget("text"), context)
             self.assertNotIn("ⓘ", field_label.cget("text"), context)
             self.assertIn(field_label, matching, context)
             self.assertIn(cell, matching, context)
@@ -3019,7 +3175,7 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(root_field.required)
             issues = gui.validate_values(
                 task_key, {"snapshot": __file__, "root_map": ""})
-            self.assertIn("请填写“当前档案根目录”。", issues)
+            self.assertIn("请填写“档案根目录”。", issues)
 
     def test_validation_task_args_include_current_root(self):
         with tempfile.TemporaryDirectory() as current_root:
