@@ -450,3 +450,41 @@ OK
 `.test_runtime\v1_6_0\full_pipeline_b\temp`；测试只使用合成小文件和受控工具替身，未读取
 用户 `TEMP\`，未扫描真实硬盘，未枚举、附加、复用或停止其它进程。阶段 4 仍需完成
 生产入口、独立抽验、封存／发布和 CLI／GUI 控制接线后才可关闭。
+
+## 九、阶段 5：共享格式判据与 Full 可选格式校验（第一检查点）
+
+新增 `FormatValidationSession` 作为扫描与未来统一核验共用的文件级判据层；现行 DBS-32
+入口和报告循环尚未改写，因此旧 CLI 输出、退出码和 v1.4.1 只读语义保持原状。共享层与
+schema 4 运行层当前提供：
+
+- 内置 ZIP／OOXML、PDF、OLE、7-Zip、ExifTool 和 ffprobe 判据按文件类型惰性选择，工具
+  只在对应格式首次出现时启动；未知类型不启动外部工具；
+- `off` 保持 `format_checks` 空表并把 checkpoint 标为 skipped；`sample` 和 `all` 分别
+  写入 sample／full 覆盖，默认关闭不改变 Full 基线；
+- 抽样使用快照 UUID 的确定性种子，0% 明确选择 0 条，100% 全取，小样本沿用既有至少
+  100 条策略；布尔、负数、超过 100 和非有限值在写入任何结果前拒绝；
+- 每个已选文件建立 `entry_attempts(stage='format')` 与当前 `format_checks`，校验前后均
+  比较 size／mtime；valid、invalid、timeout、error、unstable 和 unsupported 分开记录；
+- unknown／unsupported 只进入统计和数据库能力证据，不写入 `errors`，以后 Issues 渲染
+  只能显示总数，不能列路径或冒充问题；
+- 格式阶段在文件边界支持暂停／继续、保存退出和新 session 恢复；当前文件事件默认关闭，
+  显式打开后按 100 ms 限频；
+- Full 证据流水线已在元数据后、复扫前接入可选格式阶段；Quick 启用格式仍在枚举前拒绝；
+  Full 在格式阶段保存退出后，可关闭精确 lease、重开、重跑枚举并完成剩余格式项与复扫。
+
+定向结果：共享格式／运行／旧核验联合 33／33，通过；状态、Reader 与运行联合 87／87，
+通过。最终代码的完整发现式回归连续两轮结果为：
+
+| 批次 | 结果 | 用时 |
+|---|---:|---:|
+| 完整发现式回归 A | 405／405 | 94.876s |
+| 完整发现式回归 B | 405／405 | 95.747s |
+
+全部批次失败 0，跳过 0，并启用 `ResourceWarning` 即错误。两轮完整回归分别把 `TEMP`、
+`TMP`、`TMPDIR` 指向工作区 `.test_runtime\v1_6_0\full_format_a\temp` 和
+`.test_runtime\v1_6_0\full_format_b\temp`；没有读取用户 `TEMP\`，没有扫描真实硬盘，
+没有枚举、附加或停止其它进程。
+
+本检查点尚不关闭阶段 5：统一“核验”入口、独立哈希抽验的 schema 4 控制包装、Issues
+分板块渲染、封存／发布和 GUI 尚未完成。暂停期间源文件被删除／改名还需要独立的一致性
+设计；不能为绕过外键而删除 attempt 历史，也不能把未完成边界写成已经支持。

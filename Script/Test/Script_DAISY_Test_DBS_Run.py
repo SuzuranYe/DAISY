@@ -24,6 +24,7 @@ import DBS_Hash_Worker_Fixture as worker_fixture
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
+import Script_DAISY_Lib_DBS_06_Verify as dbverify
 import Script_DAISY_Lib_DBS_08_State as dbstate
 import Script_DAISY_Lib_DBS_09_Run as dbrun
 
@@ -659,6 +660,195 @@ class TestControlledStageBoundaries(_RunFixture):
             dbrun.close_handle(handle, release_lease=True)
 
 
+class TestControlledFormatStage(_RunFixture):
+    class FakeFormatSession:
+        def __init__(self, _tools) -> None:
+            pass
+
+        @staticmethod
+        def describe(_extension, _media_kind):
+            return dbverify.FormatValidatorSpec(
+                "pdf", "fixture-validator", "1.fixture")
+
+        @staticmethod
+        def validate(_path, _media_kind, _spec):
+            return "valid", None
+
+        @staticmethod
+        def close() -> None:
+            pass
+
+    def prepare_entries(self, handle: dbrun.RunHandle, count: int = 2) \
+            -> None:
+        for index in range(count):
+            with open(
+                os.path.join(self.root_path, f"file_{index}.pdf"),
+                "wb",
+            ) as stream:
+                stream.write(b"%PDF-1.4\nstartxref\n0\n%%EOF\n")
+        result = dbrun.run_enumeration_stage_controlled(
+            handle.connection, dbrun.RunCommandRouter())
+        self.assertEqual("completed", result["state"])
+
+    def test_pause_continue_restarts_at_next_file_boundary(self) -> None:
+        handle = self.create()
+        self.prepare_entries(handle)
+        router = dbrun.RunCommandRouter()
+        events = []
+        sequence = 0
+        completed = 0
+
+        def on_event(event, **_payload) -> None:
+            nonlocal sequence, completed
+            events.append(event)
+            if event == "format_item_finished":
+                completed += 1
+                if completed == 1:
+                    sequence += 1
+                    self.assertTrue(router.route(
+                        dbrun.ControlCommand(sequence, "pause")
+                    ).accepted)
+            elif event == "run_paused":
+                sequence += 1
+                self.assertTrue(router.route(
+                    dbrun.ControlCommand(sequence, "continue")
+                ).accepted)
+
+        try:
+            result = dbrun.run_format_stage_controlled(
+                handle.connection,
+                "all",
+                {},
+                router,
+                show_current_file=True,
+                on_event=on_event,
+                paused_wait_seconds=0.01,
+                _session_factory=self.FakeFormatSession,
+            )
+            self.assertEqual(("completed", 2, 2), (
+                result["state"], result["processed"], result["valid"]))
+            self.assertEqual(2, handle.connection.execute(
+                "SELECT COUNT(*) FROM entry_attempts"
+                " WHERE stage='format' AND status='succeeded'"
+            ).fetchone()[0])
+            self.assertEqual(("completed", 2, 2), tuple(
+                handle.connection.execute(
+                    "SELECT state,items_done,items_total"
+                    " FROM stage_checkpoints WHERE stage='format'"
+                ).fetchone()))
+            self.assertIn("run_paused", events)
+            self.assertIn("run_resumed", events)
+            self.assertIn("current_item", events)
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_small_sample_uses_minimum_and_invalid_percent_is_atomic(
+        self,
+    ) -> None:
+        handle = self.create()
+        self.prepare_entries(handle, count=3)
+        try:
+            for value in (-1, 101, float("nan"), True, "bad"):
+                with self.subTest(value=value), self.assertRaises(
+                        core.PreflightError):
+                    dbrun.run_format_stage_controlled(
+                        handle.connection,
+                        "sample",
+                        {},
+                        dbrun.RunCommandRouter(),
+                        sample_percent=value,
+                        _session_factory=self.FakeFormatSession,
+                    )
+            self.assertEqual(0, handle.connection.execute(
+                "SELECT COUNT(*) FROM format_checks").fetchone()[0])
+            result = dbrun.run_format_stage_controlled(
+                handle.connection,
+                "sample",
+                {},
+                dbrun.RunCommandRouter(),
+                sample_percent=10,
+                _session_factory=self.FakeFormatSession,
+            )
+            self.assertEqual((3, 3, 3), (
+                result["eligible"], result["selected"], result["valid"]))
+            self.assertEqual(
+                [("sample", 3)],
+                handle.connection.execute(
+                    "SELECT coverage,COUNT(*) FROM format_checks"
+                    " GROUP BY coverage"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_save_exit_then_new_session_finishes_pending_format(self) \
+            -> None:
+        handle = self.create()
+        self.prepare_entries(handle)
+        router = dbrun.RunCommandRouter()
+        sequence = 0
+        completed = 0
+
+        def on_event(event, **_payload) -> None:
+            nonlocal sequence, completed
+            if event == "format_item_finished":
+                completed += 1
+                if completed == 1:
+                    sequence += 1
+                    self.assertTrue(router.route(
+                        dbrun.ControlCommand(sequence, "pause")
+                    ).accepted)
+            elif event == "run_paused":
+                sequence += 1
+                self.assertTrue(router.route(
+                    dbrun.ControlCommand(sequence, "save_exit")
+                ).accepted)
+
+        try:
+            first = dbrun.run_format_stage_controlled(
+                handle.connection,
+                "all",
+                {},
+                router,
+                on_event=on_event,
+                paused_wait_seconds=0.01,
+                _session_factory=self.FakeFormatSession,
+            )
+            self.assertEqual("save_exit", first["state"])
+            self.assertEqual(
+                [("pending", 1), ("valid", 1)],
+                handle.connection.execute(
+                    "SELECT status,COUNT(*) FROM format_checks"
+                    " GROUP BY status ORDER BY status"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+        resumed = dbrun.resume_run(self.partial)
+        try:
+            second = dbrun.run_format_stage_controlled(
+                resumed.connection,
+                "all",
+                {},
+                dbrun.RunCommandRouter(),
+                _session_factory=self.FakeFormatSession,
+            )
+            self.assertEqual(("completed", 2, 2), (
+                second["state"], second["processed"], second["valid"]))
+            self.assertEqual(2, resumed.connection.execute(
+                "SELECT COUNT(*) FROM run_sessions").fetchone()[0])
+            self.assertEqual(
+                [(1, "succeeded"), (1, "succeeded")],
+                resumed.connection.execute(
+                    "SELECT attempt_number,status FROM entry_attempts"
+                    " WHERE stage='format' ORDER BY entry_id"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(resumed, release_lease=True)
+
+
 class TestScanEvidencePipeline(_RunFixture):
     @staticmethod
     def tools() -> dict[str, dict[str, object]]:
@@ -702,7 +892,7 @@ class TestScanEvidencePipeline(_RunFixture):
             self.assertEqual(("completed", "rescan"), (
                 result["state"], result["stage"]))
             self.assertEqual(
-                {"enumerate", "hash", "metadata", "rescan"},
+                {"enumerate", "hash", "metadata", "format", "rescan"},
                 set(result["stages"]),
             )
             entry = handle.connection.execute(
@@ -717,10 +907,17 @@ class TestScanEvidencePipeline(_RunFixture):
             ).fetchone()[0])
             checkpoints = dict(handle.connection.execute(
                 "SELECT stage,state FROM stage_checkpoints"
-                " WHERE stage IN ('enumerate','hash','metadata','rescan')"
+                " WHERE stage IN"
+                " ('enumerate','hash','metadata','format','rescan')"
             ))
             self.assertEqual(
-                {stage: "completed" for stage in checkpoints},
+                {
+                    "enumerate": "completed",
+                    "hash": "completed",
+                    "metadata": "completed",
+                    "format": "skipped",
+                    "rescan": "completed",
+                },
                 checkpoints,
             )
             versions = handle.connection.execute(
@@ -766,11 +963,11 @@ class TestScanEvidencePipeline(_RunFixture):
                 ).fetchone()))
             checkpoints = dict(handle.connection.execute(
                 "SELECT stage,state FROM stage_checkpoints"
-                " WHERE stage IN ('hash','metadata','rescan')"
+                " WHERE stage IN ('hash','metadata','format','rescan')"
             ))
             self.assertEqual(
                 {"hash": "skipped", "metadata": "skipped",
-                 "rescan": "completed"},
+                 "format": "skipped", "rescan": "completed"},
                 checkpoints,
             )
         finally:
@@ -796,23 +993,137 @@ class TestScanEvidencePipeline(_RunFixture):
         finally:
             dbrun.close_handle(handle, release_lease=True)
 
-    def test_enabled_format_cannot_be_silently_omitted(self) -> None:
+    def test_enabled_format_is_persisted_and_unsupported_is_not_error(
+        self,
+    ) -> None:
+        files = {
+            "valid.pdf": b"%PDF-1.4\nstartxref\n0\n%%EOF\n",
+            "broken.pdf": b"%PDF-1.4\nmissing trailer",
+            "unknown.bin": b"unknown",
+        }
+        for name, payload in files.items():
+            with open(os.path.join(self.root_path, name), "wb") as stream:
+                stream.write(payload)
+        handle = self.create(
+            config={
+                "phase": "full",
+                "hash": "full",
+                "metadata_storage": "complete",
+                "format_validation": "all",
+            },
+            tool_versions=self.tools(),
+        )
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                result = dbrun.run_scan_evidence_stages(
+                    handle,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual("completed", result["state"])
+            self.assertEqual(
+                {"valid": 1, "invalid": 1, "unsupported": 1},
+                {
+                    status: count
+                    for status, count in handle.connection.execute(
+                        "SELECT status,COUNT(*) FROM format_checks"
+                        " GROUP BY status"
+                    )
+                },
+            )
+            self.assertEqual(
+                [
+                    ("broken.pdf", "invalid", "pdf"),
+                    ("unknown.bin", "unsupported", "none"),
+                    ("valid.pdf", "valid", "pdf"),
+                ],
+                handle.connection.execute(
+                    "SELECT e.rel_path,f.status,f.validator"
+                    " FROM format_checks f"
+                    " JOIN entries e ON e.entry_id=f.entry_id"
+                    " ORDER BY e.rel_path"
+                ).fetchall(),
+            )
+            self.assertEqual(3, handle.connection.execute(
+                "SELECT COUNT(*) FROM entry_attempts"
+                " WHERE stage='format'").fetchone()[0])
+            self.assertEqual(0, handle.connection.execute(
+                "SELECT COUNT(*) FROM errors"
+                " WHERE stage='format'").fetchone()[0])
+            self.assertEqual(("completed", 1), tuple(
+                handle.connection.execute(
+                    "SELECT state,error_count FROM stage_checkpoints"
+                    " WHERE stage='format'"
+                ).fetchone()))
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_format_sample_zero_executes_with_empty_coverage(self) -> None:
+        with open(os.path.join(self.root_path, "file.pdf"), "wb") as stream:
+            stream.write(b"%PDF-1.4\nstartxref\n0\n%%EOF\n")
         handle = self.create(
             config={
                 "phase": "full",
                 "hash": "full",
                 "metadata_storage": "complete",
                 "format_validation": "sample",
+                "format_sample_percent": 0,
             },
             tool_versions=self.tools(),
         )
         try:
-            with self.assertRaisesRegex(
-                    core.PreflightError, "拒绝遗漏该阶段"):
-                dbrun.run_scan_evidence_stages(
-                    handle, dbrun.RunCommandRouter())
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                result = dbrun.run_scan_evidence_stages(
+                    handle,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual("completed", result["state"])
             self.assertEqual(0, handle.connection.execute(
-                "SELECT COUNT(*) FROM entries").fetchone()[0])
+                "SELECT COUNT(*) FROM format_checks").fetchone()[0])
+            checkpoint = handle.connection.execute(
+                "SELECT state,items_done,items_total,checkpoint_json"
+                " FROM stage_checkpoints WHERE stage='format'"
+            ).fetchone()
+            self.assertEqual(("completed", 0, 0), tuple(checkpoint[:3]))
+            self.assertEqual(1, json.loads(checkpoint[3])["eligible"])
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_format_sample_hundred_keeps_sample_coverage(self) -> None:
+        with open(os.path.join(self.root_path, "file.pdf"), "wb") as stream:
+            stream.write(b"%PDF-1.4\nstartxref\n0\n%%EOF\n")
+        handle = self.create(
+            config={
+                "phase": "full",
+                "hash": "full",
+                "metadata_storage": "complete",
+                "format_validation": "sample",
+                "format_sample_percent": 100,
+            },
+            tool_versions=self.tools(),
+        )
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                result = dbrun.run_scan_evidence_stages(
+                    handle,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual("completed", result["state"])
+            self.assertEqual(("sample", "valid"), tuple(
+                handle.connection.execute(
+                    "SELECT coverage,status FROM format_checks"
+                ).fetchone()))
         finally:
             dbrun.close_handle(handle, release_lease=True)
 
@@ -935,6 +1246,85 @@ class TestScanEvidencePipeline(_RunFixture):
                 ).fetchone()))
             self.assertEqual(2, resumed.connection.execute(
                 "SELECT COUNT(*) FROM run_sessions").fetchone()[0])
+        finally:
+            dbrun.close_handle(resumed, release_lease=True)
+
+    def test_pipeline_resumes_from_format_stage_through_rescan(self) -> None:
+        for index in range(2):
+            with open(
+                os.path.join(self.root_path, f"file_{index}.pdf"),
+                "wb",
+            ) as stream:
+                stream.write(b"%PDF-1.4\nstartxref\n0\n%%EOF\n")
+        handle = self.create(
+            config={
+                "phase": "full",
+                "hash": "full",
+                "metadata_storage": "complete",
+                "format_validation": "all",
+            },
+            tool_versions=self.tools(),
+        )
+        router = dbrun.RunCommandRouter()
+        saved = False
+
+        def save_after_first_format(event, **_payload) -> None:
+            nonlocal saved
+            if event == "format_item_finished" and not saved:
+                saved = True
+                self.assertTrue(router.route(
+                    dbrun.ControlCommand(1, "save_exit")
+                ).accepted)
+
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                first = dbrun.run_scan_evidence_stages(
+                    handle,
+                    router,
+                    on_event=save_after_first_format,
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual(("save_exit", "format"), (
+                first["state"], first["stage"]))
+            self.assertEqual(
+                [("pending", 1), ("valid", 1)],
+                handle.connection.execute(
+                    "SELECT status,COUNT(*) FROM format_checks"
+                    " GROUP BY status ORDER BY status"
+                ).fetchall(),
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+        resumed = dbrun.resume_run(self.partial)
+        try:
+            with mock.patch.object(
+                    dbmeta, "ExifToolWorker", self.FakeExifToolWorker):
+                second = dbrun.run_scan_evidence_stages(
+                    resumed,
+                    dbrun.RunCommandRouter(),
+                    hash_stall_seconds=1.0,
+                    hash_timeout_seconds=2.0,
+                    hash_poll_seconds=0.005,
+                )
+            self.assertEqual(("completed", "rescan"), (
+                second["state"], second["stage"]))
+            self.assertEqual(
+                [("valid", 2)],
+                resumed.connection.execute(
+                    "SELECT status,COUNT(*) FROM format_checks"
+                    " GROUP BY status"
+                ).fetchall(),
+            )
+            self.assertEqual(2, resumed.connection.execute(
+                "SELECT COUNT(*) FROM run_sessions").fetchone()[0])
+            self.assertEqual(2, resumed.connection.execute(
+                "SELECT COUNT(*) FROM entry_attempts"
+                " WHERE stage='format' AND status='succeeded'"
+            ).fetchone()[0])
         finally:
             dbrun.close_handle(resumed, release_lease=True)
 

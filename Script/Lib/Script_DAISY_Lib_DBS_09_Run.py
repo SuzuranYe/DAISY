@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -20,6 +21,7 @@ import uuid
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
+import Script_DAISY_Lib_DBS_06_Verify as dbverify
 import Script_DAISY_Lib_DBS_08_State as dbstate
 
 
@@ -1150,6 +1152,381 @@ def run_metadata_stage_controlled(
     return stats
 
 
+def _format_sample_value(value: object) -> float:
+    if isinstance(value, bool):
+        raise core.PreflightError("格式校验抽样比例不能是布尔值")
+    try:
+        percent = float(value)
+    except (TypeError, ValueError) as exc:
+        raise core.PreflightError(
+            f"格式校验抽样比例无效：{value!r}") from exc
+    if not math.isfinite(percent) or percent < 0.0 or percent > 100.0:
+        raise core.PreflightError(
+            f"格式校验抽样比例必须在 0～100：{value!r}")
+    return percent
+
+
+def _prepare_format_selection(
+    con: sqlite3.Connection,
+    mode: str,
+    sample_percent: float,
+) -> tuple[int, int, str]:
+    candidates = con.execute(
+        "SELECT entry_id,size_bytes,extension,media_kind FROM entries"
+        " WHERE is_placeholder=0 ORDER BY root_id,path_key,rel_path"
+    ).fetchall()
+    if mode == "all":
+        selected = candidates
+        coverage = "full"
+    else:
+        coverage = "sample"
+        if sample_percent == 0.0:
+            selected = []
+        else:
+            snapshot_uuid = str(con.execute(
+                "SELECT snapshot_uuid FROM snapshot_info WHERE id=1"
+            ).fetchone()[0])
+            selected_ids = {
+                int(entry_id)
+                for entry_id, _size in dbhash.pick_sample(
+                    [(row[0], row[1]) for row in candidates],
+                    sample_percent,
+                    100,
+                    seed=snapshot_uuid + ":scan-format",
+                )
+            }
+            selected = [
+                row for row in candidates if int(row[0]) in selected_ids]
+    existing_coverages = {
+        str(row[0]) for row in con.execute(
+            "SELECT DISTINCT coverage FROM format_checks")
+    }
+    if existing_coverages and existing_coverages != {coverage}:
+        raise core.PreflightError(
+            "format_checks 覆盖类型与冻结配置不一致")
+    with con:
+        con.executemany(
+            "INSERT INTO format_checks"
+            " (entry_id,attempt_id,status,coverage,validator,tool_name,"
+            " tool_version,stat_match,detail,checked_at_utc,result_revision)"
+            " VALUES (?,NULL,'pending',?,?,NULL,NULL,NULL,NULL,NULL,1)"
+            " ON CONFLICT(entry_id) DO NOTHING",
+            [
+                (
+                    int(entry_id),
+                    coverage,
+                    dbverify.pick_format_validator(
+                        str(extension), str(media_kind)),
+                )
+                for entry_id, _size, extension, media_kind in selected
+            ],
+        )
+    return len(candidates), len(selected), coverage
+
+
+def run_format_stage_controlled(
+    con: sqlite3.Connection,
+    mode: str,
+    tools: dict[str, object],
+    router: RunCommandRouter,
+    *,
+    sample_percent: float = 10.0,
+    show_current_file: bool = False,
+    on_progress: Callable[[int, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    paused_wait_seconds: float = 0.25,
+    _session_factory=None,
+) -> dict[str, object]:
+    """运行 Full 可选格式校验；unsupported 只统计，不写为错误。"""
+    if mode not in ("off", "sample", "all"):
+        raise core.PreflightError(f"格式校验模式无效：{mode!r}")
+    if router.state != "running":
+        raise core.PreflightError(
+            f"格式校验要求 running 控制器，实际为 {router.state}")
+    percent = _format_sample_value(sample_percent)
+    if router.hash_control.current() is not None:
+        boundary = settle_pending_stage_control(
+            con,
+            "format",
+            router,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+        if boundary != "running":
+            return {"state": boundary}
+    if mode == "off":
+        existing = int(con.execute(
+            "SELECT COUNT(*) FROM format_checks").fetchone()[0])
+        if existing:
+            raise core.PreflightError(
+                "格式校验已关闭，但 partial 中存在格式结果")
+        dbstate.update_stage_checkpoint(
+            con,
+            "format",
+            "skipped",
+            items_done=0,
+            items_total=0,
+            current_entry_id=None,
+            checkpoint={"reason": "format_validation_off"},
+        )
+        stats = {
+            "state": "completed",
+            "eligible": 0,
+            "selected": 0,
+            "processed": 0,
+            "valid": 0,
+            "invalid": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "error": 0,
+            "unstable": 0,
+        }
+        _emit_control_event(
+            on_event,
+            "stage_skipped",
+            stage="format",
+            reason="format_validation_off",
+        )
+        return stats
+
+    last_current_event = 0.0
+    last_progress_event = 0.0
+    factory = _session_factory or dbverify.FormatValidationSession
+
+    def operation(should_stop: Callable[[], bool]) -> object:
+        nonlocal last_current_event, last_progress_event
+        eligible, selected_now, coverage = _prepare_format_selection(
+            con, mode, percent)
+        rows = con.execute(
+            "SELECT f.entry_id,e.root_id,e.rel_path,e.extension,e.media_kind,"
+            " e.size_bytes,e.modified_at_utc,f.status"
+            " FROM format_checks f JOIN entries e ON e.entry_id=f.entry_id"
+            " WHERE e.is_placeholder=0 AND f.coverage=?"
+            " ORDER BY e.root_id,e.path_key,e.rel_path",
+            (coverage,),
+        ).fetchall()
+        counts = {
+            "valid": 0,
+            "invalid": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "error": 0,
+            "unstable": 0,
+        }
+        for row in rows:
+            status = str(row[7])
+            if status in counts:
+                counts[status] += 1
+        processed = sum(counts.values())
+        stats: dict[str, object] = {
+            "state": "running",
+            "eligible": eligible,
+            "selected": len(rows),
+            "selected_now": selected_now,
+            "processed": processed,
+            **counts,
+        }
+        dbstate.update_stage_checkpoint(
+            con,
+            "format",
+            "running",
+            items_done=processed,
+            items_total=len(rows),
+            error_count=(
+                counts["invalid"] + counts["timeout"]
+                + counts["error"] + counts["unstable"]),
+            current_entry_id=None,
+            checkpoint={
+                "mode": mode,
+                "sample_percent": percent,
+                "eligible": eligible,
+                "selected": len(rows),
+            },
+        )
+        if should_stop():
+            raise core.StageControlBoundary(
+                "format controlled stage boundary")
+        if not rows:
+            stats["state"] = "completed"
+            return stats
+        roots = dict(con.execute(
+            "SELECT root_id,root_path FROM roots"))
+        attempt_status = {
+            "valid": "succeeded",
+            "invalid": "invalid",
+            "unsupported": "unsupported",
+            "timeout": "timeout",
+            "error": "error",
+            "unstable": "unstable",
+        }
+        session = factory(tools)
+        try:
+            for (entry_id, root_id, rel_path, extension, media_kind,
+                 size_bytes, modified_at_utc, current_status) in rows:
+                if str(current_status) not in ("pending", "processing"):
+                    continue
+                if should_stop():
+                    raise core.StageControlBoundary(
+                        "format controlled stage boundary")
+                now = time.monotonic()
+                if show_current_file and on_event is not None \
+                        and now - last_current_event >= 0.1:
+                    _emit_control_event(
+                        on_event,
+                        "current_item",
+                        stage="format",
+                        item=str(rel_path),
+                    )
+                    last_current_event = now
+                spec = session.describe(
+                    str(extension), str(media_kind))
+                attempt_id = dbstate.start_attempt(
+                    con,
+                    int(entry_id),
+                    "format",
+                    tool_name=spec.tool_name,
+                    tool_version=spec.tool_version,
+                    coverage=coverage,
+                    validator=spec.validator,
+                )
+                path = os.path.join(roots[int(root_id)], str(rel_path))
+                extended_path = core.to_extended_path(path)
+                status = "error"
+                detail = None
+                stat_match = False
+                try:
+                    before = os.stat(
+                        extended_path, follow_symlinks=False)
+                except OSError as exc:
+                    status = "unstable"
+                    detail = f"校验前文件不可读取：{exc}"
+                else:
+                    before_match = (
+                        int(before.st_size) == int(size_bytes)
+                        and core.ns_to_utc_iso(before.st_mtime_ns)
+                        == str(modified_at_utc)
+                    )
+                    if not before_match:
+                        status = "unstable"
+                        detail = "校验前 size／mtime 已改变"
+                    else:
+                        status, detail = session.validate(
+                            path, str(media_kind), spec)
+                        try:
+                            after = os.stat(
+                                extended_path, follow_symlinks=False)
+                        except OSError as exc:
+                            status = "unstable"
+                            detail = f"校验后文件不可读取：{exc}"
+                        else:
+                            stat_match = (
+                                int(after.st_size) == int(size_bytes)
+                                and core.ns_to_utc_iso(after.st_mtime_ns)
+                                == str(modified_at_utc)
+                            )
+                            if not stat_match:
+                                status = "unstable"
+                                detail = "校验期间 size／mtime 已改变"
+                detail = None if detail is None else str(detail)[:2000]
+                finish_status = attempt_status.get(status, "error")
+                error_code = None
+                if finish_status in (
+                        "invalid", "timeout", "error", "unstable"):
+                    error_code = f"format_{finish_status}"
+                dbstate.finish_attempt(
+                    con,
+                    attempt_id,
+                    finish_status,
+                    end_reason=f"format_{finish_status}",
+                    error_code=error_code,
+                    error_message=detail if error_code else None,
+                    result={
+                        "validator": spec.validator,
+                        "status": status,
+                    },
+                    stat_match=stat_match,
+                    detail=detail,
+                )
+                final_status = (
+                    status if status in counts else "error")
+                counts[final_status] += 1
+                processed += 1
+                stats.update({"processed": processed, **counts})
+                failures = (
+                    counts["invalid"] + counts["timeout"]
+                    + counts["error"] + counts["unstable"])
+                dbstate.update_stage_checkpoint(
+                    con,
+                    "format",
+                    "running",
+                    items_done=processed,
+                    items_total=len(rows),
+                    error_count=failures,
+                    current_entry_id=None,
+                    checkpoint={
+                        "mode": mode,
+                        "sample_percent": percent,
+                        "eligible": eligible,
+                        "selected": len(rows),
+                    },
+                )
+                _emit_control_event(
+                    on_event,
+                    "format_item_finished",
+                    entry_id=int(entry_id),
+                    validator=spec.validator,
+                    status=final_status,
+                )
+                now = time.monotonic()
+                if on_progress is not None and (
+                        now - last_progress_event >= 0.5
+                        or processed == len(rows)):
+                    on_progress(processed, dict(stats))
+                    last_progress_event = now
+                if should_stop():
+                    raise core.StageControlBoundary(
+                        "format controlled stage boundary")
+        finally:
+            session.close()
+        stats["state"] = "completed"
+        return stats
+
+    state, value = _run_controlled_boundary_operation(
+        con,
+        "format",
+        router,
+        operation,
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    if state != "completed":
+        return {"state": state}
+    stats = dict(value)
+    failures = (
+        int(stats["invalid"]) + int(stats["timeout"])
+        + int(stats["error"]) + int(stats["unstable"])
+    )
+    dbstate.update_stage_checkpoint(
+        con,
+        "format",
+        "completed",
+        items_done=int(stats["processed"]),
+        items_total=int(stats["selected"]),
+        error_count=failures,
+        current_entry_id=None,
+        checkpoint={
+            "mode": mode,
+            "sample_percent": percent,
+            "eligible": int(stats["eligible"]),
+            "selected": int(stats["selected"]),
+            "unsupported": int(stats["unsupported"]),
+        },
+    )
+    _emit_control_event(
+        on_event, "stage_finished", stage="format", **stats)
+    return stats
+
+
 def run_rescan_stage_controlled(
     con: sqlite3.Connection,
     router: RunCommandRouter,
@@ -1378,9 +1755,6 @@ def run_scan_evidence_stages(
             f"冻结的格式校验模式无效：{format_mode!r}")
     if phase == "quick" and format_mode != "off":
         raise core.PreflightError("Quick 冻结配置不能启用格式校验")
-    if phase == "full" and format_mode != "off":
-        raise core.PreflightError(
-            "格式校验尚未接入 schema 4 扫描流水线，拒绝遗漏该阶段")
     retain_original = config.get("metadata_storage", "complete") == "complete"
     if phase == "full" and config.get("metadata_storage", "complete") \
             not in ("complete", "normalized"):
@@ -1514,6 +1888,25 @@ def run_scan_evidence_stages(
                 "stage": "metadata",
                 "stages": stages,
             }
+
+    formatted = run_format_stage_controlled(
+        con,
+        format_mode,
+        tools,
+        router,
+        sample_percent=config.get("format_sample_percent", 10.0),
+        show_current_file=show_current_file,
+        on_progress=lambda _index, payload: progress("format", payload),
+        on_event=on_event,
+        paused_wait_seconds=paused_wait_seconds,
+    )
+    stages["format"] = formatted
+    if formatted["state"] != "completed":
+        return {
+            "state": formatted["state"],
+            "stage": "format",
+            "stages": stages,
+        }
 
     rescanned = run_rescan_stage_controlled(
         con,

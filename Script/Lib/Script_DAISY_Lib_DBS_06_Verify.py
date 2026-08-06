@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 from typing import Iterable
 import zipfile
@@ -31,6 +32,7 @@ _MEDIA_KINDS = {
     "video_mp4", "video_crm", "audio",
 }
 _FFPROBE_KINDS = {"image_gif", "video_mp4", "video_crm", "audio"}
+FORMAT_VALIDATION_PROFILE = "daisy-format-v1"
 
 # 损坏模式表（v1，判据来自截断 JPG/MP4/CR3 与坏头 JPG 的探针输出）。
 _CORRUPT_RE = re.compile(
@@ -545,6 +547,122 @@ def pick_format_validator(ext: str, kind: str) -> str:
     if kind == "archive":
         return "7z"
     return "none"
+
+
+@dataclass(frozen=True)
+class FormatValidatorSpec:
+    """一次文件格式校验使用的稳定判据与工具身份。"""
+
+    validator: str
+    tool_name: str
+    tool_version: str
+
+
+class FormatValidationSession:
+    """共享文件级格式判据；外部工具仅在对应格式首次出现时启动。"""
+
+    def __init__(self, tools: dict[str, object]) -> None:
+        self._tools = dict(tools)
+        self._worker = None
+
+    def _tool(self, name: str) -> dict[str, str]:
+        value = self._tools.get(name)
+        if not isinstance(value, dict):
+            raise core.PreflightError(
+                f"格式校验缺少 {name} 的路径／版本能力")
+        path = value.get("path")
+        version = value.get("version")
+        if not isinstance(path, str) or not path \
+                or not isinstance(version, str) or not version:
+            raise core.PreflightError(
+                f"格式校验的 {name} 路径／版本无效")
+        return {"path": path, "version": version}
+
+    def describe(self, extension: str, media_kind: str) \
+            -> FormatValidatorSpec:
+        validator = pick_format_validator(extension, media_kind)
+        if validator == "zip":
+            version = ".".join(map(str, sys.version_info[:3]))
+            return FormatValidatorSpec(
+                validator, "python-zipfile", version)
+        if validator in ("pdf", "none"):
+            return FormatValidatorSpec(
+                validator, "daisy-format", FORMAT_VALIDATION_PROFILE)
+        if validator in ("ole", "7z"):
+            sevenzip = self._tool("sevenzip")
+            return FormatValidatorSpec(
+                validator, "7-Zip", sevenzip["version"])
+        exiftool = self._tool("exiftool")
+        effective_kind = (
+            "image_gif" if validator == "gif" else media_kind)
+        if effective_kind in _FFPROBE_KINDS:
+            ffprobe = self._tool("ffprobe")
+            return FormatValidatorSpec(
+                validator,
+                "exiftool+ffprobe",
+                f"exiftool {exiftool['version']}; "
+                f"ffprobe {ffprobe['version']}",
+            )
+        return FormatValidatorSpec(
+            validator, "exiftool", exiftool["version"])
+
+    def validate(
+        self,
+        path: str,
+        media_kind: str,
+        spec: FormatValidatorSpec,
+    ) -> tuple[str, str | None]:
+        """返回 schema 4 格式状态，不把 unsupported 提升为错误。"""
+        validator = spec.validator
+        extended_path = core.to_extended_path(path)
+        try:
+            if validator == "none":
+                return "unsupported", None
+            if validator == "zip":
+                return validate_zip(extended_path)
+            if validator == "pdf":
+                return validate_pdf(extended_path)
+            if validator == "ole":
+                result = validate_legacy_office(
+                    extended_path, self._tool("sevenzip")["path"])
+            elif validator == "7z":
+                result = validate_sevenzip(
+                    path, self._tool("sevenzip")["path"])
+            else:
+                if self._worker is None:
+                    self._worker = meta.ExifToolWorker(
+                        self._tool("exiftool")["path"])
+                effective_kind = (
+                    "image_gif" if validator == "gif" else media_kind)
+                ffprobe_path = (
+                    self._tool("ffprobe")["path"]
+                    if effective_kind in _FFPROBE_KINDS else None
+                )
+                result = validate_media(
+                    path, effective_kind, self._worker, ffprobe_path)
+        except TimeoutError:
+            return "timeout", "exiftool -validate 超时"
+        except Exception as exc:
+            return "error", f"{type(exc).__name__}: {exc}"
+        status, detail = result
+        if status == "invalid" and detail and (
+                "ffprobe: 超时" in detail or "7z t 超时" in detail):
+            return "timeout", detail
+        if status not in ("valid", "invalid", "unsupported"):
+            return "error", (
+                detail or f"校验器返回未知状态：{status!r}")
+        return status, detail
+
+    def close(self) -> None:
+        if self._worker is not None:
+            self._worker.close()
+            self._worker = None
+
+    def __enter__(self) -> FormatValidationSession:
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
 
 
 def validate_format_snapshot(

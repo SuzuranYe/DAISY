@@ -567,6 +567,45 @@ class TestValidators(unittest.TestCase):
                 ("invalid", "7z t 超时"),
             )
 
+    def test_shared_session_keeps_unknown_unsupported_without_tools(self):
+        session = dbverify.FormatValidationSession({})
+        try:
+            spec = session.describe("unknown", "other")
+            self.assertEqual(("none", "daisy-format"), (
+                spec.validator, spec.tool_name))
+            self.assertEqual(
+                ("unsupported", None),
+                session.validate("not-opened.unknown", "other", spec),
+            )
+        finally:
+            session.close()
+
+    def test_shared_session_maps_internal_results_and_tool_timeout(self):
+        good = os.path.join(self.dir, "shared.pdf")
+        with open(good, "wb") as stream:
+            stream.write(b"%PDF-1.4\nstartxref\n0\n%%EOF\n")
+        tools = {
+            "sevenzip": {"path": "fixture-7z", "version": "24.fixture"},
+        }
+        session = dbverify.FormatValidationSession(tools)
+        try:
+            pdf_spec = session.describe("pdf", "document")
+            self.assertEqual(
+                ("valid", None),
+                session.validate(good, "document", pdf_spec),
+            )
+            archive_spec = session.describe("7z", "archive")
+            with patch.object(
+                    dbverify, "validate_sevenzip",
+                    return_value=("invalid", "7z t 超时")):
+                self.assertEqual(
+                    ("timeout", "7z t 超时"),
+                    session.validate(
+                        "fixture.7z", "archive", archive_spec),
+                )
+        finally:
+            session.close()
+
     def test_exiftool_criteria(self):
         # 完好相机 JPG 的合规性警告不应被判为损坏
         ok_lines = [("Warning", "[minor] Odd offset for IFD0 tag 0x011a"),
