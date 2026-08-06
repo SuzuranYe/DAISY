@@ -727,8 +727,13 @@ CLI 现已接入同一业务模型：stat 始终执行，哈希／格式分别�
 v1.5.1 兼容入口；240 文件夹具在两种入口下分别选中完全相同的 100 个文件，缺失／stat
 变化／哈希不一致／工具错误／格式损坏／unsupported 的规范化业务投影也一致。兼容专项
 4／4、安全旧入口 18／18 通过。Full 可选格式阶段及其现有扫描页接线已在阶段 4 完成；最终
-四入口 GUI 合并尚未完成。RAW 深度校验是 2026-08-06 新增且已冻结进本计划的需求，目前
-尚未编码；因此阶段 5 仍为进行中。
+四入口 GUI 合并尚未完成。RAW 第一层现已实现统一运行能力状态、隔离 rawpy 探测和每文件
+`spawn` 深度解码 worker；父进程不导入 rawpy，成功必须经过 `postprocess()` 并返回非空像素
+尺寸，unsupported／解码失败／MemoryError／native-like 退出／timeout 分别分类。动态阈值
+沿用 90s／9 GiB 阶梯，默认继续等待；暂停、跳过和停止只回收本任务精确 worker。合成专项
+连续 3 轮共 36／36 通过。扫描恢复 JSONL、伴随报告、统一核验／Full／ENV／GUI 接线和
+许可明确的真实
+RAW 夹具尚未完成；因此阶段 5 仍为进行中。
 
 ### 阶段 6：跨版本对比
 
@@ -1299,6 +1304,22 @@ v1.5.1 `check-hash`／`check-format` 不同。虽然两者都满足确定性抽�
 unsupported。专项 4／4、CLI 7／7、统一核验 11／11、安全旧核验 18／18、入口契约 1／1
 通过；输入 schema 3 数据库身份不变。安全旧核验明确排除 3 项会自动发现工作区外真实工具
 的用例，因此这个结果证明兼容业务投影，不冒充真实 ExifTool／7-Zip 端到端证明。
+
+### 17.9 RAW 隔离能力与 worker 第一检查点
+
+新增 `Script_DAISY_Lib_ENV_01_Capabilities.py`，以统一
+available／unavailable／incompatible／crashed／timeout 状态描述运行能力；rawpy 探测仅在
+本次创建的 `spawn` 子进程导入模块并检查版本、`imread` 和 `RawPy.postprocess`，崩溃或
+timeout 后只终止并等待该精确进程。新增 `Script_DAISY_Lib_DBS_13_Raw.py`，每个 RAW 候选
+使用独立子进程执行 `imread(...).postprocess()`；像素数组不返回父进程，只有非空尺寸、像素
+数和缓冲字节数可形成 valid。
+
+专项以注入进程覆盖三种常规能力状态、探测崩溃／timeout、实际生产 child 的合成 rawpy
+`postprocess` 路径、unsupported、decode error、MemoryError、native-like 非零退出、默认继续
+等待、跳过、停止和暂停，共 12／12。一次 Windows native-like 测试最初暴露控制管道
+`BrokenPipeError`，已收口为 `worker_crashed` 后全绿。没有导入真实 rawpy 或读取真实 RAW；
+RAW-05 要求的许可／摘要冻结真实夹具仍是发布阻断，不能以合成模块冒充真实 LibRaw 解码。
+本检查点也尚未接入扫描、核验、ENV-01 或 GUI。
 
 ## 十八、完成定义
 

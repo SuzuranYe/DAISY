@@ -769,3 +769,34 @@ seed；哈希和格式的 seed 仍彼此独立。
 测试只使用工作区 `.test_runtime\v1_6_0` 和注入工具结果，没有调用真实
 ExifTool／FFprobe／7-Zip，没有读取用户 `TEMP\` 或影响其它进程。3 项真实工具用例的排除
 意味着当前证据不能声称真实工具端到端兼容；它只证明明确列出的业务投影与控制边界。
+
+## 十五、阶段 5：RAW 隔离能力与 worker（第五检查点）
+
+新增统一运行能力模型和 rawpy／LibRaw 隔离探测：父进程只接收结构化
+available／unavailable／incompatible／crashed／timeout、版本和原因，不在 Tk 主进程或普通
+线程导入 rawpy。探测 timeout／崩溃只回收本次创建的精确 `spawn` 子进程。
+
+新增 RAW 每文件 worker：
+
+- 只在子进程导入 rawpy，执行 `imread(...).postprocess()`，验证宽、高、通道、像素数和缓冲
+  字节数均非空后丢弃数组；父进程不接收像素；
+- unsupported、invalid decode、MemoryError、worker error、native-like crash 和 timeout 分开；
+- timeout 沿用 ExifTool 的默认 90s／每 9 GiB 增加 90s 阶梯；无人操作默认继续等待；
+- 暂停、跳过并记录和停止续传只终止／等待本次精确 worker；事件证据上限为 512 条；
+- RAW 候选使用显式扩展名集合，不把普通未识别类型当问题。
+
+专项修正后连续 3 轮共 36／36，失败 0、跳过 0，并把 `ResourceWarning` 视为错误。首轮 native-like
+退出测试发现 Windows 双向管道的 `poll()` 会抛出 `BrokenPipeError`；生产监管已把握手期和
+结果期管道断裂统一归为 `worker_crashed`。连续复测覆盖：
+
+- 能力 available／unavailable／incompatible／crashed／timeout 和未知能力拒绝；
+- 父进程 `sys.modules` 不新增 rawpy，两个生产模块均无顶层 rawpy import；
+- 生产 child 注入合成 rawpy 后确实调用 `postprocess`，只返回尺寸摘要；
+- unsupported／decode error／MemoryError／native-like 退出分类；
+- 默认继续后晚到成功、默认跳过、默认停止和暂停均精确回收 worker；
+- 0、9 GiB、9 GiB+1 的阈值分别为 90s、90s、180s。
+
+当前没有许可与 SHA-256 冻结的工作区真实 RAW 夹具，也没有调用工作区外 rawpy 或私人照片，
+所以 RAW-05 的真实 LibRaw 解码证据仍未满足，属于发布阻断。扫描恢复 JSONL、最终伴随 JSON、
+Issues 合并、统一核验／Full／ENV-01／GUI 接线也尚未实现；不得把本检查点描述为 RAW 功能
+全部完成。
