@@ -138,7 +138,7 @@ OK
 
 ## 五、阶段结论与未完成项
 
-阶段 0～1 已完成。证据证明统一能力探测层可只读接纳 v1.4.1/schema 3，并且没有改变
+阶段 0～2 已完成。证据证明统一能力探测层可只读接纳 v1.4.1/schema 3，并且没有改变
 schema 3 快照／Diff DDL 或既有输出投影。
 
 以下内容仍未完成，不能因 Reader 已落地而宣称 v1.6.0 完成：
@@ -150,7 +150,7 @@ schema 3 快照／Diff DDL 或既有输出投影。
 - 数据库解析、Issues 新板块和 GUI 四入口；
 - v1.6.0 最终版本号、发布回归、合并、推送与标签。
 
-## 六、阶段 2：行为保持型重构（进行中）
+## 六、阶段 2：行为保持型重构（完成）
 
 第一步新增 `Script_DAISY_Lib_DBS_06_Verify.py`，仅抽取 DBS-31／32 原来重复的：
 
@@ -210,3 +210,21 @@ OK
 ```
 
 失败 0，跳过 0。阶段 2 第 1～3 项完成；大型旧测试文件拆分尚未完成。
+
+第四步按 AST 类边界迁移既有测试，不重写业务断言：
+
+- `TestVerifyHashPatrol`、`TestValidators`、`TestValidateSnapshot` 移入 Verify 专项；
+- `TestExportSnapshot`、`TestExportDiff` 移入 Parse 专项；
+- 类名和测试方法名不变，临时目录改为工作区内的 `_RUNTIME_ROOT`；
+- `Script_DAISY_Test_Unit.py` 从 6766 行降至 6230 行；Verify／Parse 专项分别包含
+  19／11 项测试。
+
+两个专项合计 30 项全部通过。完整发现式回归的用例总数仍为 308，证明没有漏测或重复
+执行：
+
+```text
+Ran 308 tests in 91.228s
+OK
+```
+
+失败 0，跳过 0。阶段 2 全部完成；阶段 3 才开始引入 v1.6.0 新 schema 与状态机。

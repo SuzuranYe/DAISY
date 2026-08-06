@@ -1,15 +1,18 @@
-"""DBS-31／32 共用核验输入模型的行为保持测试。"""
+"""DBS-31／32 核验输入、业务服务和兼容入口的行为保持测试。"""
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
+from unittest.mock import patch
 
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,9 +23,17 @@ _MODULE_DIR = os.path.join(_SCRIPT_DIR, "Module")
 sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR, _MODULE_DIR]
 
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_02_Meta as meta
+import Script_DAISY_Lib_DBS_03_Hash as dbh
 import Script_DAISY_Lib_DBS_06_Verify as dbverify
 import Script_DAISY_Module_DBS_31_Check_Hash as hashcheck
 import Script_DAISY_Module_DBS_32_Check_Format as formatcheck
+import Script_DAISY_Test_Tree as test_tree
+
+
+_MODULE = _MODULE_DIR
+Validate = formatcheck
+tt = test_tree
 
 
 _RUNTIME_ROOT = os.path.join(
@@ -289,6 +300,383 @@ class TestVerificationInputModel(unittest.TestCase):
                 force=True,
             )
         self.assertIn("高32bit指纹不符", str(caught.exception))
+
+
+class TestVerifyHashPatrol(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory(
+            prefix="patrol_", dir=_RUNTIME_ROOT)
+        self.arch = os.path.join(self._td.name, "Arch巡检")
+        os.makedirs(self.arch)
+        for name, data in [("p.bin", b"P" * 4096), ("q.bin", b"q-data"),
+                           ("r.bin", b"r-content-7")]:
+            with open(os.path.join(self.arch, name), "wb") as f:
+                f.write(data)
+        out = os.path.join(self._td.name, "Snap")
+        os.makedirs(out)
+        partial = os.path.join(out, "Scan_P.partial.sqlite")
+        con = core.create_partial_snapshot(partial, [("Arch", self.arch)],
+                                           config={"phase": "test"})
+        core.enumerate_and_reconcile(con)
+        dbh.process_hash_stage(con, "full")
+        con.execute("UPDATE entries SET meta_status='skipped'"
+                    " WHERE meta_status='pending'")
+        con.commit()
+        self.final = core.finalize_snapshot(con, partial, "full")
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_patrol_ok_then_detects_injection(self):
+        vh = importlib.import_module(
+            "Script_DAISY_Module_DBS_31_Check_Hash")
+        rep = vh.patrol(self.final, {"Arch": self.arch},
+                        sample_percent=100.0, full=True)
+        self.assertTrue(rep["ok"])
+        self.assertEqual(rep["stat_missing"], [])
+        self.assertEqual(rep["stat_changed"], [])
+        self.assertEqual(rep["hash_mismatched"], [])
+        self.assertEqual(rep["hash_checked"], 3)
+        # 注入①：同尺寸改内容＋回拨 mtime——stat 层不可见，仅哈希可检出
+        target = os.path.join(self.arch, "p.bin")
+        st = os.stat(target)
+        with open(target, "rb") as f:
+            data = bytearray(f.read())
+        data[0] ^= 0xFF
+        with open(target, "wb") as f:
+            f.write(bytes(data))
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+        # 注入②：文件消失
+        os.remove(os.path.join(self.arch, "q.bin"))
+        rep2 = vh.patrol(self.final, {"Arch": self.arch},
+                         sample_percent=100.0, full=True)
+        self.assertFalse(rep2["ok"])
+        self.assertEqual([m["rel_path"] for m in rep2["stat_missing"]],
+                         ["q.bin"])
+        self.assertEqual([m["rel_path"] for m in rep2["hash_mismatched"]],
+                         ["p.bin"])
+
+    def test_cli_creates_explicit_report_parent(self):
+        report = os.path.join(
+            self._td.name, "new", "nested", "hash_report.json")
+        script = os.path.join(
+            _MODULE, "Script_DAISY_Module_DBS_31_Check_Hash.py")
+        result = subprocess.run(
+            [
+                sys.executable, "-B", script,
+                "--snapshot", self.final,
+                "--root", f"Arch={self.arch}",
+                "--full",
+                "--report", report,
+            ],
+            capture_output=True, timeout=120,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            result.stderr.decode("utf-8", "replace"))
+        self.assertTrue(os.path.isfile(report))
+        with open(report, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            payload["report_metadata"],
+            core.report_metadata("DBS-31 内容哈希核验"),
+        )
+
+    def test_cli_problem_adds_clean_named_markdown_report(self):
+        os.remove(os.path.join(self.arch, "q.bin"))
+        report = os.path.join(self._td.name, "hash_report.json")
+        script = os.path.join(
+            _MODULE, "Script_DAISY_Module_DBS_31_Check_Hash.py")
+        result = subprocess.run(
+            [
+                sys.executable, "-B", script,
+                "--snapshot", self.final,
+                "--root", f"Arch={self.arch}",
+                "--full", "--report", report,
+            ],
+            capture_output=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 1)
+        issue_report = os.path.splitext(report)[0] + "_Issues.md"
+        self.assertTrue(os.path.isfile(report))
+        self.assertTrue(os.path.isfile(issue_report))
+        with open(issue_report, encoding="utf-8") as handle:
+            self.assertIn("q.bin", handle.read())
+
+
+class TestValidators(unittest.TestCase):
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory(
+            prefix="validator_", dir=_RUNTIME_ROOT)
+        self.dir = self._td.name
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_zip_good_truncated_crc_ole(self):
+        import zipfile as _zf
+        payload = b"KNOWN-PAYLOAD-BYTES-" * 8
+        good = os.path.join(self.dir, "good.zip")
+        with _zf.ZipFile(good, "w") as z:
+            z.writestr("a.bin", payload, compress_type=_zf.ZIP_STORED)
+            z.writestr("b.txt", b"hello" * 20)
+        self.assertEqual(Validate.validate_zip(good), ("valid", None))
+        with open(good, "rb") as f:
+            raw = f.read()
+        trunc = os.path.join(self.dir, "trunc.zip")     # 截断→中央目录坏
+        with open(trunc, "wb") as f:
+            f.write(raw[:-30])
+        st, detail = Validate.validate_zip(trunc)
+        self.assertEqual(st, "invalid")
+        self.assertTrue(detail)
+        crcbad = os.path.join(self.dir, "crc.zip")      # 数据区翻转→CRC 层检出
+        pos = raw.find(payload)
+        mut = bytearray(raw)
+        mut[pos] ^= 0xFF
+        with open(crcbad, "wb") as f:
+            f.write(bytes(mut))
+        st, detail = Validate.validate_zip(crcbad)
+        self.assertEqual(st, "invalid")
+        self.assertIn("a.bin", detail)
+        ole = os.path.join(self.dir, "enc.docx")        # OLE 魔数→unsupported
+        with open(ole, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+        st, _ = Validate.validate_zip(ole)
+        self.assertEqual(st, "unsupported")
+
+    def test_pdf_head_tail_xref(self):
+        good = os.path.join(self.dir, "good.pdf")
+        with open(good, "wb") as f:
+            f.write(b"%PDF-1.4\n1 0 obj<<>>endobj\nxref\n0 1\n"
+                    b"trailer<<>>\nstartxref\n9\n%%EOF\n")
+        self.assertEqual(Validate.validate_pdf(good), ("valid", None))
+        noeof = os.path.join(self.dir, "noeof.pdf")
+        with open(noeof, "wb") as f:
+            f.write(b"%PDF-1.4\nstartxref\n9\n")
+        self.assertEqual(Validate.validate_pdf(noeof)[0], "invalid")
+        garbage = os.path.join(self.dir, "garbage.pdf")
+        with open(garbage, "wb") as f:
+            f.write(b"\x00" * 128)
+        self.assertEqual(Validate.validate_pdf(garbage)[0], "invalid")
+
+    def test_sevenzip_t(self):
+        sz = core.discover_tool("sevenzip", None)
+        src = os.path.join(self.dir, "src.bin")
+        with open(src, "wb") as f:
+            f.write(b"seven-zip-data" * 100)
+        arch = os.path.join(self.dir, "t.7z")
+        subprocess.run([sz, "a", arch, src], capture_output=True, check=True)
+        self.assertEqual(Validate.validate_sevenzip(arch, sz), ("valid", None))
+        with open(arch, "rb") as f:
+            raw = f.read()
+        bad = os.path.join(self.dir, "bad.7z")
+        with open(bad, "wb") as f:
+            f.write(raw[:len(raw) // 2])
+        self.assertEqual(Validate.validate_sevenzip(bad, sz)[0], "invalid")
+
+    def test_legacy_doc_and_gif_validator_routing(self):
+        ole = os.path.join(self.dir, "legacy.doc")
+        with open(ole, "wb") as f:
+            f.write(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32)
+        with patch.object(
+                Validate, "validate_sevenzip",
+                return_value=("valid", None)) as sevenzip_check:
+            self.assertEqual(
+                Validate.validate_legacy_office(ole, "7z"),
+                ("valid", None),
+            )
+        sevenzip_check.assert_called_once_with(ole, "7z")
+
+        rtf = os.path.join(self.dir, "rtf-as-doc.doc")
+        with open(rtf, "wb") as f:
+            f.write(b"{\\rtf1 test}")
+        status, detail = Validate.validate_legacy_office(rtf, "7z")
+        self.assertEqual(status, "unsupported")
+        self.assertIn("不是 OLE", detail)
+        self.assertEqual(Validate._pick_validator("doc", "document"), "ole")
+        self.assertEqual(
+            Validate._pick_validator("gif", "image_gif"), "gif")
+        self.assertEqual(
+            Validate._pick_validator("gif", "other"), "gif")
+        self.assertEqual(
+            Validate._pick_validator("jfif", "photo_jpeg"), "media")
+        self.assertEqual(
+            Validate._pick_validator("jfif", "other"), "media")
+
+    def test_gif_ffprobe_success_timeout_and_missing_tool(self):
+        class Worker:
+            @staticmethod
+            def execute(_args):
+                return b""
+
+        success = subprocess.CompletedProcess(
+            [], 0,
+            stdout=b'{"streams":[{"codec_type":"video","codec_name":"gif"}]}',
+            stderr=b"",
+        )
+        with patch.object(
+                Validate.subprocess, "run", return_value=success):
+            self.assertEqual(
+                Validate.validate_media(
+                    "motion.gif", "image_gif", Worker(), "ffprobe"),
+                ("valid", None),
+            )
+        with patch.object(
+                Validate.subprocess, "run",
+                side_effect=subprocess.TimeoutExpired(["ffprobe"], 600)):
+            status, detail = Validate.validate_media(
+                "motion.gif", "image_gif", Worker(), "ffprobe")
+        self.assertEqual(status, "invalid")
+        self.assertIn("ffprobe: 超时", detail)
+        with self.assertRaises(core.PreflightError):
+            Validate.validate_media(
+                "motion.gif", "image_gif", Worker(), None)
+
+    def test_header_only_wav_is_invalid(self):
+        class Worker:
+            @staticmethod
+            def execute(_args):
+                return b""
+
+        with tempfile.TemporaryDirectory(
+            prefix="audio_", dir=_RUNTIME_ROOT,
+        ) as td:
+            wav = os.path.join(td, "empty.wav")
+            with open(wav, "wb") as stream:
+                stream.write(b"RIFF" + b"\x00" * 40)
+            probe = subprocess.CompletedProcess(
+                [], 0,
+                stdout=(b'{"format":{},"streams":['
+                        b'{"codec_type":"audio"}]}'),
+                stderr=b"",
+            )
+            with patch.object(
+                    Validate.subprocess, "run", return_value=probe):
+                status, detail = Validate.validate_media(
+                    wav, "audio", Worker(), "ffprobe")
+        self.assertEqual(status, "invalid")
+        self.assertIn("没有可确认的音频样本", detail)
+
+    def test_sevenzip_timeout_is_reported_not_raised(self):
+        with patch.object(
+                Validate.subprocess, "run",
+                side_effect=subprocess.TimeoutExpired(["7z"], 3600)):
+            self.assertEqual(
+                Validate.validate_sevenzip("slow.7z", "7z"),
+                ("invalid", "7z t 超时"),
+            )
+
+    def test_exiftool_criteria(self):
+        # 完好相机 JPG 的合规性警告不应被判为损坏
+        ok_lines = [("Warning", "[minor] Odd offset for IFD0 tag 0x011a"),
+                    ("Warning", "Missing required JPEG ExifIFD tag 0x9101"
+                                " ComponentsConfiguration"),
+                    ("Warning", "Missing required JPEG IFD0 tag 0x0213")]
+        self.assertEqual(Validate.classify_et_findings(ok_lines), [])
+        for bad in ("JPEG format error",
+                    "Truncated 'mdat' data at offset 0x1f8",
+                    "Error reading meta data",
+                    "Processing JPEG-like data after unknown 998-byte header"):
+            self.assertTrue(
+                Validate.classify_et_findings([("Warning", bad)]), bad)
+        self.assertTrue(
+            Validate.classify_et_findings([("Error", "Unknown file type")]))
+        # minor 前缀豁免（即便文本命中模式）
+        self.assertEqual(Validate.classify_et_findings(
+            [("Warning", "[minor] Truncated PreviewImage")]), [])
+
+    def test_runtime_generated_truncated_png(self):
+        good = os.path.join(self.dir, "generated_good.png")
+        bad = os.path.join(self.dir, "generated_truncated.png")
+        payload = core.build_tiny_png()
+        with open(good, "wb") as f:
+            f.write(payload)
+        with open(bad, "wb") as f:
+            f.write(payload[:-12])       # 动态移除 IEND 块，构造可重复截断
+
+        exiftool = core.discover_tool("exiftool", None)
+        worker = meta.ExifToolWorker(exiftool)
+        try:
+            self.assertEqual(
+                Validate.validate_media(
+                    good, "photo_working", worker, ffprobe=""),
+                ("valid", None),
+            )
+            status, detail = Validate.validate_media(
+                bad, "photo_working", worker, ffprobe="")
+        finally:
+            worker.close()
+
+        self.assertEqual(status, "invalid")
+        self.assertIn("Truncated PNG image", detail)
+
+
+class _FormatFixture(unittest.TestCase):
+    def setUp(self) -> None:
+        os.makedirs(_RUNTIME_ROOT, exist_ok=True)
+        self._td = tempfile.TemporaryDirectory(
+            prefix="format_", dir=_RUNTIME_ROOT)
+        self.base = self._td.name
+        self.old_tree = os.path.join(self.base, "Tree")
+        self.snaps = os.path.join(self.base, "Snapshots")
+        os.makedirs(self.old_tree)
+        os.makedirs(self.snaps)
+
+    def tearDown(self) -> None:
+        self._td.cleanup()
+
+    def snap(self, tree: str, name: str, **kwargs) -> str:
+        kwargs.setdefault("label", "T")
+        return test_tree.build_snapshot(
+            tree, self.snaps, name, **kwargs)
+
+
+class TestValidateSnapshot(_FormatFixture):
+    def test_end_to_end_mixed_tree(self):
+        import zipfile as _zf
+        with _zf.ZipFile(os.path.join(self.old_tree, "ok.zip"), "w",
+                         _zf.ZIP_DEFLATED) as z:
+            z.writestr("m.txt", b"zip-member" * 30)
+        with open(os.path.join(self.old_tree, "ok.zip"), "rb") as f:
+            raw = f.read()
+        with open(os.path.join(self.old_tree, "bad.zip"), "wb") as f:
+            f.write(raw[:-25])
+        with open(os.path.join(self.old_tree, "doc.pdf"), "wb") as f:
+            f.write(b"%PDF-1.4\nxref\nstartxref\n9\n%%EOF\n")
+        png = core.build_tiny_png()
+        tt.write(self.old_tree, "generated_good.png", png)
+        tt.write(self.old_tree, "generated_truncated.png", png[:-12])
+        tt.write(self.old_tree, "note.txt", b"plain")
+        tt.write(self.old_tree, "gone.bin", b"will-vanish")
+        snap = self.snap(self.old_tree, "val", hash_mode="none")
+        os.remove(os.path.join(self.old_tree, "gone.bin"))
+        rep = Validate.validate_snapshot(snap, {"T": self.old_tree},
+                                         report_dir=self.base)
+        by = {r["rel_path"]: r for r in rep["rows"]}
+        self.assertEqual(by["ok.zip"]["status"], "valid")
+        self.assertEqual(by["bad.zip"]["status"], "invalid")
+        self.assertEqual(by["doc.pdf"]["status"], "valid")
+        self.assertEqual(by["generated_good.png"]["status"], "valid")
+        self.assertEqual(by["generated_truncated.png"]["status"], "invalid")
+        self.assertIn("Truncated PNG image",
+                      by["generated_truncated.png"]["detail"])
+        self.assertEqual(by["note.txt"]["status"], "unsupported")
+        self.assertEqual(by["gone.bin"]["status"], "missing")
+        self.assertFalse(rep["ok"])
+        self.assertEqual(
+            rep["report_metadata"],
+            core.report_metadata("DBS-32 文件结构核验"),
+        )
+        self.assertTrue(any(
+            path.endswith("_Info.csv") for path in rep["files"]))
+        for suffix in (".json", ".csv", ".md"):
+            self.assertTrue(any(f.endswith(suffix) for f in rep["files"]),
+                            suffix)
+        self.assertRegex(                        # 报告名遵循当前命名体系；
+            os.path.basename(rep["files"][0]),   # 问题状态只在报告内容中
+            r"^T_Check_Format_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
+            r"\.\d{6}_[0-9a-f]{8}\.json$")
 
 
 if __name__ == "__main__":
