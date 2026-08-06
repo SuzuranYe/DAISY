@@ -1,15 +1,17 @@
 """DAISY DBS 哈希模块：三模式＋溯源＋独立实现抽验。
 
 实现 full／incremental／none 三种模式、五项复用条件、计算溯源、
-无固定超时的 stall 观测和 PowerShell Get-FileHash 独立抽验。
+schema 3 既有 stall 观测、schema 4 受控工作进程和 PowerShell 独立抽验。
 哈希 valid 的条件是摘要非空、读取字节等于文件大小，并且读取前后
 size 和 mtime 一致。
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import platform
 import random
@@ -21,19 +23,27 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Callable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_05_Reader as dbreader
+import Script_DAISY_Lib_DBS_08_State as dbstate
 
 HASH_TOOL = "python-hashlib"
 HASH_TOOL_VERSION = platform.python_version()
+HASH_TIMEOUT_STEP_BYTES = 9 * 1024 ** 3
+HASH_TIMEOUT_STEP_SECONDS = 90
+HASH_STALL_SECONDS = 30
+HASH_TIMEOUT_DECISIONS = frozenset((
+    "continue_waiting", "skip_and_record", "stop_and_resume",
+))
 
 
 # === 单文件流式哈希 ===
 def hash_one_file(path: str, expected_size: int | None = None,
                   chunk_bytes: int = core.HASH_CHUNK_BYTES,
-                  on_chunk=None) -> dict:
+                  on_chunk=None, _metrics: dict | None = None) -> dict:
     """流式 SHA-256＋前后 stat 一致性。返回 hashes 行所需全部字段。
 
     expected_size 为枚举登记的 size_bytes；不符（读前或读后）判 unstable。
@@ -64,7 +74,15 @@ def hash_one_file(path: str, expected_size: int | None = None,
     try:
         with open(ext, "rb") as f:
             while True:
-                b = f.read(chunk_bytes)
+                if _metrics is None:
+                    b = f.read(chunk_bytes)
+                else:
+                    read_started = time.monotonic()
+                    b = f.read(chunk_bytes)
+                    _metrics["active_read_seconds"] = (
+                        float(_metrics.get("active_read_seconds", 0.0))
+                        + time.monotonic() - read_started
+                    )
                 if not b:
                     break
                 h.update(b)
@@ -135,6 +153,1185 @@ class StallWatchdog:
     def stop(self) -> None:
         self._stopped.set()
         self._t.join(timeout=2.0)
+
+
+@dataclass(frozen=True)
+class TimeoutChoice:
+    decision: str
+    source: str
+
+
+class AtomicTimeoutDecision:
+    """一次 threshold episode 只接受第一个用户或预设决定。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._choice: TimeoutChoice | None = None
+
+    def choose(self, decision: str, source: str = "user") -> bool:
+        if decision not in HASH_TIMEOUT_DECISIONS:
+            raise ValueError(f"未知 timeout 决策：{decision}")
+        if source not in dbstate.DECISION_SOURCES or source == "none":
+            raise ValueError(f"未知 timeout 决策来源：{source}")
+        with self._lock:
+            if self._choice is not None:
+                return False
+            self._choice = TimeoutChoice(decision, source)
+            return True
+
+    def resolve(self, default_decision: str) -> TimeoutChoice:
+        if default_decision not in HASH_TIMEOUT_DECISIONS:
+            raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+        default_source = (
+            "default" if default_decision == "continue_waiting"
+            else "advanced_policy"
+        )
+        with self._lock:
+            if self._choice is None:
+                self._choice = TimeoutChoice(
+                    default_decision, default_source)
+            return self._choice
+
+
+class HashWorkerControl:
+    """控制线程写入一次暂停或停止请求；第一个请求胜出。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._action: tuple[str, str] | None = None
+
+    def _request(self, action: str, source: str) -> bool:
+        if action not in ("pause", "stop"):
+            raise ValueError(f"未知 worker 控制动作：{action}")
+        if source not in dbstate.DECISION_SOURCES or source == "none":
+            raise ValueError(f"未知 worker 控制来源：{source}")
+        with self._lock:
+            if self._action is not None:
+                return False
+            self._action = (action, source)
+            return True
+
+    def request_pause(self, source: str = "user") -> bool:
+        return self._request("pause", source)
+
+    def request_stop(self, source: str = "user") -> bool:
+        return self._request("stop", source)
+
+    def current(self) -> tuple[str, str] | None:
+        with self._lock:
+            return self._action
+
+
+@dataclass(frozen=True)
+class HashWorkerOutcome:
+    outcome: str
+    result: dict[str, object] | None
+    decision: str
+    decision_source: str
+    size_bytes: int
+    bytes_read: int
+    final_offset: int
+    elapsed_seconds: float
+    active_read_seconds: float
+    stall_count: int
+    longest_stall_seconds: float
+    first_stall_offset: int | None
+    last_stall_offset: int | None
+    threshold_count: int
+    worker_pid: int
+    worker_exitcode: int | None
+    worker_reaped: bool
+    events: tuple[dict[str, object], ...]
+
+    def performance(self) -> dict[str, object]:
+        return {
+            "origin": "computed",
+            "size_bytes": self.size_bytes,
+            "bytes_read": self.bytes_read,
+            "elapsed_seconds": self.elapsed_seconds,
+            "active_read_seconds": self.active_read_seconds,
+            "stall_count": self.stall_count,
+            "longest_stall_seconds": self.longest_stall_seconds,
+            "first_stall_offset": self.first_stall_offset,
+            "last_stall_offset": self.last_stall_offset,
+            "final_offset": self.final_offset,
+            "ended_reason": self.outcome,
+        }
+
+
+def hash_no_progress_timeout_for_size(
+    size_bytes: int,
+    *,
+    minimum_seconds: float = HASH_TIMEOUT_STEP_SECONDS,
+    step_bytes: int = HASH_TIMEOUT_STEP_BYTES,
+    seconds_per_step: float = HASH_TIMEOUT_STEP_SECONDS,
+) -> float:
+    """返回无进展阈值；9 GiB 整数边界仍属于前一个 90 秒档。"""
+    size = int(size_bytes)
+    if size < 0:
+        raise ValueError("size_bytes 不能小于 0")
+    if minimum_seconds <= 0 or step_bytes <= 0 or seconds_per_step <= 0:
+        raise ValueError("timeout policy 参数必须大于 0")
+    steps = max(1, math.ceil(size / step_bytes))
+    return float(max(minimum_seconds, steps * seconds_per_step))
+
+
+def _hash_worker_main(
+    connection,
+    path: str,
+    expected_size: int | None,
+    chunk_bytes: int,
+) -> None:
+    metrics: dict[str, float] = {"active_read_seconds": 0.0}
+
+    def progress(bytes_read: int) -> None:
+        connection.send({
+            "kind": "progress",
+            "bytes_read": int(bytes_read),
+            "active_read_seconds": float(metrics["active_read_seconds"]),
+        })
+
+    try:
+        connection.send({"kind": "ready"})
+        result = hash_one_file(
+            path,
+            expected_size=expected_size,
+            chunk_bytes=chunk_bytes,
+            on_chunk=progress,
+            _metrics=metrics,
+        )
+        connection.send({
+            "kind": "result",
+            "result": result,
+            "active_read_seconds": float(metrics["active_read_seconds"]),
+        })
+    except BaseException as exc:
+        try:
+            connection.send({
+                "kind": "crash",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "active_read_seconds": float(metrics["active_read_seconds"]),
+            })
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        connection.close()
+
+
+def _finish_owned_worker(
+    process,
+    *,
+    terminate: bool,
+    join_seconds: float = 2.0,
+) -> tuple[int | None, bool]:
+    if terminate and process.is_alive():
+        process.terminate()
+    process.join(join_seconds)
+    if process.is_alive() and hasattr(process, "kill"):
+        process.kill()
+        process.join(join_seconds)
+    reaped = not process.is_alive()
+    exitcode = process.exitcode
+    if reaped:
+        process.close()
+    return exitcode, reaped
+
+
+def run_hash_worker(
+    path: str,
+    *,
+    expected_size: int | None = None,
+    chunk_bytes: int = core.HASH_CHUNK_BYTES,
+    stall_seconds: float = HASH_STALL_SECONDS,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    display_name: str | None = None,
+    control: HashWorkerControl | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], AtomicTimeoutDecision], None] | None = None,
+    poll_seconds: float = 0.05,
+    worker_start_timeout_seconds: float = 30.0,
+    _worker_target=None,
+) -> HashWorkerOutcome:
+    """监督本次创建的单文件 worker；只用精确句柄终止和回收。"""
+    if (chunk_bytes <= 0 or stall_seconds <= 0 or poll_seconds <= 0
+            or worker_start_timeout_seconds <= 0):
+        raise ValueError("chunk、stall 和 poll 参数必须大于 0")
+    if default_decision not in HASH_TIMEOUT_DECISIONS:
+        raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+    normalized = os.path.abspath(os.fspath(path))
+    if expected_size is None:
+        try:
+            size_bytes = int(os.stat(
+                core.to_extended_path(normalized),
+                follow_symlinks=False,
+            ).st_size)
+        except OSError:
+            size_bytes = 0
+    else:
+        size_bytes = int(expected_size)
+    if size_bytes < 0:
+        raise ValueError("expected_size 不能小于 0")
+    threshold_seconds = (
+        hash_no_progress_timeout_for_size(size_bytes)
+        if timeout_seconds is None else float(timeout_seconds)
+    )
+    if threshold_seconds <= 0:
+        raise ValueError("timeout_seconds 必须大于 0")
+
+    label = str(display_name or os.path.basename(normalized))
+    owned_control = control or HashWorkerControl()
+    events: list[dict[str, object]] = []
+
+    def emit(event: str, **payload: object) -> None:
+        record = {"event": event, **payload}
+        events.append(record)
+        if on_event is not None:
+            try:
+                on_event(event, **payload)
+            except Exception:
+                pass
+
+    context = multiprocessing.get_context("spawn")
+    receive, send = context.Pipe(duplex=False)
+    target = _worker_target or _hash_worker_main
+    process = context.Process(
+        target=target,
+        args=(send, normalized, expected_size, int(chunk_bytes)),
+        daemon=True,
+    )
+    try:
+        process.start()
+    except Exception:
+        receive.close()
+        send.close()
+        process.close()
+        raise
+    send.close()
+    worker_pid = int(process.pid)
+    emit("worker_started", file=label, worker_pid=worker_pid)
+    pipe_closed = False
+
+    def pipe_poll(timeout: float = 0.0) -> bool:
+        nonlocal pipe_closed
+        try:
+            return receive.poll(timeout)
+        except (BrokenPipeError, EOFError, OSError):
+            pipe_closed = True
+            return False
+
+    started = time.monotonic()
+    last_progress_at = started
+    timeout_window_started = started
+    bytes_read = 0
+    active_read_seconds = 0.0
+    stall_count = 0
+    longest_stall_seconds = 0.0
+    first_stall_offset = None
+    last_stall_offset = None
+    threshold_count = 0
+    stall_reported = False
+    ready = False
+    outcome = "crashed"
+    result: dict[str, object] | None = None
+    decision = "none"
+    decision_source = "none"
+    terminate = False
+
+    try:
+        while True:
+            now = time.monotonic()
+            action = owned_control.current()
+            if action is not None:
+                control_action, control_source = action
+                outcome = "paused" if control_action == "pause" else "stopped"
+                decision = "stop_and_resume"
+                decision_source = control_source
+                terminate = True
+                emit(
+                    "worker_controlled",
+                    file=label,
+                    action=control_action,
+                    bytes_read=bytes_read,
+                )
+                break
+
+            if pipe_poll(poll_seconds):
+                try:
+                    message = receive.recv()
+                except EOFError:
+                    message = None
+                if not isinstance(message, dict):
+                    if not process.is_alive():
+                        emit("worker_no_result", file=label)
+                        break
+                    continue
+                kind = message.get("kind")
+                if kind == "ready":
+                    ready = True
+                    last_progress_at = time.monotonic()
+                    timeout_window_started = last_progress_at
+                    emit("worker_ready", file=label, worker_pid=worker_pid)
+                    continue
+                if kind == "progress":
+                    next_bytes = max(bytes_read, int(message.get(
+                        "bytes_read", bytes_read)))
+                    active_read_seconds = max(
+                        active_read_seconds,
+                        float(message.get(
+                            "active_read_seconds", active_read_seconds)),
+                    )
+                    if next_bytes > bytes_read:
+                        bytes_read = next_bytes
+                        last_progress_at = time.monotonic()
+                        timeout_window_started = last_progress_at
+                        stall_reported = False
+                        if on_progress is not None:
+                            try:
+                                on_progress(bytes_read, size_bytes, label)
+                            except Exception:
+                                pass
+                    continue
+                if kind == "result":
+                    raw_result = message.get("result")
+                    if isinstance(raw_result, dict):
+                        result = dict(raw_result)
+                        result_bytes = result.get("bytes_read")
+                        if result_bytes is not None:
+                            bytes_read = max(bytes_read, int(result_bytes))
+                        active_read_seconds = max(
+                            active_read_seconds,
+                            float(message.get(
+                                "active_read_seconds", active_read_seconds)),
+                        )
+                        outcome = "completed"
+                        emit(
+                            "worker_completed",
+                            file=label,
+                            status=result.get("status"),
+                            bytes_read=bytes_read,
+                        )
+                        break
+                    emit("worker_bad_result", file=label)
+                    break
+                if kind == "crash":
+                    active_read_seconds = max(
+                        active_read_seconds,
+                        float(message.get(
+                            "active_read_seconds", active_read_seconds)),
+                    )
+                    emit(
+                        "worker_crashed",
+                        file=label,
+                        error_type=message.get("error_type"),
+                        error=message.get("error"),
+                    )
+                    break
+
+            now = time.monotonic()
+            if not ready:
+                if now - started >= worker_start_timeout_seconds:
+                    outcome = "crashed"
+                    terminate = True
+                    emit(
+                        "worker_start_timeout",
+                        file=label,
+                        timeout_seconds=worker_start_timeout_seconds,
+                    )
+                    break
+                if pipe_closed or (
+                        not process.is_alive() and not pipe_poll()):
+                    emit(
+                        "worker_no_result",
+                        file=label,
+                        worker_exitcode=process.exitcode,
+                    )
+                    break
+                continue
+            idle = now - last_progress_at
+            longest_stall_seconds = max(longest_stall_seconds, idle)
+            if idle >= stall_seconds and not stall_reported:
+                stall_reported = True
+                stall_count += 1
+                if first_stall_offset is None:
+                    first_stall_offset = bytes_read
+                last_stall_offset = bytes_read
+                emit(
+                    "stall",
+                    file=label,
+                    idle_seconds=round(idle, 3),
+                    final_offset=bytes_read,
+                )
+
+            timeout_idle = now - timeout_window_started
+            if timeout_idle >= threshold_seconds:
+                threshold_count += 1
+                emit(
+                    "threshold_reached",
+                    file=label,
+                    threshold_seconds=threshold_seconds,
+                    idle_seconds=round(idle, 3),
+                    final_offset=bytes_read,
+                    threshold_count=threshold_count,
+                )
+                arbiter = AtomicTimeoutDecision()
+                if on_threshold is not None:
+                    try:
+                        on_threshold({
+                            "file": label,
+                            "size_bytes": size_bytes,
+                            "bytes_read": bytes_read,
+                            "threshold_seconds": threshold_seconds,
+                            "threshold_count": threshold_count,
+                        }, arbiter)
+                    except Exception as exc:
+                        emit(
+                            "threshold_callback_error",
+                            file=label,
+                            error=str(exc),
+                        )
+                choice = arbiter.resolve(default_decision)
+                decision = choice.decision
+                decision_source = choice.source
+                emit(
+                    "threshold_decided",
+                    file=label,
+                    decision=decision,
+                    decision_source=decision_source,
+                    threshold_count=threshold_count,
+                )
+                if decision == "continue_waiting":
+                    timeout_window_started = time.monotonic()
+                    continue
+                terminate = True
+                outcome = (
+                    "timeout" if decision == "skip_and_record"
+                    else "stopped"
+                )
+                break
+
+            if pipe_closed or (
+                    not process.is_alive() and not pipe_poll()):
+                emit(
+                    "worker_no_result",
+                    file=label,
+                    worker_exitcode=process.exitcode,
+                )
+                break
+    finally:
+        receive.close()
+        exitcode, reaped = _finish_owned_worker(
+            process, terminate=terminate or outcome != "completed")
+
+    elapsed_seconds = max(0.0, time.monotonic() - started)
+    longest_stall_seconds = max(
+        longest_stall_seconds, time.monotonic() - last_progress_at)
+    return HashWorkerOutcome(
+        outcome=outcome,
+        result=result,
+        decision=decision,
+        decision_source=decision_source,
+        size_bytes=size_bytes,
+        bytes_read=bytes_read,
+        final_offset=bytes_read,
+        elapsed_seconds=elapsed_seconds,
+        active_read_seconds=active_read_seconds,
+        stall_count=stall_count,
+        longest_stall_seconds=longest_stall_seconds,
+        first_stall_offset=first_stall_offset,
+        last_stall_offset=last_stall_offset,
+        threshold_count=threshold_count,
+        worker_pid=worker_pid,
+        worker_exitcode=exitcode,
+        worker_reaped=reaped,
+        events=tuple(events),
+    )
+
+
+def _reset_current_hash(
+    con: sqlite3.Connection,
+    entry_id: int,
+    _attempt_id: int,
+) -> None:
+    con.execute(
+        "DELETE FROM hashes WHERE entry_id=? AND algorithm='sha256'",
+        (entry_id,),
+    )
+    con.execute(
+        "DELETE FROM errors WHERE entry_id=? AND stage='hash'"
+        " AND error_code IN"
+        " ('hash_failed','hash_timeout','hash_worker_crash')",
+        (entry_id,),
+    )
+
+
+def _synthetic_failed_hash(
+    size_bytes: int,
+    bytes_read: int,
+    chunk_bytes: int,
+    reason: str,
+) -> dict[str, object]:
+    now = core.now_utc_iso()
+    return {
+        "hash_hex": None,
+        "bytes_read": bytes_read,
+        "chunk_bytes": chunk_bytes,
+        "started_at_utc": now,
+        "finished_at_utc": now,
+        "pre_size": size_bytes,
+        "pre_mtime_utc": None,
+        "post_size": None,
+        "post_mtime_utc": None,
+        "status": "failed",
+        "failure_reason": reason,
+    }
+
+
+def _validated_worker_hash(
+    outcome: HashWorkerOutcome,
+    chunk_bytes: int,
+) -> tuple[dict[str, object], str | None]:
+    if outcome.outcome != "completed" or outcome.result is None:
+        reason = {
+            "timeout": "no_progress_timeout",
+            "paused": "pause_requested",
+            "stopped": "stop_and_resume",
+            "crashed": "worker_crashed_without_result",
+        }.get(outcome.outcome, "worker_failed_without_result")
+        return _synthetic_failed_hash(
+            outcome.size_bytes,
+            outcome.bytes_read,
+            chunk_bytes,
+            reason,
+        ), reason
+    if not outcome.worker_reaped or outcome.worker_exitcode != 0:
+        reason = "worker_not_cleanly_reaped"
+        return _synthetic_failed_hash(
+            outcome.size_bytes,
+            outcome.bytes_read,
+            chunk_bytes,
+            reason,
+        ), reason
+    result = dict(outcome.result)
+    status = result.get("status")
+    if status not in ("valid", "failed", "unstable"):
+        reason = f"worker_invalid_status:{status}"
+        return _synthetic_failed_hash(
+            outcome.size_bytes,
+            outcome.bytes_read,
+            chunk_bytes,
+            reason,
+        ), reason
+    if status == "valid":
+        hash_hex = result.get("hash_hex")
+        valid_hex = (
+            isinstance(hash_hex, str)
+            and re.fullmatch(r"[0-9a-fA-F]{64}", hash_hex) is not None
+        )
+        stable = (
+            result.get("bytes_read") == outcome.size_bytes
+            and result.get("pre_size") == outcome.size_bytes
+            and result.get("post_size") == outcome.size_bytes
+            and result.get("pre_mtime_utc") == result.get("post_mtime_utc")
+        )
+        if not valid_hex or not stable:
+            reason = "worker_invalid_valid_result"
+            return _synthetic_failed_hash(
+                outcome.size_bytes,
+                outcome.bytes_read,
+                chunk_bytes,
+                reason,
+            ), reason
+    return result, None
+
+
+def process_hash_attempt_v4(
+    con: sqlite3.Connection,
+    entry_id: int,
+    path: str,
+    *,
+    chunk_bytes: int = core.HASH_CHUNK_BYTES,
+    stall_seconds: float = HASH_STALL_SECONDS,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    display_name: str | None = None,
+    control: HashWorkerControl | None = None,
+    save_on_pause: bool = False,
+    on_progress: Callable[[int, int, str], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], AtomicTimeoutDecision], None] | None = None,
+    poll_seconds: float = 0.05,
+    _worker_target=None,
+) -> HashWorkerOutcome:
+    """以 schema 4 attempt 包裹单文件 worker，并原子提交当前哈希。"""
+    row = con.execute(
+        "SELECT size_bytes FROM entries WHERE entry_id=?",
+        (entry_id,),
+    ).fetchone()
+    if row is None:
+        raise core.PreflightError(f"哈希 entry_id 不存在：{entry_id}")
+    size_bytes = int(row[0])
+    attempt_id = dbstate.start_attempt(
+        con,
+        entry_id,
+        "hash",
+        tool_name=HASH_TOOL,
+        tool_version=HASH_TOOL_VERSION,
+        _current_reset=_reset_current_hash,
+    )
+    try:
+        outcome = run_hash_worker(
+            path,
+            expected_size=size_bytes,
+            chunk_bytes=chunk_bytes,
+            stall_seconds=stall_seconds,
+            timeout_seconds=timeout_seconds,
+            default_decision=default_decision,
+            display_name=display_name,
+            control=control,
+            on_progress=on_progress,
+            on_event=on_event,
+            on_threshold=on_threshold,
+            poll_seconds=poll_seconds,
+            _worker_target=_worker_target,
+        )
+    except Exception as exc:
+        failed = _synthetic_failed_hash(
+            size_bytes, 0, chunk_bytes, f"worker_start_failed:{exc}")
+
+        def write_start_failure(
+            current: sqlite3.Connection,
+            current_entry_id: int,
+            _current_attempt_id: int,
+        ) -> None:
+            _write_hash_current(
+                current,
+                current_entry_id,
+                failed,
+                "hash_worker_crash",
+                size_bytes,
+            )
+
+        dbstate.finish_attempt(
+            con,
+            attempt_id,
+            "error",
+            end_reason="worker_start_failed",
+            error_code="hash_worker_crash",
+            error_message=str(exc),
+            result={"worker_outcome": "start_failed"},
+            _current_writer=write_start_failure,
+        )
+        raise
+
+    result, validation_error = _validated_worker_hash(
+        outcome, chunk_bytes)
+    result_status = str(result["status"])
+    error_code = None
+    error_message = None
+    if outcome.outcome == "paused" or outcome.outcome == "stopped":
+        attempt_status = "cancelled"
+    elif outcome.outcome == "timeout":
+        attempt_status = "timeout"
+        error_code = "hash_timeout"
+        error_message = str(result["failure_reason"])
+    elif outcome.outcome == "crashed" or validation_error is not None:
+        attempt_status = "error"
+        error_code = "hash_worker_crash"
+        error_message = str(result["failure_reason"])
+    else:
+        attempt_status = {
+            "valid": "succeeded",
+            "failed": "error",
+            "unstable": "unstable",
+        }[result_status]
+        if attempt_status == "error":
+            error_code = "hash_failed"
+            error_message = str(result.get("failure_reason") or "hash_failed")
+
+    def write_current(
+        current: sqlite3.Connection,
+        current_entry_id: int,
+        _current_attempt_id: int,
+    ) -> None:
+        if attempt_status != "cancelled":
+            _write_hash_current(
+                current,
+                current_entry_id,
+                result,
+                error_code,
+                size_bytes,
+            )
+
+    event_counts: dict[str, int] = {}
+    for event in outcome.events:
+        event_name = str(event.get("event"))
+        event_counts[event_name] = event_counts.get(event_name, 0) + 1
+    performance = outcome.performance()
+    performance["ended_reason"] = (
+        str(result.get("failure_reason") or result_status)
+        if outcome.outcome == "completed" else outcome.outcome
+    )
+    dbstate.finish_attempt(
+        con,
+        attempt_id,
+        attempt_status,
+        bytes_read=outcome.bytes_read,
+        final_offset=outcome.final_offset,
+        stall_count=outcome.stall_count,
+        max_stall_seconds=outcome.longest_stall_seconds,
+        decision=outcome.decision,
+        decision_source=outcome.decision_source,
+        end_reason=performance["ended_reason"],
+        error_code=error_code,
+        error_message=error_message,
+        result={
+            "worker_outcome": outcome.outcome,
+            "worker_exitcode": outcome.worker_exitcode,
+            "worker_reaped": outcome.worker_reaped,
+            "threshold_count": outcome.threshold_count,
+            "event_counts": event_counts,
+        },
+        performance=performance,
+        _current_writer=write_current,
+    )
+    if outcome.outcome == "paused":
+        dbstate.request_pause(con, for_exit=save_on_pause)
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "pause_requested",
+            current_entry_id=None,
+            checkpoint={"reason": "worker_pause"},
+        )
+        dbstate.mark_paused(con, for_exit=save_on_pause)
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "paused",
+            current_entry_id=None,
+            checkpoint={"reason": "worker_pause"},
+        )
+    elif outcome.outcome == "stopped":
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "failed_recoverable",
+            current_entry_id=None,
+            checkpoint={"reason": "stop_and_resume"},
+        )
+        dbstate.stop_run(con, reason="stop_and_resume")
+    return outcome
+
+
+def _write_hash_current(
+    con: sqlite3.Connection,
+    entry_id: int,
+    result: dict[str, object],
+    error_code: str | None,
+    size_bytes: int,
+) -> None:
+    con.execute(
+        "INSERT INTO hashes"
+        " (entry_id,algorithm,hash_hex,origin,size_bytes,bytes_read,"
+        " chunk_bytes,started_at_utc,finished_at_utc,pre_size,"
+        " pre_mtime_utc,post_size,post_mtime_utc,status,failure_reason,"
+        " tool,tool_version) VALUES"
+        " (?,'sha256',?,'computed',?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            entry_id,
+            result.get("hash_hex"),
+            int(size_bytes),
+            result.get("bytes_read"),
+            result.get("chunk_bytes"),
+            result.get("started_at_utc"),
+            result.get("finished_at_utc"),
+            result.get("pre_size"),
+            result.get("pre_mtime_utc"),
+            result.get("post_size"),
+            result.get("post_mtime_utc"),
+            result.get("status"),
+            result.get("failure_reason"),
+            HASH_TOOL,
+            HASH_TOOL_VERSION,
+        ),
+    )
+    if error_code is not None:
+        con.execute(
+            "INSERT INTO errors"
+            " (entry_id,stage,error_code,message,occurred_at_utc)"
+            " VALUES (?,'hash',?,?,?)",
+            (
+                entry_id,
+                error_code,
+                result.get("failure_reason"),
+                core.now_utc_iso(),
+            ),
+        )
+
+
+def _commit_reused_hash_v4(
+    con: sqlite3.Connection,
+    entry_id: int,
+    size_bytes: int,
+    previous: dict[str, object],
+    reuse_basis: str,
+) -> None:
+    attempt_id = dbstate.start_attempt(
+        con,
+        entry_id,
+        "hash",
+        tool_name=str(previous["tool"]),
+        tool_version=str(previous["tool_version"]),
+        _current_reset=_reset_current_hash,
+    )
+    source_uuid, source_time = previous["source"]
+
+    def write_current(
+        current: sqlite3.Connection,
+        current_entry_id: int,
+        _current_attempt_id: int,
+    ) -> None:
+        current.execute(
+            "INSERT INTO hashes"
+            " (entry_id,algorithm,hash_hex,origin,source_snapshot_uuid,"
+            " source_computed_at_utc,reuse_basis,size_bytes,bytes_read,"
+            " status,tool,tool_version) VALUES"
+            " (?,'sha256',?,'reused',?,?,?,?,0,'valid',?,?)",
+            (
+                current_entry_id,
+                previous["hash_hex"],
+                source_uuid,
+                source_time,
+                reuse_basis,
+                size_bytes,
+                previous["tool"],
+                previous["tool_version"],
+            ),
+        )
+
+    dbstate.finish_attempt(
+        con,
+        attempt_id,
+        "succeeded",
+        bytes_read=0,
+        final_offset=0,
+        end_reason="reused",
+        result={
+            "reuse_basis": reuse_basis,
+            "source_snapshot_uuid": source_uuid,
+            "source_computed_at_utc": source_time,
+        },
+        performance={
+            "origin": "reused",
+            "size_bytes": size_bytes,
+            "bytes_read": 0,
+            "elapsed_seconds": 0.0,
+            "active_read_seconds": 0.0,
+            "stall_count": 0,
+            "longest_stall_seconds": 0.0,
+            "first_stall_offset": None,
+            "last_stall_offset": None,
+            "final_offset": 0,
+            "ended_reason": "reused",
+        },
+        _current_writer=write_current,
+    )
+
+
+def _apply_hash_stage_control(
+    con: sqlite3.Connection,
+    control_action: tuple[str, str],
+    *,
+    save_on_pause: bool,
+) -> str:
+    action, _source = control_action
+    if action == "pause":
+        dbstate.request_pause(con, for_exit=save_on_pause)
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "pause_requested",
+            current_entry_id=None,
+            checkpoint={"reason": "stage_pause"},
+        )
+        dbstate.mark_paused(con, for_exit=save_on_pause)
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "paused",
+            current_entry_id=None,
+            checkpoint={"reason": "stage_pause"},
+        )
+        return "paused"
+    dbstate.update_stage_checkpoint(
+        con,
+        "hash",
+        "failed_recoverable",
+        current_entry_id=None,
+        checkpoint={"reason": "stage_stop"},
+    )
+    dbstate.stop_run(con, reason="user_stop")
+    return "stopped"
+
+
+def process_hash_stage_v4(
+    con: sqlite3.Connection,
+    mode: str,
+    *,
+    previous: PreviousSnapshot | None = None,
+    retry_mode: str = "pending",
+    chunk_bytes: int = core.HASH_CHUNK_BYTES,
+    stall_seconds: float = HASH_STALL_SECONDS,
+    timeout_seconds: float | None = None,
+    default_decision: str = "continue_waiting",
+    control: HashWorkerControl | None = None,
+    save_on_pause: bool = False,
+    show_current_file: bool = False,
+    on_progress: Callable[[int, dict[str, object]], None] | None = None,
+    on_event: Callable[..., None] | None = None,
+    on_threshold: Callable[
+        [dict[str, object], AtomicTimeoutDecision], None] | None = None,
+    poll_seconds: float = 0.05,
+    max_files: int | None = None,
+    _worker_target=None,
+) -> dict[str, object]:
+    """schema 4 逐文件阶段；不复用 schema 3 的线程内读取路径。"""
+    if mode not in ("none", "incremental", "full"):
+        raise ValueError(f"mode={mode}")
+    if retry_mode not in ("pending", "transient", "all_unsuccessful"):
+        raise ValueError(f"未知 retry_mode：{retry_mode}")
+    if mode == "incremental" and previous is None:
+        raise core.PreflightError("增量模式需要 previous")
+    dbstate.require_v4_connection(con)
+    owned_control = control or HashWorkerControl()
+    if retry_mode in ("transient", "all_unsuccessful"):
+        statuses = "'error'"
+        if retry_mode == "all_unsuccessful":
+            statuses = "'error','unstable','skipped'"
+        con.execute(
+            "UPDATE entries SET hash_status='pending'"
+            f" WHERE hash_status IN ({statuses}) AND is_placeholder=0"
+        )
+    placeholders = con.execute(
+        "UPDATE entries SET hash_status='skipped'"
+        " WHERE hash_status IN ('pending','processing')"
+        " AND is_placeholder=1"
+    ).rowcount
+    con.commit()
+    if mode == "none":
+        skipped = con.execute(
+            "UPDATE entries SET hash_status='skipped'"
+            " WHERE hash_status IN ('pending','processing')"
+        ).rowcount
+        con.commit()
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "skipped",
+            items_done=skipped + placeholders,
+            current_entry_id=None,
+            checkpoint={"reason": "hash_mode_none"},
+        )
+        return {
+            "state": "completed",
+            "total": skipped + placeholders,
+            "processed": skipped,
+            "done": 0,
+            "reused": 0,
+            "error": 0,
+            "timeout": 0,
+            "unstable": 0,
+            "skipped": skipped + placeholders,
+            "bytes_total": 0,
+            "bytes_read": 0,
+        }
+
+    total, bytes_total = con.execute(
+        "SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM entries"
+        " WHERE is_placeholder=0"
+    ).fetchone()
+    processed = con.execute(
+        "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+        " AND hash_status NOT IN ('pending','processing')"
+    ).fetchone()[0]
+    done = con.execute(
+        "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+        " AND hash_status='done'"
+    ).fetchone()[0]
+    reused_count = con.execute(
+        "SELECT COUNT(*) FROM entries e JOIN hashes h ON h.entry_id=e.entry_id"
+        " AND h.algorithm='sha256' WHERE e.is_placeholder=0"
+        " AND e.hash_status='done' AND h.origin='reused'"
+    ).fetchone()[0]
+    timeout_count = con.execute(
+        "SELECT COUNT(*) FROM entries e WHERE e.is_placeholder=0"
+        " AND e.hash_status='error' AND"
+        " (SELECT a.status FROM entry_attempts a"
+        "  WHERE a.entry_id=e.entry_id AND a.stage='hash'"
+        "  ORDER BY a.attempt_number DESC LIMIT 1)='timeout'"
+    ).fetchone()[0]
+    error_count = con.execute(
+        "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+        " AND hash_status='error'"
+    ).fetchone()[0] - int(timeout_count)
+    unstable_count = con.execute(
+        "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+        " AND hash_status='unstable'"
+    ).fetchone()[0]
+    nonplaceholder_skipped = con.execute(
+        "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+        " AND hash_status='skipped'"
+    ).fetchone()[0]
+    completed_bytes = con.execute(
+        "SELECT COALESCE(SUM(size_bytes),0) FROM entries"
+        " WHERE is_placeholder=0 AND hash_status='done'"
+    ).fetchone()[0]
+    stats: dict[str, object] = {
+        "state": "running",
+        "total": int(total),
+        "processed": int(processed),
+        "done": int(done),
+        "reused": int(reused_count),
+        "error": int(error_count),
+        "timeout": int(timeout_count),
+        "unstable": int(unstable_count),
+        "skipped": placeholders + int(nonplaceholder_skipped),
+        "bytes_total": int(bytes_total),
+        "bytes_read": int(completed_bytes),
+    }
+    dbstate.update_stage_checkpoint(
+        con,
+        "hash",
+        "running",
+        items_done=int(processed),
+        items_total=int(total),
+        bytes_done=int(completed_bytes),
+        bytes_total=int(bytes_total),
+        current_entry_id=None,
+    )
+    roots = dict(con.execute("SELECT root_id,root_path FROM roots"))
+    labels = dict(con.execute("SELECT root_id,root_label FROM roots"))
+    last_current_event = 0.0
+    last_progress_event = 0.0
+
+    while True:
+        control_action = owned_control.current()
+        if control_action is not None:
+            stats["state"] = _apply_hash_stage_control(
+                con, control_action, save_on_pause=save_on_pause)
+            break
+        row = con.execute(
+            "SELECT entry_id,root_id,rel_path,path_key,size_bytes,"
+            " modified_at_utc,is_placeholder,volume_serial,file_index_hex"
+            " FROM entries WHERE hash_status='pending'"
+            " ORDER BY root_id,path_key,rel_path LIMIT 1"
+        ).fetchone()
+        if row is None:
+            stats["state"] = "completed"
+            dbstate.update_stage_checkpoint(
+                con,
+                "hash",
+                "completed",
+                items_done=int(stats["processed"]),
+                items_total=int(stats["total"]),
+                bytes_done=int(stats["bytes_read"]),
+                bytes_total=int(stats["bytes_total"]),
+                error_count=int(stats["error"]) + int(stats["timeout"]),
+                current_entry_id=None,
+            )
+            break
+        (entry_id, root_id, rel_path, path_key, size_bytes, modified_at,
+         placeholder, volume_serial, file_index_hex) = tuple(row)
+        if max_files is not None and int(stats["processed"]) >= max_files:
+            raise KeyboardInterrupt
+        now = time.monotonic()
+        if show_current_file and on_event is not None \
+                and now - last_current_event >= 0.1:
+            on_event("current_item", stage="hash", item=rel_path)
+            last_current_event = now
+
+        reused = False
+        if mode == "incremental":
+            prior = previous.lookup(labels[root_id], path_key)
+            can_reuse, basis = reuse_decision(
+                {
+                    "size": size_bytes,
+                    "mtime": modified_at,
+                    "placeholder": placeholder,
+                    "volume_serial": volume_serial,
+                    "file_index_hex": file_index_hex,
+                },
+                prior,
+            )
+            if can_reuse:
+                _commit_reused_hash_v4(
+                    con, entry_id, size_bytes, prior, basis)
+                stats["reused"] = int(stats["reused"]) + 1
+                stats["done"] = int(stats["done"]) + 1
+                stats["bytes_read"] = (
+                    int(stats["bytes_read"]) + int(size_bytes))
+                reused = True
+        outcome = None
+        if not reused:
+            outcome = process_hash_attempt_v4(
+                con,
+                entry_id,
+                os.path.join(roots[root_id], rel_path),
+                chunk_bytes=chunk_bytes,
+                stall_seconds=stall_seconds,
+                timeout_seconds=timeout_seconds,
+                default_decision=default_decision,
+                display_name=rel_path,
+                control=owned_control,
+                save_on_pause=save_on_pause,
+                on_event=on_event,
+                on_threshold=on_threshold,
+                poll_seconds=poll_seconds,
+                _worker_target=_worker_target,
+            )
+            stats["bytes_read"] = (
+                int(stats["bytes_read"]) + outcome.bytes_read)
+            if outcome.outcome in ("paused", "stopped"):
+                stats["state"] = outcome.outcome
+                break
+            attempt_status = con.execute(
+                "SELECT status FROM entry_attempts"
+                " WHERE entry_id=? AND stage='hash'"
+                " ORDER BY attempt_number DESC LIMIT 1",
+                (entry_id,),
+            ).fetchone()[0]
+            if attempt_status == "succeeded":
+                stats["done"] = int(stats["done"]) + 1
+            elif attempt_status == "timeout":
+                stats["timeout"] = int(stats["timeout"]) + 1
+            elif attempt_status == "unstable":
+                stats["unstable"] = int(stats["unstable"]) + 1
+            else:
+                stats["error"] = int(stats["error"]) + 1
+        stats["processed"] = int(stats["processed"]) + 1
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "running",
+            items_done=int(stats["processed"]),
+            items_total=int(stats["total"]),
+            bytes_done=int(stats["bytes_read"]),
+            bytes_total=int(stats["bytes_total"]),
+            error_count=int(stats["error"]) + int(stats["timeout"]),
+            current_entry_id=None,
+        )
+        now = time.monotonic()
+        if on_progress is not None and (
+                now - last_progress_event >= 0.5
+                or int(stats["processed"]) == int(stats["total"])):
+            on_progress(int(stats["processed"]), dict(stats))
+            last_progress_event = now
+    return stats
 
 
 # === 增量复用与计算溯源 ===

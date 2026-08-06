@@ -565,6 +565,19 @@ format check、performance summary、CAS 状态转换、lease、JSONL 截断、�
 
 检查点：永久阻塞夹具可受控结束，不留僵尸进程或损坏事务。
 
+当前进度：第 1～3 项的哈希内核、第 4 项的哈希文件边界，以及第 5 项的 attempt／性能
+摘要接入已完成。单文件读取使用本次任务持有的精确进程句柄；worker 启动握手不计入
+读取 timeout，30 秒 stall 与按 `max(90, ceil(size_bytes / 9 GiB) * 90)` 计算的无进展
+timeout 分离。继续等待会重置本轮 timeout 窗口，不会静默跳过；跳过、停止、暂停、崩溃
+和无结果均先回收本次 worker，再原子提交当前状态与历史 attempt。哈希阶段按文件游标处理，
+支持仅 pending、瞬时失败和全部未成功三种集合，当前文件事件默认关闭并按 100 ms 限频，
+数值进度按 500 ms 限频。
+
+本检查点尚未把现行 DBS-11 生产编排切换到 schema 4，也尚未实现 GUI timeout 决策框、
+恢复卡片和完整扫描各阶段的暂停衔接。因此 `SCANNER_VERSION=1.5.1`、
+`SCHEMA_VERSION=3` 及既有 schema 3 入口继续保持不变；阶段 4 只有在生产编排、GUI 和
+突然终止端到端恢复接入并通过后才算完成。
+
 ### 阶段 5：核验合并与 Full 可选格式校验
 
 1. 重审 DBS-31 前后 stat、无基准、独立哈希和报告结论。

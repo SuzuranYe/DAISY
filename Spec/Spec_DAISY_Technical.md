@@ -49,7 +49,7 @@ STG-11 在底层自动执行同等完整核验。
 | schema 4 DDL、session、attempt、lease、恢复与发布 | `Script\Lib\Script_DAISY_Lib_DBS_08_State.py` 及 `Spec\Spec_DAISY_V1_6_0_Data_Contract.md` |
 | Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_04_Diff.py` 中的 `DIFF_DDL` |
 | 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_DBS_02_Meta.py` |
-| 哈希、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
+| 哈希、schema 4 隔离 worker、timeout、复用和独立抽验 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
 | 数据库类型、schema、模块能力与业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
 | 核验快照准入、stat／哈希、格式判据和报告服务 | `Script\Lib\Script_DAISY_Lib_DBS_06_Verify.py` |
 | 数据库解析模块注册表、CSV 与旧 Excel writer | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
@@ -801,6 +801,11 @@ BitLocker 状态；不得未经检查公开分享。
   流式业务投影比较一次完成与多 session 恢复；运行身份、attempt 和观察时间不进入业务
   投影。现行 DBS-11 生产入口在 worker 接入前仍使用冻结 schema 3，不能把状态层专项通过
   误写成扫描入口已经切换。
+- v1.6.0 阶段 4 的第一检查点已在哈希库中实现 spawn 工作进程、启动握手、30 秒 stall、
+  90 秒／9 GiB 动态无进展 timeout、三种原子处置、精确句柄回收、逐文件 checkpoint、
+  attempt 与低频性能摘要。schema 4 哈希当前结果与历史 attempt 在同一 SQLite 事务提交；
+  暂停或停止中的当前文件不保存 `hashlib` 内部状态，恢复时从文件起点重做。该内核尚未
+  接入 DBS-11 生产编排和 GUI，因此现行 schema 3 扫描语义及版本常量仍未改变。
 
 ### 12.2 信息架构与字段命名
 

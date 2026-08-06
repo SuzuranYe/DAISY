@@ -1395,6 +1395,8 @@ def start_attempt(
     coverage: str = "full",
     validator: str = "unassigned",
     now_utc: str | None = None,
+    _current_reset: Callable[
+        [sqlite3.Connection, int, int], None] | None = None,
 ) -> int:
     """开始一个文件边界 attempt，并把对应当前状态标为 processing。"""
     if stage not in ATTEMPT_STAGES:
@@ -1449,6 +1451,8 @@ def start_attempt(
             ),
         )
         attempt_id = int(cursor.lastrowid)
+        if _current_reset is not None:
+            _current_reset(con, entry_id, attempt_id)
         if stage == "hash":
             con.execute(
                 "UPDATE entries SET hash_status='processing'"
@@ -1585,6 +1589,8 @@ def finish_attempt(
     detail: str | None = None,
     performance: dict[str, object] | None = None,
     now_utc: str | None = None,
+    _current_writer: Callable[
+        [sqlite3.Connection, int, int], None] | None = None,
 ) -> None:
     """结束 attempt；历史行保留，当前结果与性能摘要在同一事务更新。"""
     if status not in ATTEMPT_STATUSES or status == "running":
@@ -1646,6 +1652,8 @@ def finish_attempt(
         if changed != 1:
             raise core.PreflightError(
                 f"attempt {attempt_id} 结束时发生竞态")
+        if _current_writer is not None:
+            _current_writer(con, entry_id, attempt_id)
         if stage == "hash":
             con.execute(
                 "UPDATE entries SET hash_status=? WHERE entry_id=?",

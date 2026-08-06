@@ -137,6 +137,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_Verify.py",
     "Script_DAISY_Test_DBS_Parse.py",
     "Script_DAISY_Test_DBS_State.py",
+    "Script_DAISY_Test_DBS_Hash_Worker.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
 _PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
