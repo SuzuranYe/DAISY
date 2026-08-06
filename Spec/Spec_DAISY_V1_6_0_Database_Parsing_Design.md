@@ -240,9 +240,9 @@ Issues 预览沿用固定证据域板块：枚举、哈希、Exif／元数据、
   支持格式和兼容降级。格式写入器只消费投影行，不直接拼业务 SQL。
 - HTML、XLSX、CSV、JSONL 分别实现流式 writer，共用转义、公式防护、超长值、行数统计、
   取消和 manifest 逻辑；不得继续把所有实现堆入单个 DBS-41 Module 脚本。
-- 新 DBS-41 入口负责参数解析和编排；现有
-  `Script_DAISY_Module_DBS_41_Export_Report.py` 保留为薄兼容包装，转调同一实现，避免旧
-  CLI、测试和自动化脚本立即失效。
+- DBS-41 模块负责两类参数解析和编排；`parse-db` 使用统一 Reader、模块目录和新版执行层，
+  `export-report` 在同一模块中保留薄兼容路径并调用冻结 writer。两者不能强行共用同一个
+  输出 writer，否则无法同时满足新版模块选择和旧 CSV／XLSX 字节契约。
 - 先以兼容层证明现有 v1.5.1 输出投影不变，再逐步切换 GUI 和新增格式；不能在一次提交
   中同时重写 SQL、格式和界面而失去可定位的回归边界。
 
@@ -341,3 +341,24 @@ XLSX 不经 CSV 中转，模块遍历时直接写临时 worksheet XML；首张�
 CRC、全部 XML、冻结、筛选、拆表、工作表重名、单元格截断和无 `<f>` 公式元素。取消时
 XLSX parts、总 staging 与最终报告均不存在。`parse-db` CLI、GUI 模块卡片和“打开报告”
 动作仍未实现，因此 DBS-41 继续标记为实施中。
+
+### 11.4 统一 CLI 检查点
+
+`Script_DAISY_MAIN.py parse-db` 通过内部模式参数进入同一 DBS-41 编排模块，但与旧命令在
+参数解析层隔离：新入口只接受 `--database`、`--preset`、`--include`、`--format` 和
+`--output-dir`；旧 `export-report` 只接受冻结的 `--snapshot／--diff` 和 `--output-dir`。
+因此旧自动化不会静默切换 writer，新入口也不会误收旧输入类型选项。旧帮助页提供迁移提示，
+成功输出及错误前缀维持原契约。
+
+新入口先快速识别数据库并显示类型、schema、兼容模式和五类模块状态，再建立选择计划；
+正式导出仍由执行层重新完成输入 SHA-256、SQLite 完整性和发布指纹检查。`--include` 与
+`--format` 均可重复，且接受逗号分隔；默认使用 `human-summary＋html`。原始载荷被选中时在
+启动正式导出前打印隐私提示。终端按模块显示进度，同时只在 `DAISY_GUI_PROGRESS=1` 时输出
+既有 `progress_start／progress_update／progress_finish` 机器事件，不把事件混入普通 GUI
+日志。CLI 不自动打开浏览器、Excel 或资源管理器。
+
+新增端到端测试覆盖新旧帮助隔离、schema 3 四格式导出、Diff 自动识别、非法预设／模块／
+格式／数据库／参数混用零发布、GUI 事件和冻结旧报告。数据库解析 6 组测试合计 38／38；
+对 2 个 schema 3 快照、2 个 schema 4 快照和 6 个跨版本／变化 Diff 的真实派生数据库又
+完成新 CLI 10／10，所有输入 SHA-256、大小和 mtime 前后不变。GUI 模块卡片、检测状态、
+运行面板切换和打开报告动作仍未实现，所以阶段 7 继续标记为进行中。

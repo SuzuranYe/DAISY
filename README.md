@@ -247,8 +247,10 @@ DBS-11 的 `_Issues.md` 只呈现需要关注的问题。ExifTool 单纯返回�
 - v1.5.1 没有改变数据库 DDL、字段、约束、schema 版本或 DBS 扫描／Diff／生成
   语义；代码层只更新应用版本和报告身份，并优化 UI 与人读输出。STG 的
   `archive_schema_version=3` 与 SQLite schema 只是数字相同，数据模型彼此独立。
-- v1.6.0 的续传状态机、失败重试、工具溯源、哈希超时、旧库兼容、核验审计和报告重构
-  仍是计划项，不应把规划文档解释为 v1.5.1 已具备这些能力。
+- v1.6.0 的续传状态机、失败重试、工具溯源、哈希超时、旧库兼容、核验审计和数据库解析
+  正在 `Codex` 开发分支分阶段实现；其中 `parse-db` CLI 已能只读识别 schema 3／4 快照与
+  Diff，选择模块并导出 HTML／XLSX／CSV／JSONL。当前公开版本和默认 GUI 仍是 v1.5.1，
+  开发分支检查点不等于 v1.6.0 已发布，也不表示尚未完成的 GUI／真实 RAW 验收已经通过。
 
 DBS 与 STG 的完整技术语义见[技术规格](Spec/Spec_DAISY_Technical.md)，版本历史见
 [版本演化](Spec/Spec_DAISY_Version_Evolution.md)。v1.6.0 的已确认需求、实施顺序和完整

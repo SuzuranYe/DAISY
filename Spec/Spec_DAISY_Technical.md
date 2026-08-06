@@ -828,7 +828,7 @@ BitLocker 状态；不得未经检查公开分享。
   Quick／No-Hash 明确未执行的模块是 `unavailable/NULL`，不得伪装为无问题或无记录。
   能力的语义状态与物理投影是否可查询分别记录；旧固定导出可读取结构完整的 schema 3
   空表，但新模块选择界面不得据此把未执行模块列为可选。
-- v1.6.0 阶段 7 已完成前两个检查点：数据库解析目录包含快照 15 个模块、Diff 6 个模块，模块
+- v1.6.0 阶段 7 已完成四个检查点：数据库解析目录包含快照 15 个模块、Diff 6 个模块，模块
   状态只来自统一 Reader；`human-summary`／`full-audit`／`custom` 内容预设与 HTML／XLSX／
   CSV／JSONL 格式正交。只有 available 可由预设或全选选中，empty／unavailable／
   incompatible 保留 `0`／`NULL` 差异和原因。原始载荷模块固定显示隐私提示。Reader 的
@@ -838,7 +838,9 @@ BitLocker 状态；不得未经检查公开分享。
   和 UTF-8 JSON。HTML／XLSX／CSV／JSONL 共用一次模块遍历，生成输入／产物摘要 manifest，
   并在唯一 staging 完成后 no-clobber 发布。HTML 为带 nonce CSP、无外部资源、限定预览的
   自包含报告；XLSX 使用流式 sheet parts，首张概览，支持冻结、筛选、拆表和字符串公式
-  防护。旧 `export-report` 的 CSV／XLSX 顺序和值没有切换；新 CLI 和 GUI 仍未完成。
+  防护。统一 `parse-db --database` 已提供三种内容预设、可重复／逗号分隔模块选择和四格式
+  选择，输出模块进度并安全发布报告；`export-report --snapshot／--diff` 仍走冻结参数和
+  writer，CSV／XLSX 顺序和值没有切换。数据库解析 GUI 仍未完成。
 - v1.6.0 阶段 3 已实现独立 schema 4 状态层：新表保持 schema 3 业务表超集，新增 session、
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用

@@ -48,12 +48,15 @@ COMMANDS = {
                      "DBS-32 文件结构核验：检查结构与可解析性"),
     "export-report": ("Script_DAISY_Module_DBS_41_Export_Report",
                       "DBS-41 结果报告导出：从快照或 Diff 导出报告"),
+    "parse-db": ("Script_DAISY_Module_DBS_41_Export_Report",
+                 "DBS-41 数据库解析：识别模块并导出人读或技术报告"),
     "storage-list": ("Script_DAISY_Module_STG_11_Collect",
                      "STG-11 页内检测：列盘并关联 smartctl"),
     "storage-collect": ("Script_DAISY_Module_STG_11_Collect",
                         "STG-11 硬盘信息登记：只读采集并生成 ZIP"),
 }
 COMMAND_ARGUMENT_PREFIXES = {
+    "parse-db": ("--parse-db-mode",),
     "storage-list": ("--list",),
 }
 
@@ -97,6 +100,7 @@ def guide() -> str:
         "  接盘快速扫描    python .\\Script\\Script_DAISY_MAIN.py quick-scan --root \"E:\\档案2024\"",
         "  盘接上的安心检查 python .\\Script\\Script_DAISY_MAIN.py check-hash --snapshot .\\Output\\Snapshots\\基准.sqlite --root \"档案2024=E:\\档案2024\"",
         "  统一只读核验    python .\\Script\\Script_DAISY_MAIN.py verify --snapshot .\\Output\\Snapshots\\基准.sqlite --root \"档案2024=E:\\档案2024\"",
+        "  数据库解析      python .\\Script\\Script_DAISY_MAIN.py parse-db --database .\\Output\\Snapshots\\基准.sqlite --format html",
         "  完整性复核      full-scan --hash full --metadata-storage normalized 后与首扫快照 diff",
         "  物理硬盘清单    python .\\Script\\Script_DAISY_MAIN.py storage-list",
         "  单盘信息登记    python .\\Script\\Script_DAISY_MAIN.py storage-collect --disk-number 3",

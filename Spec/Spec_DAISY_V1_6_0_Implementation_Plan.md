@@ -972,7 +972,7 @@ rawpy／LibRaw 使用两层夹具：故障、timeout、MemoryError 和 native-li
 | DBP-14 | 大表流式内存上界，不对 entries／diagnostics／diff_entries fetchall |
 | DBP-15 | 取消、SQL 异常、磁盘空间不足、目标冲突和原子发布 |
 | DBP-16 | manifest 记录输入与输出 SHA-256、模块、字段、行数和兼容降级 |
-| DBP-17 | 旧 `export-report` 包装和新 `parse-db` 共享实现，兼容输出有迁移说明 |
+| DBP-17 | 旧 `export-report` 与新 `parse-db` 共享 DBS-41 编排边界；旧 writer 冻结，兼容输出有迁移说明 |
 
 ### 11.9 Issues 与性能候选
 
@@ -1240,7 +1240,7 @@ staging、摘要绑定和 no-clobber，不能为省事回写 SQLite。
 | 4 | 完成 | worker、暂停／保存退出／停止、动态 timeout、扫描发布链、scan CLI 和现有扫描 GUI 接线已落地 |
 | 5 | 进行中 | 统一核验、旧入口投影、RAW 核验／Full 扫描链及 ENV／Full GUI 能力接线已完成；核验页最终 GUI 与真实 RAW 夹具仍未完成 |
 | 6 | 完成 | schema 3／4 四方向 Diff 已切到 Reader 规范化投影，冻结输出 DDL，能力不足不伪装 |
-| 7 | 进行中 | 数据库解析识别、15／6 模块、四格式 writer、manifest 与安全发布已完成；CLI 和 GUI 待完成 |
+| 7 | 进行中 | 数据库解析识别、15／6 模块、四格式 writer、manifest、安全发布和统一 CLI 已完成；GUI 待完成 |
 | 8～9 | 未开始完成性实施 | 四入口 GUI、完整发布文档／回归／版本／tag 均待完成 |
 
 最近一次完整发现式回归是在扫描 GUI 检查点后执行，结果为 465／465；同一阶段的 State、
@@ -1528,6 +1528,32 @@ DBP-11 的人读／工作簿部分以及 GUI 矩阵仍未完成；阶段 7 继�
 
 统一 `parse-db` CLI、GUI 数据库检测／模块卡片／格式选择、运行面板切换和打开结果仍未
 实现；本检查点不能称数据库解析产品入口已经完成。
+
+### 17.18 数据库解析统一 CLI 检查点
+
+统一入口现登记 `parse-db`，并用分发器内部前缀选择 DBS-41 的新版参数解析器。新版只接受
+`--database`、三种 `--preset`、可重复或逗号分隔的 `--include／--format` 和输出目录；旧
+`export-report --snapshot／--diff` 保持冻结解析器、writer、文件顺序、成功文本和退出码。
+两个入口共用一个编排模块，但参数空间不能交叉，避免把兼容包装悄悄变成新版导出。
+
+新入口输出数据库类型、schema、兼容模式、available／empty／unavailable／incompatible／
+invalid 计数、实际模块、格式和隐私提示。执行进度按模块进入普通终端；GUI 子进程模式复用
+既有三类结构化进度事件。成功时显示报告目录、manifest、建议打开的人读入口和产物清单，
+但 CLI 不产生任何自动打开或外部访问动作；取消／Ctrl+C 返回 130，正式执行失败返回 2，
+且依赖执行层只清理本次 staging。
+
+新增 CLI 端到端 6／6；与旧 Parse 11、规划 5、投影 5、执行层 5、人读 6 联合为 38／38。
+真实矩阵对 2 个 v1.4.1/schema 3 快照、2 个 schema 4 快照和 6 个 Diff 逐一经 subprocess
+调用新入口，10／10 生成 HTML／manifest；跨版本 Diff 专项 8／8 与真实变化正反向机器断言
+同时复核。全部输入 SHA-256、大小和 mtime 不变，输出只在 `.test_runtime\v1_6_0`，没有
+访问数据库记录的源路径或其它进程。
+
+外围回归另完成 Unit 225／225、no-clobber 11／11 和 Reader 22／22。Unit 首次执行使用
+180 秒上限，在真实 Tk 比例矩阵中被测试驱动超时；没有断言失败。改用符合历史耗时的
+420 秒上限后，同一 225 项从头完整复跑并在 257 秒通过，未把中断批次计入通过证据。
+
+本检查点仍没有实现 GUI 的数据库检测、模块卡片、格式选择、运行折叠和打开报告动作；
+DBP-03／04 的界面部分、DBP GUI 矩阵及阶段 8～9 发布门槛仍未满足。
 
 ## 十八、完成定义
 
