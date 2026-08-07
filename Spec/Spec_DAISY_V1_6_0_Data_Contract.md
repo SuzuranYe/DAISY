@@ -136,6 +136,25 @@
 - 记录当前 attempt、validator、工具、`stat_match`、详情、时间和结果 revision；
 - 未开启格式校验时保持空表，Reader 报 `unavailable`，不能伪装为执行后 `0` 问题。
 
+### 3.8 外部工具故障证据
+
+外部工具运行证据复用 `entry_attempts`、`stage_checkpoints`、`run_state_events` 和
+`run_sessions`，不得为修复工具故障而修改 schema 3，也不得把工具内部会话状态写进业务表。
+
+- 所有工具统一区分 `source_error`、`tool_error`、`timeout`、`unsupported`、`unstable` 和
+  `not_processed`；其中 `not_processed` 是阶段覆盖语义，不新增到 schema 3 的条目状态枚举；
+- 每个工具故障事件至少记录工具、操作、session／worker PID、退出码或 errno、有限 stderr、
+  重试／重启次数、影响条目范围和剩余未处理数；无法取得的字段明确为 `NULL`；
+- ExifTool 长驻会话另有独立 `tool_session_id`。EOF、进程退出、Broken Pipe、`OSError 22`
+  或协议失效必须使旧会话立即不可复用；新会话通过健康检查后才可接收当前文件的一次重试；
+- 一次性 ffprobe、7-Zip、rawpy／LibRaw、哈希 worker 和 smartctl 不伪造长驻会话恢复；每次只
+  回收本次创建的精确进程，按后端策略有限重试，并进入同一故障分类与熔断器；
+- 同一工具级签名默认连续 3 次失败，或工具重启／健康检查失败时，当前阶段转为
+  `failed_recoverable`。当前及剩余未完成条目保持可重试，不逐项制造错误，快照不得封存；
+- 恢复只重跑未完成或明确允许重试的工具故障条目；已完成哈希不因元数据工具故障重新计算；
+- `_Issues.md` 的“运行／证据问题”只投影聚合事件、受影响数量和有限范围，不把同一工具
+  故障复制为每个源文件的问题。完整机器证据留在上述运行表或不修改 SQLite 的伴随输出。
+
 ## 四、运行状态机
 
 冻结状态：

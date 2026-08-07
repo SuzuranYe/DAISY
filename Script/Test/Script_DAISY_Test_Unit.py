@@ -1217,6 +1217,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.4.2", evolution)
         self.assertIn("DAISY v1.5.0", evolution)
         self.assertIn("DAISY v1.5.1", evolution)
+        self.assertIn("DAISY v1.6.0", evolution)
         self.assertIn("STG-11 硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
@@ -2361,6 +2362,32 @@ class TestGuiArguments(unittest.TestCase):
             app.gui_preferences["last_task_key"], "verify")
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_completion_sound_is_a_persistent_top_menu_toggle(self):
+        root, app = self._real_tk_app()
+        sound_index = next(
+            index
+            for index in range(int(app.settings_menu.index("end")) + 1)
+            if app.settings_menu.type(index) != "separator"
+            and app.settings_menu.entrycget(index, "label")
+            == "任务完成提示音"
+        )
+        self.assertFalse(app.completion_sound_enabled)
+        self.assertFalse(app.completion_sound_enabled_var.get())
+
+        with patch.object(app, "_save_gui_preferences") as save:
+            app.settings_menu.invoke(sound_index)
+            root.update_idletasks()
+            self.assertTrue(app.completion_sound_enabled)
+            self.assertTrue(app.completion_sound_enabled_var.get())
+            save.assert_called_once_with()
+
+            app.settings_menu.invoke(sound_index)
+            root.update_idletasks()
+            self.assertFalse(app.completion_sound_enabled)
+            self.assertFalse(app.completion_sound_enabled_var.get())
+            self.assertEqual(2, save.call_count)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_1080p_both_binary_styles_fit_without_scrolling(self):
         root, app = self._real_tk_app()
         app._select_task("full_scan", save_current=False)
@@ -3434,7 +3461,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.5.1")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.0")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")

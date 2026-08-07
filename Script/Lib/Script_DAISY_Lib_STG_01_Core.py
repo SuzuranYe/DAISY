@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 APP_NAME = "DAISY"
 APP_TITLE = "DAISY 存储设备信息登记"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 APP_AUTHOR = "Suzuran Ye"
 APP_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 ARCHIVE_SCHEMA_VERSION = 3

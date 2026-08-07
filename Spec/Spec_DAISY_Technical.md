@@ -1,7 +1,7 @@
-# DAISY v1.5.1 技术规格
+# DAISY v1.6.0 技术规格
 
 - 状态：**现行规范**。
-- 对应版本：**v1.5.1**。
+- 对应版本：**v1.6.0**。
 - 本文定义 DAISY 的现行统一语义：DBS 获取数据库所描述的文件档案信息，STG
   获取物理硬盘信息；两者共用应用外壳，但保持独立数据模型。DBS 与 STG 的完整
   技术约束均以本文为准。
@@ -11,7 +11,7 @@
 
 ## 一、功能域、编号与权威边界
 
-DAISY v1.5.1 的信息能力分为两个并列功能域：
+DAISY v1.6.0 的信息能力分为两个并列功能域：
 
 - **DBS 数据库档案信息**：获取文件树、大小、时间、File ID、元数据、哈希和
   快照变化，保存为 SQLite 快照或 Diff，并支持核验与导出。
@@ -22,29 +22,25 @@ DAISY v1.5.1 的信息能力分为两个并列功能域：
 写入 DBS 的 SQLite，DBS 也不把物理盘资料嵌入快照；当前版本不自动建立文件条目
 与物理硬盘档案之间的关联。
 
-现行编号、六字名称、GUI、CLI 与对应任务脚本必须一一对应。以下 8 项是
-v1.5.1 的完整用户功能模块集合：
+GUI 使用 6 个六字入口；统一入口组合既有 DBS 能力，冻结入口继续供旧脚本调用：
 
-| 编号 | 六字名称 | CLI | Module 脚本 |
+| GUI 入口 | 现行 CLI | 编排脚本 | 冻结兼容入口 |
 |---|---|---|---|
-| ENV-01 | 运行环境检测 | `env-check` | `Script_DAISY_Module_ENV_01_Env_Check.py` |
-| DBS-11 | 完整档案扫描 | `full-scan` | `Script_DAISY_Module_DBS_11_Full_Scan.py` |
-| DBS-12 | 快速档案扫描 | `quick-scan` | `Script_DAISY_Module_DBS_12_Quick_Scan.py` |
-| DBS-21 | 快照变更分析 | `diff` | `Script_DAISY_Module_DBS_21_Diff.py` |
-| DBS-31 | 内容哈希核验 | `check-hash` | `Script_DAISY_Module_DBS_31_Check_Hash.py` |
-| DBS-32 | 文件结构核验 | `check-format` | `Script_DAISY_Module_DBS_32_Check_Format.py` |
-| DBS-41 | 结果报告导出 | `export-report` | `Script_DAISY_Module_DBS_41_Export_Report.py` |
-| STG-11 | 硬盘信息登记 | `storage-collect` | `Script_DAISY_Module_STG_11_Collect.py` |
+| 运行环境检测 | `env-check` | `Script_DAISY_Module_ENV_01_Env_Check.py` | 无 |
+| 档案扫描 | `scan` | `Script_DAISY_Module_DBS_10_Scan.py` | DBS-11 `full-scan`、DBS-12 `quick-scan` |
+| 快照对比 | `diff` | `Script_DAISY_Module_DBS_21_Diff.py` | 同一入口 |
+| 数据核验 | `verify` | `Script_DAISY_Module_DBS_30_Verify.py` | DBS-31 `check-hash`、DBS-32 `check-format` |
+| 数据库解析 | `parse-db` | `Script_DAISY_Module_DBS_41_Export_Report.py` | DBS-41 `export-report` |
+| 硬盘信息登记 | `storage-collect` | `Script_DAISY_Module_STG_11_Collect.py` | 同一入口 |
 
 `DBS-91 DAISY功能自检` 只属于「高级」维护入口，通过 `unittest` 运行正式测试，
 不占用功能模块或 Module 脚本。`storage-list` 是同一 STG-11 脚本的 `--list` 内部
 准备模式，也不另占编号或脚本。归档核验不再提供独立用户命令；创建 ZIP 后仍由
 STG-11 在底层自动执行同等完整核验。
 
-v1.6.0 开发分支另有不占编号的统一编排脚本
-`Script_DAISY_Module_DBS_10_Scan.py`，由新命令 `scan` 调用。它不是第 9 个业务
-模块，而是 Full／Quick 共用的 schema 4 新建、恢复、控制和发布入口；旧
-`full-scan`／`quick-scan` 在兼容期内仍指向原任务脚本。
+`scan` 与 `verify` 的统一编排脚本不新增业务编号；它们分别组合 DBS-11／12 与
+DBS-31／32。`storage-list` 是 STG-11 页内准备模式。冻结命令保留原参数和业务投影，
+但 GUI 不重复显示这些入口。
 
 文档解释意图和不变量，代码保存容易漂移的精确定义：
 
@@ -67,6 +63,7 @@ v1.6.0 开发分支另有不占编号的统一编排脚本
 | 数据库解析稳定字段与流式业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_15_Parse_Projection.py` |
 | 数据库解析技术 writer、manifest、staging 与 no-clobber 发布 | `Script\Lib\Script_DAISY_Lib_DBS_16_Parse_Run.py` |
 | 数据库解析自包含 HTML 与流式 XLSX 人读投影 | `Script\Lib\Script_DAISY_Lib_DBS_17_Parse_Human.py` |
+| 外部工具统一故障证据、受控一次性进程与连续失败熔断 | `Script\Lib\Script_DAISY_Lib_DBS_18_Tool_Runtime.py` |
 | Python 可选运行能力统一探测 | `Script\Lib\Script_DAISY_Lib_ENV_01_Capabilities.py` |
 | CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本及统一编排脚本的参数解析器 |
@@ -338,9 +335,10 @@ DBS-11 是当前唯一提供正式续传入口的任务。续传只接受 partia
 
 失败或中断时保留 partial 和事件，供诊断或续传。
 
-### 7.4 续传状态机与一致性边界
+### 7.4 冻结 schema 3 续传边界
 
-当前 DBS-11 续传流程如下：
+旧 `full-scan` 的 schema 3 续传流程冻结如下；v1.6.0 GUI 的 `scan` 使用第 12.1 节所述
+schema 4 状态机，不应把两条路径混写：
 
 1. 要求文件名以 `.partial.sqlite` 结尾，取得同名 ScanLock；本机 owner PID 仍存活
    时拒绝，owner 已失效时允许接管；
@@ -377,9 +375,9 @@ row ID 与物理布局后，文件清单、SHA-256、规范化元数据、统计
 时才把条目标为 `error` 并继续；若系统 I/O 一直不返回，当前任务可能长期停在该文件。
 哈希错误率超过 20% 的告警和超过 50% 的整次中止不等于单文件超时机制。
 
-上述限制保持 v1.4.1 扫描语义，不在 v1.5.1 修改。计划中的状态机、锁、失败重试、
-工具溯源、变更失效、输出目录恢复、哈希超时和等价性测试见
-[v1.6.0 可靠性、兼容与报告重构待办](Spec_DAISY_V1_6_0_Backlog.md)。
+上述限制只用于冻结的 schema 3 兼容入口。统一 schema 4 扫描已经实现独立状态机、
+lease、失败重试、工具溯源、输出目录冻结、动态哈希 timeout 和业务投影等价测试；完整
+契约见[v1.6.0 数据契约](Spec_DAISY_V1_6_0_Data_Contract.md)。
 
 ### 7.5 文件名
 
@@ -524,7 +522,7 @@ v1.4.1 只读取当前 schema 3，不读取旧结构，不提供数据库迁移�
 
 ### 10.3 跨版本只读投影
 
-v1.6.0 开发分支的 DBS-21 支持 schema 3／4 的旧旧、旧新、新旧和新新四种方向。输入先由
+v1.6.0 的 DBS-21 支持 schema 3／4 的旧旧、旧新、新旧和新新四种方向。输入先由
 统一 Reader 转成 `daisy-diff-input-v1`，Diff 业务层不直接查询快照物理表。交换方向时，
 added／deleted、old／new 路径、schema 和未配对 root 必须一起反转；枚举失败范围在任一方向
 都保持 `unknown`。
@@ -805,22 +803,23 @@ BitLocker 状态；不得未经检查公开分享。
 
 ### 12.1 版本与兼容性
 
-- 当前应用版本为 `1.5.1`。DBS 新数据库产物继续使用 `schema_version=3`、
-  元数据 profile 7 和 `min_reader_version=1.4.1`，当前实现只读取 schema 3。
+- 当前应用版本为 `1.6.0`。统一 `scan` 新产物使用 `schema_version=4`、
+  `daisy-snapshot-v4` 和独立 `daisy-resume-v1`；冻结的 `full-scan／quick-scan` 入口继续
+  生成 schema 3。元数据 profile 仍为 7，最低旧库读取器基线仍为 `v1.4.1`。
 - v1.5.0 新增 STG 功能域，并统一 Module 与 Lib 脚本的 ENV／DBS／STG 前缀；
   v1.5.1 只优化 UI、交互、人读报告和对应测试。v1.5.1 对 DBS Core 的功能改动
   仅限应用版本与 `Issues.md` 呈现边界；数据库 DDL、字段、约束、schema、扫描、
   Diff、数据库生成和业务语义均未改变。DBS 库文件名与导入路径的统一属于 v1.5.0。
-- `.partial.sqlite` 续传必须同时匹配 `SCANNER_VERSION`、`schema_version`、
-  元数据 profile 和 GPS 表；因此 v1.5.0 及更早版本的未完成 partial 不能由
-  v1.5.1 续传。
-  已完成的 schema 3 封存快照仍可按现有准入规则只读使用。
+- 冻结 schema 3 `.partial.sqlite` 仍要求生成器版本、schema、元数据 profile 和 GPS 表
+  完全匹配；v1.5.1 及更早未完成 partial 不能由 v1.6.0 接管。schema 4 恢复按独立
+  resume contract、冻结配置、session 和 lease 判定，不用 patch 版本替代恢复契约。
+  已完成的 schema 3 封存快照继续只读使用。
 - 项目长期兼容门槛：v1.6.0 及后续版本中，所有接受封存 DBS 快照或 Diff 的功能至少
   必须只读支持 v1.4.1／schema 3。旧库不得原地迁移；缺少新字段时使用明确的能力降级，
   不伪造为 0、空值或成功。该门槛不表示 v1.4.1 程序能够读取未来新 schema，也不把
   v1.4.1 未完成 partial 纳入无条件续传承诺。详细矩阵见
   [v1.6.0 待办](Spec_DAISY_V1_6_0_Backlog.md)。
-- v1.6.0 开发分支已增加统一只读 Reader。它按身份表、schema、封存状态和实际表列识别
+- v1.6.0 使用统一只读 Reader。它按身份表、schema、封存状态和实际表列识别
   快照／Diff／partial，并将模块状态区分为 `available`、`empty`、`unavailable`、
   `incompatible` 和 `invalid`。DBS-21／31／32／41、增量来源和 Issues 读取均通过该层；
   schema 3 的 DDL、数据契约和发布版本身份在阶段 1 未改变。对于 schema 3，Reader 还
@@ -840,28 +839,30 @@ BitLocker 状态；不得未经检查公开分享。
   自包含报告；XLSX 使用流式 sheet parts，首张概览，支持冻结、筛选、拆表和字符串公式
   防护。统一 `parse-db --database` 已提供三种内容预设、可重复／逗号分隔模块选择和四格式
   选择，输出模块进度并安全发布报告；`export-report --snapshot／--diff` 仍走冻结参数和
-  writer，CSV／XLSX 顺序和值没有切换。开发 GUI 已接入后台只读数据库识别、Reader 模块
+  writer，CSV／XLSX 顺序和值没有切换。GUI 已接入后台只读数据库识别、Reader 模块
   状态、预设、四格式选择和标准运行面板切换；历史入口仍保留为隐藏兼容 TaskSpec。
-- v1.6.0 外部原生工具故障边界不改变 SQLite 契约。统一入口仅在非 GUI 任务 worker 中
+- v1.6.0 外部原生工具故障边界不修改 schema 3。统一入口仅在非 GUI 任务 worker 中
   设置 Windows `SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
   SEM_NOOPENFILEERRORBOX`；Tk 主进程、注册表和系统 WER 配置不修改。旧 Full 的 FFprobe
-  调用增加 `CREATE_NO_WINDOW`，并把 Windows 高位退出状态记录为十六进制工具崩溃；新版
-  核验监督器沿用精确句柄、输出上限、timeout 和回收。工具崩溃只能说明本次解析未完成，
-  不能直接证明文件损坏。受控测试已确认标志由任务进程后代继承，但尚未故意制造真实
-  access violation，因此发布前仍需在不越出工作区的安全边界内补足系统错误 UI 验证。
+  调用增加 `CREATE_NO_WINDOW`，Windows 高位退出状态记录为十六进制工具崩溃。统一工具
+  runtime 覆盖启动、监控线程、wait、输出上限、timeout、native 退出和精确回收；ExifTool
+  坏会话会作废、重建并有限重试。连续同签名工具故障默认 3 次后熔断，schema 4 阶段转为
+  `failed_recoverable`，剩余条目保持可重试，Issues 只输出聚合事件。工具崩溃只能说明本次
+  解析未完成，不能直接证明文件损坏。受控测试没有故意触发真实 access violation，因此
+  不能承诺所有第三方二进制绝不会显示自身实现的 UI。
 - v1.6.0 阶段 3 已实现独立 schema 4 状态层：新表保持 schema 3 业务表超集，新增 session、
   attempt、格式当前结果、低频性能摘要、CAS 状态转换、精确 lease、截断事件恢复和发布
   副本。统一 Reader 只把 `run_state=published` 的完整 schema 4 当作普通封存输入，并用
   流式业务投影比较一次完成与多 session 恢复；运行身份、attempt 和观察时间不进入业务
-  投影。schema 4 生产链已经通过新 `scan` CLI 从证据采集运行到发布；开发 GUI 的可见
+  投影。schema 4 生产链已经通过新 `scan` CLI 从证据采集运行到发布；GUI 的可见
   “扫描”页也已切换到该统一入口。旧 `full-scan`／`quick-scan` 命令与隐藏兼容 TaskSpec
   继续使用冻结 schema 3，不得把新页切换误写成旧命令的数据库契约也已改变。
 - v1.6.0 阶段 4 的第一检查点已在哈希库中实现 spawn 工作进程、启动握手、30 秒 stall、
   90 秒／9 GiB 动态无进展 timeout、三种原子处置、精确句柄回收、逐文件 checkpoint、
   attempt 与低频性能摘要。schema 4 哈希当前结果与历史 attempt 在同一 SQLite 事务提交；
   暂停或停止中的当前文件不保存 `hashlib` 内部状态，恢复时从文件起点重做。该内核已接入
-  `DBS_09_Run.py` 的 schema 4 生产链，并由 `scan` CLI 与开发 GUI 可见扫描页调用；旧兼容
-  命令未接入，因此 schema 3 兼容扫描语义及 Core 版本常量仍未改变。
+  `DBS_09_Run.py` 的 schema 4 生产链，并由 `scan` CLI 与 GUI 可见扫描页调用；旧兼容
+  命令未接入，因此 schema 3 兼容扫描业务语义未改变。
 - `DBS_09_Run.py` 进一步封装 schema 4 partial 的 no-clobber 预留、只读恢复预览、
   `<partial>.lease` 明确接管和数据库／lease 双端心跳。partial、publish stem 与 event log
   必须互不相同；同会话暂停后进程消失时，旧 session 先转为 abandoned，再创建 resume
@@ -873,7 +874,7 @@ BitLocker 状态；不得未经检查公开分享。
   上限和严格递增序号；生命周期动作为 first-wins，timeout 决定绑定当前 worker PID。
   同会话暂停后的继续会创建新控制对象并从当前文件起点重试；稍后保存退出通过受审计的
   `paused_saved_for_exit` 动作结束 session。该控制子层已接入 `scan --control-stdin` 生产
-  入口和开发 GUI；扫描页提供暂停／继续、保存退出和停止，统一核验页只提供暂停／继续与
+  入口和 GUI；扫描页提供暂停／继续、保存退出和停止，统一核验页只提供暂停／继续与
   停止，不伪造跨次续传能力。
 - 同一运行层已为枚举、元数据和复扫提供显式受控包装：枚举暂停后重跑临时树对账，元数据
   在单文件提交后停下并从数据库状态恢复全局进度，复扫保存已观察变化后可重跑。数值进度
@@ -894,7 +895,7 @@ BitLocker 状态；不得未经检查公开分享。
   阈值为高置信度。低置信度只留 `read_performance`，高置信度进入同名 Issues；措辞只称
   可疑逻辑路径／时段，明确不能推断物理坏区。
 - `DBS_10_Issues.py` 通过统一 Reader 只读分析 schema 3／4 快照，固定输出枚举、哈希、
-  Exif／元数据、格式、读取性能候选和运行证据六个板块。已执行且无问题为 `0`，未执行、
+  Exif／元数据、格式、RAW 深检、读取性能候选和运行证据七个板块。已执行且无问题为 `0`，未执行、
   旧库未记录或能力不可解释为 `NULL`；unsupported／unknown／unrecognized format 只显示
   去重总数，不显示路径也不单独触发报告。普通 warning、`[minor]` warning、validation
   和低置信度性能样本折叠；明确损坏类 warning 或单文件至少 100 条折叠 warning 才进入
@@ -902,9 +903,8 @@ BitLocker 状态；不得未经检查公开分享。
 - schema 4 发布层可接收只读 Issues builder：先在 `mode=ro` 发布副本上分析并复核摘要
   未变化，再以 UTF-8 无 BOM、LF、no-clobber 创建 sidecar，最后发布 SQLite。报告或
   SQLite 任一目标冲突均不覆盖；SQLite 发布失败时只删除本次新建的 sidecar，保留 sealed
-  partial 供恢复。该能力已接入 schema 4 生产链、新 `scan` CLI 和开发 GUI 的可见扫描页；
-  旧兼容命令仍未切换，且最终兼容／GUI／发布矩阵尚未完成，因而不能据此宣称 v1.6.0
-  已发布。
+  partial 供恢复。该能力已接入 schema 4 生产链、新 `scan` CLI 和 GUI 的可见扫描页；
+  旧兼容命令保持冻结路径。
 
 - `Script_DAISY_Module_DBS_10_Scan.py` 是 schema 4 的首个生产编排入口。新建时冻结
   Full／Quick、格式校验、90 秒／9 GiB 无进展策略和工具身份；恢复前先做只读预览，
@@ -912,8 +912,8 @@ BitLocker 状态；不得未经检查公开分享。
   `--control-stdin` 只读取 `daisy-control-v1` JSONL，不关闭调用方 stdin；本任务的
   lease 心跳在封存前停止并确认线程已退出，避免后台写入改变最终字节；事件日志创建或
   写入失败会阻断扫描／封存。Quick 不调用外部工具，Full 默认关闭格式校验；发布成功、
-  保存退出、手动停止分别返回 0、75、130。开发 GUI 的可见扫描页已经切换到该入口；
-  旧命令仍按 v1.5.1/schema 3 执行，作为冻结兼容路径保留。
+  保存退出、手动停止分别返回 0、75、130。GUI 的可见扫描页已经切换到该入口；
+  旧命令仍按冻结的 v1.5.1 业务语义生成 schema 3，作为兼容路径保留。
 - `sealed_unpublished` 不得通过普通 `resume_run` 降级回扫描阶段。`scan --resume` 会改用
   只发布恢复：在读取源目录或运行工具预检前识别 sealed 状态，创建单独 resume session，
   停止精确心跳后直接从 sealed partial 建立发布副本。失败 session 保留并可再次重试；
@@ -928,9 +928,9 @@ BitLocker 状态；不得未经检查公开分享。
   「环境 ENV」「数据 DBS」「硬盘 STG」。「高级」包含「工具路径」「哈希比例」、
   动态「显示／隐藏命令预览」命令和「DAISY功能自检」。DBS-11 独立哈希抽验与
   DBS-31 内容哈希抽样只改变参数编辑位置，不改变字段、默认值或 CLI 参数。
-- 开发 GUI 的数据域只显示“扫描、对比、核验、数据库解析”4 个用户入口；旧 Full／Quick、
+- GUI 的数据域只显示“扫描、对比、核验、数据库解析”4 个用户入口；旧 Full／Quick、
   哈希／格式核验和报告导出 TaskSpec 继续用于偏好迁移、恢复指针与脚本兼容，不重复显示。
-- 所有功能模块按钮与设置页标题共用同一套六字名称。开发 GUI 中，值域严格为
+- 所有功能模块按钮与设置页标题共用同一套六字名称。GUI 中，值域严格为
   `{False, True}` 的表单项默认使用二态按钮：黄色表示关闭，按下后绿色表示启用；顶部
   「设置 > 开关选项样式」可以把这些开关改为下拉菜单。完整／快速、抽样／全量、预设和
   timeout 处置等多值模式始终使用下拉菜单，不因该偏好改变。切换样式会先收集当前页面
@@ -938,6 +938,9 @@ BitLocker 状态；不得未经检查公开分享。
   RAW 深检在两种样式下都受统一能力探测约束。根标签映射直接显示为文本输入；既有
   `--force`、`--map-root` 默认值和执行语义不变。只读下拉框未展开时拦截鼠标滚轮，滚轮
   只滚动页面，不改变选项。
+- 顶部「设置」菜单提供默认关闭且持久化的“任务完成提示音”。普通任务正常结束或
+  “完成但需要检查”时异步播放一次；失败、暂停、保存退出、停止、依赖安装和物理盘检测
+  准备步骤不播放。提示音失败只写日志，不改变退出码或报告。
 
 常规设置页的字段标题如下；括号表示条件满足时才出现：
 
@@ -986,23 +989,22 @@ BitLocker 状态；不得未经检查公开分享。
 “跳过”。不支持／不适用的文件类型不能为了让进度显得醒目而累加到错误；底层结构化
 状态、Issues 触发规则和 GUI 计数必须使用同一语义边界。
 
-v1.5.1 的进度数据与 UI 刷新是两层机制：子进程的 `Progress.update()` 最多每秒发送
-一次 `progress_update`，阶段开始／完成立即发送；GUI 每 80 ms 清空一次事件队列。
-不确定进度条以 12 ms 步进播放动画，但动画不表示扫描数据按该频率更新。各阶段实际
-回调粒度如下：
+v1.6.0 的生产事件与 UI 绘制使用独立限频：冻结兼容命令的 `Progress.update()` 最多
+每秒发送一次；schema 4 扫描的数值进度最多每 500 ms 发送一次，可选当前文件事件最多
+每 100 ms 发送一次；阶段开始／完成立即发送。GUI 每 80 ms 合并并清空事件队列。未知
+总量时，进度条以 12 ms 步进播放动画，但动画不表示底层扫描以该频率取得新数据。
 
-| 阶段 | 当前回调粒度 | v1.5.1 显示边界 |
+| 阶段 | schema 4 进度来源 | 显示边界 |
 |---|---|---|
-| 枚举 | 每 500 个文件 | 慢目录或不足 500 项时可能长时间没有数值更新 |
-| 哈希 | 每完成 1 个文件 | 单个大文件的 4 MiB 块只驱动 stall 心跳，不推进进度条 |
-| 元数据 | 每 10 个文件 | 单文件解析很慢时中间没有更新 |
-| 复扫 | 无中间回调 | 只有阶段开始和完成 |
-| 独立抽验 | 底层每批 200 项可回调，但 DBS-11 未接入进度条 | 阶段内保持不确定显示 |
-| 预检／封存 | 无中间回调 | 只有阶段开始和完成 |
+| 枚举 | 受控枚举计数，最多 500 ms 一次 | 当前目录调用仍可能暂时阻塞 |
+| 哈希 | worker 块进度＋文件完成，最多 500 ms 一次 | 当前文件可独立以 100 ms 限频显示 |
+| 元数据 | 文件边界累计，最多 500 ms 一次 | 单次外部工具调用期间保持上一数值 |
+| 格式／RAW | 文件终态与受控 worker 事件 | timeout 对话不伪造进度 |
+| 复扫／独立抽验 | 条目累计，最多 500 ms 一次 | 当前文件开关关闭时不发送路径事件 |
+| 封存／发布 | 状态边界 | 无可解释中间总量时使用未知进度 |
 
-因此“最多 1 Hz”不是“保证每秒刷新”。v1.6.0 计划增加当前文件开关、按块限频字节
-进度、全阶段统一遥测与事件合并，见
-[v1.6.0 待办](Spec_DAISY_V1_6_0_Backlog.md)。
+因此“最多每 500 ms”是上限，不是保证每半秒刷新；工具正在处理一个文件而尚无新证据时，
+保持上一数值比伪造变化更准确。
 
 ### 12.4 窗口、DPI 与滚动
 
@@ -1014,8 +1016,8 @@ v1.5.1 的进度数据与 UI 刷新是两层机制：子进程的 `Progress.upda
 
 ### 12.5 偏好、关闭与管理员重启
 
-- 顶部「设置」菜单持久化默认窗口大小、字体族、字号、开关选项样式、空闲关闭确认和
-  最后功能页面。
+- 顶部「设置」菜单持久化默认窗口大小、字体族、字号、开关选项样式、任务完成提示音、
+  空闲关闭确认和最后功能页面。
   正常关闭或管理员重启后只恢复页面，不保存表单路径、硬盘选择或其它任务参数。
   运行或启动中关闭始终确认，不受空闲偏好影响。字体菜单只显示本机已安装候选字体，
   标准字号为默认值；表单、菜单、提示与独立日志窗口同步应用所选字体和字号。
@@ -1033,6 +1035,7 @@ v1.5.1 的进度数据与 UI 刷新是两层机制：子进程的 `Progress.upda
 | `font_family` | `Microsoft YaHei UI` | 首选界面字体；不可用时回退到已安装候选字体 |
 | `font_size_delta` | `0` | 标准 `0`、较大 `1`、特大 `2` |
 | `binary_control_style` | `buttons` | 开／关字段控件；可选 `buttons` 或 `dropdowns` |
+| `completion_sound_enabled` | `false` | 普通任务正常完成后异步播放一次系统提示音 |
 | `confirm_close_when_idle` | `true` | 空闲关闭是否执行第一层确认 |
 | `last_task_key` | `env_check` | 正常关闭或管理员重启后恢复的功能页面 |
 
@@ -1051,14 +1054,12 @@ v1.5.1 的进度数据与 UI 刷新是两层机制：子进程的 `Progress.upda
 
 ### 12.6 报告与其余界面行为
 
-- 「结果报告导出」按输入类型说明产物：封存快照导出文件树、目录、规范化元数据、
-  视频 GPS、媒体流、哈希、压缩包、错误和 Summary 等 CSV；Diff 数据库导出
-  `Diff_summary.md`、`Diff_details.csv`、`Diff_dirs.csv`、
-  `Diff_hash_groups.csv` 与 `Diff_subtrees.csv`。两种输入均额外生成
-  `Report_Excel.xlsx`：原生 OOXML 使用 Unicode 内联字符串、中文工作表、中英字段、
-  冻结表头、筛选和语义列宽；超过 Excel 单表行上限时分表而不静默截断。超过
-  Excel 单元格上限的显示值只在 XLSX 中截短，完整值仍保留在 CSV。CSV 仍为 UTF-8
-  无 BOM／LF，并保留完整技术字段。
+- 「数据库解析」先识别快照或 Diff，再按 Reader 能力选择模块。快照最多 15 个模块，
+  Diff 最多 6 个模块；`human-summary／full-audit／custom` 与 HTML／XLSX／CSV／JSONL
+  正交。HTML 是无网络资源的自包含人读首页；XLSX 使用 Unicode 内联字符串、中文工作表、
+  冻结表头、筛选、语义列宽和超限拆表；CSV 为 UTF-8 无 BOM／LF 的稳定机器字段；JSONL
+  保留嵌套类型和完整值。manifest 固定输入身份、选择、行数和产物摘要。旧
+  `export-report` 继续按冻结顺序生成旧 CSV／XLSX，供已有自动化兼容使用。
 - 「帮助」首项为「联系作者」，显示作者及 GitHub noreply 邮箱；「关于 DAISY」
   显示应用／DBS 生成器版本、DBS SQLite schema、元数据 profile、
   DBS／STG 文件名布局、STG 归档 schema 和 `v1.4.1` 最低读取器版本，并明确完整
@@ -1114,5 +1115,6 @@ v1.5.1 的进度数据与 UI 刷新是两层机制：子进程的 `Progress.upda
 
 可重复执行的回归测试位于 [`Script\Test`](../Script/Test/)；GUI 顶部「高级 >
 DAISY功能自检」可启动同一套测试，覆盖 SQLite schema、数据库约束、快照、Diff、
-GUI 参数映射和 STG 只读／归档边界；它不属于业务任务。v1.5.1 的矩阵、发布门槛和
-实测结果见 [v1.5.1 测试计划](Spec_DAISY_V1_5_1_Test_Plan.md)。
+GUI 参数映射和 STG 只读／归档边界；它不属于业务任务。v1.6.0 的矩阵、发布门槛和
+实测结果见[v1.6.0 实施计划](Spec_DAISY_V1_6_0_Implementation_Plan.md)与
+[v1.6.0 测试记录](Spec_DAISY_V1_6_0_Test_Record.md)。
