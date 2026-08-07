@@ -24,6 +24,7 @@ import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as dbverify
 import Script_DAISY_Lib_DBS_08_State as dbstate
 import Script_DAISY_Lib_DBS_10_Issues as dbissues
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 
 
 LEASE_SUFFIX = ".lease"
@@ -1163,6 +1164,8 @@ def run_metadata_stage_controlled(
     on_progress: Callable[[int, dict[str, object]], None] | None = None,
     on_event: Callable[..., None] | None = None,
     paused_wait_seconds: float = 0.25,
+    tool_circuit_threshold: int =
+    toolruntime.DEFAULT_CIRCUIT_THRESHOLD,
 ) -> dict[str, object]:
     """运行元数据阶段，并只在单文件处理边界接受生命周期动作。"""
     total_entries = int(con.execute(
@@ -1220,16 +1223,79 @@ def run_metadata_stage_controlled(
             on_progress=progress,
             should_stop=should_stop,
             on_current=current_item if show_current_file else None,
+            tool_circuit_threshold=tool_circuit_threshold,
         )
 
-    state, value = _run_controlled_boundary_operation(
-        con,
-        "metadata",
-        router,
-        operation,
-        on_event=on_event,
-        paused_wait_seconds=paused_wait_seconds,
-    )
+    try:
+        state, value = _run_controlled_boundary_operation(
+            con,
+            "metadata",
+            router,
+            operation,
+            on_event=on_event,
+            paused_wait_seconds=paused_wait_seconds,
+        )
+    except dbmeta.MetadataToolCircuitOpen as exc:
+        summary = dict(exc.summary)
+        status_counts = {
+            str(status): int(count)
+            for status, count in con.execute(
+                "SELECT meta_status,COUNT(*) FROM entries"
+                " GROUP BY meta_status")
+        }
+        pending = status_counts.get("pending", 0)
+        processing = status_counts.get("processing", 0)
+        processed = total_entries - pending - processing
+        error_count = (
+            status_counts.get("error", 0)
+            + status_counts.get("timeout", 0)
+        )
+        dbstate.update_stage_checkpoint(
+            con,
+            "metadata",
+            "failed_recoverable",
+            items_done=processed,
+            items_total=total_entries,
+            error_count=error_count,
+            current_entry_id=None,
+            checkpoint=summary,
+        )
+        dbstate.fail_run(
+            con,
+            recoverable=True,
+            error_code="metadata_tool_circuit_open",
+            error_message=str(exc),
+            payload=summary,
+        )
+        router.end()
+        _emit_control_event(
+            on_event,
+            "tool_circuit_open",
+            stage="metadata",
+            **summary,
+        )
+        _emit_control_event(
+            on_event,
+            "stage_failed",
+            stage="metadata",
+            state="failed_recoverable",
+            reason="metadata_tool_circuit_open",
+            tool=str(summary.get("tool") or "external_tool"),
+            processed=processed,
+            total=total_entries,
+            not_processed=pending + processing,
+        )
+        return {
+            "state": "failed_recoverable",
+            "total": total_entries,
+            "processed": processed,
+            "done": status_counts.get("done", 0),
+            "error": status_counts.get("error", 0),
+            "timeout": status_counts.get("timeout", 0),
+            "unstable": status_counts.get("unstable", 0),
+            "not_processed": pending + processing,
+            "tool_failure": summary,
+        }
     if state != "completed":
         return {"state": state}
     stats = dict(value)
@@ -1260,6 +1326,12 @@ def run_metadata_stage_controlled(
         items_total=total_entries,
         error_count=int(stats["error"]) + int(stats["timeout"]),
         current_entry_id=None,
+        checkpoint={
+            "source_error": int(stats.get("source_error") or 0),
+            "tool_error": int(stats.get("tool_error") or 0),
+            "not_processed": 0,
+            "tool_runtime": dict(stats.get("tool_runtime") or {}),
+        },
     )
     _emit_control_event(
         on_event, "stage_finished", stage="metadata", **stats)
@@ -1409,6 +1481,20 @@ def run_format_stage_controlled(
     last_current_event = 0.0
     last_progress_event = 0.0
     factory = _session_factory or dbverify.FormatValidationSession
+    circuit = toolruntime.ConsecutiveToolFailureCircuit()
+
+    def record_format_tool_success(
+        spec: dbverify.FormatValidatorSpec,
+        media_kind: str,
+    ) -> None:
+        if spec.validator in ("ole", "7z"):
+            circuit.record_success("sevenzip")
+        elif spec.validator not in ("zip", "pdf", "none"):
+            circuit.record_success("exiftool")
+            effective_kind = (
+                "image_gif" if spec.validator == "gif" else media_kind)
+            if effective_kind in dbverify._FFPROBE_KINDS:
+                circuit.record_success("ffprobe")
 
     def operation(should_stop: Callable[[], bool]) -> object:
         nonlocal last_current_event, last_progress_event
@@ -1511,6 +1597,7 @@ def run_format_stage_controlled(
                 status = "error"
                 detail = None
                 stat_match = False
+                tool_failure = None
                 try:
                     before = os.stat(
                         extended_path, follow_symlinks=False)
@@ -1529,6 +1616,8 @@ def run_format_stage_controlled(
                     else:
                         status, detail = session.validate(
                             path, str(media_kind), spec)
+                        tool_failure = getattr(
+                            session, "last_tool_failure", None)
                         try:
                             after = os.stat(
                                 extended_path, follow_symlinks=False)
@@ -1544,12 +1633,18 @@ def run_format_stage_controlled(
                             if not stat_match:
                                 status = "unstable"
                                 detail = "校验期间 size／mtime 已改变"
+                                tool_failure = None
                 detail = None if detail is None else str(detail)[:2000]
                 finish_status = attempt_status.get(status, "error")
                 error_code = None
                 if finish_status in (
                         "invalid", "timeout", "error", "unstable"):
-                    error_code = f"format_{finish_status}"
+                    error_code = (
+                        "format_tool_error"
+                        if isinstance(
+                            tool_failure, toolruntime.ToolRuntimeFailure)
+                        else f"format_{finish_status}"
+                    )
                 dbstate.finish_attempt(
                     con,
                     attempt_id,
@@ -1560,6 +1655,11 @@ def run_format_stage_controlled(
                     result={
                         "validator": spec.validator,
                         "status": status,
+                        **({
+                            "tool_failure": tool_failure.as_dict(),
+                        } if isinstance(
+                            tool_failure, toolruntime.ToolRuntimeFailure)
+                           else {}),
                     },
                     stat_match=stat_match,
                     detail=detail,
@@ -1568,6 +1668,84 @@ def run_format_stage_controlled(
                     status if status in counts else "error")
                 counts[final_status] += 1
                 processed += 1
+                if isinstance(
+                        tool_failure, toolruntime.ToolRuntimeFailure):
+                    opened = circuit.record_failure(
+                        int(entry_id), tool_failure)
+                    if opened.opened:
+                        affected_ids = list(opened.entry_ids)
+                        with con:
+                            con.executemany(
+                                "UPDATE format_checks SET status='pending',"
+                                " attempt_id=NULL,tool_name=NULL,"
+                                " tool_version=NULL,stat_match=NULL,detail=NULL,"
+                                " checked_at_utc=NULL WHERE entry_id=?",
+                                [(current_id,) for current_id in affected_ids],
+                            )
+                        counts["error"] = max(
+                            0, counts["error"] - len(affected_ids))
+                        processed = max(0, processed - len(affected_ids))
+                        not_processed = max(0, len(rows) - processed)
+                        payload = {
+                            "reason": "format_tool_circuit_open",
+                            "stage": "format",
+                            "tool_circuit": opened.as_dict(),
+                            "processed": processed,
+                            "total": len(rows),
+                            "not_processed": not_processed,
+                            "tool_failure": tool_failure.as_dict(),
+                        }
+                        dbstate.update_stage_checkpoint(
+                            con,
+                            "format",
+                            "failed_recoverable",
+                            items_done=processed,
+                            items_total=len(rows),
+                            error_count=(
+                                counts["invalid"] + counts["timeout"]
+                                + counts["error"] + counts["unstable"]),
+                            current_entry_id=None,
+                            checkpoint=payload,
+                        )
+                        dbstate.fail_run(
+                            con,
+                            recoverable=True,
+                            error_code="format_tool_circuit_open",
+                            error_message=tool_failure.latest.message,
+                            payload=payload,
+                        )
+                        stats.update({
+                            "state": "failed_recoverable",
+                            "processed": processed,
+                            "not_processed": not_processed,
+                            "tool_circuit": opened.as_dict(),
+                            **counts,
+                        })
+                        _emit_control_event(
+                            on_event,
+                            "tool_circuit_open",
+                            stage="format",
+                            tool=tool_failure.latest.tool,
+                            failure_kind=(
+                                tool_failure.latest.failure_kind),
+                            processed=processed,
+                            total=len(rows),
+                            not_processed=not_processed,
+                            affected=len(affected_ids),
+                        )
+                        _emit_control_event(
+                            on_event,
+                            "stage_failed",
+                            stage="format",
+                            tool=tool_failure.latest.tool,
+                            processed=processed,
+                            total=len(rows),
+                            not_processed=not_processed,
+                        )
+                        return stats
+                else:
+                    record_format_tool_success(
+                        spec, str(media_kind))
                 stats.update({"processed": processed, **counts})
                 failures = (
                     counts["invalid"] + counts["timeout"]
@@ -1619,6 +1797,9 @@ def run_format_stage_controlled(
     if state != "completed":
         return {"state": state}
     stats = dict(value)
+    if stats.get("state") == "failed_recoverable":
+        router.end()
+        return stats
     failures = (
         int(stats["invalid"]) + int(stats["timeout"])
         + int(stats["error"]) + int(stats["unstable"])
@@ -1798,6 +1979,9 @@ def run_hash_stage_controlled(
                 state=outcome,
             )
             return stats
+        if outcome == "failed_recoverable":
+            router.end()
+            return stats
         if outcome != "paused":
             raise core.PreflightError(
                 f"哈希阶段返回未知控制状态：{outcome}")
@@ -1884,6 +2068,68 @@ def _latest_verify_hash_attempts(
             "  AND newer.attempt_number>a.attempt_number)"
         )
     }
+
+
+_VERIFY_HASH_RETRIABLE_TOOL_ERRORS = frozenset((
+    "independent_worker_start_failed",
+    "independent_hash_tool_error",
+    "verify_primary_recheck_start_failed",
+    "verify_primary_recheck_tool_error",
+    "independent_recheck_start_failed",
+))
+
+
+def _verify_hash_attempt_is_terminal(
+    value: tuple[str, str | None, int],
+) -> bool:
+    status, error_code, _bytes_read = value
+    return (
+        status not in ("cancelled", "abandoned")
+        and error_code not in _VERIFY_HASH_RETRIABLE_TOOL_ERRORS
+    )
+
+
+def _verify_hash_runtime_failure(
+    *,
+    tool: str,
+    operation: str,
+    failure_kind: str,
+    message: str | None,
+    pid: int | None = None,
+    returncode: int | None = None,
+    errno: int | None = None,
+    recovered: bool = True,
+) -> toolruntime.ToolRuntimeFailure:
+    return toolruntime.ToolRuntimeFailure(
+        toolruntime.ToolFaultEvidence(
+            tool=tool,
+            operation=operation,
+            failure_kind=failure_kind,
+            message=str(message or f"{tool} 运行故障")[:2048],
+            pid=pid,
+            returncode=returncode,
+            errno=errno,
+        ),
+        recovered=recovered,
+    )
+
+
+def _independent_hash_tool_failure(
+    outcome: dbhash.IndependentHashOutcome,
+) -> toolruntime.ToolRuntimeFailure | None:
+    if not outcome.failure_kind:
+        return None
+    return _verify_hash_runtime_failure(
+        tool="powershell-get-filehash",
+        operation="independent_hash",
+        failure_kind=str(outcome.failure_kind),
+        message=outcome.error,
+        pid=outcome.worker_pid,
+        returncode=outcome.worker_exitcode,
+        recovered=outcome.failure_kind not in (
+            "cleanup_failed", "monitor_start_failed", "supervision_failed",
+        ),
+    )
 
 
 def _mark_hash_verification_unstable(
@@ -2092,7 +2338,7 @@ def run_independent_hash_stage_controlled(
     }
     terminal = {
         entry_id: value for entry_id, value in latest.items()
-        if value[0] not in ("cancelled", "abandoned")
+        if _verify_hash_attempt_is_terminal(value)
     }
     stats: dict[str, object] = {
         "state": "running",
@@ -2137,12 +2383,98 @@ def run_independent_hash_stage_controlled(
     primary_runner = _primary_runner or dbhash.run_hash_worker
     last_current_event = 0.0
     last_progress_event = 0.0
+    circuit = toolruntime.ConsecutiveToolFailureCircuit()
+    fault_bytes: dict[int, int] = {}
+
+    def fail_tool_stage(
+        failure: toolruntime.ToolRuntimeFailure,
+        opened: toolruntime.ToolCircuitSnapshot,
+        *,
+        current_entry_id: int,
+    ) -> dict[str, object]:
+        affected_ids = list(opened.entry_ids)
+        prior_ids = [
+            affected_id for affected_id in affected_ids
+            if affected_id != current_entry_id
+        ]
+        stats["processed"] = max(
+            0, int(stats["processed"]) - len(prior_ids))
+        stats["tool_error"] = max(
+            0, int(stats["tool_error"]) - len(prior_ids))
+        stats["bytes_read"] = max(
+            0,
+            int(stats["bytes_read"])
+            - sum(fault_bytes.get(affected_id, 0) for affected_id in prior_ids),
+        )
+        not_processed = max(
+            0, int(stats["sampled"]) - int(stats["processed"]))
+        payload = {
+            "reason": "verify_hash_tool_circuit_open",
+            "stage": "verify_hash",
+            "tool_circuit": opened.as_dict(),
+            "processed": int(stats["processed"]),
+            "total": int(stats["sampled"]),
+            "not_processed": not_processed,
+            "tool_failure": failure.as_dict(),
+        }
+        dbstate.update_stage_checkpoint(
+            con,
+            "verify_hash",
+            "failed_recoverable",
+            items_done=int(stats["processed"]),
+            items_total=int(stats["sampled"]),
+            bytes_done=int(stats["bytes_read"]),
+            bytes_total=int(stats["bytes_total"]),
+            error_count=(
+                int(stats["mismatched"])
+                + int(stats["tool_error"])
+                + int(stats["timeout"])
+                + int(stats["unstable"])
+            ),
+            current_entry_id=None,
+            checkpoint=payload,
+        )
+        dbstate.fail_run(
+            con,
+            recoverable=True,
+            error_code="verify_hash_tool_circuit_open",
+            error_message=failure.latest.message,
+            payload=payload,
+        )
+        router.end()
+        stats.update({
+            "state": "failed_recoverable",
+            "not_processed": not_processed,
+            "tool_circuit": opened.as_dict(),
+            "tool_failure": failure.as_dict(),
+        })
+        _emit_control_event(
+            on_event,
+            "tool_circuit_open",
+            stage="verify_hash",
+            tool=failure.latest.tool,
+            failure_kind=failure.latest.failure_kind,
+            processed=int(stats["processed"]),
+            total=int(stats["sampled"]),
+            not_processed=not_processed,
+            affected=len(affected_ids),
+        )
+        _emit_control_event(
+            on_event,
+            "stage_failed",
+            stage="verify_hash",
+            state="failed_recoverable",
+            tool=failure.latest.tool,
+            processed=int(stats["processed"]),
+            total=int(stats["sampled"]),
+            not_processed=not_processed,
+        )
+        return stats
 
     for entry_id, size_bytes, root_id, rel_path, recorded, recorded_mtime \
             in selected:
         previous = latest.get(entry_id)
-        if previous is not None and previous[0] not in (
-                "cancelled", "abandoned"):
+        if previous is not None and _verify_hash_attempt_is_terminal(previous):
             continue
         boundary = settle_pending_stage_control(
             con,
@@ -2217,6 +2549,17 @@ def run_independent_hash_stage_controlled(
                 poll_seconds=poll_seconds,
             )
         except Exception as exc:
+            failure = _verify_hash_runtime_failure(
+                tool="powershell-get-filehash",
+                operation="independent_hash",
+                failure_kind="start_failed",
+                message=(
+                    "PowerShell 独立哈希进程无法启动："
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                errno=getattr(exc, "errno", None),
+                recovered=False,
+            )
             dbstate.finish_attempt(
                 con,
                 attempt_id,
@@ -2224,33 +2567,31 @@ def run_independent_hash_stage_controlled(
                 end_reason="independent_worker_start_failed",
                 error_code="independent_worker_start_failed",
                 error_message=str(exc),
-                result={"worker_outcome": "start_failed"},
+                result={
+                    "worker_outcome": "start_failed",
+                    "tool_failure": failure.as_dict(),
+                },
             )
-            dbstate.update_stage_checkpoint(
-                con,
-                "verify_hash",
-                "failed_recoverable",
-                current_entry_id=None,
-                checkpoint={"reason": "worker_start_failed"},
+            fault_bytes[int(entry_id)] = 0
+            opened = circuit.record_failure(int(entry_id), failure)
+            return fail_tool_stage(
+                failure,
+                opened,
+                current_entry_id=int(entry_id),
             )
-            dbstate.fail_run(
-                con,
-                recoverable=True,
-                error_code="independent_worker_start_failed",
-                error_message=str(exc),
-            )
-            raise
 
         final_outcome = independent
         attempt_status = "succeeded"
         error_code = None
         error_message = None
+        tool_failure = _independent_hash_tool_failure(independent)
         result: dict[str, object] = {
             "initial_independent": independent.hash_hex,
             "recorded": recorded,
             "worker_exitcode": independent.worker_exitcode,
             "worker_reaped": independent.worker_reaped,
             "threshold_count": independent.threshold_count,
+            "failure_kind": independent.failure_kind,
         }
         if independent.outcome in ("paused", "save_exit", "stopped"):
             attempt_status = "cancelled"
@@ -2258,12 +2599,19 @@ def run_independent_hash_stage_controlled(
             attempt_status = "timeout"
             error_code = "independent_hash_timeout"
             error_message = independent.error or error_code
-        elif independent.outcome != "completed" \
-                or independent.hash_hex is None:
+            circuit.record_success("powershell-get-filehash")
+        elif tool_failure is not None:
             attempt_status = "error"
             error_code = "independent_hash_tool_error"
             error_message = independent.error or error_code
+        elif independent.outcome != "completed" \
+                or independent.hash_hex is None:
+            attempt_status = "error"
+            error_code = "independent_hash_source_error"
+            error_message = independent.error or error_code
+            circuit.record_success("powershell-get-filehash")
         elif independent.hash_hex != recorded:
+            circuit.record_success("powershell-get-filehash")
             try:
                 primary = primary_runner(
                     path,
@@ -2278,6 +2626,17 @@ def run_independent_hash_stage_controlled(
                     poll_seconds=poll_seconds,
                 )
             except Exception as exc:
+                tool_failure = _verify_hash_runtime_failure(
+                    tool=dbhash.HASH_TOOL,
+                    operation="verify_primary_recheck",
+                    failure_kind="worker_start_failed",
+                    message=(
+                        "主哈希复核 worker 无法启动："
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    errno=getattr(exc, "errno", None),
+                    recovered=False,
+                )
                 attempt_status = "error"
                 error_code = "verify_primary_recheck_start_failed"
                 error_message = str(exc)
@@ -2286,17 +2645,27 @@ def run_independent_hash_stage_controlled(
                 final_outcome = primary
                 result["primary_recheck"] = _verified_primary_digest(primary)
                 result["primary_recheck_outcome"] = primary.outcome
+                result["primary_recheck_failure_kind"] = primary.failure_kind
+                primary_failure = dbhash._hash_worker_tool_failure(primary)
                 if primary.outcome in ("paused", "save_exit", "stopped"):
                     attempt_status = "cancelled"
                 elif primary.outcome == "timeout":
                     attempt_status = "timeout"
                     error_code = "verify_recheck_timeout"
                     error_message = error_code
+                    circuit.record_success(dbhash.HASH_TOOL)
+                elif primary_failure is not None:
+                    tool_failure = primary_failure
+                    attempt_status = "error"
+                    error_code = "verify_primary_recheck_tool_error"
+                    error_message = primary_failure.latest.message
                 elif result["primary_recheck"] is None:
                     attempt_status = "error"
-                    error_code = "verify_primary_recheck_error"
+                    error_code = "verify_primary_recheck_source_error"
                     error_message = error_code
+                    circuit.record_success(dbhash.HASH_TOOL)
                 else:
+                    circuit.record_success(dbhash.HASH_TOOL)
                     try:
                         independent_again = independent_runner(
                             path,
@@ -2312,6 +2681,17 @@ def run_independent_hash_stage_controlled(
                             poll_seconds=poll_seconds,
                         )
                     except Exception as exc:
+                        tool_failure = _verify_hash_runtime_failure(
+                            tool="powershell-get-filehash",
+                            operation="independent_hash_recheck",
+                            failure_kind="start_failed",
+                            message=(
+                                "PowerShell 独立哈希复核进程无法启动："
+                                f"{type(exc).__name__}: {exc}"
+                            ),
+                            errno=getattr(exc, "errno", None),
+                            recovered=False,
+                        )
                         attempt_status = "error"
                         error_code = "independent_recheck_start_failed"
                         error_message = str(exc)
@@ -2323,6 +2703,10 @@ def run_independent_hash_stage_controlled(
                             independent_again.hash_hex
                         result["independent_recheck_outcome"] = \
                             independent_again.outcome
+                        result["independent_recheck_failure_kind"] = \
+                            independent_again.failure_kind
+                        independent_again_failure = \
+                            _independent_hash_tool_failure(independent_again)
                         if independent_again.outcome in (
                                 "paused", "save_exit", "stopped"):
                             attempt_status = "cancelled"
@@ -2330,16 +2714,28 @@ def run_independent_hash_stage_controlled(
                             attempt_status = "timeout"
                             error_code = "verify_recheck_timeout"
                             error_message = error_code
-                        elif independent_again.outcome != "completed" \
-                                or independent_again.hash_hex is None:
+                            circuit.record_success(
+                                "powershell-get-filehash")
+                        elif independent_again_failure is not None:
+                            tool_failure = independent_again_failure
                             attempt_status = "error"
                             error_code = "independent_hash_tool_error"
                             error_message = (
+                                independent_again_failure.latest.message)
+                        elif independent_again.outcome != "completed" \
+                                or independent_again.hash_hex is None:
+                            attempt_status = "error"
+                            error_code = "independent_hash_source_error"
+                            error_message = (
                                 independent_again.error or error_code)
+                            circuit.record_success(
+                                "powershell-get-filehash")
                         elif result["primary_recheck"] == recorded \
                                 and independent_again.hash_hex == recorded:
                             attempt_status = "succeeded"
                             result["initial_mismatch_resolved"] = True
+                            circuit.record_success(
+                                "powershell-get-filehash")
                         else:
                             attempt_status = "unstable"
                             error_code = "verify_mismatch"
@@ -2351,6 +2747,13 @@ def run_independent_hash_stage_controlled(
                                 "independent_recheck="
                                 f"{independent_again.hash_hex}"
                             )
+                            circuit.record_success(
+                                "powershell-get-filehash")
+        else:
+            circuit.record_success("powershell-get-filehash")
+
+        if tool_failure is not None:
+            result["tool_failure"] = tool_failure.as_dict()
 
         if attempt_status not in ("cancelled", "timeout", "error"):
             try:
@@ -2402,6 +2805,15 @@ def run_independent_hash_stage_controlled(
             performance=performance,
             _current_writer=write_unstable,
         )
+        if tool_failure is not None:
+            fault_bytes[int(entry_id)] = int(independent.bytes_read)
+            opened = circuit.record_failure(int(entry_id), tool_failure)
+            if opened.opened:
+                return fail_tool_stage(
+                    tool_failure,
+                    opened,
+                    current_entry_id=int(entry_id),
+                )
         if attempt_status == "cancelled":
             state = _verify_controlled_attempt_state(
                 con,
@@ -2909,10 +3321,86 @@ def _collect_v4_snapshot_counts(
         )
     }
     attempts = _latest_attempt_counts(con)
+    metadata_total = int(con.execute(
+        "SELECT COUNT(*) FROM entries").fetchone()[0])
+    metadata_status = counts.get("meta_status") or {}
+    metadata_applicable = max(
+        0,
+        metadata_total
+        - int(metadata_status.get("not_applicable") or 0)
+        - int(metadata_status.get("skipped") or 0),
+    )
+    metadata_attempted = sum(
+        int(metadata_status.get(status) or 0)
+        for status in ("done", "error", "timeout", "unstable")
+    )
+    metadata_successful = int(metadata_status.get("done") or 0)
+    metadata_coverage = {
+        "total": metadata_total,
+        "applicable": metadata_applicable,
+        "attempted": metadata_attempted,
+        "successful": metadata_successful,
+        "not_processed": sum(
+            int(metadata_status.get(status) or 0)
+            for status in ("pending", "processing")),
+        "attempted_percent": (
+            round(metadata_attempted / metadata_applicable * 100, 4)
+            if metadata_applicable else None),
+        "successful_percent": (
+            round(metadata_successful / metadata_applicable * 100, 4)
+            if metadata_applicable else None),
+    }
+    tool_error_records = int(con.execute(
+        "SELECT COUNT(*) FROM errors"
+        " WHERE error_code LIKE 'metadata\\_%\\_tool\\_error' ESCAPE '\\'"
+    ).fetchone()[0])
+    metadata_source_error_files = int(con.execute(
+        "SELECT COUNT(*) FROM entries e WHERE e.meta_status='error' AND ("
+        " EXISTS (SELECT 1 FROM errors x WHERE x.entry_id=e.entry_id"
+        "  AND x.stage='metadata'"
+        "  AND x.error_code NOT LIKE 'metadata\\_%\\_tool\\_error'"
+        "  ESCAPE '\\')"
+        " OR NOT EXISTS (SELECT 1 FROM errors x WHERE x.entry_id=e.entry_id"
+        "  AND x.stage='metadata'))"
+    ).fetchone()[0])
+    tool_failure_sessions = int(con.execute(
+        "SELECT COUNT(*) FROM run_sessions"
+        " WHERE end_reason LIKE '%tool%circuit%'")
+        .fetchone()[0])
+    attempt_tool_errors = int(con.execute(
+        "SELECT COUNT(*) FROM entry_attempts"
+        " WHERE error_code LIKE '%tool%' OR error_code GLOB 'worker_*'"
+    ).fetchone()[0])
+    timeout_issues = bool(
+        metadata_status.get("timeout")
+        or format_status.get("timeout")
+        or any(
+            status_counts.get("timeout")
+            for status_counts in attempts.values()
+        )
+    )
+    has_tool_issues = bool(
+        tool_error_records or tool_failure_sessions or attempt_tool_errors)
+    has_source_file_issues = bool(
+        counts.get("has_enumeration_gaps")
+        or (counts.get("hash_status") or {}).get("error")
+        or (counts.get("hash_status") or {}).get("unstable")
+        or metadata_source_error_files
+        or metadata_status.get("unstable")
+        or format_status.get("invalid")
+        or format_status.get("unstable")
+    )
     counts.update({
         "format_status": format_status,
         "latest_attempt_status": attempts,
         "performance_confidence": performance_confidence,
+        "metadata_coverage": metadata_coverage,
+        "has_source_file_issues": has_source_file_issues,
+        "has_tool_issues": has_tool_issues,
+        "has_timeout_issues": timeout_issues,
+        "tool_error_records": tool_error_records,
+        "tool_failure_sessions": tool_failure_sessions,
+        "metadata_source_error_files": metadata_source_error_files,
         "sessions": int(con.execute(
             "SELECT COUNT(*) FROM run_sessions").fetchone()[0]),
     })
@@ -2926,6 +3414,7 @@ def _collect_v4_snapshot_counts(
         or format_status.get("invalid")
         or format_status.get("error")
         or format_status.get("timeout")
+        or has_tool_issues
     )
     counts["has_unstable_entries"] = bool(
         counts.get("has_unstable_entries")
@@ -2946,6 +3435,20 @@ def _scan_manifest_payload(
     supplied: dict[str, object] | None,
 ) -> dict[str, object]:
     manifest = dict(supplied or {})
+    metadata_checkpoint_row = con.execute(
+        "SELECT state,checkpoint_json FROM stage_checkpoints"
+        " WHERE stage='metadata'"
+    ).fetchone()
+    metadata_checkpoint: dict[str, object] = {}
+    metadata_stage_state = None
+    if metadata_checkpoint_row is not None:
+        metadata_stage_state = str(metadata_checkpoint_row[0])
+        try:
+            decoded_checkpoint = json.loads(metadata_checkpoint_row[1] or "{}")
+        except (TypeError, ValueError):
+            decoded_checkpoint = {}
+        if isinstance(decoded_checkpoint, dict):
+            metadata_checkpoint = decoded_checkpoint
     manifest.update({
         "scanner_version": str(con.execute(
             "SELECT scanner_version FROM snapshot_info WHERE id=1"
@@ -2965,6 +3468,15 @@ def _scan_manifest_payload(
                 "verify_hash", {}),
             "format": counts.get("latest_attempt_status", {}).get(
                 "verify_format", {}),
+        },
+        "metadata": {
+            "stage_state": metadata_stage_state,
+            "coverage": counts.get("metadata_coverage", {}),
+            "has_source_file_issues": bool(
+                counts.get("has_source_file_issues")),
+            "has_tool_issues": bool(counts.get("has_tool_issues")),
+            "has_timeout_issues": bool(counts.get("has_timeout_issues")),
+            "tool_runtime": metadata_checkpoint.get("tool_runtime", {}),
         },
         "format_validation": {
             "mode": config.get("format_validation", "off"),

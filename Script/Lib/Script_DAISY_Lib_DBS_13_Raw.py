@@ -14,6 +14,7 @@ from typing import Callable
 
 import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 
 
@@ -52,6 +53,7 @@ class RawDecodeOutcome:
     decoded_bytes: int | None
     events: tuple[dict[str, object], ...]
     events_truncated: bool
+    failure_kind: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -513,6 +515,16 @@ def run_raw_decode_worker(
     elif outcome == "crashed":
         status = "error"
         code = code or "worker_crashed"
+    failure_kind = None
+    if code in (
+            "worker_start_timeout", "worker_crashed", "worker_not_reaped",
+            "invalid_worker_result", "unknown_worker_status",
+            "rawpy_unavailable", "worker_error"):
+        failure_kind = str(code)
+    elif code == "memory_error":
+        failure_kind = "resource_exhausted"
+    if toolruntime.is_native_crash_returncode(exitcode):
+        failure_kind = "native_crash"
     return RawDecodeOutcome(
         outcome=outcome,
         status=status,
@@ -537,4 +549,5 @@ def run_raw_decode_worker(
         decoded_bytes=decoded_bytes,
         events=tuple(events),
         events_truncated=events_truncated,
+        failure_kind=failure_kind,
     )

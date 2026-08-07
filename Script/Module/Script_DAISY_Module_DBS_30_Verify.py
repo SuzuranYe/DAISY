@@ -143,6 +143,31 @@ class VerificationReporter:
                         f"[{index}/{_STAGES_TOTAL}] {name} 完成：{summary}",
                         flush=True,
                     )
+            elif event == "stage_failed" and stage in _STAGES:
+                index, name = _STAGES[stage]
+                processed = int(clean.get("processed") or 0)
+                total = int(clean.get("total") or 0)
+                not_processed = int(clean.get("not_processed") or 0)
+                tool = str(clean.get("tool") or "外部工具")
+                summary = (
+                    f"{tool} 故障熔断 · 已处理 {processed:,}/{total:,} · "
+                    f"未处理 {not_processed:,}"
+                )
+                core.emit_gui_event(
+                    "progress_fail",
+                    stage_idx=index,
+                    stage_total=_STAGES_TOTAL,
+                    name=name,
+                    summary=summary,
+                    done=processed,
+                    total=total,
+                )
+                if not self.quiet:
+                    print(
+                        f"[{index}/{_STAGES_TOTAL}] {name} 失败：{summary}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             if event == "threshold_reached" and not self.quiet:
                 decision_text = {
                     "continue_waiting": "继续等待",
@@ -443,6 +468,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 130
+    if conclusion == "failed":
+        print(
+            "结论：外部工具故障已熔断；报告只代表已处理范围。",
+            file=sys.stderr,
+        )
+        return 1
     if conclusion == "incomplete":
         print(
             "结论：证据不完整，不能宣称内容一致；详见报告。",

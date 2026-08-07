@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import Script_DAISY_Lib_STG_01_Core as core
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 
 
 SMARTCTL_ENV = "SMARTCTL_PATH"
@@ -73,21 +74,59 @@ def find_smartctl(explicit: str | os.PathLike[str] | None = None) -> Path:
     )
 
 def _run(arguments: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    operation = (
+        "version"
+        if "--version" in arguments else
+        "device_discovery"
+        if "--scan-open" in arguments else
+        "device_read"
+    )
     try:
-        return subprocess.run(
+        result = toolruntime.run_bounded_tool(
             arguments,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-            creationflags=CREATE_NO_WINDOW,
+            tool="smartctl",
+            operation=operation,
+            timeout_seconds=float(timeout),
         )
-    except subprocess.TimeoutExpired as exc:
+    except toolruntime.ToolProcessTimeout as exc:
         raise core.DaisySmartError(f"smartctl 运行超过 {timeout} 秒。") from exc
-    except OSError as exc:
-        raise core.DaisySmartError(f"无法启动 smartctl：{exc}") from exc
+    except toolruntime.ToolRuntimeFailure as exc:
+        evidence = exc.latest
+        code = toolruntime.format_returncode(evidence.returncode)
+        suffix = f"（退出码 {code}）" if code is not None else ""
+        raise core.DaisySmartError(
+            f"smartctl 工具运行故障：{evidence.failure_kind}{suffix}；"
+            f"{evidence.message}"
+        ) from exc
+    if toolruntime.is_native_crash_returncode(result.returncode):
+        failure = toolruntime.failure_from_process(
+            result,
+            tool="smartctl",
+            operation=operation,
+            failure_kind="native_crash",
+            recovered=False,
+        )
+        raise core.DaisySmartError(
+            "smartctl 工具进程发生原生崩溃："
+            f"{failure.latest.message}"
+        ) from failure
+    if result.stdout_truncated or result.stderr_truncated:
+        stream = "stdout" if result.stdout_truncated else "stderr"
+        failure = toolruntime.failure_from_process(
+            result,
+            tool="smartctl",
+            operation=operation,
+            failure_kind="output_limit_exceeded",
+            recovered=False,
+            message=f"smartctl {stream} 超出安全采集上限",
+        )
+        raise core.DaisySmartError(failure.latest.message) from failure
+    return subprocess.CompletedProcess(
+        list(arguments),
+        result.returncode,
+        stdout=result.stdout.decode("utf-8", "replace"),
+        stderr=result.stderr.decode("utf-8", "replace"),
+    )
 
 
 def _parse_json(stdout: str, stderr: str, purpose: str) -> dict[str, Any]:

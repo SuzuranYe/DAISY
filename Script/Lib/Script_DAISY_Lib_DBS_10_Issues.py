@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 import re
 import sqlite3
@@ -54,6 +55,7 @@ _INFORMATION_LABELS = {
     "low_confidence_files": "低置信度候选（仅留库）",
     "failed_or_abandoned_sessions": "失败／异常结束 session",
     "failed_stages": "当前失败阶段",
+    "tool_failure_events": "聚合工具故障事件",
 }
 _FOLDED_INFORMATION_KEYS = frozenset((
     "unsupported_or_unrecognized_files",
@@ -759,19 +761,58 @@ def _runtime_section(
     session_count = _count(
         con,
         "SELECT COUNT(*) FROM run_sessions"
-        " WHERE session_status IN ('failed','abandoned')",
+        " WHERE session_status IN ('failed','abandoned')"
+        " AND COALESCE(end_reason,'') NOT LIKE '%tool%circuit%'",
     )
     stage_count = _count(
         con,
         "SELECT COUNT(*) FROM stage_checkpoints"
         " WHERE state IN ('failed_recoverable','failed_terminal')",
     )
+    tool_events = []
+    for session_id, payload_json in con.execute(
+        "SELECT session_id,payload_json FROM run_state_events"
+        " WHERE event='run_failed' ORDER BY event_id"
+    ):
+        try:
+            payload = json.loads(payload_json or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) \
+                or "tool_circuit" not in str(payload.get("reason") or ""):
+            continue
+        tool_events.append((str(session_id), payload))
     details = []
+    for session_id, payload in tool_events[:row_limit]:
+        tool = str(payload.get("tool") or "external_tool")
+        failure_count = int(payload.get("consecutive_failures") or 0)
+        not_processed = int(payload.get("not_processed") or 0)
+        first_entry = payload.get("first_unprocessed_entry_id")
+        last_entry = payload.get("last_unprocessed_entry_id")
+        kinds = payload.get("not_processed_by_media_kind")
+        kind_text = ""
+        if isinstance(kinds, dict) and kinds:
+            kind_text = "；分类=" + "、".join(
+                f"{key}:{value}" for key, value in sorted(kinds.items())
+            )
+        detail = (
+            f"{tool} 连续工具故障 {failure_count} 次后熔断；"
+            f"未处理 {not_processed}；entry_id={first_entry}～{last_entry}"
+            f"{kind_text}"
+        )
+        details.append(_detail(
+            "",
+            f"session {session_id}",
+            "tool_failure_aggregated",
+            detail,
+            statuses="阶段=failed_recoverable；源文件问题=未归因",
+            advice="确认工具健康后恢复；未处理条目会从文件边界重试",
+        ))
     for row in con.execute(
             "SELECT '',stage,state,checkpoint_json FROM stage_checkpoints"
             " WHERE state IN ('failed_recoverable','failed_terminal')"
             " ORDER BY stage LIMIT ?",
-            (row_limit,),
+            (max(0, row_limit - len(details)),),
         ):
         details.append(_detail(
             *row,
@@ -784,6 +825,7 @@ def _runtime_section(
             "SELECT '',session_id,session_status,COALESCE(end_reason,'')"
             " FROM run_sessions"
             " WHERE session_status IN ('failed','abandoned')"
+            " AND COALESCE(end_reason,'') NOT LIKE '%tool%circuit%'"
             " ORDER BY session_number LIMIT ?",
             (remaining,),
         ):
@@ -793,7 +835,8 @@ def _runtime_section(
                 statuses=f"session={row[2]}",
                 advice="这是历史运行证据；确认后续 session 已完整恢复",
             ))
-    total = session_count + stage_count
+    tool_event_count = len(tool_events)
+    total = session_count + stage_count + tool_event_count
     return IssueSection(
         "runtime",
         "运行／证据问题",
@@ -805,6 +848,7 @@ def _runtime_section(
         {
             "failed_or_abandoned_sessions": session_count,
             "failed_stages": stage_count,
+            "tool_failure_events": tool_event_count,
             "detail_total": total,
             "evidence_tables": "run_sessions、stage_checkpoints、run_state_events",
         },

@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_05_Reader as dbreader
 import Script_DAISY_Lib_DBS_08_State as dbstate
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 
 HASH_TOOL = "python-hashlib"
 HASH_TOOL_VERSION = platform.python_version()
@@ -352,6 +353,7 @@ class HashWorkerOutcome:
     worker_exitcode: int | None
     worker_reaped: bool
     events: tuple[dict[str, object], ...]
+    failure_kind: str | None = None
 
     def performance(self) -> dict[str, object]:
         return {
@@ -392,6 +394,7 @@ class IndependentHashOutcome:
     worker_exitcode: int | None
     worker_reaped: bool
     events: tuple[dict[str, object], ...]
+    failure_kind: str | None = None
 
     def performance(self) -> dict[str, object]:
         return {
@@ -832,6 +835,18 @@ def run_hash_worker(
     elapsed_seconds = max(0.0, time.monotonic() - started)
     longest_stall_seconds = max(
         longest_stall_seconds, time.monotonic() - last_progress_at)
+    failure_kind = None
+    if outcome == "crashed":
+        if toolruntime.is_native_crash_returncode(exitcode):
+            failure_kind = "native_crash"
+        elif not reaped:
+            failure_kind = "cleanup_failed"
+        elif any(
+                event.get("event") == "worker_start_timeout"
+                for event in events):
+            failure_kind = "start_timeout"
+        else:
+            failure_kind = "worker_protocol_failed"
     return HashWorkerOutcome(
         outcome=outcome,
         result=result,
@@ -851,6 +866,7 @@ def run_hash_worker(
         worker_exitcode=exitcode,
         worker_reaped=reaped,
         events=tuple(events),
+        failure_kind=failure_kind,
     )
 
 
@@ -1132,6 +1148,7 @@ def run_independent_hash_process(
     longest_stall_seconds = max(longest_stall_seconds, elapsed_seconds)
     digest = None
     error = None
+    failure_kind = None
     if outcome == "completed":
         tokens = stdout.decode("utf-8", "replace").strip().split()
         if exitcode == 0 and len(tokens) == 1 and _HEX64.match(tokens[0]):
@@ -1141,6 +1158,12 @@ def run_independent_hash_process(
             outcome = "tool_error"
             detail = stderr.decode("utf-8", "replace").strip()
             error = (detail or "Get-FileHash 未返回唯一的 SHA-256")[:2048]
+            if toolruntime.is_native_crash_returncode(exitcode):
+                failure_kind = "native_crash"
+            elif not reaped or exitcode is None:
+                failure_kind = "cleanup_failed"
+            elif exitcode == 0:
+                failure_kind = "protocol_invalid"
             emit(
                 "worker_tool_error",
                 file=label,
@@ -1173,6 +1196,7 @@ def run_independent_hash_process(
         worker_exitcode=exitcode,
         worker_reaped=reaped,
         events=tuple(events),
+        failure_kind=failure_kind,
     )
 
 
@@ -1272,6 +1296,28 @@ def _validated_worker_hash(
                 reason,
             ), reason
     return result, None
+
+
+def _hash_worker_tool_failure(
+    outcome: HashWorkerOutcome,
+) -> toolruntime.ToolRuntimeFailure | None:
+    if not outcome.failure_kind:
+        return None
+    evidence = toolruntime.ToolFaultEvidence(
+        tool=HASH_TOOL,
+        operation="content_hash",
+        failure_kind=str(outcome.failure_kind),
+        message=(
+            "内容哈希隔离 worker 运行故障："
+            f"{outcome.failure_kind}"
+        ),
+        pid=outcome.worker_pid,
+        returncode=outcome.worker_exitcode,
+    )
+    return toolruntime.ToolRuntimeFailure(
+        evidence,
+        recovered=outcome.failure_kind != "cleanup_failed",
+    )
 
 
 def process_hash_attempt_v4(
@@ -1746,6 +1792,85 @@ def process_hash_stage_v4(
     labels = dict(con.execute("SELECT root_id,root_label FROM roots"))
     last_current_event = 0.0
     last_progress_event = 0.0
+    circuit = toolruntime.ConsecutiveToolFailureCircuit()
+
+    def fail_tool_stage(
+        failure: toolruntime.ToolRuntimeFailure,
+        opened: toolruntime.ToolCircuitSnapshot,
+        *,
+        current_already_counted: bool,
+    ) -> dict[str, object]:
+        affected_ids = list(opened.entry_ids)
+        with con:
+            for affected_id in affected_ids:
+                _reset_current_hash(con, affected_id, 0)
+            con.executemany(
+                "UPDATE entries SET hash_status='pending' WHERE entry_id=?",
+                [(affected_id,) for affected_id in affected_ids],
+            )
+        previous_counted = len(affected_ids) - (
+            0 if current_already_counted else 1)
+        stats["processed"] = max(
+            0, int(stats["processed"]) - previous_counted)
+        stats["error"] = max(
+            0, int(stats["error"]) - previous_counted)
+        not_processed = int(con.execute(
+            "SELECT COUNT(*) FROM entries WHERE is_placeholder=0"
+            " AND hash_status IN ('pending','processing')"
+        ).fetchone()[0])
+        payload = {
+            "reason": "hash_tool_circuit_open",
+            "stage": "hash",
+            "tool_circuit": opened.as_dict(),
+            "processed": int(stats["processed"]),
+            "total": int(stats["total"]),
+            "not_processed": not_processed,
+            "tool_failure": failure.as_dict(),
+        }
+        dbstate.update_stage_checkpoint(
+            con,
+            "hash",
+            "failed_recoverable",
+            items_done=int(stats["processed"]),
+            items_total=int(stats["total"]),
+            bytes_done=int(stats["bytes_read"]),
+            bytes_total=int(stats["bytes_total"]),
+            error_count=int(stats["error"]) + int(stats["timeout"]),
+            current_entry_id=None,
+            checkpoint=payload,
+        )
+        dbstate.fail_run(
+            con,
+            recoverable=True,
+            error_code="hash_tool_circuit_open",
+            error_message=failure.latest.message,
+            payload=payload,
+        )
+        stats.update({
+            "state": "failed_recoverable",
+            "not_processed": not_processed,
+            "tool_circuit": opened.as_dict(),
+        })
+        if on_event is not None:
+            on_event(
+                "tool_circuit_open",
+                stage="hash",
+                tool=failure.latest.tool,
+                failure_kind=failure.latest.failure_kind,
+                processed=int(stats["processed"]),
+                total=int(stats["total"]),
+                not_processed=not_processed,
+                affected=len(affected_ids),
+            )
+            on_event(
+                "stage_failed",
+                stage="hash",
+                tool=failure.latest.tool,
+                processed=int(stats["processed"]),
+                total=int(stats["total"]),
+                not_processed=not_processed,
+            )
+        return stats
 
     while True:
         control_action = owned_control.current()
@@ -1806,27 +1931,55 @@ def process_hash_stage_v4(
                 reused = True
         outcome = None
         if not reused:
-            outcome = process_hash_attempt_v4(
-                con,
-                entry_id,
-                os.path.join(roots[root_id], rel_path),
-                chunk_bytes=chunk_bytes,
-                stall_seconds=stall_seconds,
-                timeout_seconds=timeout_seconds,
-                default_decision=default_decision,
-                display_name=rel_path,
-                control=owned_control,
-                save_on_pause=save_on_pause,
-                on_event=on_event,
-                on_threshold=on_threshold,
-                poll_seconds=poll_seconds,
-                _worker_target=_worker_target,
-            )
+            try:
+                outcome = process_hash_attempt_v4(
+                    con,
+                    entry_id,
+                    os.path.join(roots[root_id], rel_path),
+                    chunk_bytes=chunk_bytes,
+                    stall_seconds=stall_seconds,
+                    timeout_seconds=timeout_seconds,
+                    default_decision=default_decision,
+                    display_name=rel_path,
+                    control=owned_control,
+                    save_on_pause=save_on_pause,
+                    on_event=on_event,
+                    on_threshold=on_threshold,
+                    poll_seconds=poll_seconds,
+                    _worker_target=_worker_target,
+                )
+            except (OSError, RuntimeError) as exc:
+                failure = toolruntime.ToolRuntimeFailure(
+                    toolruntime.ToolFaultEvidence(
+                        tool=HASH_TOOL,
+                        operation="content_hash",
+                        failure_kind="worker_start_failed",
+                        message=(
+                            "内容哈希隔离 worker 无法启动："
+                            f"{type(exc).__name__}: {exc}"
+                        )[:2048],
+                        errno=getattr(exc, "errno", None),
+                    ),
+                    recovered=False,
+                )
+                opened = circuit.record_failure(int(entry_id), failure)
+                return fail_tool_stage(
+                    failure, opened, current_already_counted=False)
             stats["bytes_read"] = (
                 int(stats["bytes_read"]) + outcome.bytes_read)
             if outcome.outcome in ("paused", "save_exit", "stopped"):
                 stats["state"] = outcome.outcome
                 break
+            tool_failure = _hash_worker_tool_failure(outcome)
+            if tool_failure is not None:
+                opened = circuit.record_failure(
+                    int(entry_id), tool_failure)
+                if opened.opened:
+                    return fail_tool_stage(
+                        tool_failure, opened,
+                        current_already_counted=False)
+            else:
+                circuit.record_success(HASH_TOOL)
             attempt_status = con.execute(
                 "SELECT status FROM entry_attempts"
                 " WHERE entry_id=? AND stage='hash'"

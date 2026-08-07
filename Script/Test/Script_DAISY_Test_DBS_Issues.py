@@ -184,6 +184,7 @@ class _IssuesFixture(unittest.TestCase):
         format_issue: bool = True,
         performance_confidence: str = "high",
         prior_hash_failure: bool = False,
+        runtime_tool_failure: bool = False,
     ) -> str:
         if performance_confidence not in ("none", "low", "high"):
             raise ValueError("测试夹具性能置信度无效")
@@ -310,6 +311,39 @@ class _IssuesFixture(unittest.TestCase):
             )
         con.execute(
             "UPDATE snapshot_info SET hash_coverage='full' WHERE id=1")
+        if runtime_tool_failure:
+            dbstate.fail_run(
+                con,
+                recoverable=True,
+                error_code="metadata_tool_circuit_open",
+                error_message="ExifTool 连续工具故障，元数据阶段已熔断",
+                payload={
+                    "reason": "metadata_tool_circuit_open",
+                    "tool": "exiftool",
+                    "failure_kind": "native_crash",
+                    "consecutive_failures": 3,
+                    "not_processed": 204913,
+                    "first_unprocessed_entry_id": 6194,
+                    "last_unprocessed_entry_id": 233079,
+                    "not_processed_by_media_kind": {"image": 204913},
+                },
+            )
+            dbstate.start_resume_session(
+                con,
+                config={
+                    "phase": "full",
+                    "hash": "full",
+                    "metadata_storage": "complete",
+                    "format_validation": (
+                        "all" if format_enabled else "off"),
+                },
+                tools={
+                    "exiftool": "fixture",
+                    "ffprobe": "fixture",
+                    "sevenzip": "fixture",
+                },
+                lease_id=lease_id,
+            )
         con.commit()
         dbstate.begin_sealing(con)
         dbstate.mark_sealed_unpublished(con)
@@ -634,6 +668,33 @@ class TestIssueSections(_IssuesFixture):
         self.assertFalse(analysis["has_reportable_issues"])
         self.assertFalse(os.path.exists(
             core.artifact_issue_report_path(snapshot)))
+
+    def test_tool_circuit_is_one_aggregate_runtime_issue(self) -> None:
+        snapshot = self.schema4_snapshot(
+            format_issue=False,
+            performance_confidence="none",
+            runtime_tool_failure=True,
+        )
+        baseline = _identity(snapshot)
+        analysis = dbissues.analyze_snapshot_issues(snapshot)
+        runtime = self.by_id(analysis)["runtime"]
+        self.assertEqual(("executed", 1, 1, 1), (
+            runtime["execution"],
+            runtime["issue_records"],
+            runtime["information"]["tool_failure_events"],
+            len(runtime["details"]),
+        ))
+        self.assertEqual(
+            "tool_failure_aggregated",
+            runtime["details"][0]["status"],
+        )
+        report = dbissues.render_snapshot_issues(analysis)
+        self.assertIn("## 运行／证据问题", report)
+        self.assertIn("exiftool 连续工具故障 3 次后熔断", report)
+        self.assertIn("未处理 204913", report)
+        self.assertIn("entry_id=6194～233079", report)
+        self.assertNotIn("204913 个文件错误", report)
+        self.assertEqual(baseline, _identity(snapshot))
 
     def test_row_limit_changes_details_not_totals(self) -> None:
         snapshot = self.schema3_snapshot(

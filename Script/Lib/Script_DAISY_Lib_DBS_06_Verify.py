@@ -23,6 +23,7 @@ import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as meta
 import Script_DAISY_Lib_DBS_03_Hash as dbh
 import Script_DAISY_Lib_DBS_05_Reader as dbreader
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 
 
 _OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -426,13 +427,40 @@ def validate_legacy_office(
 
 def validate_sevenzip(path: str, sevenzip: str) -> tuple[str, str | None]:
     try:
-        result = subprocess.run(
+        result = toolruntime.run_bounded_tool(
             [sevenzip, "t", "-p", "-y", "-sccUTF-8", path],
-            capture_output=True,
-            timeout=3600,
+            tool="sevenzip",
+            operation="format_validate",
+            timeout_seconds=3600,
         )
-    except subprocess.TimeoutExpired:
+    except toolruntime.ToolProcessTimeout:
         return "invalid", "7z t 超时"
+    if toolruntime.is_native_crash_returncode(result.returncode):
+        raise toolruntime.failure_from_process(
+            result,
+            tool="sevenzip",
+            operation="format_validate",
+            failure_kind="native_crash",
+            recovered=True,
+        )
+    if result.returncode in (7, 8, 255):
+        raise toolruntime.failure_from_process(
+            result,
+            tool="sevenzip",
+            operation="format_validate",
+            failure_kind=f"tool_exit_{result.returncode}",
+            recovered=True,
+            message=f"7-Zip 工具错误（退出码 {result.returncode}）",
+        )
+    if result.stdout_truncated or result.stderr_truncated:
+        raise toolruntime.failure_from_process(
+            result,
+            tool="sevenzip",
+            operation="format_validate",
+            failure_kind="output_limit",
+            recovered=True,
+            message="7-Zip 校验输出超过受控上限",
+        )
     if result.returncode == 0:
         return "valid", None
     text = (result.stderr + result.stdout).decode("utf-8", "replace")
@@ -486,29 +514,28 @@ def validate_media(
         if not ffprobe:
             raise core.PreflightError(f"{kind} 格式校验需要 ffprobe")
         try:
-            result = subprocess.run(
-                [
-                    ffprobe, "-v", "error", "-print_format", "json",
-                    "-show_format", "-show_streams", path,
-                ],
-                capture_output=True,
-                timeout=600,
-            )
-        except subprocess.TimeoutExpired:
+            document = meta.ffprobe_full(
+                ffprobe, path, timeout=600, operation="format_validate")
+        except toolruntime.ToolProcessTimeout:
             bad.append("ffprobe: 超时")
             return "invalid", "；".join(bad)
-        document = {}
-        streams = []
-        try:
-            document = json.loads(result.stdout.decode("utf-8", "replace"))
-            streams = document.get("streams", [])
-        except ValueError:
-            pass
-        if result.returncode != 0 or not streams:
-            error = result.stderr.decode("utf-8", "replace").strip()[-200:]
-            bad.append(
-                f"ffprobe: rc={result.returncode}, streams={len(streams)}"
-                + (f"，{error}" if error else ""))
+        except meta.MetadataSourceError as exc:
+            bad.append(f"ffprobe: {exc}")
+            return "invalid", "；".join(bad)
+        streams = document.get("streams")
+        if not isinstance(streams, list) or not all(
+                isinstance(stream, dict) for stream in streams):
+            raise toolruntime.ToolRuntimeFailure(
+                toolruntime.ToolFaultEvidence(
+                    tool="ffprobe",
+                    operation="format_validate",
+                    failure_kind="protocol_invalid",
+                    message="ffprobe 返回的 streams 结构无效",
+                ),
+                recovered=True,
+            )
+        if not streams:
+            bad.append("ffprobe: 未发现媒体流")
         elif kind == "audio" and os.path.getsize(path) <= 44:
             audio_streams = [
                 stream
@@ -564,6 +591,7 @@ class FormatValidationSession:
     def __init__(self, tools: dict[str, object]) -> None:
         self._tools = dict(tools)
         self._worker = None
+        self.last_tool_failure: toolruntime.ToolRuntimeFailure | None = None
 
     def _tool(self, name: str) -> dict[str, str]:
         value = self._tools.get(name)
@@ -613,6 +641,7 @@ class FormatValidationSession:
         spec: FormatValidatorSpec,
     ) -> tuple[str, str | None]:
         """返回 schema 4 格式状态，不把 unsupported 提升为错误。"""
+        self.last_tool_failure = None
         validator = spec.validator
         extended_path = core.to_extended_path(path)
         try:
@@ -642,6 +671,9 @@ class FormatValidationSession:
                     path, effective_kind, self._worker, ffprobe_path)
         except TimeoutError:
             return "timeout", "exiftool -validate 超时"
+        except toolruntime.ToolRuntimeFailure as exc:
+            self.last_tool_failure = exc
+            return "error", str(exc)
         except Exception as exc:
             return "error", f"{type(exc).__name__}: {exc}"
         status, detail = result

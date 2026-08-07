@@ -23,6 +23,7 @@ import Script_DAISY_Lib_DBS_02_Meta as dbmeta
 import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as legacy
 import Script_DAISY_Lib_DBS_12_Verify_Tools as verifytools
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 import Script_DAISY_MAIN as entry
 
 
@@ -153,34 +154,43 @@ class TestWindowsNativeFailureBoundary(unittest.TestCase):
             entry._configure_task_worker_runtime("verify")
             configure.assert_called_once_with()
 
-    def test_legacy_ffprobe_hides_window_and_labels_native_crash(self) \
+    def test_legacy_ffprobe_uses_bounded_runtime_and_labels_native_crash(self) \
             -> None:
-        success = subprocess.CompletedProcess(
-            args=["ffprobe"], returncode=0, stdout=b'{"streams":[]}',
-            stderr=b"")
-        with (
-            mock.patch.object(dbmeta.core, "configure_windows_worker_error_mode"),
-            mock.patch.object(dbmeta.os, "name", "nt"),
-            mock.patch.object(dbmeta.subprocess, "run", return_value=success)
-            as runner,
-        ):
+        success = toolruntime.ToolProcessResult(
+            command=("ffprobe.exe",),
+            returncode=0,
+            stdout=b'{"streams":[]}',
+            stderr=b"",
+            elapsed_seconds=0.01,
+            pid=101,
+            reaped=True,
+            stdout_truncated=False,
+            stderr_truncated=False,
+        )
+        with mock.patch.object(
+                dbmeta.toolruntime, "run_bounded_tool", return_value=success
+        ) as runner:
             self.assertEqual(
                 dbmeta.ffprobe_full("ffprobe.exe", "fixture.mp4"),
                 {"streams": []},
             )
+        self.assertEqual(runner.call_args.kwargs["tool"], "ffprobe")
         self.assertEqual(
-            runner.call_args.kwargs["creationflags"],
-            getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+            runner.call_args.kwargs["operation"], "metadata_extract")
 
-        crashed = subprocess.CompletedProcess(
-            args=["ffprobe"], returncode=0xC0000005,
-            stdout=b"", stderr=b"")
-        with (
-            mock.patch.object(dbmeta.core, "configure_windows_worker_error_mode"),
-            mock.patch.object(dbmeta.os, "name", "nt"),
-            mock.patch.object(dbmeta.subprocess, "run", return_value=crashed),
-        ):
+        crashed = toolruntime.ToolProcessResult(
+            command=("ffprobe.exe",),
+            returncode=0xC0000005,
+            stdout=b"",
+            stderr=b"",
+            elapsed_seconds=0.01,
+            pid=102,
+            reaped=True,
+            stdout_truncated=False,
+            stderr_truncated=False,
+        )
+        with mock.patch.object(
+                dbmeta.toolruntime, "run_bounded_tool", return_value=crashed):
             with self.assertRaisesRegex(RuntimeError, "0xC0000005"):
                 dbmeta.ffprobe_full("ffprobe.exe", "fixture.mp4")
 
@@ -527,7 +537,9 @@ class TestExternalFormatClassification(_Fixture):
             expected_size=os.path.getsize(path),
             _direct_runner=lambda *_args, **_kwargs: results.pop(0),
         )
-        self.assertEqual(outcome.status, "invalid")
+        self.assertEqual(outcome.status, "error")
+        self.assertEqual(outcome.tool, "ffprobe")
+        self.assertEqual(outcome.failure_kind, "protocol_invalid")
         self.assertIn("JSON 结构无效", outcome.detail)
 
     def test_ffprobe_native_exit_is_tool_error_not_file_damage(self) -> None:

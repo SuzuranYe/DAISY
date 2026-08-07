@@ -14,11 +14,13 @@ import sqlite3
 import subprocess
 import threading
 import time
+import uuid
 import zipfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 
 PROFILE_VERSION = 7
 ET_PHOTO_ARGS = ["-charset", "filename=utf8", "-j", "-G1:3:4", "-a", "-u", "-D", "-l", "-ee"]
@@ -30,8 +32,33 @@ ET_TIMEOUT_STEP_BYTES = 9 * 1024 ** 3
 ET_TIMEOUT_STEP_SECONDS = 90
 FF_TIMEOUT_S = 60
 ET_RESTART_EVERY = 5000
+ET_HEALTH_TIMEOUT_S = 10
+ET_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+ET_STDERR_TAIL_BYTES = 256 * 1024
 
 _BANNED_ET = core.EXIFTOOL_BANNED_ARGS   # 与 DBS_01 共享只读参数黑名单
+
+
+class MetadataSourceError(RuntimeError):
+    """外部工具已正常响应，但当前源文件无法解析。"""
+
+    def __init__(self, message: str, *, tool: str) -> None:
+        self.tool = str(tool)
+        super().__init__(message)
+
+
+class MetadataToolCircuitOpen(core.PreflightError):
+    """元数据外部工具连续故障，阶段已在可恢复边界熔断。"""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        self.summary = dict(summary)
+        tool = str(summary.get("tool") or "external_tool")
+        affected = int(summary.get("not_processed") or 0)
+        consecutive = int(summary.get("consecutive_failures") or 0)
+        super().__init__(
+            f"元数据工具 {tool} 已熔断：连续故障 {consecutive} 次，"
+            f"保留 {affected} 个条目等待恢复"
+        )
 
 
 def exiftool_timeout_policy() -> dict:
@@ -470,11 +497,43 @@ def parse_7z_slt(text: str) -> dict:
 
 def sevenzip_summary(path: str, sevenzip: str, fmt: str) -> dict:
     # -sccUTF-8：控制台输出定为 UTF-8，否则非 ASCII 成员名按 ANSI 码页输出致乱码
-    r = subprocess.run([sevenzip, "l", "-slt", "-sccUTF-8", path],
-                       capture_output=True, timeout=FF_TIMEOUT_S)
+    r = toolruntime.run_bounded_tool(
+        [sevenzip, "l", "-slt", "-sccUTF-8", path],
+        tool="sevenzip",
+        operation="metadata_list",
+        timeout_seconds=FF_TIMEOUT_S,
+    )
+    if toolruntime.is_native_crash_returncode(r.returncode):
+        raise toolruntime.failure_from_process(
+            r,
+            tool="sevenzip",
+            operation="metadata_list",
+            failure_kind="native_crash",
+            recovered=True,
+        )
+    if r.returncode in (7, 8, 255):
+        raise toolruntime.failure_from_process(
+            r,
+            tool="sevenzip",
+            operation="metadata_list",
+            failure_kind="tool_exit",
+            recovered=True,
+            message=f"7-Zip 工具故障（退出码 {r.returncode}）",
+        )
     if r.returncode != 0:
-        raise RuntimeError("7z l 失败：" +
-                           r.stderr.decode("utf-8", "replace")[:200])
+        raise MetadataSourceError(
+            "7z l 失败：" + r.stderr.decode("utf-8", "replace")[-200:],
+            tool="sevenzip",
+        )
+    if r.stdout_truncated:
+        raise toolruntime.failure_from_process(
+            r,
+            tool="sevenzip",
+            operation="metadata_list",
+            failure_kind="output_limit",
+            recovered=True,
+            message="7-Zip 列表输出超过受控上限，未生成不完整成员清单",
+        )
     s = parse_7z_slt(r.stdout.decode("utf-8", "replace"))
     s["archive_format"] = fmt
     return s
@@ -920,27 +979,127 @@ def video_gps_rows(ff: dict) -> list[dict]:
 
 # === ExifTool stay_open 工作器 ===
 class ExifToolWorker:
-    def __init__(self, exiftool_path: str):
+    """带健康检查、一次只读重试和有界诊断的 stay-open 会话。"""
+
+    def __init__(
+        self,
+        exiftool_path: str,
+        *,
+        health_timeout: float = ET_HEALTH_TIMEOUT_S,
+        _popen_factory=None,
+    ):
         self.path = exiftool_path
         self.count = 0
+        self.restart_count = 0
+        self.session_count = 0
+        self.health_timeout = float(health_timeout)
+        if self.health_timeout <= 0:
+            raise ValueError("ExifTool 健康检查 timeout 必须大于 0")
+        self._popen_factory = _popen_factory or subprocess.Popen
+        self._lock = threading.RLock()
         self._proc = None
         self._reader_thread = None
+        self._stderr_thread = None
+        self._stderr_tail = bytearray()
         self._q: queue.Queue = queue.Queue()
-        self._start()
+        self._tool_session_id = None
+        self._session_history: list[dict[str, object]] = []
+        self._start("initial")
 
-    def _start(self):
-        self._proc = subprocess.Popen(
-            [self.path, "-stay_open", "True", "-@", "-"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL)
+    def _start(self, reason: str) -> None:
+        core.configure_windows_worker_error_mode()
+        kwargs: dict[str, object] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = self._popen_factory(
+                [self.path, "-stay_open", "True", "-@", "-"],
+                **kwargs,
+            )
+        except OSError as exc:
+            detail = getattr(exc, "strerror", None) or str(exc)
+            evidence = toolruntime.ToolFaultEvidence(
+                tool="exiftool",
+                operation="start",
+                failure_kind="start_failed",
+                message=f"ExifTool 启动失败：{detail}",
+                errno=getattr(exc, "errno", None),
+                restart_count=self.restart_count,
+            )
+            raise toolruntime.ToolRuntimeFailure(
+                evidence, recovered=False) from exc
+        pid = int(getattr(proc, "pid", 0) or 0)
+        if pid <= 0 or proc.stdin is None or proc.stdout is None \
+                or proc.stderr is None:
+            self._proc = proc
+            self._kill("invalid_start")
+            evidence = toolruntime.ToolFaultEvidence(
+                tool="exiftool",
+                operation="start",
+                failure_kind="start_invalid",
+                message="ExifTool 没有可监管的 PID 或管道",
+                pid=pid or None,
+                restart_count=self.restart_count,
+            )
+            raise toolruntime.ToolRuntimeFailure(evidence, recovered=False)
+        self.session_count += 1
+        self._proc = proc
         self._q = queue.Queue()
-        t = threading.Thread(target=self._reader, args=(self._proc, self._q),
-                             daemon=True)
-        t.start()
-        self._reader_thread = t
+        self._stderr_tail = bytearray()
+        self._tool_session_id = uuid.uuid4().hex
+        self._reader_thread = threading.Thread(
+            target=self._reader,
+            args=(proc, self._q),
+            name=f"daisy-exiftool-stdout-{pid}",
+            daemon=True,
+        )
+        self._stderr_thread = threading.Thread(
+            target=self._stderr_reader,
+            args=(proc,),
+            name=f"daisy-exiftool-stderr-{pid}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        self._stderr_thread.start()
+        try:
+            version = self._execute_once(
+                ["-ver"], self.health_timeout, operation="health_check")
+            if not version.strip():
+                raise self._session_failure(
+                    "health_check_invalid",
+                    "ExifTool 健康检查没有返回版本",
+                    operation="health_check",
+                )
+        except TimeoutError as exc:
+            failure = self._session_failure(
+                "health_check_timeout",
+                "ExifTool 健康检查超时",
+                operation="health_check",
+                exc=exc,
+            )
+            self._kill("health_check_timeout")
+            raise failure from exc
+        except toolruntime.ToolRuntimeFailure:
+            self._kill("health_check_failed")
+            raise
+        self.count = 0
+        self._session_history.append({
+            "event": "session_started",
+            "reason": reason,
+            "tool_session_id": self._tool_session_id,
+            "session_number": self.session_count,
+            "pid": pid,
+            "version": version.decode("utf-8", "replace").strip()[:100],
+        })
+        self._session_history = self._session_history[-32:]
 
     @staticmethod
-    def _reader(proc, q):
+    def _reader(proc, q) -> None:
         try:
             for line in proc.stdout:
                 q.put(line)
@@ -949,112 +1108,381 @@ class ExifToolWorker:
         finally:
             q.put(None)
 
-    def _release_process(self, proc):
-        thread = self._reader_thread
-        if thread is not None:
-            thread.join(timeout=1)
-        for stream in (proc.stdin, proc.stdout):
+    def _stderr_reader(self, proc) -> None:
+        try:
+            while True:
+                payload = proc.stderr.read(64 * 1024)
+                if not payload:
+                    return
+                self._stderr_tail.extend(payload)
+                if len(self._stderr_tail) > ET_STDERR_TAIL_BYTES:
+                    del self._stderr_tail[:-ET_STDERR_TAIL_BYTES]
+        except (OSError, ValueError):
+            return
+
+    def _stderr_text(self) -> str | None:
+        text = bytes(self._stderr_tail).decode("utf-8", "replace").strip()
+        return text[-2000:] or None
+
+    def _session_failure(
+        self,
+        failure_kind: str,
+        message: str,
+        *,
+        operation: str,
+        exc: BaseException | None = None,
+    ) -> toolruntime.ToolRuntimeFailure:
+        proc = self._proc
+        returncode = None
+        pid = None
+        if proc is not None:
+            pid = int(getattr(proc, "pid", 0) or 0) or None
+            try:
+                returncode = proc.poll()
+            except (OSError, ValueError):
+                returncode = getattr(proc, "returncode", None)
+        evidence = toolruntime.ToolFaultEvidence(
+            tool="exiftool",
+            operation=operation,
+            failure_kind=failure_kind,
+            message=message,
+            pid=pid,
+            returncode=returncode,
+            errno=getattr(exc, "errno", None) if exc is not None else None,
+            tool_session_id=self._tool_session_id,
+            stderr_tail=self._stderr_text(),
+            restart_count=self.restart_count,
+        )
+        return toolruntime.ToolRuntimeFailure(evidence, recovered=False)
+
+    def _release_process(self, proc, reason: str) -> None:
+        for thread in (self._reader_thread, self._stderr_thread):
+            if thread is not None:
+                thread.join(timeout=1)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
             if stream is not None and not stream.closed:
                 try:
                     stream.close()
                 except OSError:
                     pass
         if self._proc is proc:
+            try:
+                returncode = proc.poll()
+            except (OSError, ValueError):
+                returncode = getattr(proc, "returncode", None)
+            self._session_history.append({
+                "event": "session_finished",
+                "reason": reason,
+                "tool_session_id": self._tool_session_id,
+                "session_number": self.session_count,
+                "pid": int(getattr(proc, "pid", 0) or 0) or None,
+                "returncode": returncode,
+                "returncode_hex": toolruntime.format_returncode(returncode),
+                "stderr_tail": self._stderr_text(),
+            })
+            self._session_history = self._session_history[-32:]
             self._proc = None
             self._reader_thread = None
+            self._stderr_thread = None
+            self._tool_session_id = None
 
-    def _kill(self):
+    def _kill(self, reason: str = "killed") -> None:
         proc = self._proc
         if proc is None:
             return
         try:
             if proc.poll() is None:
                 proc.kill()
-        except OSError:
+        except (OSError, ValueError):
             pass
         try:
             proc.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, ValueError):
             pass
         finally:
-            self._release_process(proc)
+            self._release_process(proc, reason)
 
-    def restart(self):
-        self._kill()
-        self._start()
-        self.count = 0
+    def restart(self, reason: str = "manual") -> None:
+        with self._lock:
+            self._kill(reason)
+            self.restart_count += 1
+            self._start(reason)
 
-    def execute(self, args: list[str], timeout: float = ET_TIMEOUT_S) -> bytes:
+    def _execute_once(
+        self,
+        args: list[str],
+        timeout: float,
+        *,
+        operation: str,
+    ) -> bytes:
         guard_exiftool_args(args)
+        proc = self._proc
+        if proc is None or proc.stdin is None:
+            raise self._session_failure(
+                "session_missing", "ExifTool 会话不存在", operation=operation)
+        try:
+            if proc.poll() is not None:
+                raise self._session_failure(
+                    "process_exited",
+                    "ExifTool 进程在命令提交前已经退出",
+                    operation=operation,
+                )
+        except toolruntime.ToolRuntimeFailure:
+            raise
+        except (OSError, ValueError) as exc:
+            raise self._session_failure(
+                "process_state_failed",
+                f"ExifTool 进程状态不可读取：{exc}",
+                operation=operation,
+                exc=exc,
+            ) from exc
         payload = "\n".join(args) + "\n-execute\n"
-        self._proc.stdin.write(payload.encode("utf-8"))
-        self._proc.stdin.flush()
+        try:
+            proc.stdin.write(payload.encode("utf-8"))
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as exc:
+            raise self._session_failure(
+                "pipe_write_failed",
+                f"ExifTool 命令管道写入失败：{exc}",
+                operation=operation,
+                exc=exc,
+            ) from exc
         out = bytearray()
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + float(timeout)
         while True:
             remain = deadline - time.monotonic()
             if remain <= 0:
-                self.restart()
-                raise TimeoutError("exiftool 命令超时")
+                raise TimeoutError("ExifTool 命令超时")
             try:
                 line = self._q.get(timeout=min(remain, 1.0))
             except queue.Empty:
                 continue
             if line is None:
-                self.restart()
-                raise RuntimeError("exiftool 进程意外退出")
+                raise self._session_failure(
+                    "pipe_eof",
+                    "ExifTool 进程意外退出或输出管道提前结束",
+                    operation=operation,
+                )
             if line.strip() == b"{ready}":
-                break
+                return bytes(out)
             out += line
-        self.count += 1
-        if self.count >= ET_RESTART_EVERY:
-            self.restart()
-        return bytes(out)
+            if len(out) > ET_MAX_OUTPUT_BYTES:
+                raise self._session_failure(
+                    "output_limit",
+                    "ExifTool 输出超过受控上限",
+                    operation=operation,
+                )
+
+    @staticmethod
+    def _retag_failures(
+        rows: list[toolruntime.ToolFaultEvidence],
+        *,
+        retry_count: int,
+        restart_count: int,
+    ) -> tuple[toolruntime.ToolFaultEvidence, ...]:
+        return tuple(replace(
+            row,
+            retry_count=retry_count,
+            restart_count=restart_count,
+        ) for row in rows)
+
+    def execute(self, args: list[str], timeout: float = ET_TIMEOUT_S) -> bytes:
+        with self._lock:
+            if self.count >= ET_RESTART_EVERY:
+                self.restart("periodic_rotation")
+            failures: list[toolruntime.ToolFaultEvidence] = []
+            for attempt in range(2):
+                try:
+                    out = self._execute_once(
+                        args, timeout, operation="metadata_extract")
+                except TimeoutError:
+                    try:
+                        self.restart("command_timeout")
+                    except toolruntime.ToolRuntimeFailure as restart_failure:
+                        evidence = self._retag_failures(
+                            list(restart_failure.evidence),
+                            retry_count=attempt,
+                            restart_count=self.restart_count,
+                        )
+                        raise toolruntime.ToolRuntimeFailure(
+                            evidence, recovered=False) from restart_failure
+                    raise
+                except toolruntime.ToolRuntimeFailure as exc:
+                    failures.extend(exc.evidence)
+                    if attempt == 0:
+                        try:
+                            self.restart("automatic_retry")
+                        except toolruntime.ToolRuntimeFailure as restart_failure:
+                            failures.extend(restart_failure.evidence)
+                            evidence = self._retag_failures(
+                                failures,
+                                retry_count=1,
+                                restart_count=self.restart_count,
+                            )
+                            raise toolruntime.ToolRuntimeFailure(
+                                evidence, recovered=False) from restart_failure
+                        continue
+                    try:
+                        self.restart("post_retry_recovery")
+                    except toolruntime.ToolRuntimeFailure as restart_failure:
+                        failures.extend(restart_failure.evidence)
+                        evidence = self._retag_failures(
+                            failures,
+                            retry_count=1,
+                            restart_count=self.restart_count,
+                        )
+                        raise toolruntime.ToolRuntimeFailure(
+                            evidence, recovered=False) from restart_failure
+                    evidence = self._retag_failures(
+                        failures,
+                        retry_count=1,
+                        restart_count=self.restart_count,
+                    )
+                    raise toolruntime.ToolRuntimeFailure(
+                        evidence, recovered=True) from exc
+                self.count += 1
+                return out
+            raise AssertionError("ExifTool 重试状态机未返回结果")
 
     def extract(self, file_path: str, photo_profile: bool,
                 timeout: float = ET_TIMEOUT_S) -> dict:
         args = (ET_PHOTO_ARGS if photo_profile else ET_VIDEO_ARGS) + [file_path]
-        out = self.execute(args, timeout)
-        docs = json.loads(out.decode("utf-8", "replace")) if out.strip() else []
-        if not docs:
-            raise RuntimeError("exiftool 无输出（文件不可解析？）")
-        return docs[0]
+        with self._lock:
+            failures: list[toolruntime.ToolFaultEvidence] = []
+            for attempt in range(2):
+                out = self.execute(args, timeout)
+                try:
+                    docs = (
+                        json.loads(out.decode("utf-8", "replace"))
+                        if out.strip() else []
+                    )
+                    if not isinstance(docs, list) or not docs \
+                            or not isinstance(docs[0], dict):
+                        raise ValueError("ExifTool 没有返回 JSON 对象")
+                    return docs[0]
+                except (TypeError, ValueError) as exc:
+                    failure = self._session_failure(
+                        "protocol_invalid",
+                        f"ExifTool 输出协议无效：{exc}",
+                        operation="metadata_extract",
+                        exc=exc,
+                    )
+                    failures.extend(failure.evidence)
+                    try:
+                        self.restart(
+                            "protocol_retry" if attempt == 0
+                            else "post_protocol_recovery")
+                    except toolruntime.ToolRuntimeFailure as restart_failure:
+                        failures.extend(restart_failure.evidence)
+                        evidence = self._retag_failures(
+                            failures,
+                            retry_count=attempt,
+                            restart_count=self.restart_count,
+                        )
+                        raise toolruntime.ToolRuntimeFailure(
+                            evidence, recovered=False) from restart_failure
+                    if attempt == 0:
+                        continue
+                    evidence = self._retag_failures(
+                        failures,
+                        retry_count=1,
+                        restart_count=self.restart_count,
+                    )
+                    raise toolruntime.ToolRuntimeFailure(
+                        evidence, recovered=True) from exc
+            raise AssertionError("ExifTool 协议重试状态机未返回结果")
 
-    def close(self):
-        proc = self._proc
-        if proc is None:
-            return
-        try:
-            if proc.poll() is None:
-                proc.stdin.write(b"-stay_open\nFalse\n")
-                proc.stdin.flush()
-                proc.wait(timeout=5)
-        except Exception:
-            self._kill()
-            return
-        self._release_process(proc)
+    def telemetry(self) -> dict[str, object]:
+        with self._lock:
+            active = None
+            if self._proc is not None:
+                active = {
+                    "tool_session_id": self._tool_session_id,
+                    "session_number": self.session_count,
+                    "pid": int(getattr(self._proc, "pid", 0) or 0) or None,
+                    "stderr_tail": self._stderr_text(),
+                }
+            return {
+                "session_count": self.session_count,
+                "restart_count": self.restart_count,
+                "active_session": active,
+                "recent_sessions": [dict(row) for row in self._session_history],
+            }
+
+    def close(self) -> None:
+        with self._lock:
+            proc = self._proc
+            if proc is None:
+                return
+            try:
+                if proc.poll() is None:
+                    proc.stdin.write(b"-stay_open\nFalse\n")
+                    proc.stdin.flush()
+                    proc.wait(timeout=5)
+            except Exception:
+                self._kill("close_failed")
+                return
+            self._release_process(proc, "closed")
 
 
-def ffprobe_full(ffprobe_path: str, file_path: str,
-                 timeout: float = FF_TIMEOUT_S) -> dict:
-    core.configure_windows_worker_error_mode()
-    run_kwargs: dict[str, object] = {
-        "capture_output": True, "timeout": timeout}
-    if os.name == "nt":
-        run_kwargs["creationflags"] = getattr(
-            subprocess, "CREATE_NO_WINDOW", 0)
-    r = subprocess.run(
-        [ffprobe_path] + FF_ARGS + [file_path], **run_kwargs)
+def ffprobe_full(
+    ffprobe_path: str,
+    file_path: str,
+    timeout: float = FF_TIMEOUT_S,
+    *,
+    operation: str = "metadata_extract",
+) -> dict:
+    r = toolruntime.run_bounded_tool(
+        [ffprobe_path] + FF_ARGS + [file_path],
+        tool="ffprobe",
+        operation=operation,
+        timeout_seconds=timeout,
+    )
+    if toolruntime.is_native_crash_returncode(r.returncode):
+        raise toolruntime.failure_from_process(
+            r,
+            tool="ffprobe",
+            operation=operation,
+            failure_kind="native_crash",
+            recovered=True,
+        )
     if r.returncode != 0:
-        returncode = int(r.returncode)
-        unsigned = returncode & 0xFFFFFFFF
-        if returncode < 0 or unsigned >= 0x80000000:
-            summary = f"ffprobe 异常退出（0x{unsigned:08X}）"
-        else:
-            summary = f"ffprobe 失败（退出码 {returncode}）"
-        error = r.stderr.decode("utf-8", "replace").strip()[:200]
-        raise RuntimeError(summary + (f"：{error}" if error else ""))
-    return json.loads(r.stdout.decode("utf-8", "replace"))
+        error = r.stderr.decode("utf-8", "replace").strip()[-200:]
+        message = f"ffprobe 失败（退出码 {r.returncode}）"
+        raise MetadataSourceError(
+            message + (f"：{error}" if error else ""),
+            tool="ffprobe",
+        )
+    if r.stdout_truncated:
+        raise toolruntime.failure_from_process(
+            r,
+            tool="ffprobe",
+            operation=operation,
+            failure_kind="output_limit",
+            recovered=True,
+            message="ffprobe JSON 输出超过受控上限",
+        )
+    try:
+        document = json.loads(r.stdout.decode("utf-8", "replace"))
+    except (TypeError, ValueError) as exc:
+        raise toolruntime.failure_from_process(
+            r,
+            tool="ffprobe",
+            operation=operation,
+            failure_kind="protocol_invalid",
+            recovered=True,
+            message=f"ffprobe 返回无效 JSON：{exc}",
+        ) from exc
+    if not isinstance(document, dict):
+        raise toolruntime.failure_from_process(
+            r,
+            tool="ffprobe",
+            operation=operation,
+            failure_kind="protocol_invalid",
+            recovered=True,
+            message="ffprobe 返回的 JSON 顶层不是对象",
+        )
+    return document
 
 
 # === 阶段执行（汇合状态机；逐文件断点续传） ===
@@ -1117,12 +1545,112 @@ def _merge_diagnostic_stats(stats: dict, counts: dict) -> None:
         stats[key] = stats.get(key, 0) + value
 
 
+_METADATA_RESULT_TABLES = (
+    "photo_metadata", "video_metadata", "working_metadata",
+    "document_metadata", "archive_metadata", "archive_members",
+    "video_gps_points", "video_streams", "audio_streams", "raw_payloads",
+    "metadata_diagnostics",
+)
+
+
+def _clear_metadata_result(
+    con: sqlite3.Connection,
+    entry_id: int,
+    *,
+    clear_errors: bool,
+) -> None:
+    for table in _METADATA_RESULT_TABLES:
+        con.execute(f"DELETE FROM {table} WHERE entry_id=?", (entry_id,))
+    if clear_errors:
+        con.execute(
+            "DELETE FROM errors WHERE entry_id=? AND stage='metadata'",
+            (entry_id,),
+        )
+
+
+def _tool_failure_message(failure: toolruntime.ToolRuntimeFailure) -> str:
+    row = failure.latest
+    fields = [row.message]
+    if row.tool_session_id:
+        fields.append(f"tool_session_id={row.tool_session_id}")
+    if row.pid is not None:
+        fields.append(f"pid={row.pid}")
+    code = toolruntime.format_returncode(row.returncode)
+    if code is not None:
+        fields.append(f"exit={code}")
+    if row.errno is not None:
+        fields.append(f"errno={row.errno}")
+    if row.stderr_tail:
+        fields.append("stderr=" + row.stderr_tail[-500:])
+    return "；".join(fields)
+
+
+def _abort_metadata_tool_circuit(
+    con: sqlite3.Connection,
+    *,
+    circuit: toolruntime.ToolCircuitSnapshot,
+    failure: toolruntime.ToolRuntimeFailure,
+    worker,
+    stats: dict[str, object],
+) -> None:
+    affected_entry_ids = tuple(dict.fromkeys(circuit.entry_ids))
+    for entry_id in affected_entry_ids:
+        _clear_metadata_result(con, entry_id, clear_errors=False)
+    if affected_entry_ids:
+        placeholders = ",".join("?" for _ in affected_entry_ids)
+        con.execute(
+            f"UPDATE entries SET meta_status='pending'"
+            f" WHERE entry_id IN ({placeholders})",
+            affected_entry_ids,
+        )
+    pending_rows = con.execute(
+        "SELECT entry_id,media_kind FROM entries"
+        " WHERE meta_status='pending' ORDER BY entry_id"
+    ).fetchall()
+    pending_by_kind: dict[str, int] = {}
+    for _entry_id, media_kind in pending_rows:
+        key = str(media_kind or "unknown")
+        pending_by_kind[key] = pending_by_kind.get(key, 0) + 1
+    telemetry = {}
+    telemetry_reader = getattr(worker, "telemetry", None)
+    if callable(telemetry_reader):
+        telemetry = dict(telemetry_reader())
+    summary: dict[str, object] = {
+        "reason": "metadata_tool_circuit_open",
+        "tool": circuit.tool,
+        "threshold": circuit.threshold,
+        "consecutive_failures": circuit.consecutive_failures,
+        "failure_signature": list(circuit.signature),
+        "failure_recovered": circuit.recovered,
+        "failed_entry_ids": list(affected_entry_ids),
+        "first_unprocessed_entry_id": (
+            int(pending_rows[0][0]) if pending_rows else None),
+        "last_unprocessed_entry_id": (
+            int(pending_rows[-1][0]) if pending_rows else None),
+        "not_processed": len(pending_rows),
+        "not_processed_by_media_kind": pending_by_kind,
+        "failure": failure.as_dict(),
+        "tool_runtime": telemetry,
+    }
+    stats["circuit_open"] = True
+    stats["not_processed"] = len(pending_rows)
+    stats["tool_runtime"] = telemetry
+    con.execute(
+        "UPDATE snapshot_info SET scan_status='interrupted',"
+        " database_integrity='pending',finished_at_utc=NULL WHERE id=1"
+    )
+    con.commit()
+    raise MetadataToolCircuitOpen(summary)
+
+
 def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                            retain_original_metadata: bool = True,
                            timeout_policy: dict | None = None,
                            on_progress=None,
                            should_stop=None,
-                           on_current=None) -> dict:
+                           on_current=None,
+                           tool_circuit_threshold: int =
+                           toolruntime.DEFAULT_CIRCUIT_THRESHOLD) -> dict:
     core.ensure_metadata_diagnostics_table(con)
     et_ver = tools["exiftool"]["version"]
     ff_ver = tools["ffprobe"]["version"]
@@ -1146,17 +1674,81 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
     exiftool_timeout_for_size(0, selected_timeout_policy)  # 启动前验证策略
     stats = {
         "total": len(todo), "done": 0, "error": 0, "timeout": 0,
-        "unstable": 0, "ffprobe_payloads": 0,
+        "unstable": 0, "source_error": 0, "tool_error": 0,
+        "not_processed": len(todo), "circuit_open": False,
+        "ffprobe_payloads": 0,
         "ffprobe_optional_unreadable": 0,
         "ffprobe_optional_timeouts": 0,
         "diagnostic_warning": 0, "diagnostic_error": 0,
         "diagnostic_validation": 0,
         "exiftool_timeout_policy": selected_timeout_policy,
     }
+    circuit = toolruntime.ConsecutiveToolFailureCircuit(
+        tool_circuit_threshold)
     if should_stop is not None and should_stop():
         raise core.StageControlBoundary(
             "metadata controlled stage boundary")
-    worker = ExifToolWorker(tools["exiftool"]["path"])
+    if not todo:
+        stats["not_processed"] = 0
+        stats["tool_runtime"] = {
+            "session_count": 0,
+            "restart_count": 0,
+            "active_session": None,
+            "recent_sessions": [],
+        }
+        return stats
+    try:
+        worker = ExifToolWorker(tools["exiftool"]["path"])
+    except toolruntime.ToolRuntimeFailure as exc:
+        first_entry_id = int(todo[0][0])
+        snapshot = circuit.record_failure(first_entry_id, exc)
+        _record_error(
+            con,
+            first_entry_id,
+            "metadata_exiftool_tool_error",
+            _tool_failure_message(exc),
+        )
+        stats["tool_error"] += 1
+        _abort_metadata_tool_circuit(
+            con,
+            circuit=snapshot,
+            failure=exc,
+            worker=None,
+            stats=stats,
+        )
+
+    def register_tool_failure(
+        entry_id: int,
+        failure: toolruntime.ToolRuntimeFailure,
+    ) -> toolruntime.ToolCircuitSnapshot:
+        snapshot = circuit.record_failure(entry_id, failure)
+        _record_error(
+            con,
+            entry_id,
+            f"metadata_{failure.latest.tool}_tool_error",
+            _tool_failure_message(failure),
+        )
+        stats["tool_error"] += 1
+        if snapshot.opened:
+            prior_error_count = 0
+            if snapshot.entry_ids:
+                placeholders = ",".join("?" for _ in snapshot.entry_ids)
+                prior_error_count = int(con.execute(
+                    f"SELECT COUNT(*) FROM entries WHERE meta_status='error'"
+                    f" AND entry_id IN ({placeholders})",
+                    snapshot.entry_ids,
+                ).fetchone()[0])
+            stats["error"] = max(
+                0, int(stats["error"]) - prior_error_count)
+            _abort_metadata_tool_circuit(
+                con,
+                circuit=snapshot,
+                failure=failure,
+                worker=worker,
+                stats=stats,
+            )
+        return snapshot
+
     try:
         for i, (eid, rid, rel, ext, kind, size0, mtime0) in enumerate(todo, 1):
             if should_stop is not None and should_stop():
@@ -1170,20 +1762,13 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
             et_timeout = exiftool_timeout_for_size(
                 size0, selected_timeout_policy)
             status = "done"
+            file_tool_error = False
             try:
-                for tbl in ("photo_metadata", "video_metadata", "working_metadata",
-                            "document_metadata", "archive_metadata",
-                            "archive_members",
-                            "video_gps_points", "video_streams",
-                            "audio_streams", "raw_payloads",
-                            "metadata_diagnostics"):
-                    con.execute(f"DELETE FROM {tbl} WHERE entry_id=?", (eid,))
-                con.execute(
-                    "DELETE FROM errors WHERE entry_id=? AND stage='metadata'",
-                    (eid,))
+                _clear_metadata_result(con, eid, clear_errors=True)
                 if kind in _PHOTO_KINDS:
                     doc = worker.extract(
                         path, photo_profile=True, timeout=et_timeout)
+                    circuit.record_success("exiftool")
                     idx = build_tag_index(doc)
                     diagnostics = reported_diagnostics(doc)
                     normalized = photo_row(idx, ext, diagnostics)
@@ -1206,6 +1791,9 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     try:
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
+                        circuit.record_success("exiftool")
+                    except toolruntime.ToolRuntimeFailure:
+                        raise
                     except TimeoutError:
                         status = "timeout"
                         _record_error(
@@ -1215,9 +1803,15 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         errors.append(("exiftool_error", exc))
                     try:
                         ff = ffprobe_full(tools["ffprobe"]["path"], path)
+                        circuit.record_success("ffprobe")
+                    except toolruntime.ToolRuntimeFailure:
+                        raise
                     except subprocess.TimeoutExpired:
                         status = "timeout"
                         _record_error(con, eid, "ffprobe_timeout", path)
+                    except MetadataSourceError as exc:
+                        circuit.record_success(exc.tool)
+                        errors.append(("ffprobe_source_error", exc))
                     except Exception as exc:
                         errors.append(("ffprobe_error", exc))
                     idx = build_tag_index(doc) if doc else {}
@@ -1275,6 +1869,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 elif kind == "document":
                     doc = worker.extract(
                         path, photo_profile=False, timeout=et_timeout)
+                    circuit.record_success("exiftool")
                     idx = build_tag_index(doc)
                     _insert_row(con, "document_metadata", eid,
                                 document_row(idx, ext), "exiftool", et_ver)
@@ -1291,6 +1886,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         parser, ver = "python-zipfile", zip_ver
                     else:
                         s = sevenzip_summary(path, tools["sevenzip"]["path"], ext)
+                        circuit.record_success("sevenzip")
                         parser, ver = "7-Zip", sz_ver
                     members = s.pop("members", [])
                     _insert_row(con, "archive_metadata", eid, s, parser, ver)
@@ -1309,6 +1905,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     if retain_original_metadata:
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
+                        circuit.record_success("exiftool")
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                         diagnostic_counts = _persist_diagnostics(
                             con, eid, reported_diagnostics(doc))
@@ -1321,12 +1918,25 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     if retain_original_metadata:
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
+                        circuit.record_success("exiftool")
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                         diagnostic_counts = _persist_diagnostics(
                             con, eid, reported_diagnostics(doc))
                         _merge_diagnostic_stats(stats, diagnostic_counts)
                         if diagnostic_counts["error"]:
                             status = "error"
+            except toolruntime.ToolRuntimeFailure as exc:
+                file_tool_error = True
+                status = "error"
+                register_tool_failure(eid, exc)
+            except MetadataSourceError as exc:
+                circuit.record_success(exc.tool)
+                status = "error"
+                _record_error(
+                    con, eid,
+                    f"metadata_{exc.tool}_source_error",
+                    exc,
+                )
             except TimeoutError:
                 status = "timeout"
                 _record_error(
@@ -1341,8 +1951,16 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 try:
                     ff_optional = ffprobe_full(
                         tools["ffprobe"]["path"], path)
+                    circuit.record_success("ffprobe")
+                except toolruntime.ToolRuntimeFailure as exc:
+                    file_tool_error = True
+                    status = "error" if status == "done" else status
+                    register_tool_failure(eid, exc)
                 except subprocess.TimeoutExpired:
                     stats["ffprobe_optional_timeouts"] += 1
+                except MetadataSourceError as exc:
+                    circuit.record_success(exc.tool)
+                    stats["ffprobe_optional_unreadable"] += 1
                 except Exception:
                     stats["ffprobe_optional_unreadable"] += 1
                 else:
@@ -1366,6 +1984,9 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         (status, eid))
             stats[status if status in stats else "error"] = \
                 stats.get(status, 0) + 1
+            if status == "error" and not file_tool_error:
+                stats["source_error"] += 1
+            stats["not_processed"] = max(0, len(todo) - i)
             if i % 200 == 0:
                 con.commit()
             if on_progress and i % 10 == 0:
@@ -1373,6 +1994,8 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         con.commit()
     finally:
         worker.close()
+        stats["tool_runtime"] = (
+            worker.telemetry() if hasattr(worker, "telemetry") else {})
     if should_stop is not None and should_stop():
         raise core.StageControlBoundary(
             "metadata controlled stage boundary")

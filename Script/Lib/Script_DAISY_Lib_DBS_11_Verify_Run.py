@@ -23,6 +23,7 @@ import Script_DAISY_Lib_DBS_03_Hash as dbhash
 import Script_DAISY_Lib_DBS_06_Verify as legacy
 import Script_DAISY_Lib_DBS_12_Verify_Tools as verifytools
 import Script_DAISY_Lib_DBS_13_Raw as dbraw
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 
 
@@ -234,6 +235,7 @@ class FormatWorkerOutcome:
     worker_exitcode: int | None
     worker_reaped: bool
     events: tuple[dict[str, object], ...]
+    failure_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -425,6 +427,95 @@ def _issue_row(
     }
     row.update(extra)
     return row
+
+
+def _runtime_failure(
+    *,
+    tool: str,
+    operation: str,
+    failure_kind: str,
+    detail: str | None,
+    pid: int | None,
+    returncode: int | None,
+) -> toolruntime.ToolRuntimeFailure:
+    unrecovered = failure_kind in {
+        "start_failed", "cleanup_failed", "worker_start_failed",
+        "rawpy_unavailable",
+    }
+    return toolruntime.ToolRuntimeFailure(
+        toolruntime.ToolFaultEvidence(
+            tool=str(tool),
+            operation=str(operation),
+            failure_kind=str(failure_kind),
+            message=str(detail or f"{tool} 运行故障")[:2048],
+            pid=None if pid is None else int(pid),
+            returncode=(
+                None if returncode is None else int(returncode)),
+        ),
+        recovered=not unrecovered,
+    )
+
+
+def _record_tool_failure_group(
+    groups: dict[tuple[object, ...], dict[str, object]],
+    failure: toolruntime.ToolRuntimeFailure,
+    entry: _Entry,
+) -> dict[str, object]:
+    signature = failure.signature
+    group = groups.setdefault(signature, {
+        "tool": failure.latest.tool,
+        "failure_kind": failure.latest.failure_kind,
+        "detail": failure.latest.message,
+        "affected_files": 0,
+        "entry_ids": [],
+        "sample_paths": [],
+        "not_processed": 0,
+        "returncode": failure.latest.returncode,
+        "returncode_hex": toolruntime.format_returncode(
+            failure.latest.returncode),
+    })
+    group["affected_files"] = int(group["affected_files"]) + 1
+    entry_ids = group["entry_ids"]
+    if isinstance(entry_ids, list):
+        entry_ids.append(entry.entry_id)
+    samples = group["sample_paths"]
+    if isinstance(samples, list) and len(samples) < 3:
+        samples.append(entry.logical_path)
+    return group
+
+
+def _tool_failure_problem_rows(
+    groups: Mapping[tuple[object, ...], Mapping[str, object]],
+) -> list[dict[str, object]]:
+    rows = []
+    for group in groups.values():
+        affected = int(group.get("affected_files") or 0)
+        not_processed = int(group.get("not_processed") or 0)
+        tool = str(group.get("tool") or "外部工具")
+        kind = str(group.get("failure_kind") or "tool_error")
+        detail = (
+            f"{tool} 工具级故障 {kind}；影响已尝试文件 {affected} 个"
+            + (f"；熔断后未处理 {not_processed} 个" if not_processed else "")
+            + f"；{str(group.get('detail') or '').strip()}"
+        ).rstrip("；")
+        rows.append({
+            "path": "（工具故障聚合）",
+            "rel_path": None,
+            "root_id": None,
+            "status": "tool_error",
+            "detail": detail,
+            **dict(group),
+        })
+    return rows
+
+
+def _problem_file_count(
+    problems: list[dict[str, object]],
+) -> int:
+    return sum(
+        int(row.get("affected_files") or 1)
+        for row in problems
+    )
 
 
 def _settle_boundary(
@@ -761,6 +852,16 @@ def run_format_worker(
         status = "timeout"
     elif outcome == "crashed":
         status = "error"
+    failure_kind = None
+    if outcome == "crashed":
+        if toolruntime.is_native_crash_returncode(exitcode):
+            failure_kind = "native_crash"
+        elif not reaped:
+            failure_kind = "cleanup_failed"
+        elif detail == "格式 worker 启动超时":
+            failure_kind = "start_timeout"
+        else:
+            failure_kind = "worker_protocol_failed"
     return FormatWorkerOutcome(
         outcome=outcome,
         status=status,
@@ -774,6 +875,7 @@ def run_format_worker(
         worker_exitcode=exitcode,
         worker_reaped=reaped,
         events=tuple(events),
+        failure_kind=failure_kind,
     )
 
 
@@ -1016,6 +1118,13 @@ def _run_hash_stage(
     performance: list[dict[str, object]] = []
     processed = 0
     runner = hash_runner or dbhash.run_independent_hash_process
+    circuit = toolruntime.ConsecutiveToolFailureCircuit()
+    tool_failure_groups: dict[
+        tuple[object, ...], dict[str, object]
+    ] = {}
+
+    def combined_problems() -> list[dict[str, object]]:
+        return [*problems, *_tool_failure_problem_rows(tool_failure_groups)]
 
     for entry in selected:
         while True:
@@ -1026,8 +1135,10 @@ def _run_hash_stage(
                     "selected": len(selected), "processed": processed,
                     "checked": checked, "matched": matched,
                     "unverifiable": unverifiable,
-                    "counts": _section_counts(problems),
-                    "problems": problems, "performance": performance,
+                    "counts": _section_counts(combined_problems()),
+                    "problems": combined_problems(),
+                    "problem_files": _problem_file_count(combined_problems()),
+                    "performance": performance,
                     "tools": used_tools,
                 }, "stopped", used_tools
             if not entry.baseline_hash:
@@ -1055,17 +1166,62 @@ def _run_hash_stage(
                     "hash", "current_item", stage="hash",
                     item=entry.rel_path)
             assert powershell_path is not None
-            outcome = runner(
-                entry.physical_path,
-                powershell_path,
-                expected_size=entry.size_bytes,
-                timeout_seconds=options.hash_timeout_seconds,
-                default_decision=options.timeout_decision,
-                display_name=entry.rel_path,
-                control=control.worker_control,
-                on_event=on_event,
-                on_threshold=on_threshold,
-            )
+            try:
+                outcome = runner(
+                    entry.physical_path,
+                    powershell_path,
+                    expected_size=entry.size_bytes,
+                    timeout_seconds=options.hash_timeout_seconds,
+                    default_decision=options.timeout_decision,
+                    display_name=entry.rel_path,
+                    control=control.worker_control,
+                    on_event=on_event,
+                    on_threshold=on_threshold,
+                )
+            except (OSError, core.PreflightError) as exc:
+                failure = _runtime_failure(
+                    tool="powershell",
+                    operation="independent_hash",
+                    failure_kind="start_failed",
+                    detail=f"PowerShell 哈希进程无法启动：{exc}",
+                    pid=None,
+                    returncode=None,
+                )
+                group = _record_tool_failure_group(
+                    tool_failure_groups, failure, entry)
+                snapshot_failure = circuit.record_failure(
+                    entry.entry_id, failure)
+                processed += 1
+                checked += 1
+                group["not_processed"] = max(0, len(selected) - processed)
+                all_problems = combined_problems()
+                _emit(
+                    on_event, "tool_circuit_open", stage="hash",
+                    tool="powershell",
+                    failure_kind=failure.latest.failure_kind,
+                    affected=int(group["affected_files"]),
+                    not_processed=int(group["not_processed"]),
+                )
+                _emit(
+                    on_event, "stage_failed", stage="hash",
+                    processed=processed, total=len(selected),
+                    not_processed=int(group["not_processed"]),
+                    tool="powershell",
+                )
+                return {
+                    "state": "failed", "mode": options.hash_mode,
+                    "reason": "PowerShell 工具无法启动，哈希核验已熔断",
+                    "selected": len(selected), "processed": processed,
+                    "checked": checked, "matched": matched,
+                    "unverifiable": unverifiable,
+                    "not_processed": int(group["not_processed"]),
+                    "counts": _section_counts(all_problems),
+                    "problems": all_problems,
+                    "problem_files": _problem_file_count(all_problems),
+                    "performance": performance,
+                    "tools": used_tools,
+                    "tool_circuit": snapshot_failure.as_dict(),
+                }, "failed", used_tools
             if outcome.outcome == "paused":
                 if _wait_worker_pause(control, "hash", on_event) == "running":
                     continue
@@ -1074,8 +1230,10 @@ def _run_hash_stage(
                     "selected": len(selected), "processed": processed,
                     "checked": checked, "matched": matched,
                     "unverifiable": unverifiable,
-                    "counts": _section_counts(problems),
-                    "problems": problems, "performance": performance,
+                    "counts": _section_counts(combined_problems()),
+                    "problems": combined_problems(),
+                    "problem_files": _problem_file_count(combined_problems()),
+                    "performance": performance,
                     "tools": used_tools,
                 }, "stopped", used_tools
             if outcome.outcome in ("stopped", "save_exit"):
@@ -1100,23 +1258,73 @@ def _run_hash_stage(
                 "worker_reaped": outcome.worker_reaped,
             })
             if after is None:
+                circuit.record_success("powershell")
                 problems.append(_issue_row(entry, "missing", after_error))
             elif not _same_stat(before, after) or not _matches_baseline(
                     entry, after):
+                circuit.record_success("powershell")
                 problems.append(_issue_row(
                     entry, "unstable",
                     "哈希读取前后 size／mtime 不稳定"))
+            elif getattr(outcome, "failure_kind", None):
+                failure = _runtime_failure(
+                    tool="powershell",
+                    operation="independent_hash",
+                    failure_kind=str(outcome.failure_kind),
+                    detail=outcome.error,
+                    pid=outcome.worker_pid,
+                    returncode=outcome.worker_exitcode,
+                )
+                group = _record_tool_failure_group(
+                    tool_failure_groups, failure, entry)
+                snapshot_failure = circuit.record_failure(
+                    entry.entry_id, failure)
+                if snapshot_failure.opened:
+                    processed += 1
+                    group["not_processed"] = max(
+                        0, len(selected) - processed)
+                    all_problems = combined_problems()
+                    _emit(
+                        on_event, "tool_circuit_open", stage="hash",
+                        tool="powershell",
+                        failure_kind=failure.latest.failure_kind,
+                        affected=int(group["affected_files"]),
+                        not_processed=int(group["not_processed"]),
+                    )
+                    _emit(
+                        on_event, "stage_failed", stage="hash",
+                        processed=processed, total=len(selected),
+                        not_processed=int(group["not_processed"]),
+                        tool="powershell",
+                    )
+                    return {
+                        "state": "failed", "mode": options.hash_mode,
+                        "reason": "PowerShell 连续工具故障，哈希核验已熔断",
+                        "selected": len(selected), "processed": processed,
+                        "checked": checked, "matched": matched,
+                        "unverifiable": unverifiable,
+                        "not_processed": int(group["not_processed"]),
+                        "counts": _section_counts(all_problems),
+                        "problems": all_problems,
+                        "problem_files": _problem_file_count(all_problems),
+                        "performance": performance,
+                        "tools": used_tools,
+                        "tool_circuit": snapshot_failure.as_dict(),
+                    }, "failed", used_tools
             elif outcome.outcome == "timeout":
+                circuit.record_success("powershell")
                 problems.append(_issue_row(
                     entry, "timeout", outcome.error))
             elif outcome.outcome != "completed" or not outcome.hash_hex \
                     or outcome.bytes_read != entry.size_bytes \
                     or not outcome.worker_reaped \
                     or outcome.worker_exitcode != 0:
+                circuit.record_success("powershell")
                 problems.append(_issue_row(
                     entry, "tool_error",
                     outcome.error or "独立哈希进程未完整成功"))
             elif outcome.hash_hex.casefold() != entry.baseline_hash:
+                circuit.record_success("powershell")
                 problems.append(_issue_row(
                     entry,
                     "mismatched",
@@ -1125,20 +1333,24 @@ def _run_hash_stage(
                     independent=outcome.hash_hex.casefold(),
                 ))
             else:
+                circuit.record_success("powershell")
                 matched += 1
             processed += 1
             break
         progress.send(
             "hash", "hash", processed, len(selected),
-            {"matched": matched, "problems": len(problems),
+            {"matched": matched,
+             "problems": _problem_file_count(combined_problems()),
              "unverifiable": unverifiable},
         )
     progress.send(
         "hash", "hash", processed, len(selected),
-        {"matched": matched, "problems": len(problems),
+        {"matched": matched,
+         "problems": _problem_file_count(combined_problems()),
          "unverifiable": unverifiable}, force=True)
+    all_problems = combined_problems()
     _emit(on_event, "stage_finished", stage="hash", processed=processed,
-          matched=matched, problems=len(problems),
+          matched=matched, problems=_problem_file_count(all_problems),
           unverifiable=unverifiable)
     return {
         "state": "executed",
@@ -1151,8 +1363,9 @@ def _run_hash_stage(
         "checked": checked,
         "matched": matched,
         "unverifiable": unverifiable,
-        "counts": _section_counts(problems),
-        "problems": problems,
+        "counts": _section_counts(all_problems),
+        "problems": all_problems,
+        "problem_files": _problem_file_count(all_problems),
         "performance": performance,
         "tools": used_tools,
     }, "running", used_tools
@@ -1195,6 +1408,28 @@ def _run_format_stage(
     unsupported = 0
     processed = 0
     runner = format_runner or run_format_validator
+    circuit = toolruntime.ConsecutiveToolFailureCircuit()
+    tool_failure_groups: dict[
+        tuple[object, ...], dict[str, object]
+    ] = {}
+
+    def combined_problems() -> list[dict[str, object]]:
+        return [*problems, *_tool_failure_problem_rows(tool_failure_groups)]
+
+    def record_validator_success(
+        spec: legacy.FormatValidatorSpec,
+        media_kind: str,
+    ) -> None:
+        if spec.validator in ("zip", "pdf"):
+            circuit.record_success("daisy-format-worker")
+        elif spec.validator in ("ole", "7z"):
+            circuit.record_success("sevenzip")
+        else:
+            circuit.record_success("exiftool")
+            effective_kind = (
+                "image_gif" if spec.validator == "gif" else media_kind)
+            if effective_kind in legacy._FFPROBE_KINDS:
+                circuit.record_success("ffprobe")
 
     for entry in selected:
         while True:
@@ -1204,8 +1439,10 @@ def _run_format_stage(
                     "state": "stopped", "mode": options.format_mode,
                     "selected": len(selected), "processed": processed,
                     "valid": valid, "unsupported": unsupported,
-                    "counts": _section_counts(problems),
-                    "problems": problems, "tools": used_tools,
+                    "counts": _section_counts(combined_problems()),
+                    "problems": combined_problems(),
+                    "problem_files": _problem_file_count(combined_problems()),
+                    "tools": used_tools,
                     "coverage_note": FORMAT_COVERAGE_NOTE,
                 }, "stopped", used_tools
             before, before_error = _stat_file(entry.physical_path)
@@ -1223,19 +1460,68 @@ def _run_format_stage(
                 current.send(
                     "format", "current_item", stage="format",
                     item=entry.rel_path)
-            outcome = runner(
-                entry.physical_path,
-                entry.media_kind,
-                spec,
-                used_tools,
-                expected_size=entry.size_bytes,
-                timeout_seconds=options.format_timeout_seconds,
-                default_decision=options.timeout_decision,
-                display_name=entry.rel_path,
-                control=control.worker_control,
-                on_event=on_event,
-                on_threshold=on_threshold,
-            )
+            try:
+                outcome = runner(
+                    entry.physical_path,
+                    entry.media_kind,
+                    spec,
+                    used_tools,
+                    expected_size=entry.size_bytes,
+                    timeout_seconds=options.format_timeout_seconds,
+                    default_decision=options.timeout_decision,
+                    display_name=entry.rel_path,
+                    control=control.worker_control,
+                    on_event=on_event,
+                    on_threshold=on_threshold,
+                )
+            except (OSError, RuntimeError, core.PreflightError) as exc:
+                tool = (
+                    "daisy-format-worker"
+                    if spec.validator in ("zip", "pdf") else
+                    "sevenzip" if spec.validator in ("ole", "7z") else
+                    "external-format-tool"
+                )
+                failure = _runtime_failure(
+                    tool=tool,
+                    operation="format_validate",
+                    failure_kind="start_failed",
+                    detail=f"格式校验工具无法启动：{exc}",
+                    pid=None,
+                    returncode=None,
+                )
+                group = _record_tool_failure_group(
+                    tool_failure_groups, failure, entry)
+                snapshot_failure = circuit.record_failure(
+                    entry.entry_id, failure)
+                processed += 1
+                group["not_processed"] = max(0, len(selected) - processed)
+                all_problems = combined_problems()
+                _emit(
+                    on_event, "tool_circuit_open", stage="format",
+                    tool=tool,
+                    failure_kind=failure.latest.failure_kind,
+                    affected=int(group["affected_files"]),
+                    not_processed=int(group["not_processed"]),
+                )
+                _emit(
+                    on_event, "stage_failed", stage="format",
+                    processed=processed, total=len(selected),
+                    not_processed=int(group["not_processed"]), tool=tool,
+                )
+                return {
+                    "state": "failed", "mode": options.format_mode,
+                    "reason": "格式校验工具无法启动，阶段已熔断",
+                    "selected": len(selected), "processed": processed,
+                    "valid": valid, "unsupported": unsupported,
+                    "checked": processed - unsupported,
+                    "not_processed": int(group["not_processed"]),
+                    "counts": _section_counts(all_problems),
+                    "problems": all_problems,
+                    "problem_files": _problem_file_count(all_problems),
+                    "tools": used_tools,
+                    "tool_circuit": snapshot_failure.as_dict(),
+                    "coverage_note": FORMAT_COVERAGE_NOTE,
+                }, "failed", used_tools
             if outcome.outcome == "paused":
                 if _wait_worker_pause(control, "format", on_event) == "running":
                     continue
@@ -1243,8 +1529,10 @@ def _run_format_stage(
                     "state": "stopped", "mode": options.format_mode,
                     "selected": len(selected), "processed": processed,
                     "valid": valid, "unsupported": unsupported,
-                    "counts": _section_counts(problems),
-                    "problems": problems, "tools": used_tools,
+                    "counts": _section_counts(combined_problems()),
+                    "problems": combined_problems(),
+                    "problem_files": _problem_file_count(combined_problems()),
+                    "tools": used_tools,
                     "coverage_note": FORMAT_COVERAGE_NOTE,
                 }, "stopped", used_tools
             if outcome.outcome in ("stopped", "save_exit"):
@@ -1260,17 +1548,70 @@ def _run_format_stage(
                 }, "stopped", used_tools
             after, after_error = _stat_file(entry.physical_path)
             if after is None:
+                record_validator_success(spec, entry.media_kind)
                 problems.append(_issue_row(entry, "missing", after_error))
             elif not _same_stat(before, after):
+                record_validator_success(spec, entry.media_kind)
                 problems.append(_issue_row(
                     entry, "unstable",
                     "格式读取前后 size／mtime 不稳定"))
+            elif getattr(outcome, "failure_kind", None):
+                tool = str(
+                    getattr(outcome, "tool", None)
+                    or "daisy-format-worker")
+                failure = _runtime_failure(
+                    tool=tool,
+                    operation="format_validate",
+                    failure_kind=str(outcome.failure_kind),
+                    detail=outcome.detail,
+                    pid=getattr(outcome, "worker_pid", None),
+                    returncode=getattr(outcome, "worker_exitcode", None),
+                )
+                group = _record_tool_failure_group(
+                    tool_failure_groups, failure, entry)
+                snapshot_failure = circuit.record_failure(
+                    entry.entry_id, failure)
+                if snapshot_failure.opened:
+                    processed += 1
+                    group["not_processed"] = max(
+                        0, len(selected) - processed)
+                    all_problems = combined_problems()
+                    _emit(
+                        on_event, "tool_circuit_open", stage="format",
+                        tool=tool,
+                        failure_kind=failure.latest.failure_kind,
+                        affected=int(group["affected_files"]),
+                        not_processed=int(group["not_processed"]),
+                    )
+                    _emit(
+                        on_event, "stage_failed", stage="format",
+                        processed=processed, total=len(selected),
+                        not_processed=int(group["not_processed"]),
+                        tool=tool,
+                    )
+                    return {
+                        "state": "failed", "mode": options.format_mode,
+                        "reason": f"{tool} 连续工具故障，格式校验已熔断",
+                        "selected": len(selected), "processed": processed,
+                        "valid": valid, "unsupported": unsupported,
+                        "checked": processed - unsupported,
+                        "not_processed": int(group["not_processed"]),
+                        "counts": _section_counts(all_problems),
+                        "problems": all_problems,
+                        "problem_files": _problem_file_count(all_problems),
+                        "tools": used_tools,
+                        "tool_circuit": snapshot_failure.as_dict(),
+                        "coverage_note": FORMAT_COVERAGE_NOTE,
+                    }, "failed", used_tools
             elif outcome.status == "unsupported":
+                record_validator_success(spec, entry.media_kind)
                 unsupported += 1
             elif outcome.status == "valid" and outcome.outcome == "completed" \
                     and outcome.worker_reaped and outcome.worker_exitcode == 0:
+                record_validator_success(spec, entry.media_kind)
                 valid += 1
             else:
+                record_validator_success(spec, entry.media_kind)
                 status = str(outcome.status or "error")
                 if status not in (
                         "invalid", "timeout", "error", "missing", "unstable"):
@@ -1285,14 +1626,16 @@ def _run_format_stage(
         progress.send(
             "format", "format", processed, len(selected),
             {"valid": valid, "unsupported": unsupported,
-             "problems": len(problems)},
+             "problems": _problem_file_count(combined_problems())},
         )
     progress.send(
         "format", "format", processed, len(selected),
         {"valid": valid, "unsupported": unsupported,
-         "problems": len(problems)}, force=True)
+         "problems": _problem_file_count(combined_problems())}, force=True)
+    all_problems = combined_problems()
     _emit(on_event, "stage_finished", stage="format", processed=processed,
-          valid=valid, unsupported=unsupported, problems=len(problems))
+          valid=valid, unsupported=unsupported,
+          problems=_problem_file_count(all_problems))
     return {
         "state": "executed",
         "mode": options.format_mode,
@@ -1303,8 +1646,9 @@ def _run_format_stage(
         "checked": processed - unsupported,
         "valid": valid,
         "unsupported": unsupported,
-        "counts": _section_counts(problems),
-        "problems": problems,
+        "counts": _section_counts(all_problems),
+        "problems": all_problems,
+        "problem_files": _problem_file_count(all_problems),
         "tools": used_tools,
         "coverage_note": FORMAT_COVERAGE_NOTE,
     }, "running", used_tools
@@ -1400,9 +1744,20 @@ def _run_raw_stage(
     processed = 0
     decoded_pixels = 0
     decoded_bytes = 0
+    circuit = toolruntime.ConsecutiveToolFailureCircuit()
+    tool_failure_groups: dict[
+        tuple[object, ...], dict[str, object]
+    ] = {}
+    stage_reason: str | None = None
+    not_processed = 0
+    circuit_snapshot: dict[str, object] | None = None
+
+    def combined_problems() -> list[dict[str, object]]:
+        return [*problems, *_tool_failure_problem_rows(tool_failure_groups)]
 
     def section(section_state: str) -> dict[str, object]:
-        return {
+        all_problems = combined_problems()
+        payload: dict[str, object] = {
             "state": section_state,
             "format_mode": options.format_mode,
             "format_sample_percent": (
@@ -1415,8 +1770,9 @@ def _run_raw_stage(
             "valid": valid,
             "unsupported": unsupported,
             "unverifiable": unverifiable,
-            "counts": _section_counts(problems),
-            "problems": problems,
+            "counts": _section_counts(all_problems),
+            "problems": all_problems,
+            "problem_files": _problem_file_count(all_problems),
             "decoded_pixels": decoded_pixels,
             "decoded_bytes": decoded_bytes,
             "capability": dict(capability),
@@ -1424,6 +1780,13 @@ def _run_raw_stage(
                 "RAW 范围继承本次格式校验选择；sample 不代表全部 RAW。"
             ),
         }
+        if stage_reason is not None:
+            payload["reason"] = stage_reason
+        if not_processed:
+            payload["not_processed"] = not_processed
+        if circuit_snapshot is not None:
+            payload["tool_circuit"] = circuit_snapshot
+        return payload
 
     for entry in selected:
         while True:
@@ -1447,16 +1810,47 @@ def _run_raw_stage(
             def raw_event(event: str, **payload: object) -> None:
                 _emit(on_event, event, stage="raw", **payload)
 
-            outcome = runner(
-                entry.physical_path,
-                expected_size=entry.size_bytes,
-                timeout_seconds=options.raw_timeout_seconds,
-                default_decision=options.timeout_decision,
-                display_name=entry.rel_path,
-                control=control.worker_control,
-                on_event=raw_event,
-                on_threshold=on_threshold,
-            )
+            try:
+                outcome = runner(
+                    entry.physical_path,
+                    expected_size=entry.size_bytes,
+                    timeout_seconds=options.raw_timeout_seconds,
+                    default_decision=options.timeout_decision,
+                    display_name=entry.rel_path,
+                    control=control.worker_control,
+                    on_event=raw_event,
+                    on_threshold=on_threshold,
+                )
+            except (OSError, RuntimeError, core.PreflightError) as exc:
+                failure = _runtime_failure(
+                    tool="rawpy/LibRaw",
+                    operation="raw_decode",
+                    failure_kind="worker_start_failed",
+                    detail=f"RAW worker 无法启动：{exc}",
+                    pid=None,
+                    returncode=None,
+                )
+                group = _record_tool_failure_group(
+                    tool_failure_groups, failure, entry)
+                opened = circuit.record_failure(entry.entry_id, failure)
+                processed += 1
+                not_processed = max(0, len(selected) - processed)
+                group["not_processed"] = not_processed
+                stage_reason = "RAW worker 无法启动，深度校验已熔断"
+                circuit_snapshot = opened.as_dict()
+                _emit(
+                    on_event, "tool_circuit_open", stage="raw",
+                    tool="rawpy/LibRaw",
+                    failure_kind=failure.latest.failure_kind,
+                    affected=int(group["affected_files"]),
+                    not_processed=not_processed,
+                )
+                _emit(
+                    on_event, "stage_failed", stage="raw",
+                    processed=processed, total=len(selected),
+                    not_processed=not_processed, tool="rawpy/LibRaw",
+                )
+                return section("failed"), "failed"
             if outcome.outcome == "paused":
                 if _wait_worker_pause(control, "raw", on_event) == "running":
                     continue
@@ -1468,6 +1862,7 @@ def _run_raw_stage(
 
             after, after_error = _stat_file(entry.physical_path)
             if after is None:
+                circuit.record_success("rawpy/LibRaw")
                 problems.append(_issue_row(
                     entry,
                     "error",
@@ -1476,13 +1871,47 @@ def _run_raw_stage(
                 ))
             elif not _same_stat(before, after) \
                     or not _matches_baseline(entry, after):
+                circuit.record_success("rawpy/LibRaw")
                 problems.append(_issue_row(
                     entry,
                     "error",
                     "RAW 解码前后 size／mtime 不稳定",
                     code="raw_unstable",
                 ))
+            elif getattr(outcome, "failure_kind", None):
+                failure = _runtime_failure(
+                    tool="rawpy/LibRaw",
+                    operation="raw_decode",
+                    failure_kind=str(outcome.failure_kind),
+                    detail=outcome.detail,
+                    pid=outcome.worker_pid,
+                    returncode=outcome.worker_exitcode,
+                )
+                group = _record_tool_failure_group(
+                    tool_failure_groups, failure, entry)
+                opened = circuit.record_failure(entry.entry_id, failure)
+                if opened.opened:
+                    processed += 1
+                    not_processed = max(0, len(selected) - processed)
+                    group["not_processed"] = not_processed
+                    stage_reason = (
+                        "rawpy／LibRaw 连续工具故障，深度校验已熔断")
+                    circuit_snapshot = opened.as_dict()
+                    _emit(
+                        on_event, "tool_circuit_open", stage="raw",
+                        tool="rawpy/LibRaw",
+                        failure_kind=failure.latest.failure_kind,
+                        affected=int(group["affected_files"]),
+                        not_processed=not_processed,
+                    )
+                    _emit(
+                        on_event, "stage_failed", stage="raw",
+                        processed=processed, total=len(selected),
+                        not_processed=not_processed, tool="rawpy/LibRaw",
+                    )
+                    return section("failed"), "failed"
             elif outcome.succeeded:
+                circuit.record_success("rawpy/LibRaw")
                 valid += 1
                 decoded_pixels += int(outcome.pixel_count or 0)
                 decoded_bytes += int(outcome.decoded_bytes or 0)
@@ -1490,8 +1919,10 @@ def _run_raw_stage(
                     and outcome.status == "unsupported" \
                     and outcome.worker_reaped \
                     and outcome.worker_exitcode == 0:
+                circuit.record_success("rawpy/LibRaw")
                 unsupported += 1
             else:
+                circuit.record_success("rawpy/LibRaw")
                 status = str(outcome.status or "error")
                 if status not in ("invalid", "timeout", "error"):
                     status = "error"
@@ -1516,7 +1947,7 @@ def _run_raw_stage(
                 "valid": valid,
                 "unsupported": unsupported,
                 "unverifiable": unverifiable,
-                "problems": len(problems),
+                "problems": _problem_file_count(combined_problems()),
             },
         )
     progress.send(
@@ -1528,7 +1959,7 @@ def _run_raw_stage(
             "valid": valid,
             "unsupported": unsupported,
             "unverifiable": unverifiable,
-            "problems": len(problems),
+            "problems": _problem_file_count(combined_problems()),
         },
         force=True,
     )
@@ -1540,12 +1971,14 @@ def _run_raw_stage(
         valid=valid,
         unsupported=unsupported,
         unverifiable=unverifiable,
-        problems=len(problems),
+        problems=_problem_file_count(combined_problems()),
     )
     return section("executed"), "running"
 
 
 def _conclusion(report: dict[str, object]) -> str:
+    if report["run_state"] == "failed":
+        return "failed"
     if report["run_state"] != "complete":
         return "stopped"
     stat = report["sections"]["stat"]
@@ -1668,7 +2101,11 @@ def run_unified_verification(
     report: dict[str, object] = {
         "contract": VERIFICATION_CONTRACT,
         "report_metadata": core.report_metadata("DBS-30 统一核验"),
-        "run_state": "complete" if state == "running" else "stopped",
+        "run_state": {
+            "running": "complete",
+            "stopped": "stopped",
+            "failed": "failed",
+        }.get(state, "failed"),
         "snapshot": snapshot,
         "input_identity": input_identity,
         "input_unchanged": True,
@@ -1699,13 +2136,19 @@ def _module_state_text(section: Mapping[str, object]) -> str:
         return "NULL（快照未记录可用基准）"
     if state == "stopped":
         return "未完成（任务已停止）"
+    if state == "failed":
+        return "失败（工具故障熔断）"
     return "NULL（本次未执行）"
 
 
 def _problem_count(section: Mapping[str, object]) -> str:
-    if section.get("state") not in ("executed", "stopped"):
+    if section.get("state") not in ("executed", "stopped", "failed"):
         return "NULL"
-    return str(len(section.get("problems") or []))
+    explicit = section.get("problem_files")
+    return str(
+        int(explicit)
+        if isinstance(explicit, int) and not isinstance(explicit, bool)
+        else len(section.get("problems") or []))
 
 
 def _append_problem_rows(
@@ -1742,6 +2185,7 @@ def render_verification_markdown(report: Mapping[str, object]) -> str:
         "issues_found": "发现需要处理或复核的问题。",
         "incomplete": "未发现确定性问题，但部分内容没有可用哈希基准，不能宣称完整一致。",
         "stopped": "任务已停止；以下仅代表停止前已完成的范围。",
+        "failed": "外部工具连续故障，核验已熔断；未处理范围不作结论。",
     }.get(str(report.get("conclusion")), "结论不可用。")
     lines = [
         "# DAISY 统一核验报告",

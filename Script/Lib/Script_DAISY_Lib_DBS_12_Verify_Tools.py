@@ -64,6 +64,8 @@ class ExternalFormatOutcome:
     worker_exitcode: int | None
     worker_reaped: bool
     events: tuple[dict[str, object], ...]
+    tool: str | None = None
+    failure_kind: str | None = None
 
 
 def _emit(callback, event: str, **payload: object) -> None:
@@ -385,6 +387,8 @@ def _format_outcome(
     started: float,
     events: list[dict[str, object]],
     threshold_count: int,
+    tool: str | None = None,
+    failure_kind: str | None = None,
 ) -> ExternalFormatOutcome:
     return ExternalFormatOutcome(
         outcome=source.outcome,
@@ -399,6 +403,8 @@ def _format_outcome(
         worker_exitcode=source.returncode,
         worker_reaped=source.worker_reaped,
         events=tuple([*events, *source.events]),
+        tool=tool,
+        failure_kind=failure_kind,
     )
 
 
@@ -411,6 +417,8 @@ def _local_format_outcome(
     outcome: str = "completed",
     threshold_count: int = 0,
     events: tuple[dict[str, object], ...] = (),
+    tool: str | None = None,
+    failure_kind: str | None = None,
 ) -> ExternalFormatOutcome:
     """返回未启动外部工具的本地头部判定结果。"""
     return ExternalFormatOutcome(
@@ -426,6 +434,8 @@ def _local_format_outcome(
         worker_exitcode=None,
         worker_reaped=True,
         events=events,
+        tool=tool,
+        failure_kind=failure_kind,
     )
 
 
@@ -439,6 +449,11 @@ def _start_error_outcome(
     events: tuple[dict[str, object], ...] = (),
 ) -> ExternalFormatOutcome:
     reason = getattr(exc, "strerror", None) or type(exc).__name__
+    canonical = {
+        "7-Zip": "sevenzip",
+        "ExifTool": "exiftool",
+        "FFprobe": "ffprobe",
+    }.get(tool_name, tool_name.casefold())
     return _local_format_outcome(
         expected_size=expected_size,
         status="error",
@@ -447,6 +462,8 @@ def _start_error_outcome(
         outcome="tool_error",
         threshold_count=threshold_count,
         events=events,
+        tool=canonical,
+        failure_kind="start_failed",
     )
 
 
@@ -492,15 +509,19 @@ def _controlled(
 
 def _sevenzip_result(
     result: ControlledToolOutcome,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, str | None]:
     if result.returncode == 0:
-        return "valid", None
+        return "valid", None, None
     text = (result.stderr + result.stdout).decode("utf-8", "replace")
     if "Wrong password" in text or "Enter password" in text:
-        return "unsupported", "加密压缩包无法完整性测试"
+        return "unsupported", "加密压缩包无法完整性测试", None
     tool_error = _SEVENZIP_TOOL_ERRORS.get(int(result.returncode or 0))
     if tool_error is not None:
-        return "error", f"7z t 工具错误：{tool_error}"
+        return (
+            "error",
+            f"7z t 工具错误：{tool_error}",
+            f"tool_exit_{int(result.returncode or 0)}",
+        )
     tail = " | ".join(
         line for line in text.splitlines() if line.strip())[-300:]
     truncated = (
@@ -510,6 +531,7 @@ def _sevenzip_result(
     return (
         "invalid",
         f"7z t 退出码 {result.returncode}：{tail}{truncated}",
+        None,
     )
 
 
@@ -517,9 +539,12 @@ def _ffprobe_findings(
     path: str,
     kind: str,
     result: ControlledToolOutcome,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     if result.stdout_truncated:
-        return ["ffprobe: JSON 输出超过证据上限，无法完成结构解析"]
+        return (
+            ["ffprobe: JSON 输出超过证据上限，无法完成结构解析"],
+            "output_limit",
+        )
     document: Mapping[str, object] = {}
     streams: list[Mapping[str, object]] = []
     invalid_shape = False
@@ -550,9 +575,9 @@ def _ffprobe_findings(
         except OSError as exc:
             reason = getattr(exc, "strerror", None) or type(exc).__name__
             bad.append(f"ffprobe: 核验期间无法读取文件大小（{reason}）")
-            return bad
+            return bad, None
         if size_bytes > 44:
-            return bad
+            return bad, None
         audio_streams = [
             stream for stream in streams
             if stream.get("codec_type") == "audio"
@@ -572,7 +597,9 @@ def _ffprobe_findings(
             and not any(value and value > 0 for value in stream_durations)
         ):
             bad.append("ffprobe: 音频容器只有头部且没有可确认的音频样本")
-    return bad
+    if result.returncode == 0 and invalid_shape:
+        return bad, "protocol_invalid"
+    return bad, None
 
 
 def run_external_format_validator(
@@ -642,6 +669,11 @@ def run_external_format_validator(
             )
         if result.outcome != "completed":
             status = "timeout" if result.outcome == "timeout" else None
+            failure_kind = (
+                "supervision_failed"
+                if result.outcome not in ("paused", "stopped", "timeout")
+                else None
+            )
             return _format_outcome(
                 result,
                 expected_size=expected_size,
@@ -652,6 +684,8 @@ def run_external_format_validator(
                 started=started,
                 events=events,
                 threshold_count=threshold_count,
+                tool="sevenzip" if failure_kind else None,
+                failure_kind=failure_kind,
             )
         crash_detail = _process_crash_detail(result, "7-Zip")
         if crash_detail is not None:
@@ -663,8 +697,10 @@ def run_external_format_validator(
                 started=started,
                 events=events,
                 threshold_count=threshold_count,
+                tool="sevenzip",
+                failure_kind="native_crash",
             )
-        status, detail = _sevenzip_result(result)
+        status, detail, failure_kind = _sevenzip_result(result)
         return _format_outcome(
             result,
             expected_size=expected_size,
@@ -673,6 +709,8 @@ def run_external_format_validator(
             started=started,
             events=events,
             threshold_count=threshold_count,
+            tool="sevenzip" if failure_kind else None,
+            failure_kind=failure_kind,
         )
 
     exiftool = _tool_path(tools, "exiftool")
@@ -701,6 +739,11 @@ def run_external_format_validator(
         )
     if exif.outcome != "completed":
         status = "timeout" if exif.outcome == "timeout" else None
+        failure_kind = (
+            "supervision_failed"
+            if exif.outcome not in ("paused", "stopped", "timeout")
+            else None
+        )
         return _format_outcome(
             exif,
             expected_size=expected_size,
@@ -709,6 +752,8 @@ def run_external_format_validator(
             started=started,
             events=events,
             threshold_count=threshold_count,
+            tool="exiftool" if failure_kind else None,
+            failure_kind=failure_kind,
         )
     crash_detail = _process_crash_detail(exif, "ExifTool")
     if crash_detail is not None:
@@ -720,6 +765,8 @@ def run_external_format_validator(
             started=started,
             events=[],
             threshold_count=0,
+            tool="exiftool",
+            failure_kind="native_crash",
         )
     if exif.stdout_truncated or exif.stderr_truncated:
         return _format_outcome(
@@ -730,6 +777,8 @@ def run_external_format_validator(
             started=started,
             events=[],
             threshold_count=0,
+            tool="exiftool",
+            failure_kind="output_limit",
         )
     findings = legacy.classify_et_findings(legacy.parse_et_text(
         exif.stdout.decode("utf-8", "replace")))
@@ -744,6 +793,8 @@ def run_external_format_validator(
             started=started,
             events=[],
             threshold_count=0,
+            tool="exiftool",
+            failure_kind="unexpected_exit",
         )
 
     effective_kind = "image_gif" if validator == "gif" else media_kind
@@ -777,6 +828,11 @@ def run_external_format_validator(
             )
         if last.outcome != "completed":
             status = "timeout" if last.outcome == "timeout" else None
+            failure_kind = (
+                "supervision_failed"
+                if last.outcome not in ("paused", "stopped", "timeout")
+                else None
+            )
             return _format_outcome(
                 last,
                 expected_size=expected_size,
@@ -786,6 +842,8 @@ def run_external_format_validator(
                 started=started,
                 events=events,
                 threshold_count=threshold_count,
+                tool="ffprobe" if failure_kind else None,
+                failure_kind=failure_kind,
             )
         crash_detail = _process_crash_detail(last, "FFprobe")
         if crash_detail is not None or last.stderr_truncated:
@@ -799,8 +857,26 @@ def run_external_format_validator(
                 started=started,
                 events=events,
                 threshold_count=threshold_count,
+                tool="ffprobe",
+                failure_kind=(
+                    "native_crash" if crash_detail is not None
+                    else "output_limit"),
             )
-        findings.extend(_ffprobe_findings(normalized, effective_kind, last))
+        ffprobe_findings, failure_kind = _ffprobe_findings(
+            normalized, effective_kind, last)
+        findings.extend(ffprobe_findings)
+        if failure_kind is not None:
+            return _format_outcome(
+                last,
+                expected_size=expected_size,
+                status="error",
+                detail="；".join(findings),
+                started=started,
+                events=events,
+                threshold_count=threshold_count,
+                tool="ffprobe",
+                failure_kind=failure_kind,
+            )
     status = "invalid" if findings else "valid"
     return _format_outcome(
         last,

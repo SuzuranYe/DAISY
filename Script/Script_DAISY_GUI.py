@@ -156,6 +156,7 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_DBS_State.py",
     "Script_DAISY_Test_DBS_Hash_Worker.py",
     "Script_DAISY_Test_DBS_Run.py",
+    "Script_DAISY_Test_DBS_Tool_Recovery.py",
     "Script_DAISY_Test_GUI_Scan.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
@@ -282,6 +283,7 @@ def default_gui_preferences() -> dict[str, object]:
         "font_family": _UI_FONT_FAMILY,
         "font_size_delta": 0,
         "binary_control_style": _DEFAULT_BINARY_CONTROL_STYLE,
+        "completion_sound_enabled": False,
         "confirm_close_when_idle": True,
         "last_task_key": "env_check",
         "recovery_scans": [],
@@ -323,6 +325,10 @@ def load_gui_preferences(
     }
     if binary_control_style in allowed_binary_control_styles:
         preferences["binary_control_style"] = binary_control_style
+
+    completion_sound = loaded.get("completion_sound_enabled")
+    if isinstance(completion_sound, bool):
+        preferences["completion_sound_enabled"] = completion_sound
 
     confirm_close = loaded.get("confirm_close_when_idle")
     if isinstance(confirm_close, bool):
@@ -468,6 +474,27 @@ def should_offer_result_directory(
         and not stopped
         and not maintenance
         and all(code in (0, 1) for code in returncodes)
+    )
+
+
+def should_play_completion_sound(
+    returncodes: list[int | None] | tuple[int | None, ...],
+    outcomes: list[str | None] | tuple[str | None, ...],
+    *,
+    task_key: str | None,
+    stopped: bool,
+    saved: bool,
+) -> bool:
+    """仅在整批业务任务正常结束后播放一次完成提示音。"""
+    return (
+        bool(returncodes)
+        and task_key not in (None, "storage_list", _DEPENDENCY_INSTALL_KEY)
+        and not stopped
+        and not saved
+        and all(code in (0, 1) for code in returncodes)
+        and not any(outcome in {
+            "failed", "failed_recoverable", "save_exit", "stopped",
+        } for outcome in outcomes)
     )
 
 
@@ -707,9 +734,17 @@ def progress_detail(payload: dict[str, object]) -> tuple[str, float | None]:
     elapsed = payload.get("elapsed")
     if elapsed is not None:
         parts.append(f"已用 {_format_duration(elapsed)}")
-    errors = int(payload.get("errors") or 0)
-    if errors:
-        parts.append(f"错误 {errors:,}")
+    source_errors = int(payload.get("source_error") or 0)
+    tool_errors = int(payload.get("tool_error") or 0)
+    if source_errors or tool_errors:
+        if source_errors:
+            parts.append(f"文件问题 {source_errors:,}")
+        if tool_errors:
+            parts.append(f"工具故障 {tool_errors:,}")
+    else:
+        errors = int(payload.get("errors") or 0)
+        if errors:
+            parts.append(f"错误 {errors:,}")
     not_applicable = int(payload.get("not_applicable") or 0)
     if not_applicable:
         parts.append(f"不适用 {not_applicable:,}")
@@ -3462,6 +3497,8 @@ class DaisyApp:
             self.gui_preferences["font_size_delta"])
         self.binary_control_style = str(
             self.gui_preferences["binary_control_style"])
+        self.completion_sound_enabled = bool(
+            self.gui_preferences["completion_sound_enabled"])
         self.confirm_close_when_idle = bool(
             self.gui_preferences["confirm_close_when_idle"])
         self.recovery_scans = list(
@@ -3792,6 +3829,7 @@ class DaisyApp:
             "font_family": self.ui_font_family,
             "font_size_delta": self.ui_font_size_delta,
             "binary_control_style": self.binary_control_style,
+            "completion_sound_enabled": self.completion_sound_enabled,
             "confirm_close_when_idle": self.confirm_close_when_idle,
             "last_task_key": self.task.key,
             "recovery_scans": list(getattr(self, "recovery_scans", ())),
@@ -4009,6 +4047,38 @@ class DaisyApp:
                 self.confirm_close_when_idle)
         if persist:
             self._save_gui_preferences()
+
+    def _set_completion_sound(
+        self, enabled: bool, *, persist: bool = True,
+    ) -> None:
+        self.completion_sound_enabled = bool(enabled)
+        if hasattr(self, "completion_sound_enabled_var"):
+            self.completion_sound_enabled_var.set(
+                self.completion_sound_enabled)
+        if persist:
+            self._save_gui_preferences()
+
+    def _play_completion_sound(self) -> None:
+        """播放非阻塞系统提示音；不可用时回退到 Tk 响铃。"""
+        system_error: BaseException | None = None
+        if os.name == "nt":
+            try:
+                import winsound
+                winsound.PlaySound(
+                    "SystemAsterisk",
+                    winsound.SND_ALIAS
+                    | winsound.SND_ASYNC
+                    | winsound.SND_NODEFAULT,
+                )
+                return
+            except (ImportError, OSError, RuntimeError) as exc:
+                system_error = exc
+        try:
+            self.root.bell()
+        except (AttributeError, OSError, RuntimeError, tk.TclError) as exc:
+            detail = system_error or exc
+            self._append_log(
+                f"\n任务完成提示音播放失败：{detail}\n", "warning")
 
     def _configure_styles(self) -> None:
         self.style = ttk.Style(self.root)
@@ -4603,6 +4673,14 @@ class DaisyApp:
             settings_menu.index("end"))
 
         settings_menu.add_separator()
+        self.completion_sound_enabled_var = tk.BooleanVar(
+            value=self.completion_sound_enabled)
+        settings_menu.add_checkbutton(
+            label="任务完成提示音",
+            variable=self.completion_sound_enabled_var,
+            command=lambda: self._set_completion_sound(
+                self.completion_sound_enabled_var.get()),
+        )
         self.confirm_close_when_idle_var = tk.BooleanVar(
             value=self.confirm_close_when_idle)
         settings_menu.add_checkbutton(
@@ -7886,6 +7964,20 @@ class DaisyApp:
         if event_name in ("stage_finished", "stage_skipped"):
             self._close_timeout_dialog()
             return
+        if event_name == "tool_circuit_open":
+            self._close_timeout_dialog()
+            tool = str(payload.get("tool") or "外部工具")
+            pending = int(payload.get("not_processed") or 0)
+            self._append_log(
+                f"{tool} 连续故障，元数据阶段已安全熔断；"
+                f"{pending:,} 个条目保留为待恢复，未批量归因给源文件。\n",
+                "error",
+            )
+            self._set_status(
+                "外部工具故障已熔断；扫描证据已保留，可稍后恢复。",
+                _DANGER,
+            )
+            return
         if event_name == "run_result":
             self._close_scan_control_input()
             self.scan_run_result = dict(payload)
@@ -7900,6 +7992,13 @@ class DaisyApp:
             elif state == "stopped":
                 self.stop_requested = True
                 self.scan_control_state = "stopped"
+            elif state == "failed_recoverable":
+                partial = str(payload.get("partial") or "")
+                self.scan_control_state = "failed_recoverable"
+                if task_key in _SCAN_TASK_KEYS and partial:
+                    self._add_recovery_scan(task_key, partial)
+            elif state == "failed":
+                self.scan_control_state = "failed"
             elif state == "published":
                 self.scan_control_state = "published"
                 if self.run_jobs and self.run_job_index >= 0:
@@ -7958,33 +8057,50 @@ class DaisyApp:
                     ) / self.current_stage_total
                     self._update_queue_progress(task_fraction)
             return
-        if event_name in ("progress_finish", "progress_skip"):
+        if event_name in ("progress_finish", "progress_skip", "progress_fail"):
             stage_idx = max(1, int(payload.get("stage_idx") or 1))
             stage_total = max(stage_idx, int(payload.get("stage_total") or 1))
             self.current_stage_index = stage_idx
             self.current_stage_total = stage_total
             name = self._short_progress_text(payload.get("name") or "阶段")
-            task_fraction = stage_idx / stage_total
+            if event_name == "progress_fail":
+                stage_fraction = progress_fraction(
+                    payload.get("done"), payload.get("total")) or 0.0
+                task_fraction = (
+                    stage_idx - 1 + stage_fraction / 100
+                ) / stage_total
+            else:
+                task_fraction = stage_idx / stage_total
             self.progress_stage_bar.configure(
                 mode="determinate", maximum=100,
                 value=task_fraction * 100,
-                style="Stage.Horizontal.TProgressbar",
+                style=(
+                    "Danger.Horizontal.TProgressbar"
+                    if event_name == "progress_fail" else
+                    "Stage.Horizontal.TProgressbar"
+                ),
             )
             self._update_queue_progress(task_fraction)
             if event_name == "progress_skip":
                 detail = "已跳过：" + str(payload.get("reason") or "当前配置")
             else:
-                detail = str(payload.get("summary") or "完成")
+                detail = str(payload.get("summary") or (
+                    "阶段失败并可恢复"
+                    if event_name == "progress_fail" else "完成"))
                 elapsed = payload.get("elapsed")
                 if elapsed is not None:
                     detail += f" · 用时 {_format_duration(elapsed)}"
             self.progress_stage_label.configure(
                 text=f"阶段 {stage_idx}/{stage_total} · {name}",
-                fg=_GREEN_DARK,
+                fg=_DANGER if event_name == "progress_fail" else _GREEN_DARK,
             )
             self.progress_detail_label.configure(
-                text=self._short_progress_text(detail), fg=_TEXT)
-            self._set_work_fraction(100)
+                text=self._short_progress_text(detail),
+                fg=_DANGER if event_name == "progress_fail" else _TEXT)
+            self._set_work_fraction(
+                stage_fraction if event_name == "progress_fail" else 100,
+                style="Danger" if event_name == "progress_fail" else "Work",
+            )
 
     def _finish_progress(self, returncode: int | None, elapsed: float) -> None:
         self._stop_work_progress()
@@ -8528,7 +8644,20 @@ class DaisyApp:
         detecting_storage = self.process_task_key == "storage_list"
         saved = self.save_exit_requested or any(
             outcome == "save_exit" for outcome in self.run_outcomes)
+        recoverable_failed = any(
+            outcome == "failed_recoverable" for outcome in self.run_outcomes)
+        failed = any(outcome == "failed" for outcome in self.run_outcomes)
         stopped = self.stop_requested
+        play_completion_sound = (
+            self.completion_sound_enabled
+            and should_play_completion_sound(
+                self.run_results,
+                self.run_outcomes,
+                task_key=self.process_task_key,
+                stopped=stopped,
+                saved=saved,
+            )
+        )
         storage_detection_succeeded = (
             detecting_storage and returncode == 0 and not stopped)
         offer_result_directory = should_offer_result_directory(
@@ -8564,6 +8693,16 @@ class DaisyApp:
                         "任务已停止；请检查日志与 partial 产物。"
                     ),
                     _WARNING,
+                )
+            elif recoverable_failed:
+                self._set_status(
+                    "外部工具故障已安全熔断；保留 partial，可从恢复卡片继续。",
+                    _DANGER,
+                )
+            elif failed:
+                self._set_status(
+                    "外部工具故障已安全熔断；请查看报告中的未处理范围。",
+                    _DANGER,
                 )
             elif returncode == 0:
                 self._set_status(
@@ -8647,6 +8786,8 @@ class DaisyApp:
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         self._set_recovery_card_state()
+        if play_completion_sound:
+            self.root.after_idle(self._play_completion_sound)
         if storage_detection_succeeded:
             self._restore_storage_selection_after_detection()
         if self.close_after_stop:
@@ -8708,6 +8849,16 @@ class DaisyApp:
             self._append_log(
                 f"\n{item}已停止（退出码 {returncode}，"
                 f"用时 {elapsed:.1f}s）。\n", "warning")
+        elif outcome == "failed_recoverable":
+            self._append_log(
+                f"\n{item}因外部工具故障安全熔断（退出码 {returncode}，"
+                f"用时 {elapsed:.1f}s）；partial 已保留，可恢复。\n", "error")
+        elif outcome == "failed":
+            self._append_log(
+                f"\n{item}因外部工具故障安全熔断（退出码 {returncode}，"
+                f"用时 {elapsed:.1f}s）；未处理范围未被误报为文件问题。\n",
+                "error",
+            )
         elif returncode == 0:
             self._append_log(
                 f"\n{item}完成（用时 {elapsed:.1f}s）。\n", "success")

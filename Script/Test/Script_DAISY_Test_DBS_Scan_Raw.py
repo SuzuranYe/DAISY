@@ -53,6 +53,8 @@ def _outcome(
     outcome: str = "completed",
     control_action: str | None = None,
     size_bytes: int = 16,
+    failure_kind: str | None = None,
+    worker_exitcode: int | None = 0,
 ) -> dbraw.RawDecodeOutcome:
     valid = status == "valid"
     return dbraw.RawDecodeOutcome(
@@ -72,7 +74,7 @@ def _outcome(
         threshold_seconds=90.0,
         threshold_count=0,
         worker_pid=24680,
-        worker_exitcode=0,
+        worker_exitcode=worker_exitcode,
         worker_reaped=True,
         rawpy_version="0.synthetic",
         libraw_version="0.synthetic",
@@ -83,6 +85,7 @@ def _outcome(
         decoded_bytes=48 if valid else None,
         events=(),
         events_truncated=False,
+        failure_kind=failure_kind,
     )
 
 
@@ -210,6 +213,54 @@ class _RawRunFixture(unittest.TestCase):
 
 
 class TestScanRawStage(_RawRunFixture):
+    def test_native_worker_faults_circuit_without_raw_file_issue_fanout(
+        self,
+    ) -> None:
+        handle = self.create_handle((
+            "a_fault.dng", "b_fault.dng", "c_fault.dng", "d_pending.dng"))
+        integration = scan_cli.RawScanIntegration(
+            handle, {
+                "raw_deep_validation": True,
+                "format_validation": "all",
+                "format_sample_percent": 100.0,
+                "raw_timeout_policy": {
+                    "override_seconds": None,
+                    "default_decision": "continue_waiting",
+                },
+            }, create_journal=True)
+        calls = 0
+        events = []
+
+        def runner(_path: str, **kwargs) -> dbraw.RawDecodeOutcome:
+            nonlocal calls
+            calls += 1
+            return _outcome(
+                "error",
+                outcome="crashed",
+                size_bytes=int(kwargs["expected_size"]),
+                failure_kind="native_crash",
+                worker_exitcode=-1073741819,
+            )
+
+        result = integration.run(
+            handle.connection,
+            dbrun.RunCommandRouter(),
+            show_current_file=False,
+            on_progress=None,
+            on_event=lambda event, **payload: events.append((event, payload)),
+            raw_runner=runner,
+        )
+        self.assertEqual(3, calls)
+        self.assertEqual("failed_recoverable", result["state"])
+        self.assertEqual(4, result["not_processed"])
+        self.assertEqual((), integration.journal.records)
+        self.assertEqual(
+            "failed_recoverable",
+            dbstate.load_runtime(handle.connection).run_state,
+        )
+        self.assertIn("tool_circuit_open", [name for name, _ in events])
+        self.assertIn("stage_failed", [name for name, _ in events])
+
     def test_terminal_evidence_privacy_and_zero_schema_change(self) -> None:
         handle = self.create_handle((
             "a_valid.dng", "b_unsupported.dng", "c_invalid.dng"))

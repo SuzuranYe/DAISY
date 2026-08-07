@@ -26,6 +26,7 @@ import Script_DAISY_Lib_DBS_01_Core as core
 import Script_DAISY_Lib_DBS_02_Meta as meta
 import Script_DAISY_Lib_DBS_03_Hash as dbh
 import Script_DAISY_Lib_DBS_06_Verify as dbverify
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 import Script_DAISY_Module_DBS_31_Check_Hash as hashcheck
 import Script_DAISY_Module_DBS_32_Check_Format as formatcheck
 import Script_DAISY_Test_Tree as test_tree
@@ -510,21 +511,32 @@ class TestValidators(unittest.TestCase):
             def execute(_args):
                 return b""
 
-        success = subprocess.CompletedProcess(
-            [], 0,
-            stdout=b'{"streams":[{"codec_type":"video","codec_name":"gif"}]}',
-            stderr=b"",
-        )
         with patch.object(
-                Validate.subprocess, "run", return_value=success):
+                Validate.meta,
+                "ffprobe_full",
+                return_value={
+                    "streams": [
+                        {"codec_type": "video", "codec_name": "gif"}
+                    ]
+                },
+        ):
             self.assertEqual(
                 Validate.validate_media(
                     "motion.gif", "image_gif", Worker(), "ffprobe"),
                 ("valid", None),
             )
         with patch.object(
-                Validate.subprocess, "run",
-                side_effect=subprocess.TimeoutExpired(["ffprobe"], 600)):
+                Validate.meta,
+                "ffprobe_full",
+                side_effect=toolruntime.ToolProcessTimeout(
+                    ["ffprobe"],
+                    600,
+                    pid=12345,
+                    output=b"",
+                    stderr=b"",
+                    reaped=True,
+                ),
+        ):
             status, detail = Validate.validate_media(
                 "motion.gif", "image_gif", Worker(), "ffprobe")
         self.assertEqual(status, "invalid")
@@ -545,14 +557,14 @@ class TestValidators(unittest.TestCase):
             wav = os.path.join(td, "empty.wav")
             with open(wav, "wb") as stream:
                 stream.write(b"RIFF" + b"\x00" * 40)
-            probe = subprocess.CompletedProcess(
-                [], 0,
-                stdout=(b'{"format":{},"streams":['
-                        b'{"codec_type":"audio"}]}'),
-                stderr=b"",
-            )
             with patch.object(
-                    Validate.subprocess, "run", return_value=probe):
+                    Validate.meta,
+                    "ffprobe_full",
+                    return_value={
+                        "format": {},
+                        "streams": [{"codec_type": "audio"}],
+                    },
+            ):
                 status, detail = Validate.validate_media(
                     wav, "audio", Worker(), "ffprobe")
         self.assertEqual(status, "invalid")
@@ -560,8 +572,17 @@ class TestValidators(unittest.TestCase):
 
     def test_sevenzip_timeout_is_reported_not_raised(self):
         with patch.object(
-                Validate.subprocess, "run",
-                side_effect=subprocess.TimeoutExpired(["7z"], 3600)):
+                dbverify.toolruntime,
+                "run_bounded_tool",
+                side_effect=toolruntime.ToolProcessTimeout(
+                    ["7z"],
+                    3600,
+                    pid=12346,
+                    output=b"",
+                    stderr=b"",
+                    reaped=True,
+                ),
+        ):
             self.assertEqual(
                 Validate.validate_sevenzip("slow.7z", "7z"),
                 ("invalid", "7z t 超时"),

@@ -1115,6 +1115,7 @@ def fail_run(
     error_code: str,
     error_message: str,
     integrity_failed: bool = False,
+    payload: dict[str, object] | None = None,
     now_utc: str | None = None,
 ) -> RuntimeSnapshot:
     target = "failed_recoverable" if recoverable else "failed_terminal"
@@ -1129,6 +1130,10 @@ def fail_run(
         error_code=error_code,
         error_message=error_message,
         integrity_failed=integrity_failed,
+        payload=(
+            {"error_code": error_code, "error_message": error_message}
+            if payload is None else payload
+        ),
         now_utc=now_utc,
     )
 

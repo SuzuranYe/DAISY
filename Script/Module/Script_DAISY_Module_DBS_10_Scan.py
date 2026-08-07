@@ -7,6 +7,7 @@ session、lease、worker 与发布编排。
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import replace
 import json
 import math
@@ -31,6 +32,7 @@ import Script_DAISY_Lib_DBS_09_Run as dbrun
 import Script_DAISY_Lib_DBS_10_Issues as dbissues
 import Script_DAISY_Lib_DBS_13_Raw as dbraw
 import Script_DAISY_Lib_DBS_14_Raw_Evidence as rawevidence
+import Script_DAISY_Lib_DBS_18_Tool_Runtime as toolruntime
 import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 
 
@@ -120,10 +122,12 @@ class ScanReporter:
                 "bytes_read", result.get("bytes"))
         result.pop("stage", None)
         failures = 0
-        for key in (
-            "dir_errors", "error", "timeout", "unstable", "invalid",
+        keys = [
+            "dir_errors", "timeout", "unstable", "invalid",
             "mismatched", "tool_error",
-        ):
+        ]
+        keys.append("source_error" if "source_error" in result else "error")
+        for key in keys:
             try:
                 failures += int(result.get(key) or 0)
             except (TypeError, ValueError):
@@ -183,12 +187,17 @@ class ScanReporter:
                 elapsed = time.monotonic() - self._stage_started_at.get(
                     stage, time.monotonic())
                 summary_parts = []
-                for key, label in (
+                summary_fields = [
                     ("processed", "处理"), ("files", "文件"),
                     ("matched", "一致"), ("mismatched", "不一致"),
-                    ("error", "错误"), ("timeout", "超时"),
+                    ("source_error", "文件问题"),
+                    ("tool_error", "工具故障"),
+                    ("timeout", "超时"),
                     ("not_applicable", "不适用"), ("skipped", "跳过"),
-                ):
+                ]
+                if "source_error" not in clean:
+                    summary_fields.insert(4, ("error", "错误"))
+                for key, label in summary_fields:
                     if clean.get(key) is not None:
                         summary_parts.append(f"{label} {clean[key]}")
                 summary = " · ".join(summary_parts) or "完成"
@@ -206,6 +215,25 @@ class ScanReporter:
                 if stage == "seal":
                     # 封存后事件文件已不再是权威来源；发布函数会删除它。
                     self._event_log_active = False
+            elif event == "stage_failed" and stage in _STAGES:
+                index, name = _STAGES[stage]
+                processed = int(clean.get("processed") or 0)
+                total = int(clean.get("total") or 0)
+                not_processed = int(clean.get("not_processed") or 0)
+                tool = str(clean.get("tool") or "外部工具")
+                summary = (
+                    f"{tool} 故障熔断 · 已处理 {processed:,}/{total:,} · "
+                    f"待恢复 {not_processed:,}"
+                )
+                core.emit_gui_event(
+                    "progress_fail",
+                    stage_idx=index,
+                    stage_total=STAGES_TOTAL,
+                    name=name,
+                    summary=summary,
+                    done=processed,
+                    total=total,
+                )
             if event == "threshold_reached" and not self.quiet:
                 print(
                     "!! 单文件连续无进展达到阈值："
@@ -737,6 +765,7 @@ def _raw_problem_outcome(
     size_bytes: int,
     code: str,
     detail: str,
+    failure_kind: str | None = None,
 ) -> dbraw.RawDecodeOutcome:
     return dbraw.RawDecodeOutcome(
         outcome="crashed",
@@ -762,6 +791,34 @@ def _raw_problem_outcome(
         decoded_bytes=None,
         events=(),
         events_truncated=False,
+        failure_kind=failure_kind,
+    )
+
+
+def _raw_tool_failure(
+    outcome: dbraw.RawDecodeOutcome,
+) -> toolruntime.ToolRuntimeFailure | None:
+    if not outcome.failure_kind:
+        return None
+    unrecovered = outcome.failure_kind in (
+        "worker_start_failed",
+        "worker_not_reaped",
+        "rawpy_unavailable",
+        "cleanup_failed",
+    )
+    return toolruntime.ToolRuntimeFailure(
+        toolruntime.ToolFaultEvidence(
+            tool="rawpy/LibRaw",
+            operation="raw_decode",
+            failure_kind=str(outcome.failure_kind),
+            message=str(
+                outcome.detail
+                or f"RAW 隔离 worker 运行故障：{outcome.failure_kind}"
+            )[:2048],
+            pid=outcome.worker_pid or None,
+            returncode=outcome.worker_exitcode,
+        ),
+        recovered=not unrecovered,
     )
 
 
@@ -936,15 +993,16 @@ class RawScanIntegration:
                 selected=len(rows),
             )
 
-        index = 0
-        while index < len(rows):
-            row = rows[index]
+        circuit = toolruntime.ConsecutiveToolFailureCircuit()
+        work_rows = deque(rows)
+        retry_counts: dict[int, int] = {}
+        while work_rows:
+            row = work_rows.popleft()
             entry_id = int(row["entry_id"])
             if self.journal.matches_terminal(
                     entry_id,
                     size_bytes=int(row["size_bytes"]),
                     modified_at_utc=str(row["modified_at_utc"])):
-                index += 1
                 continue
             boundary = dbrun.settle_pending_stage_control(
                 con,
@@ -984,6 +1042,7 @@ class RawScanIntegration:
             expected_size = int(row["size_bytes"])
             expected_mtime = str(row["modified_at_utc"])
             extended = core.to_extended_path(source_path)
+            tool_invoked = False
             try:
                 before = os.stat(extended, follow_symlinks=False)
             except OSError as exc:
@@ -1017,6 +1076,7 @@ class RawScanIntegration:
                             )
 
                     try:
+                        tool_invoked = True
                         outcome = runner(
                             source_path,
                             expected_size=expected_size,
@@ -1035,6 +1095,7 @@ class RawScanIntegration:
                                 "RAW worker 无法启动："
                                 f"{type(exc).__name__}: {exc}"
                             ),
+                            failure_kind="worker_start_failed",
                         )
                     if outcome.outcome in (
                             "paused", "save_exit", "stopped"):
@@ -1047,6 +1108,7 @@ class RawScanIntegration:
                                 paused_wait_seconds=paused_wait_seconds,
                             )
                             if boundary == "running":
+                                work_rows.appendleft(row)
                                 continue
                         else:
                             boundary = self._stop_after_timeout(
@@ -1086,6 +1148,101 @@ class RawScanIntegration:
                                 worker_exitcode=outcome.worker_exitcode,
                                 worker_reaped=outcome.worker_reaped,
                             )
+            tool_failure = _raw_tool_failure(outcome)
+            if tool_failure is not None:
+                opened = circuit.record_failure(entry_id, tool_failure)
+                retry_counts[entry_id] = retry_counts.get(entry_id, 0) + 1
+                if opened.opened:
+                    stats = self._stats(rows)
+                    affected_ids = tuple(dict.fromkeys(opened.entry_ids))
+                    paths_by_id = {
+                        int(item["entry_id"]): os.path.join(
+                            str(item["root_label"]), str(item["rel_path"]))
+                        for item in rows
+                    }
+                    not_processed = max(
+                        0, len(rows) - int(stats["processed"]))
+                    payload = {
+                        "reason": "raw_tool_circuit_open",
+                        "stage": "format",
+                        "substage": "raw",
+                        "tool_circuit": opened.as_dict(),
+                        "processed": int(stats["processed"]),
+                        "total": len(rows),
+                        "not_processed": not_processed,
+                        "affected": len(affected_ids),
+                        "sample_paths": [
+                            paths_by_id[current_id]
+                            for current_id in affected_ids[:3]
+                            if current_id in paths_by_id
+                        ],
+                        "tool_failure": tool_failure.as_dict(),
+                    }
+                    dbstate.update_stage_checkpoint(
+                        con,
+                        "format",
+                        "failed_recoverable",
+                        items_done=int(stats["processed"]),
+                        items_total=len(rows),
+                        error_count=sum(
+                            int(stats[key])
+                            for key in ("invalid", "timeout", "error")),
+                        current_entry_id=None,
+                        checkpoint=payload,
+                    )
+                    dbstate.fail_run(
+                        con,
+                        recoverable=True,
+                        error_code="raw_tool_circuit_open",
+                        error_message=tool_failure.latest.message,
+                        payload=payload,
+                    )
+                    router.end()
+                    if on_event is not None:
+                        on_event(
+                            "tool_circuit_open",
+                            stage="format",
+                            substage="raw",
+                            tool=tool_failure.latest.tool,
+                            failure_kind=tool_failure.latest.failure_kind,
+                            processed=int(stats["processed"]),
+                            total=len(rows),
+                            not_processed=not_processed,
+                            affected=len(affected_ids),
+                        )
+                        on_event(
+                            "stage_failed",
+                            stage="format",
+                            substage="raw",
+                            state="failed_recoverable",
+                            tool=tool_failure.latest.tool,
+                            processed=int(stats["processed"]),
+                            total=len(rows),
+                            not_processed=not_processed,
+                        )
+                    return {
+                        "state": "failed_recoverable",
+                        "raw_candidate_total": raw_candidate_total,
+                        "selected": len(rows),
+                        "not_processed": not_processed,
+                        "tool_circuit": opened.as_dict(),
+                        "tool_failure": tool_failure.as_dict(),
+                        **stats,
+                    }
+                work_rows.append(row)
+                if on_event is not None:
+                    on_event(
+                        "tool_retry_scheduled",
+                        stage="format",
+                        substage="raw",
+                        tool=tool_failure.latest.tool,
+                        failure_kind=tool_failure.latest.failure_kind,
+                        item=logical_path,
+                        retry_count=retry_counts[entry_id],
+                    )
+                continue
+            if tool_invoked:
+                circuit.record_success("rawpy/LibRaw")
             self.journal.append_result(
                 entry_id=entry_id,
                 logical_path=logical_path,
@@ -1117,7 +1274,6 @@ class RawScanIntegration:
                     "total": len(rows),
                     **stats,
                 })
-            index += 1
 
         report = rawevidence.build_raw_report(
             self.journal,
@@ -1492,6 +1648,14 @@ def _run_handle(
             file=sys.stderr,
         )
         return 130
+    if state == "failed_recoverable":
+        print(
+            "\n扫描阶段因外部工具故障熔断；已保留已完成结果和可恢复证据，"
+            "未处理文件没有被批量记成源文件错误。修复工具环境后可恢复："
+            f"\n{handle.partial_path}",
+            file=sys.stderr,
+        )
+        return 1
     print(
         f"\n扫描返回未识别状态 {state!r}；partial 已保留："
         f"{handle.partial_path}",

@@ -38,6 +38,7 @@ class TestGuiArguments(unittest.TestCase):
             "font_family": "Segoe UI",
             "font_size_delta": 1,
             "binary_control_style": "dropdowns",
+            "completion_sound_enabled": True,
             "confirm_close_when_idle": False,
             "last_task_key": "verify",
         })
@@ -60,6 +61,7 @@ class TestGuiArguments(unittest.TestCase):
                     "font_family": "",
                     "font_size_delta": 99,
                     "binary_control_style": "unknown",
+                    "completion_sound_enabled": "yes",
                     "confirm_close_when_idle": "no",
                     "last_task_key": "storage_list",
                 }, handle)
@@ -90,6 +92,7 @@ class TestGuiArguments(unittest.TestCase):
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
         app.binary_control_style = "dropdowns"
+        app.completion_sound_enabled = True
         app.confirm_close_when_idle = True
         app.task = gui.TASK_BY_KEY["verify"]
         app.saved_values = {
@@ -105,6 +108,7 @@ class TestGuiArguments(unittest.TestCase):
         payload = save.call_args.args[0]
         self.assertEqual(payload["last_task_key"], "verify")
         self.assertEqual(payload["binary_control_style"], "dropdowns")
+        self.assertTrue(payload["completion_sound_enabled"])
         self.assertNotIn("saved_values", payload)
         self.assertNotIn("snapshot", payload)
         self.assertNotIn("root_map", payload)
@@ -1237,6 +1241,7 @@ class TestGuiArguments(unittest.TestCase):
                 "Script_DAISY_Lib_DBS_15_Parse_Projection.py",
                 "Script_DAISY_Lib_DBS_16_Parse_Run.py",
                 "Script_DAISY_Lib_DBS_17_Parse_Human.py",
+                "Script_DAISY_Lib_DBS_18_Tool_Runtime.py",
                 "Script_DAISY_Lib_ENV_01_Capabilities.py",
                 "Script_DAISY_Lib_STG_01_Core.py",
                 "Script_DAISY_Lib_STG_02_Windows.py",
@@ -1459,6 +1464,7 @@ class TestGuiArguments(unittest.TestCase):
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
         app.binary_control_style = "buttons"
+        app.completion_sound_enabled = False
         app.confirm_close_when_idle = True
         app._available_ui_font_families = lambda: (
             "Microsoft YaHei UI", "Segoe UI")
@@ -1542,7 +1548,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "checkbutton"],
-            ["空闲关闭时需要确认"],
+            ["任务完成提示音", "空闲关闭时需要确认"],
         )
         self.assertEqual(
             [
@@ -3209,6 +3215,52 @@ class TestGuiArguments(unittest.TestCase):
                 ([0], False, True)):
             self.assertFalse(gui.should_offer_result_directory(
                 returncodes, stopped=stopped, maintenance=maintenance))
+
+    def test_completion_sound_requires_completed_business_task(self):
+        self.assertTrue(gui.should_play_completion_sound(
+            [0], [None], task_key="scan", stopped=False, saved=False))
+        self.assertTrue(gui.should_play_completion_sound(
+            [0, 0], ["completed", None], task_key="verify",
+            stopped=False, saved=False))
+        self.assertTrue(gui.should_play_completion_sound(
+            [1], ["completed"], task_key="verify",
+            stopped=False, saved=False))
+        for returncodes, outcomes, task_key, stopped, saved in (
+                ([], [], "scan", False, False),
+                ([0], [None], "storage_list", False, False),
+                ([0], [None], gui._DEPENDENCY_INSTALL_KEY, False, False),
+                ([0], [None], "scan", True, False),
+                ([0], ["save_exit"], "scan", False, True),
+                ([0], ["failed_recoverable"], "scan", False, False),
+                ([2], [None], "verify", False, False),
+                ([None], [None], "scan", False, False)):
+            self.assertFalse(gui.should_play_completion_sound(
+                returncodes, outcomes, task_key=task_key,
+                stopped=stopped, saved=saved))
+
+    def test_completion_sound_is_async_and_never_invokes_real_audio(self):
+        app = object.__new__(gui.DaisyApp)
+        app.root = types.SimpleNamespace(bell=Mock())
+        app._append_log = Mock()
+        play_sound = Mock()
+        fake_winsound = types.SimpleNamespace(
+            SND_ALIAS=1,
+            SND_ASYNC=2,
+            SND_NODEFAULT=4,
+            PlaySound=play_sound,
+        )
+        with (
+            patch.object(gui.os, "name", "nt"),
+            patch.dict(sys.modules, {"winsound": fake_winsound}),
+        ):
+            app._play_completion_sound()
+        play_sound.assert_called_once_with("SystemAsterisk", 7)
+        app.root.bell.assert_not_called()
+        app._append_log.assert_not_called()
+
+        with patch.object(gui.os, "name", "posix"):
+            app._play_completion_sound()
+        app.root.bell.assert_called_once_with()
 
     def test_completed_task_can_open_existing_result_directory(self):
         app = object.__new__(gui.DaisyApp)

@@ -317,6 +317,108 @@ class TestUnifiedVerificationModel(_Fixture):
         self.assertNotIn("秘密.unknown", markdown)
         self.assertIn("只记录总数", markdown)
 
+    def test_hash_tool_circuit_is_one_aggregate_problem(self) -> None:
+        snapshot = self.snapshot({
+            f"{index}.bin": (f"payload-{index}".encode("ascii"), "other")
+            for index in range(5)
+        })
+        baseline = _identity(snapshot)
+
+        def resolver(_explicit):
+            return {"path": "X:/Synthetic/powershell.exe", "version": "7.4"}
+
+        def runner(path, _powershell, **_kwargs):
+            size = os.path.getsize(path)
+            return dbhash.IndependentHashOutcome(
+                outcome="crashed",
+                hash_hex=None,
+                error="synthetic native crash",
+                decision="none",
+                decision_source="none",
+                size_bytes=size,
+                bytes_read=0,
+                final_offset=0,
+                elapsed_seconds=0.01,
+                active_read_seconds=0.0,
+                stall_count=0,
+                longest_stall_seconds=0.0,
+                first_stall_offset=None,
+                last_stall_offset=None,
+                threshold_count=0,
+                worker_pid=32101,
+                worker_exitcode=-1073741819,
+                worker_reaped=True,
+                events=(),
+                failure_kind="native_crash",
+            )
+
+        report = self.verify(
+            snapshot,
+            options=verifyrun.VerificationOptions(
+                hash_mode="all", format_mode="off"),
+            _powershell_resolver=resolver,
+            _hash_runner=runner,
+        )
+        self.assertEqual(_identity(snapshot), baseline)
+        self.assertEqual("failed", report["run_state"])
+        self.assertEqual("failed", report["conclusion"])
+        section = report["sections"]["hash"]
+        self.assertEqual("failed", section["state"])
+        self.assertEqual(2, section["not_processed"])
+        self.assertEqual(1, len(section["problems"]))
+        problem = section["problems"][0]
+        self.assertEqual("tool_error", problem["status"])
+        self.assertEqual(3, problem["affected_files"])
+        self.assertEqual(3, len(problem["sample_paths"]))
+
+    def test_format_tool_circuit_is_not_five_file_errors(self) -> None:
+        snapshot = self.snapshot({
+            f"{index}.jpg": (f"jpeg-{index}".encode("ascii"), "photo_jpeg")
+            for index in range(5)
+        })
+        baseline = _identity(snapshot)
+
+        def resolver(name, _explicit):
+            self.assertEqual("exiftool", name)
+            return {
+                "path": "X:/Synthetic/exiftool.exe",
+                "version": "fixture",
+            }
+
+        def runner(path, _kind, _spec, _tools, **_kwargs):
+            return verifytools.ExternalFormatOutcome(
+                outcome="crashed",
+                status="error",
+                detail="synthetic ExifTool crash",
+                decision="none",
+                decision_source="none",
+                size_bytes=os.path.getsize(path),
+                elapsed_seconds=0.01,
+                threshold_count=0,
+                worker_pid=32102,
+                worker_exitcode=-1073741819,
+                worker_reaped=True,
+                events=(),
+                tool="exiftool",
+                failure_kind="native_crash",
+            )
+
+        report = self.verify(
+            snapshot,
+            options=verifyrun.VerificationOptions(
+                hash_mode="off", format_mode="all"),
+            _tool_resolver=resolver,
+            _format_runner=runner,
+        )
+        self.assertEqual(_identity(snapshot), baseline)
+        self.assertEqual("failed", report["conclusion"])
+        section = report["sections"]["format"]
+        self.assertEqual("failed", section["state"])
+        self.assertEqual(2, section["not_processed"])
+        self.assertEqual(1, len(section["problems"]))
+        self.assertEqual("tool_error", section["problems"][0]["status"])
+        self.assertEqual(3, section["problems"][0]["affected_files"])
+
 
 class TestFormatWorkerAndControl(_Fixture):
     @staticmethod
