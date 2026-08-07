@@ -1645,6 +1645,8 @@ def _abort_metadata_tool_circuit(
 
 def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                            retain_original_metadata: bool = True,
+                           metadata_exiftool: bool = True,
+                           metadata_ffprobe: bool = True,
                            timeout_policy: dict | None = None,
                            on_progress=None,
                            should_stop=None,
@@ -1652,10 +1654,32 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                            tool_circuit_threshold: int =
                            toolruntime.DEFAULT_CIRCUIT_THRESHOLD) -> dict:
     core.ensure_metadata_diagnostics_table(con)
-    et_ver = tools["exiftool"]["version"]
-    ff_ver = tools["ffprobe"]["version"]
+    if not isinstance(metadata_exiftool, bool) \
+            or not isinstance(metadata_ffprobe, bool):
+        raise core.PreflightError("元数据工具开关必须是布尔值")
+    exiftool_info = tools.get("exiftool") if metadata_exiftool else None
+    ffprobe_info = tools.get("ffprobe") if metadata_ffprobe else None
+    if metadata_exiftool and not isinstance(exiftool_info, dict):
+        raise core.PreflightError("已启用 ExifTool 元数据采集但缺少工具能力")
+    if metadata_ffprobe and not isinstance(ffprobe_info, dict):
+        raise core.PreflightError("已启用 ffprobe 元数据采集但缺少工具能力")
+    sevenzip_info = tools.get("sevenzip")
+    if not isinstance(sevenzip_info, dict):
+        raise core.PreflightError("元数据阶段缺少 7-Zip 工具能力")
+    et_ver = (
+        str(exiftool_info.get("version") or "")
+        if isinstance(exiftool_info, dict) else "")
+    ff_ver = (
+        str(ffprobe_info.get("version") or "")
+        if isinstance(ffprobe_info, dict) else "")
+    if metadata_exiftool and not et_ver:
+        raise core.PreflightError("ExifTool 元数据能力缺少版本")
+    if metadata_ffprobe and not ff_ver:
+        raise core.PreflightError("ffprobe 元数据能力缺少版本")
     zip_ver = "python-zipfile " + ".".join(map(str, __import__("sys").version_info[:3]))
-    sz_ver = tools["sevenzip"]["version"]
+    sz_ver = str(sevenzip_info.get("version") or "")
+    if not sz_ver:
+        raise core.PreflightError("7-Zip 元数据能力缺少版本")
     roots = dict(con.execute("SELECT root_id, root_path FROM roots").fetchall())
     if not retain_original_metadata:
         # 基础元数据仍解析有规范化落点的格式；真正没有规范化表的 other
@@ -1673,7 +1697,8 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         exiftool_timeout_policy() if timeout_policy is None else timeout_policy)
     exiftool_timeout_for_size(0, selected_timeout_policy)  # 启动前验证策略
     stats = {
-        "total": len(todo), "done": 0, "error": 0, "timeout": 0,
+        "total": len(todo), "done": 0, "skipped": 0,
+        "error": 0, "timeout": 0,
         "unstable": 0, "source_error": 0, "tool_error": 0,
         "not_processed": len(todo), "circuit_open": False,
         "ffprobe_payloads": 0,
@@ -1682,6 +1707,8 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
         "diagnostic_warning": 0, "diagnostic_error": 0,
         "diagnostic_validation": 0,
         "exiftool_timeout_policy": selected_timeout_policy,
+        "metadata_exiftool": metadata_exiftool,
+        "metadata_ffprobe": metadata_ffprobe,
     }
     circuit = toolruntime.ConsecutiveToolFailureCircuit(
         tool_circuit_threshold)
@@ -1697,25 +1724,27 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
             "recent_sessions": [],
         }
         return stats
-    try:
-        worker = ExifToolWorker(tools["exiftool"]["path"])
-    except toolruntime.ToolRuntimeFailure as exc:
-        first_entry_id = int(todo[0][0])
-        snapshot = circuit.record_failure(first_entry_id, exc)
-        _record_error(
-            con,
-            first_entry_id,
-            "metadata_exiftool_tool_error",
-            _tool_failure_message(exc),
-        )
-        stats["tool_error"] += 1
-        _abort_metadata_tool_circuit(
-            con,
-            circuit=snapshot,
-            failure=exc,
-            worker=None,
-            stats=stats,
-        )
+    worker = None
+    if metadata_exiftool:
+        try:
+            worker = ExifToolWorker(str(exiftool_info["path"]))
+        except toolruntime.ToolRuntimeFailure as exc:
+            first_entry_id = int(todo[0][0])
+            snapshot = circuit.record_failure(first_entry_id, exc)
+            _record_error(
+                con,
+                first_entry_id,
+                "metadata_exiftool_tool_error",
+                _tool_failure_message(exc),
+            )
+            stats["tool_error"] += 1
+            _abort_metadata_tool_circuit(
+                con,
+                circuit=snapshot,
+                failure=exc,
+                worker=None,
+                stats=stats,
+            )
 
     def register_tool_failure(
         entry_id: int,
@@ -1762,10 +1791,12 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
             et_timeout = exiftool_timeout_for_size(
                 size0, selected_timeout_policy)
             status = "done"
+            produced_metadata = False
             file_tool_error = False
             try:
                 _clear_metadata_result(con, eid, clear_errors=True)
-                if kind in _PHOTO_KINDS:
+                if kind in _PHOTO_KINDS and metadata_exiftool:
+                    assert worker is not None
                     doc = worker.extract(
                         path, photo_profile=True, timeout=et_timeout)
                     circuit.record_success("exiftool")
@@ -1774,6 +1805,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     normalized = photo_row(idx, ext, diagnostics)
                     _insert_row(con, "photo_metadata", eid, normalized,
                                 "exiftool", et_ver)
+                    produced_metadata = True
                     if kind == "photo_working":
                         _insert_row(con, "working_metadata", eid,
                                     working_row(idx, ext), "exiftool", et_ver)
@@ -1788,46 +1820,60 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     doc = None
                     ff = None
                     errors = []
-                    try:
-                        doc = worker.extract(
-                            path, photo_profile=False, timeout=et_timeout)
-                        circuit.record_success("exiftool")
-                    except toolruntime.ToolRuntimeFailure:
-                        raise
-                    except TimeoutError:
-                        status = "timeout"
-                        _record_error(
-                            con, eid, "exiftool_timeout",
-                            f"{path}（timeout={et_timeout}s；size_bytes={size0}）")
-                    except Exception as exc:
-                        errors.append(("exiftool_error", exc))
-                    try:
-                        ff = ffprobe_full(tools["ffprobe"]["path"], path)
-                        circuit.record_success("ffprobe")
-                    except toolruntime.ToolRuntimeFailure:
-                        raise
-                    except subprocess.TimeoutExpired:
-                        status = "timeout"
-                        _record_error(con, eid, "ffprobe_timeout", path)
-                    except MetadataSourceError as exc:
-                        circuit.record_success(exc.tool)
-                        errors.append(("ffprobe_source_error", exc))
-                    except Exception as exc:
-                        errors.append(("ffprobe_error", exc))
+                    if metadata_exiftool:
+                        assert worker is not None
+                        try:
+                            doc = worker.extract(
+                                path, photo_profile=False, timeout=et_timeout)
+                            circuit.record_success("exiftool")
+                        except toolruntime.ToolRuntimeFailure:
+                            raise
+                        except TimeoutError:
+                            status = "timeout"
+                            _record_error(
+                                con, eid, "exiftool_timeout",
+                                f"{path}（timeout={et_timeout}s；size_bytes={size0}）")
+                        except Exception as exc:
+                            errors.append(("exiftool_error", exc))
+                    if metadata_ffprobe:
+                        try:
+                            ff = ffprobe_full(
+                                str(ffprobe_info["path"]), path)
+                            circuit.record_success("ffprobe")
+                        except toolruntime.ToolRuntimeFailure:
+                            raise
+                        except subprocess.TimeoutExpired:
+                            status = "timeout"
+                            _record_error(con, eid, "ffprobe_timeout", path)
+                        except MetadataSourceError as exc:
+                            circuit.record_success(exc.tool)
+                            errors.append(("ffprobe_source_error", exc))
+                        except Exception as exc:
+                            errors.append(("ffprobe_error", exc))
                     idx = build_tag_index(doc) if doc else {}
                     if doc or ff:
                         diagnostics = reported_diagnostics(doc)
-                        diagnostics.extend(
-                            av_validation_diagnostics(kind, size0, ff))
+                        if metadata_ffprobe:
+                            diagnostics.extend(
+                                av_validation_diagnostics(kind, size0, ff))
                         vids, auds = stream_rows(ff or {})
                         if kind == "audio" and not auds:
                             auds = audio_stream_rows_from_exif(idx)
                         normalized = video_row(idx, ff, diagnostics)
                         if normalized["stream_count"] is None and (vids or auds):
                             normalized["stream_count"] = len(vids) + len(auds)
-                        _insert_row(con, "video_metadata", eid, normalized,
-                                    "exiftool+ffprobe",
-                                    f"exiftool {et_ver}; ffprobe {ff_ver}")
+                        providers = []
+                        versions = []
+                        if doc:
+                            providers.append("exiftool")
+                            versions.append(f"exiftool {et_ver}")
+                        if ff:
+                            providers.append("ffprobe")
+                            versions.append(f"ffprobe {ff_ver}")
+                        _insert_row(
+                            con, "video_metadata", eid, normalized,
+                            "+".join(providers), "; ".join(versions))
+                        produced_metadata = True
                         gps_points = (video_gps_rows(ff or {})
                                       if kind in _VIDEO_KINDS else [])
                         for r in gps_points:
@@ -1866,13 +1912,15 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     for code, exc in errors:
                         status = "error" if status == "done" else status
                         _record_error(con, eid, code, exc)
-                elif kind == "document":
+                elif kind == "document" and metadata_exiftool:
+                    assert worker is not None
                     doc = worker.extract(
                         path, photo_profile=False, timeout=et_timeout)
                     circuit.record_success("exiftool")
                     idx = build_tag_index(doc)
                     _insert_row(con, "document_metadata", eid,
                                 document_row(idx, ext), "exiftool", et_ver)
+                    produced_metadata = True
                     if retain_original_metadata:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                     diagnostic_counts = _persist_diagnostics(
@@ -1890,6 +1938,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         parser, ver = "7-Zip", sz_ver
                     members = s.pop("members", [])
                     _insert_row(con, "archive_metadata", eid, s, parser, ver)
+                    produced_metadata = True
                     con.executemany(
                         "INSERT INTO archive_members (entry_id, member_index,"
                         " member_path, is_dir, size_bytes, packed_bytes,"
@@ -1902,7 +1951,8 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         " :extract_version, :header_offset, :modified_raw,"
                         " :attributes, :encrypted)",
                         [{**m, "eid": eid} for m in members])
-                    if retain_original_metadata:
+                    if retain_original_metadata and metadata_exiftool:
+                        assert worker is not None
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
                         circuit.record_success("exiftool")
@@ -1915,11 +1965,13 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 elif kind == "other":
                     # 没有规范化落点不等于 ExifTool 不可读取；全量元数据仍
                     # 为本地所有文件保存原文。
-                    if retain_original_metadata:
+                    if retain_original_metadata and metadata_exiftool:
+                        assert worker is not None
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
                         circuit.record_success("exiftool")
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
+                        produced_metadata = True
                         diagnostic_counts = _persist_diagnostics(
                             con, eid, reported_diagnostics(doc))
                         _merge_diagnostic_stats(stats, diagnostic_counts)
@@ -1947,10 +1999,10 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 _record_error(con, eid, type(exc).__name__, exc)
             # GIF 的 ffprobe 是 Raw 增补探测，用于保留帧时序等动画证据；
             # 失败不覆盖 ExifTool 主解析状态。其他非音视频类型不调用 ffprobe。
-            if retain_original_metadata and ext == "gif":
+            if retain_original_metadata and metadata_ffprobe and ext == "gif":
                 try:
                     ff_optional = ffprobe_full(
-                        tools["ffprobe"]["path"], path)
+                        str(ffprobe_info["path"]), path)
                     circuit.record_success("ffprobe")
                 except toolruntime.ToolRuntimeFailure as exc:
                     file_tool_error = True
@@ -1973,6 +2025,9 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                             con, eid, "ffprobe_payload_error", exc)
                     else:
                         stats["ffprobe_payloads"] += 1
+                        produced_metadata = True
+            if status == "done" and not produced_metadata:
+                status = "skipped"
             # 逐文件即时核对解析前后的 size/mtime
             try:
                 st = os.stat(ext_path, follow_symlinks=False)
@@ -1993,9 +2048,11 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 on_progress(i, stats)
         con.commit()
     finally:
-        worker.close()
+        if worker is not None:
+            worker.close()
         stats["tool_runtime"] = (
-            worker.telemetry() if hasattr(worker, "telemetry") else {})
+            worker.telemetry()
+            if worker is not None and hasattr(worker, "telemetry") else {})
     if should_stop is not None and should_stop():
         raise core.StageControlBoundary(
             "metadata controlled stage boundary")

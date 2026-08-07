@@ -602,6 +602,106 @@ def _ffprobe_findings(
     return bad, None
 
 
+def _run_ffprobe_format_validator(
+    path: str,
+    media_kind: str,
+    tools: Mapping[str, object],
+    *,
+    expected_size: int,
+    timeout_seconds: float | None,
+    default_decision: str,
+    display_name: str | None,
+    control: dbhash.HashWorkerControl | None,
+    on_event: Callable[..., None] | None,
+    on_threshold: Callable[..., None] | None,
+    direct_runner,
+) -> ExternalFormatOutcome:
+    """只运行 ffprobe；不得为了该开关隐式启动 ExifTool。"""
+    normalized = os.path.abspath(path)
+    label = str(display_name or os.path.basename(normalized))
+    started = time.monotonic()
+    ffprobe = _tool_path(tools, "ffprobe")
+    try:
+        result = _controlled(
+            [
+                ffprobe, "-v", "error", "-print_format", "json",
+                "-show_format", "-show_streams", normalized,
+            ],
+            expected_size=expected_size,
+            timeout_seconds=timeout_seconds,
+            default_decision=default_decision,
+            display_name=label,
+            control=control,
+            on_event=on_event,
+            on_threshold=on_threshold,
+            direct_runner=direct_runner,
+        )
+    except OSError as exc:
+        return _start_error_outcome(
+            "FFprobe", exc,
+            expected_size=expected_size,
+            started=started,
+        )
+    if result.outcome != "completed":
+        status = "timeout" if result.outcome == "timeout" else None
+        failure_kind = (
+            "supervision_failed"
+            if result.outcome not in ("paused", "stopped", "timeout")
+            else None
+        )
+        return _format_outcome(
+            result,
+            expected_size=expected_size,
+            status=status,
+            detail="FFprobe 无进展 timeout" if status == "timeout" else None,
+            started=started,
+            events=[],
+            threshold_count=0,
+            tool="ffprobe" if failure_kind else None,
+            failure_kind=failure_kind,
+        )
+    crash_detail = _process_crash_detail(result, "FFprobe")
+    if crash_detail is not None or result.stderr_truncated:
+        return _format_outcome(
+            result,
+            expected_size=expected_size,
+            status="error",
+            detail=(
+                crash_detail
+                or "FFprobe 错误输出超过证据上限，无法可靠分类"),
+            started=started,
+            events=[],
+            threshold_count=0,
+            tool="ffprobe",
+            failure_kind=(
+                "native_crash" if crash_detail is not None
+                else "output_limit"),
+        )
+    findings, failure_kind = _ffprobe_findings(
+        normalized, media_kind, result)
+    if failure_kind is not None:
+        return _format_outcome(
+            result,
+            expected_size=expected_size,
+            status="error",
+            detail="；".join(findings),
+            started=started,
+            events=[],
+            threshold_count=0,
+            tool="ffprobe",
+            failure_kind=failure_kind,
+        )
+    return _format_outcome(
+        result,
+        expected_size=expected_size,
+        status="invalid" if findings else "valid",
+        detail="；".join(findings) if findings else None,
+        started=started,
+        events=[],
+        threshold_count=0,
+    )
+
+
 def run_external_format_validator(
     path: str,
     media_kind: str,
@@ -617,11 +717,26 @@ def run_external_format_validator(
     on_threshold: Callable[..., None] | None = None,
     _direct_runner=None,
 ) -> ExternalFormatOutcome:
-    """按旧格式判据组合直接 ExifTool／FFprobe／7-Zip 进程结果。"""
+    """按所选判据监督 ExifTool／ffprobe／7-Zip 精确子进程。"""
     validator = spec.validator
-    if validator not in ("ole", "7z", "gif", "media"):
+    if validator not in (
+            "ole", "7z", "gif", "media", "exiftool", "ffprobe"):
         raise core.PreflightError(
             f"外部格式监督器不接受校验器：{validator}")
+    if validator == "ffprobe":
+        return _run_ffprobe_format_validator(
+            path,
+            media_kind,
+            tools,
+            expected_size=expected_size,
+            timeout_seconds=timeout_seconds,
+            default_decision=default_decision,
+            display_name=display_name,
+            control=control,
+            on_event=on_event,
+            on_threshold=on_threshold,
+            direct_runner=_direct_runner,
+        )
     normalized = os.path.abspath(path)
     label = str(display_name or os.path.basename(normalized))
     started = time.monotonic()
@@ -799,7 +914,7 @@ def run_external_format_validator(
 
     effective_kind = "image_gif" if validator == "gif" else media_kind
     last = exif
-    if effective_kind in legacy._FFPROBE_KINDS:
+    if validator != "exiftool" and effective_kind in legacy._FFPROBE_KINDS:
         events.extend(exif.events)
         threshold_count += exif.threshold_count
         ffprobe = _tool_path(tools, "ffprobe")

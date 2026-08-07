@@ -289,6 +289,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--metadata-storage", choices=("complete", "normalized"),
     )
     parser.add_argument(
+        "--no-metadata-exiftool",
+        dest="metadata_exiftool",
+        action="store_false",
+        default=None,
+        help="关闭元数据阶段的 ExifTool 采集；默认启用",
+    )
+    parser.add_argument(
+        "--no-metadata-ffprobe",
+        dest="metadata_ffprobe",
+        action="store_false",
+        default=None,
+        help="关闭元数据阶段的 ffprobe 探测；默认启用",
+    )
+    parser.add_argument(
         "--format-validation", choices=("off", "sample", "all"),
     )
     parser.add_argument("--format-sample-percent", type=float)
@@ -357,12 +371,14 @@ def _full_preflight(
     raw_capability: dict[str, object] | None = None,
 ) \
         -> dict[str, object]:
+    format_enabled = (args.format_validation or "off") != "off"
+    explicit_tools = {"sevenzip": args.sevenzip_path}
+    if args.metadata_exiftool is not False or format_enabled:
+        explicit_tools["exiftool"] = args.exiftool_path
+    if args.metadata_ffprobe is not False or format_enabled:
+        explicit_tools["ffprobe"] = args.ffprobe_path
     tools = core.run_preflight(
-        {
-            "exiftool": args.exiftool_path,
-            "ffprobe": args.ffprobe_path,
-            "sevenzip": args.sevenzip_path,
-        },
+        explicit_tools,
         output_dir=output_dir,
     )
     if args.hash != "none":
@@ -417,6 +433,8 @@ def _new_config(
     hash_mode = args.hash or ("full" if mode == "full" else "none")
     metadata_storage = args.metadata_storage or (
         "complete" if mode == "full" else "normalized")
+    metadata_exiftool = args.metadata_exiftool is not False
+    metadata_ffprobe = args.metadata_ffprobe is not False
     format_mode = args.format_validation or "off"
     raw_enabled = bool(args.raw_deep_validation)
     if mode == "quick":
@@ -424,6 +442,9 @@ def _new_config(
             raise core.PreflightError("Quick 不能启用内容哈希")
         if args.metadata_storage not in (None, "normalized"):
             raise core.PreflightError("Quick 不能启用元数据提取")
+        if args.metadata_exiftool is not None \
+                or args.metadata_ffprobe is not None:
+            raise core.PreflightError("Quick 不接受元数据工具开关")
         if format_mode != "off":
             raise core.PreflightError("Quick 不能启用格式校验")
         if args.previous_snapshot or args.map_root:
@@ -491,6 +512,8 @@ def _new_config(
         "map_root": list(args.map_root),
         "verify_sample_percent": verify_percent,
         "metadata_storage": metadata_storage,
+        "metadata_exiftool": metadata_exiftool,
+        "metadata_ffprobe": metadata_ffprobe,
         "format_validation": format_mode,
         "format_sample_percent": format_percent,
         "raw_deep_validation": raw_enabled,
@@ -548,6 +571,10 @@ def _create_new_run(
         file_id=not bool(config["no_file_id"]),
     )
     tokens.extend(_format_tokens(str(config["format_validation"])))
+    if mode == "full" and not bool(config["metadata_exiftool"]):
+        tokens.append("No-Exif")
+    if mode == "full" and not bool(config["metadata_ffprobe"]):
+        tokens.append("No-FFprobe")
     stem = core.snapshot_name(
         [label for label, _path in roots],
         "Full" if mode == "full" else "Quick",
@@ -651,6 +678,8 @@ def _resume_preflight(
         "--map-root": bool(args.map_root),
         "--verify-sample-percent": args.verify_sample_percent is not None,
         "--metadata-storage": args.metadata_storage is not None,
+        "--no-metadata-exiftool": args.metadata_exiftool is not None,
+        "--no-metadata-ffprobe": args.metadata_ffprobe is not None,
         "--format-validation": args.format_validation is not None,
         "--format-sample-percent": args.format_sample_percent is not None,
         "--raw-deep-validation": args.raw_deep_validation is not None,
@@ -692,15 +721,27 @@ def _resume_preflight(
         tools: dict[str, object] = {}
         _quick_preflight(os.path.dirname(preview.partial_path))
     else:
+        metadata_exiftool = config.get("metadata_exiftool", True)
+        metadata_ffprobe = config.get("metadata_ffprobe", True)
+        if not isinstance(metadata_exiftool, bool) \
+                or not isinstance(metadata_ffprobe, bool):
+            raise core.PreflightError("partial 的元数据工具开关无效")
+        format_enabled = str(
+            config.get("format_validation") or "off") != "off"
+        required_names = ["sevenzip"]
+        if metadata_exiftool or format_enabled:
+            required_names.append("exiftool")
+        if metadata_ffprobe or format_enabled:
+            required_names.append("ffprobe")
         explicit = {
             name: _frozen_tool(preview.tools, name)[0]
-            for name in ("exiftool", "ffprobe", "sevenzip")
+            for name in required_names
         }
         tools = core.run_preflight(
             explicit,
             output_dir=os.path.dirname(preview.partial_path),
         )
-        for name in ("exiftool", "ffprobe", "sevenzip"):
+        for name in required_names:
             _same_tool(name, _frozen_tool(preview.tools, name), tools[name])
         if str(config.get("hash") or "none") != "none":
             frozen_ps = _frozen_tool(preview.tools, "powershell")

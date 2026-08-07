@@ -99,10 +99,10 @@ def _raw_outcome(path: str, status: str) -> dbraw.RawDecodeOutcome:
 
 
 class TestVerifyRawOptions(unittest.TestCase):
-    def test_raw_requires_format_and_own_timeout_requires_raw(self) -> None:
-        with self.assertRaises(ValueError):
-            verifyrun.VerificationOptions(
-                format_mode="off", raw_deep_validation=True)
+    def test_raw_is_independent_and_own_timeout_requires_raw(self) -> None:
+        raw_only = verifyrun.VerificationOptions(
+            hash_mode="off", format_mode="off", raw_deep_validation=True)
+        self.assertTrue(raw_only.raw_deep_validation)
         with self.assertRaises(ValueError):
             verifyrun.VerificationOptions(
                 format_mode="all", raw_timeout_seconds=90.0)
@@ -110,18 +110,18 @@ class TestVerifyRawOptions(unittest.TestCase):
         args = verifycli.build_parser().parse_args([
             "--snapshot", "fixture.sqlite",
             "--root", "夹具=Current",
-            "--format", "all",
             "--raw-deep-validation",
             "--raw-timeout-seconds", "180",
         ])
         options = verifycli.verification_options(args)
+        self.assertEqual(options.format_mode, "off")
         self.assertTrue(options.raw_deep_validation)
         self.assertEqual(options.raw_timeout_seconds, 180.0)
 
     def test_unavailable_capability_precedes_database_or_source_read(self) -> None:
         options = verifyrun.VerificationOptions(
             hash_mode="off",
-            format_mode="all",
+            format_mode="off",
             raw_deep_validation=True,
         )
         with self.assertRaisesRegex(
@@ -191,7 +191,9 @@ class TestUnifiedVerifyRaw(unified_fixture._Fixture):
         self.assertEqual(report["sections"]["raw"]["state"], "NULL")
         self.assertEqual(unified_fixture._identity(snapshot), baseline)
 
-    def test_raw_sample_inherits_exact_format_selection(self) -> None:
+    def test_raw_checks_all_candidates_independently_of_format_sample(
+        self,
+    ) -> None:
         files = {
             f"set/file_{index:03d}.dng": (
                 f"payload-{index:03d}".encode("ascii"), "photo_raw")
@@ -222,11 +224,12 @@ class TestUnifiedVerifyRaw(unified_fixture._Fixture):
             raw_runner=raw_runner,
         )
         self.assertEqual(len(format_paths), 100)
-        self.assertEqual(sorted(raw_paths), sorted(format_paths))
+        self.assertEqual(len(raw_paths), 240)
+        self.assertTrue(set(format_paths).issubset(raw_paths))
         raw = report["sections"]["raw"]
         self.assertEqual(raw["raw_candidate_total"], 240)
-        self.assertEqual(raw["selected"], 100)
-        self.assertEqual(raw["valid"], 100)
+        self.assertEqual(raw["selected"], 240)
+        self.assertEqual(raw["valid"], 240)
         self.assertEqual(raw["problems"], [])
         self.assertEqual(report["conclusion"], "passed")
         self.assertEqual(unified_fixture._identity(snapshot), baseline)
@@ -259,7 +262,7 @@ class TestUnifiedVerifyRaw(unified_fixture._Fixture):
             snapshot,
             options=verifyrun.VerificationOptions(
                 hash_mode="off",
-                format_mode="all",
+                format_mode="off",
                 raw_deep_validation=True,
             ),
             raw_runner=raw_runner,

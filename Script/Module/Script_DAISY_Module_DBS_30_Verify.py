@@ -247,7 +247,7 @@ class VerificationCommandRouter:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "DBS-30 统一核验：全量文件状态＋可选内容哈希／格式校验；"
+            "DBS-30 统一核验：全量文件状态＋可选独立校验工具；"
             "输入快照只读"
         ),
     )
@@ -267,8 +267,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--format-sample-percent", type=float)
     parser.add_argument(
+        "--format-tool", action="append",
+        choices=verifyrun.FORMAT_TOOL_IDS,
+        help=(
+            "格式校验执行器，可重复指定；省略时保持旧行为并启用全部"
+            "执行器"
+        ),
+    )
+    parser.add_argument(
         "--raw-deep-validation", action="store_true",
-        help="在格式范围内用隔离 rawpy／LibRaw 实际解码 RAW；默认关闭",
+        help="独立使用隔离 rawpy／LibRaw 实际解码 RAW；默认关闭",
     )
     parser.add_argument(
         "--timeout-action", choices=_TIMEOUT_ACTIONS,
@@ -300,6 +308,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def verification_options(args: argparse.Namespace) \
         -> verifyrun.VerificationOptions:
+    selected_format_tools = tuple(
+        args.format_tool or verifyrun.FORMAT_TOOL_IDS)
     if args.hash != "sample" and args.hash_sample_percent is not None:
         raise core.PreflightError(
             "--hash-sample-percent 仅用于 --hash sample")
@@ -310,17 +320,28 @@ def verification_options(args: argparse.Namespace) \
             args.powershell_path or args.hash_timeout_seconds is not None):
         raise core.PreflightError(
             "哈希关闭时不接受 PowerShell 路径或哈希 timeout")
+    if args.format == "off" and args.format_tool:
+        raise core.PreflightError(
+            "--format-tool 仅用于已启用的 --format")
     if args.format == "off" and any((
         args.exiftool_path,
         args.ffprobe_path,
         args.sevenzip_path,
         args.format_timeout_seconds is not None,
-        args.raw_deep_validation,
-        args.raw_timeout_seconds is not None,
     )):
         raise core.PreflightError(
-            "格式校验关闭时不接受格式工具、格式 timeout 或 RAW 深检")
+            "格式校验关闭时不接受格式工具路径或格式 timeout")
+    selected_set = set(selected_format_tools) if args.format != "off" else set()
+    for tool_id, path in (
+        ("exiftool", args.exiftool_path),
+        ("ffprobe", args.ffprobe_path),
+        ("sevenzip", args.sevenzip_path),
+    ):
+        if path and tool_id not in selected_set:
+            raise core.PreflightError(
+                f"未选择 {tool_id} 时不能指定对应工具路径")
     if args.hash == "off" and args.format == "off" \
+            and not args.raw_deep_validation \
             and args.timeout_action is not None:
         raise core.PreflightError(
             "仅执行文件状态时不接受 timeout 默认处置")
@@ -336,6 +357,7 @@ def verification_options(args: argparse.Namespace) \
                 10.0 if args.format_sample_percent is None
                 else args.format_sample_percent
             ),
+            format_tools=selected_format_tools,
             timeout_decision=args.timeout_action or "continue_waiting",
             hash_timeout_seconds=args.hash_timeout_seconds,
             format_timeout_seconds=args.format_timeout_seconds,

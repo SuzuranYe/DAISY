@@ -27,7 +27,7 @@ import Script_DAISY_Module_DBS_10_Scan as scan_cli
 
 _MAIN = os.path.join(_SCRIPT_DIR, "Script_DAISY_MAIN.py")
 _RUNTIME_ROOT = os.path.join(
-    _REPO_ROOT, ".test_runtime", "v1_6_0", "scan_cli")
+    _REPO_ROOT, ".test_runtime", "v1_6_1", "scan_cli")
 
 
 def _sha256(path: str) -> str:
@@ -58,6 +58,65 @@ class TestScanCliConfig(unittest.TestCase):
             9 * 1024 ** 3,
             config["hash_timeout_policy"]["step_bytes"],
         )
+        self.assertIs(config["metadata_exiftool"], True)
+        self.assertIs(config["metadata_ffprobe"], True)
+
+    def test_full_metadata_tool_flags_are_independent_and_limit_preflight(
+        self,
+    ) -> None:
+        args = self.parse(
+            "--root", "Archive", "--hash", "none",
+            "--no-metadata-exiftool",
+        )
+        config = scan_cli._new_config(args, "full")
+        self.assertIs(config["metadata_exiftool"], False)
+        self.assertIs(config["metadata_ffprobe"], True)
+        with mock.patch.object(
+            scan_cli.core,
+            "run_preflight",
+            return_value={
+                "ffprobe": {"path": "fixture", "version": "fixture"},
+                "sevenzip": {"path": "fixture", "version": "fixture"},
+            },
+        ) as preflight:
+            tools = scan_cli._full_preflight(args, os.path.abspath("Output"))
+        self.assertEqual(set(tools), {"ffprobe", "sevenzip"})
+        self.assertEqual(
+            set(preflight.call_args.args[0]), {"ffprobe", "sevenzip"})
+
+        both_off = self.parse(
+            "--root", "Archive", "--hash", "none",
+            "--no-metadata-exiftool", "--no-metadata-ffprobe",
+        )
+        with mock.patch.object(
+            scan_cli.core,
+            "run_preflight",
+            return_value={
+                "sevenzip": {"path": "fixture", "version": "fixture"},
+            },
+        ) as preflight:
+            scan_cli._full_preflight(both_off, os.path.abspath("Output"))
+        self.assertEqual(set(preflight.call_args.args[0]), {"sevenzip"})
+
+    def test_format_validation_still_preflights_required_decoders(self) \
+            -> None:
+        args = self.parse(
+            "--root", "Archive", "--hash", "none",
+            "--no-metadata-exiftool", "--no-metadata-ffprobe",
+            "--format-validation", "all",
+        )
+        discovered = {
+            name: {"path": "fixture", "version": "fixture"}
+            for name in ("exiftool", "ffprobe", "sevenzip")
+        }
+        with mock.patch.object(
+                scan_cli.core, "run_preflight", return_value=discovered) \
+                as preflight:
+            scan_cli._full_preflight(args, os.path.abspath("Output"))
+        self.assertEqual(
+            set(preflight.call_args.args[0]),
+            {"exiftool", "ffprobe", "sevenzip"},
+        )
 
     def test_full_format_sample_accepts_zero_and_uses_v3_name_token(
         self,
@@ -76,6 +135,8 @@ class TestScanCliConfig(unittest.TestCase):
         for extra, message in (
             (("--hash", "full"), "内容哈希"),
             (("--metadata-storage", "complete"), "元数据"),
+            (("--no-metadata-exiftool",), "元数据工具"),
+            (("--no-metadata-ffprobe",), "元数据工具"),
             (("--format-validation", "all"), "格式校验"),
         ):
             with self.subTest(extra=extra):
@@ -127,6 +188,55 @@ class TestScanCliConfig(unittest.TestCase):
                 scan_cli._resume_preflight(args, preview)
         validate.assert_not_called()
         preflight.assert_not_called()
+
+    def test_older_full_partial_defaults_both_metadata_tools_to_enabled(
+        self,
+    ) -> None:
+        frozen_tools = {
+            name: {
+                "path": os.path.abspath(f"fixture-{name}.exe"),
+                "version": "fixture",
+            }
+            for name in ("exiftool", "ffprobe", "sevenzip")
+        }
+        preview = dbrun.ResumePreview(
+            partial_path=os.path.abspath("Legacy.partial.sqlite"),
+            lease_path=os.path.abspath("Legacy.partial.sqlite.lease"),
+            run_state="paused",
+            resume_hint="resume",
+            current_stage="metadata",
+            active_session_id=None,
+            active_session_ended=True,
+            lease_classification="stale_local",
+            roots=(("档案", os.path.abspath("Archive")),),
+            config={
+                "phase": "full",
+                "hash": "none",
+                "format_validation": "off",
+            },
+            tools=frozen_tools,
+        )
+        args = self.parse("--resume", preview.partial_path, "--quiet")
+        with (
+            mock.patch.object(scan_cli.core, "validate_root"),
+            mock.patch.object(
+                scan_cli.core,
+                "run_preflight",
+                return_value=frozen_tools,
+            ) as preflight,
+        ):
+            returned = scan_cli._resume_preflight(args, preview)
+        self.assertIs(returned, preview.config)
+        self.assertEqual(
+            set(preflight.call_args.args[0]),
+            {"exiftool", "ffprobe", "sevenzip"},
+        )
+
+        override = self.parse(
+            "--resume", preview.partial_path,
+            "--no-metadata-ffprobe", "--quiet")
+        with self.assertRaisesRegex(Exception, "冻结参数"):
+            scan_cli._resume_preflight(override, preview)
 
 
 class TestScanCliProduction(unittest.TestCase):

@@ -1159,6 +1159,8 @@ def run_metadata_stage_controlled(
     router: RunCommandRouter,
     *,
     retain_original_metadata: bool = True,
+    metadata_exiftool: bool = True,
+    metadata_ffprobe: bool = True,
     timeout_policy: dict[str, object] | None = None,
     show_current_file: bool = False,
     on_progress: Callable[[int, dict[str, object]], None] | None = None,
@@ -1219,6 +1221,8 @@ def run_metadata_stage_controlled(
             con,
             tools,
             retain_original_metadata=retain_original_metadata,
+            metadata_exiftool=metadata_exiftool,
+            metadata_ffprobe=metadata_ffprobe,
             timeout_policy=timeout_policy,
             on_progress=progress,
             should_stop=should_stop,
@@ -2931,9 +2935,17 @@ def _configured_root_mapping(value: object) -> dict[str, str]:
 
 def _metadata_tools(
     tools: dict[str, object],
+    *,
+    metadata_exiftool: bool,
+    metadata_ffprobe: bool,
 ) -> dict[str, dict[str, object]]:
     selected: dict[str, dict[str, object]] = {}
-    for name in ("exiftool", "ffprobe", "sevenzip"):
+    names = ["sevenzip"]
+    if metadata_exiftool:
+        names.append("exiftool")
+    if metadata_ffprobe:
+        names.append("ffprobe")
+    for name in names:
         value = tools.get(name)
         if not isinstance(value, dict):
             raise core.PreflightError(
@@ -3000,6 +3012,11 @@ def run_scan_evidence_stages(
     if phase == "full" and config.get("metadata_storage", "complete") \
             not in ("complete", "normalized"):
         raise core.PreflightError("冻结的 metadata_storage 无效")
+    metadata_exiftool = config.get("metadata_exiftool", True)
+    metadata_ffprobe = config.get("metadata_ffprobe", True)
+    if not isinstance(metadata_exiftool, bool) \
+            or not isinstance(metadata_ffprobe, bool):
+        raise core.PreflightError("冻结的元数据工具开关必须是布尔值")
 
     def progress(stage: str, payload: dict[str, object]) -> None:
         if on_progress is not None:
@@ -3113,9 +3130,15 @@ def run_scan_evidence_stages(
             }
         metadata = run_metadata_stage_controlled(
             con,
-            _metadata_tools(tools),
+            _metadata_tools(
+                tools,
+                metadata_exiftool=metadata_exiftool,
+                metadata_ffprobe=metadata_ffprobe,
+            ),
             router,
             retain_original_metadata=retain_original,
+            metadata_exiftool=metadata_exiftool,
+            metadata_ffprobe=metadata_ffprobe,
             timeout_policy=config.get("exiftool_timeout_policy"),
             show_current_file=show_current_file,
             on_progress=lambda _index, payload: progress(
@@ -3471,6 +3494,10 @@ def _scan_manifest_payload(
         },
         "metadata": {
             "stage_state": metadata_stage_state,
+            "selected_tools": {
+                "exiftool": config.get("metadata_exiftool", True),
+                "ffprobe": config.get("metadata_ffprobe", True),
+            },
             "coverage": counts.get("metadata_coverage", {}),
             "has_source_file_issues": bool(
                 counts.get("has_source_file_issues")),

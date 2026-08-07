@@ -30,6 +30,8 @@ import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 VERIFICATION_CONTRACT = "daisy-verification-v1"
 HASH_MODES = frozenset(("off", "sample", "all"))
 FORMAT_MODES = frozenset(("off", "sample", "all"))
+FORMAT_TOOL_IDS = ("builtin", "exiftool", "ffprobe", "sevenzip")
+_FORMAT_TOOL_ID_SET = frozenset(FORMAT_TOOL_IDS)
 TIMEOUT_DECISIONS = frozenset((
     "continue_waiting", "skip_and_record", "stop_and_resume",
 ))
@@ -60,6 +62,7 @@ class VerificationOptions:
     hash_sample_percent: float = 1.0
     format_mode: str = "off"
     format_sample_percent: float = 100.0
+    format_tools: tuple[str, ...] = FORMAT_TOOL_IDS
     timeout_decision: str = "continue_waiting"
     hash_timeout_seconds: float | None = None
     format_timeout_seconds: float | None = None
@@ -72,8 +75,16 @@ class VerificationOptions:
             raise ValueError(f"未知哈希核验模式：{self.hash_mode}")
         if self.format_mode not in FORMAT_MODES:
             raise ValueError(f"未知格式核验模式：{self.format_mode}")
-        if self.raw_deep_validation and self.format_mode == "off":
-            raise ValueError("RAW 深度校验必须依附已启用的格式校验")
+        normalized_tools = tuple(str(item) for item in self.format_tools)
+        if len(normalized_tools) != len(set(normalized_tools)):
+            raise ValueError("格式核验工具不能重复")
+        unknown_tools = set(normalized_tools) - _FORMAT_TOOL_ID_SET
+        if unknown_tools:
+            raise ValueError(
+                "未知格式核验工具：" + "、".join(sorted(unknown_tools)))
+        if self.format_mode != "off" and not normalized_tools:
+            raise ValueError("启用格式核验时必须至少选择一个工具")
+        object.__setattr__(self, "format_tools", normalized_tools)
         if self.raw_timeout_seconds is not None \
                 and not self.raw_deep_validation:
             raise ValueError("RAW 深度校验关闭时不能设置 RAW timeout")
@@ -96,6 +107,7 @@ class VerificationOptions:
             "hash_sample_percent": self.hash_sample_percent,
             "format_mode": self.format_mode,
             "format_sample_percent": self.format_sample_percent,
+            "format_tools": list(self.format_tools),
             "timeout_decision": self.timeout_decision,
             "hash_timeout_seconds": self.hash_timeout_seconds,
             "format_timeout_seconds": self.format_timeout_seconds,
@@ -952,35 +964,62 @@ def _format_spec(
     used: dict[str, dict[str, object]],
     on_event,
     resolver,
+    enabled_tools: tuple[str, ...],
 ) -> legacy.FormatValidatorSpec:
     validator = legacy.pick_format_validator(
         entry.extension, entry.media_kind)
+    selected = set(enabled_tools)
+    none_spec = legacy.FormatValidatorSpec(
+        "none", "daisy-format", legacy.FORMAT_VALIDATION_PROFILE)
     if validator == "zip":
+        if "builtin" not in selected:
+            return none_spec
         version = ".".join(map(str, os.sys.version_info[:3]))
         return legacy.FormatValidatorSpec(
             validator, "python-zipfile", version)
-    if validator in ("pdf", "none"):
+    if validator == "pdf":
+        if "builtin" not in selected:
+            return none_spec
         return legacy.FormatValidatorSpec(
             validator, "daisy-format", legacy.FORMAT_VALIDATION_PROFILE)
+    if validator == "none":
+        return none_spec
     if validator in ("ole", "7z"):
+        if "sevenzip" not in selected:
+            return none_spec
         sevenzip = _resolve_tool(
             "sevenzip", supplied, used, on_event, resolver)
         return legacy.FormatValidatorSpec(
             validator, "7-Zip", str(sevenzip["version"]))
-    exiftool = _resolve_tool(
-        "exiftool", supplied, used, on_event, resolver)
     effective_kind = (
         "image_gif" if validator == "gif" else entry.media_kind)
-    if effective_kind in legacy._FFPROBE_KINDS:
-        ffprobe = _resolve_tool(
-            "ffprobe", supplied, used, on_event, resolver)
+    use_exiftool = "exiftool" in selected
+    use_ffprobe = (
+        "ffprobe" in selected
+        and effective_kind in legacy._FFPROBE_KINDS
+    )
+    if not use_exiftool and not use_ffprobe:
+        return none_spec
+    exiftool = (
+        _resolve_tool("exiftool", supplied, used, on_event, resolver)
+        if use_exiftool else None
+    )
+    ffprobe = (
+        _resolve_tool("ffprobe", supplied, used, on_event, resolver)
+        if use_ffprobe else None
+    )
+    if exiftool is not None and ffprobe is not None:
         return legacy.FormatValidatorSpec(
             validator,
             "exiftool+ffprobe",
             f"exiftool {exiftool['version']}; ffprobe {ffprobe['version']}",
         )
+    if exiftool is not None:
+        return legacy.FormatValidatorSpec(
+            "exiftool", "exiftool", str(exiftool["version"]))
+    assert ffprobe is not None
     return legacy.FormatValidatorSpec(
-        validator, "exiftool", str(exiftool["version"]))
+        "ffprobe", "ffprobe", str(ffprobe["version"]))
 
 
 def _section_counts(rows: list[dict[str, object]]) -> dict[str, int]:
@@ -1424,6 +1463,10 @@ def _run_format_stage(
             circuit.record_success("daisy-format-worker")
         elif spec.validator in ("ole", "7z"):
             circuit.record_success("sevenzip")
+        elif spec.validator == "exiftool":
+            circuit.record_success("exiftool")
+        elif spec.validator == "ffprobe":
+            circuit.record_success("ffprobe")
         else:
             circuit.record_success("exiftool")
             effective_kind = (
@@ -1451,7 +1494,8 @@ def _run_format_stage(
                 processed += 1
                 break
             spec = _format_spec(
-                entry, supplied_tools, used_tools, on_event, tool_resolver)
+                entry, supplied_tools, used_tools, on_event, tool_resolver,
+                options.format_tools)
             if spec.validator == "none":
                 unsupported += 1
                 processed += 1
@@ -1479,6 +1523,8 @@ def _run_format_stage(
                     "daisy-format-worker"
                     if spec.validator in ("zip", "pdf") else
                     "sevenzip" if spec.validator in ("ole", "7z") else
+                    "exiftool" if spec.validator == "exiftool" else
+                    "ffprobe" if spec.validator == "ffprobe" else
                     "external-format-tool"
                 )
                 failure = _runtime_failure(
@@ -1696,7 +1742,6 @@ def _raw_capability_payload(probe=None) -> dict[str, object]:
 def _run_raw_stage(
     entries: list[_Entry],
     initial_stats: dict[int, _FileStat],
-    snapshot: dict[str, object],
     options: VerificationOptions,
     control: UnifiedVerificationControl,
     capability: Mapping[str, object] | None,
@@ -1715,18 +1760,11 @@ def _run_raw_stage(
     if capability is None:
         raise core.PreflightError("RAW 深度校验缺少已通过的隔离能力")
 
-    format_selected = _choose_entries(
-        entries,
-        options.format_mode,
-        options.format_sample_percent,
-        str(snapshot["snapshot_uuid"]) + ":validate",
-    )
-    candidate_total = sum(
-        1 for entry in entries if dbraw.is_raw_candidate(entry.extension))
     selected = [
-        entry for entry in format_selected
+        entry for entry in entries
         if dbraw.is_raw_candidate(entry.extension)
     ]
+    candidate_total = len(selected)
     _emit(
         on_event,
         "stage_started",
@@ -2084,7 +2122,6 @@ def run_unified_verification(
         raw_section, state = _run_raw_stage(
             entries,
             initial_stats,
-            snapshot,
             selected_options,
             owned_control,
             raw_capability,

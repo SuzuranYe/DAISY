@@ -28,7 +28,7 @@ import Script_DAISY_Lib_STG_03_Smartctl as smartctl
 
 
 _RUNTIME_ROOT = os.path.join(
-    _REPO_ROOT, ".test_runtime", "v1_6_0", "tool_recovery")
+    _REPO_ROOT, ".test_runtime", "v1_6_1", "tool_recovery")
 
 
 class _ScriptedStdin(io.BytesIO):
@@ -221,6 +221,31 @@ class _AlwaysFailExifWorker:
         }
 
 
+class _SuccessfulExifWorker:
+    calls: list[str] = []
+
+    def __init__(self, _path) -> None:
+        type(self).calls = []
+
+    def extract(self, path, photo_profile=False, timeout=None):
+        del photo_profile, timeout
+        type(self).calls.append(path)
+        return {"SourceFile": path}
+
+    @staticmethod
+    def close() -> None:
+        pass
+
+    @staticmethod
+    def telemetry() -> dict[str, object]:
+        return {
+            "session_count": 1,
+            "restart_count": 0,
+            "active_session": None,
+            "recent_sessions": [],
+        }
+
+
 class _MetadataFixture(unittest.TestCase):
     def setUp(self) -> None:
         os.makedirs(_RUNTIME_ROOT, exist_ok=True)
@@ -366,6 +391,159 @@ class TestMetadataToolCircuit(_MetadataFixture):
             self.assertIn("stage_failed", [name for name, _ in events])
         finally:
             dbrun.close_handle(handle, release_lease=True)
+
+
+class TestMetadataToolSelection(_MetadataFixture):
+    def legacy_connection(self, name: str):
+        partial = os.path.join(self.output, f"{name}.partial.sqlite")
+        connection = core.create_partial_snapshot(
+            partial,
+            [("档案", self.archive)],
+            config={"phase": "full"},
+        )
+        core.enumerate_and_reconcile(connection, collect_file_id=False)
+        return connection
+
+    def test_both_metadata_tools_disabled_skip_without_file_errors(
+        self,
+    ) -> None:
+        connection = self.legacy_connection("BothDisabled")
+        try:
+            with (
+                mock.patch.object(
+                    dbmeta, "ExifToolWorker",
+                    side_effect=AssertionError("不应启动 ExifTool"),
+                ),
+                mock.patch.object(
+                    dbmeta, "ffprobe_full",
+                    side_effect=AssertionError("不应启动 ffprobe"),
+                ),
+            ):
+                stats = dbmeta.process_metadata_stage(
+                    connection,
+                    {"sevenzip": self.tools["sevenzip"]},
+                    metadata_exiftool=False,
+                    metadata_ffprobe=False,
+                )
+            self.assertEqual((0, 10, 0), (
+                stats["done"], stats["skipped"], stats["error"]))
+            self.assertEqual(
+                [("skipped", 10)],
+                connection.execute(
+                    "SELECT meta_status,COUNT(*) FROM entries"
+                    " GROUP BY meta_status"
+                ).fetchall(),
+            )
+            self.assertEqual(
+                0, connection.execute(
+                    "SELECT COUNT(*) FROM errors").fetchone()[0])
+        finally:
+            connection.close()
+
+    def test_manifest_records_selection_and_defaults_missing_keys_on(self) \
+            -> None:
+        handle = self.create_handle("ManifestSelection", hash_mode="none")
+        try:
+            legacy = dbrun._scan_manifest_payload(
+                handle.connection, {}, {}, {}, None)
+            self.assertEqual(
+                legacy["metadata"]["selected_tools"],
+                {"exiftool": True, "ffprobe": True},
+            )
+            selected = dbrun._scan_manifest_payload(
+                handle.connection,
+                {"metadata_exiftool": False, "metadata_ffprobe": True},
+                {}, {}, None,
+            )
+            self.assertEqual(
+                selected["metadata"]["selected_tools"],
+                {"exiftool": False, "ffprobe": True},
+            )
+        finally:
+            dbrun.close_handle(handle, release_lease=True)
+
+    def test_exiftool_only_does_not_call_ffprobe(self) -> None:
+        connection = self.legacy_connection("ExifOnly")
+        try:
+            with (
+                mock.patch.object(
+                    dbmeta, "ExifToolWorker", _SuccessfulExifWorker),
+                mock.patch.object(
+                    dbmeta, "ffprobe_full",
+                    side_effect=AssertionError("不应调用 ffprobe"),
+                ),
+            ):
+                stats = dbmeta.process_metadata_stage(
+                    connection,
+                    {
+                        "exiftool": self.tools["exiftool"],
+                        "sevenzip": self.tools["sevenzip"],
+                    },
+                    metadata_exiftool=True,
+                    metadata_ffprobe=False,
+                )
+            self.assertEqual((10, 0, 0), (
+                stats["done"], stats["skipped"], stats["error"]))
+            self.assertEqual(len(_SuccessfulExifWorker.calls), 10)
+            self.assertEqual(
+                10, connection.execute(
+                    "SELECT COUNT(*) FROM photo_metadata").fetchone()[0])
+        finally:
+            connection.close()
+
+    def test_ffprobe_only_skips_photos_and_processes_video(self) -> None:
+        video = os.path.join(self.archive, "clip.mp4")
+        with open(video, "wb") as stream:
+            stream.write(b"synthetic-video")
+        connection = self.legacy_connection("FfprobeOnly")
+        ffprobe_calls: list[str] = []
+
+        def fake_ffprobe(_tool_path: str, path: str) -> dict[str, object]:
+            ffprobe_calls.append(path)
+            return {
+                "format": {
+                    "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "duration": "1.0",
+                    "size": "15",
+                },
+                "streams": [{
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 16,
+                    "height": 16,
+                }],
+            }
+
+        try:
+            with (
+                mock.patch.object(
+                    dbmeta, "ExifToolWorker",
+                    side_effect=AssertionError("不应启动 ExifTool"),
+                ),
+                mock.patch.object(
+                    dbmeta, "ffprobe_full", side_effect=fake_ffprobe),
+            ):
+                stats = dbmeta.process_metadata_stage(
+                    connection,
+                    {
+                        "ffprobe": self.tools["ffprobe"],
+                        "sevenzip": self.tools["sevenzip"],
+                    },
+                    metadata_exiftool=False,
+                    metadata_ffprobe=True,
+                )
+            self.assertEqual((1, 10, 0), (
+                stats["done"], stats["skipped"], stats["error"]))
+            self.assertEqual(ffprobe_calls, [video])
+            provider = connection.execute(
+                "SELECT parser FROM video_metadata").fetchone()[0]
+            self.assertEqual(provider, "ffprobe")
+            self.assertEqual(
+                0, connection.execute(
+                    "SELECT COUNT(*) FROM errors").fetchone()[0])
+        finally:
+            connection.close()
 
 
 class TestOneShotToolClassification(unittest.TestCase):
