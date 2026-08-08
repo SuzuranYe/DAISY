@@ -191,11 +191,6 @@ _WINDOW_SIZE_OPTIONS = (
     ("1600 × 900", (1600, 900)),
     ("1366 × 768", (1366, 768)),
 )
-_BINARY_CONTROL_STYLE_OPTIONS = (
-    ("按钮模式", "buttons"),
-    ("下拉菜单模式", "dropdowns"),
-)
-_DEFAULT_BINARY_CONTROL_STYLE = "buttons"
 _COLOUR_STRIP_HEIGHT = 4
 
 _TOOL_FIELD_BY_NAME = {
@@ -308,7 +303,6 @@ def default_gui_preferences() -> dict[str, object]:
         "window_size": list(_DEFAULT_WINDOW_SIZE),
         "font_family": _UI_FONT_FAMILY,
         "font_size_delta": 0,
-        "binary_control_style": _DEFAULT_BINARY_CONTROL_STYLE,
         "completion_sound_enabled": False,
         "last_task_key": "env_check",
         "manual_tool_paths": {},
@@ -345,16 +339,6 @@ def load_gui_preferences(
     allowed_deltas = {delta for _label, delta in _UI_FONT_SIZE_OPTIONS}
     if isinstance(size_delta, int) and size_delta in allowed_deltas:
         preferences["font_size_delta"] = size_delta
-
-    binary_control_style = loaded.get("binary_control_style")
-    if binary_control_style == "switches":
-        # 未发布的 v1.6.1 开发偏好兼容：滑动开关方案已撤回。
-        binary_control_style = "buttons"
-    allowed_binary_control_styles = {
-        value for _label, value in _BINARY_CONTROL_STYLE_OPTIONS
-    }
-    if binary_control_style in allowed_binary_control_styles:
-        preferences["binary_control_style"] = binary_control_style
 
     completion_sound = loaded.get("completion_sound_enabled")
     if isinstance(completion_sound, bool):
@@ -3994,8 +3978,6 @@ class DaisyApp:
         self.ui_font_family = str(self.gui_preferences["font_family"])
         self.ui_font_size_delta = int(
             self.gui_preferences["font_size_delta"])
-        self.binary_control_style = str(
-            self.gui_preferences["binary_control_style"])
         self.completion_sound_enabled = bool(
             self.gui_preferences["completion_sound_enabled"])
         self.recovery_scans = list(
@@ -4353,7 +4335,6 @@ class DaisyApp:
             "window_size": list(self.default_window_size),
             "font_family": self.ui_font_family,
             "font_size_delta": self.ui_font_size_delta,
-            "binary_control_style": self.binary_control_style,
             "completion_sound_enabled": self.completion_sound_enabled,
             "last_task_key": self.task.key,
             "manual_tool_paths": _validated_manual_tool_paths(
@@ -4532,40 +4513,6 @@ class DaisyApp:
         if persist:
             self._save_gui_preferences()
 
-    def _set_binary_control_style(
-        self, style: str, *, persist: bool = True,
-    ) -> None:
-        """切换二态字段控件，同时保留当前页已输入但未运行的值。"""
-        allowed = {
-            value for _label, value in _BINARY_CONTROL_STYLE_OPTIONS
-        }
-        current = getattr(
-            self, "binary_control_style", _DEFAULT_BINARY_CONTROL_STYLE)
-        if style not in allowed or self._task_is_active():
-            if hasattr(self, "binary_control_style_var"):
-                self.binary_control_style_var.set(current)
-            return
-        if style == current:
-            if hasattr(self, "binary_control_style_var"):
-                self.binary_control_style_var.set(current)
-            return
-
-        scroll_fraction = 0.0
-        if hasattr(self, "form_canvas"):
-            try:
-                scroll_fraction = float(self.form_canvas.yview()[0])
-            except (IndexError, tk.TclError, TypeError, ValueError):
-                scroll_fraction = 0.0
-        if getattr(self, "values", None):
-            self._save_current_values()
-        self.binary_control_style = style
-        if hasattr(self, "binary_control_style_var"):
-            self.binary_control_style_var.set(style)
-        if hasattr(self, "form_inner"):
-            self._build_form(scroll_fraction)
-        if persist:
-            self._save_gui_preferences()
-
     def _set_completion_sound(
         self, enabled: bool, *, persist: bool = True,
     ) -> None:
@@ -4609,7 +4556,7 @@ class DaisyApp:
             return
         if not messagebox.askyesno(
             "重置软件设置",
-            "这会恢复默认窗口、字体、开关样式和提示音，"
+            "这会恢复默认窗口、字体和提示音，"
             "清除已保存的任务选项、手动工具路径与恢复提示。\n\n"
             "不会卸载任何工具，也不会删除快照、partial、数据库、报告、"
             "日志文件或用户档案。确定继续吗？",
@@ -4625,14 +4572,12 @@ class DaisyApp:
         self.default_window_size = (int(raw_size[0]), int(raw_size[1]))
         self.ui_font_family = str(defaults["font_family"])
         self.ui_font_size_delta = int(defaults["font_size_delta"])
-        self.binary_control_style = str(defaults["binary_control_style"])
         self.completion_sound_enabled = bool(
             defaults["completion_sound_enabled"])
         self.default_window_size_var.set(
             f"{self.default_window_size[0]}x{self.default_window_size[1]}")
         self.ui_font_family_var.set(self.ui_font_family)
         self.ui_font_size_var.set(self.ui_font_size_delta)
-        self.binary_control_style_var.set(self.binary_control_style)
         self.completion_sound_enabled_var.set(
             self.completion_sound_enabled)
         self._apply_interface_font_preferences()
@@ -5214,23 +5159,6 @@ class DaisyApp:
             )
         font_menu.add_cascade(label="字号", menu=font_size_menu)
         settings_menu.add_cascade(label="界面字体", menu=font_menu)
-
-        binary_style_menu = tk.Menu(settings_menu, **base_menu_options)
-        self.binary_control_style_menu = binary_style_menu
-        self.binary_control_style_var = tk.StringVar(
-            value=self.binary_control_style)
-        for label, value in _BINARY_CONTROL_STYLE_OPTIONS:
-            binary_style_menu.add_radiobutton(
-                label=label,
-                variable=self.binary_control_style_var,
-                value=value,
-                command=lambda selected=value:
-                self._set_binary_control_style(selected),
-            )
-        settings_menu.add_cascade(
-            label="开关选项样式", menu=binary_style_menu)
-        self.binary_control_style_menu_index = int(
-            settings_menu.index("end"))
 
         settings_menu.add_separator()
         self.completion_sound_enabled_var = tk.BooleanVar(
@@ -6515,10 +6443,6 @@ class DaisyApp:
             for entry_index in getattr(
                     self, "advanced_locked_menu_entries", ()):
                 self.advanced_menu.entryconfigure(entry_index, state=state)
-        if hasattr(self, "settings_menu") and hasattr(
-                self, "binary_control_style_menu_index"):
-            self.settings_menu.entryconfigure(
-                self.binary_control_style_menu_index, state=state)
         if hasattr(self, "reset_current_settings_button"):
             self.reset_current_settings_button.configure(
                 state=(state if self.task.fields else "disabled"))
@@ -7102,7 +7026,6 @@ class DaisyApp:
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
             elif (spec.kind == "choice_flag"
-                  and self.binary_control_style == "buttons"
                   and {value for _label, value in self._field_choices(spec)}
                   == {False, True}):
                 widget = BooleanToggleButton(

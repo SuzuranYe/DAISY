@@ -1052,7 +1052,7 @@ class TestRealTkScanControls(unittest.TestCase):
     def test_visible_binary_fields_use_toggle_buttons_not_comboboxes(
         self,
     ) -> None:
-        self.assertEqual(self.app.binary_control_style, "buttons")
+        self.assertFalse(hasattr(self.app, "binary_control_style"))
         self.app._apply_runtime_capabilities({
             "capabilities": {
                 gui.envcap.RAW_CAPABILITY_ID:
@@ -1344,7 +1344,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertIn("--format off", preview)
         self.assertIn("--raw-deep-validation", preview)
 
-    def test_binary_style_switch_preserves_value_preview_and_same_selection(
+    def test_binary_button_preserves_size_value_and_preview_without_switch(
         self,
     ) -> None:
         self.app.saved_values["scan"] = {
@@ -1364,46 +1364,26 @@ class TestRealTkScanControls(unittest.TestCase):
         )
         preview = self.app.preview_var.get()
         self.assertIn("--no-file-id", preview)
-
-        with patch.object(gui, "save_gui_preferences") as saved:
-            self.app._set_binary_control_style("dropdowns")
-        self.root.update()
-        saved.assert_called_once()
-        self.assertEqual(self.app.binary_control_style, "dropdowns")
-        self.assertEqual(self.app.binary_control_style_var.get(), "dropdowns")
         self.assertIsInstance(
-            self.app.values["collect_file_id"], gui.tk.StringVar)
-        self.assertFalse(self.app._collect_values()["collect_file_id"])
+            self.app.values["collect_file_id"], gui.BooleanToggleButton)
+        self.assertFalse(any(
+            isinstance(widget, gui.ttk.Combobox)
+            and getattr(widget, "_daisy_field_key", None)
+            == "collect_file_id"
+            for widget in self._descendants(self.app.form_inner)
+        ))
+        settings_labels = [
+            self.app.settings_menu.entrycget(index, "label")
+            for index in range(
+                int(self.app.settings_menu.index("end")) + 1)
+            if self.app.settings_menu.type(index) != "separator"
+        ]
+        self.assertNotIn("开关选项样式", settings_labels)
+        self.assertFalse(hasattr(self.app, "binary_control_style_var"))
         self.assertEqual(self.app.preview_var.get(), preview)
 
-        combobox = next(
-            widget for widget in self.app.form_inner.winfo_children()
-            for widget in self._descendants(widget)
-            if (isinstance(widget, gui.ttk.Combobox)
-                and getattr(widget, "_daisy_field_key", None)
-                == "collect_file_id")
-        )
-        displayed = combobox.get()
-        self.assertTrue(displayed)
-        selected_index = combobox.current()
-        self.assertGreaterEqual(selected_index, 0)
-        combobox.current(selected_index)
-        combobox.event_generate("<<ComboboxSelected>>")
-        self.root.update()
-        self.assertTrue(combobox.winfo_exists())
-        self.assertEqual(combobox.get(), displayed)
-        self.assertEqual(self.app.preview_var.get(), preview)
-
-        self.app._set_binary_control_style("buttons", persist=False)
-        self.root.update()
-        restored = self.app.values["collect_file_id"]
-        self.assertIsInstance(restored, gui.BooleanToggleButton)
-        self.assertFalse(restored.get())
-        self.assertEqual(self.app.preview_var.get(), preview)
-
-    def test_dropdown_style_keeps_verification_buttons_and_raw_gate(self) \
+    def test_verification_buttons_keep_raw_capability_gate(self) \
             -> None:
-        self.app._set_binary_control_style("dropdowns", persist=False)
         self.app._select_task("verify", save_current=False)
         self.root.update()
         tools = self.app.values["verify_builtin"]
@@ -1427,7 +1407,8 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertIsInstance(tools, gui.VerificationToolButtonGroup)
         self.assertTrue(tools.controls["raw_deep_validation"].enabled)
 
-    def test_binary_styles_font_size_geometry_and_scaling_matrix(self) -> None:
+    def test_button_ui_page_font_size_geometry_and_scaling_matrix(self) \
+            -> None:
         self.app._apply_runtime_capabilities({
             "capabilities": {
                 gui.envcap.RAW_CAPABILITY_ID:
@@ -1435,22 +1416,28 @@ class TestRealTkScanControls(unittest.TestCase):
             },
         })
         base_scaling = float(self.root.tk.call("tk", "scaling"))
+        base_family = self.app.ui_font_family
+        families = self.app._available_ui_font_families()[:2]
         geometries = ((1840, 1020), (1366, 768), (1100, 850))
         pages = (
+            ("env_check", None, {}),
             ("scan", "collect_file_id", {
                 "scan_mode": "full", "start_mode": "new"}),
+            ("diff", None, {}),
+            ("verify", "verify_builtin", {}),
+            ("parse_db", None, {}),
             ("storage_collect", "summary_txt", {}),
         )
         checks = 0
         try:
-            for _style_label, style in gui._BINARY_CONTROL_STYLE_OPTIONS:
-                self.app._set_binary_control_style(style, persist=False)
-                for scaling in (1.0, 1.5):
+            for family in families:
+                for scaling in (1.0, 1.25, 1.5):
                     self.root.tk.call(
                         "tk", "scaling", base_scaling * scaling)
                     for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
                         self.app._set_ui_font(
-                            size_delta=size_delta, persist=False)
+                            family=family, size_delta=size_delta,
+                            persist=False)
                         for width, height in geometries:
                             self.root.geometry(f"{width}x{height}+0+0")
                             for task_key, field_key, saved in pages:
@@ -1459,42 +1446,50 @@ class TestRealTkScanControls(unittest.TestCase):
                                     task_key, save_current=False)
                                 self.root.update()
                                 context = (
-                                    f"style={style} scale={scaling} "
+                                    f"family={family} scale={scaling} "
                                     f"size={size_delta} geometry={width}x{height} "
                                     f"task={task_key}"
                                 )
-                                value_source = self.app.values[field_key]
-                                if style == "buttons":
+                                for spec in self.app.task.fields:
+                                    if (spec.kind == "choice_flag"
+                                            and set(value for _label, value
+                                                    in spec.choices)
+                                            == {False, True}
+                                            and spec.key in self.app.values):
+                                        self.assertIsInstance(
+                                            self.app.values[spec.key],
+                                            gui.BooleanToggleButton,
+                                            context,
+                                        )
+                                control = None
+                                if field_key == "verify_builtin":
+                                    group = self.app.values[field_key]
+                                    self.assertIsInstance(
+                                        group,
+                                        gui.VerificationToolButtonGroup,
+                                        context)
+                                    control = group.controls[
+                                        "verify_builtin"].button
+                                elif field_key is not None:
+                                    value_source = self.app.values[field_key]
                                     self.assertIsInstance(
                                         value_source,
                                         gui.BooleanToggleButton,
                                         context,
                                     )
                                     control = value_source.button
-                                else:
-                                    self.assertIsInstance(
-                                        value_source, gui.tk.StringVar, context)
-                                    control = next(
-                                        widget for widget in self._descendants(
-                                            self.app.form_inner)
-                                        if (isinstance(widget, gui.ttk.Combobox)
-                                            and getattr(
-                                                widget,
-                                                "_daisy_field_key",
-                                                None,
-                                            ) == field_key)
+                                if control is not None:
+                                    self.assertGreaterEqual(
+                                        control.winfo_width() + 1,
+                                        control.winfo_reqwidth(),
+                                        context,
                                     )
-                                    self.assertTrue(control.get(), context)
-                                self.assertGreaterEqual(
-                                    control.winfo_width() + 1,
-                                    control.winfo_reqwidth(),
-                                    context,
-                                )
                                 content_height = (
                                     self.app._form_content_height())
                                 viewport_height = (
                                     self.app.form_canvas.winfo_height())
-                                if content_height <= viewport_height:
+                                if (content_height <= viewport_height
+                                        + gui._FORM_SCROLL_OVERFLOW_TOLERANCE):
                                     self.assertFalse(
                                         self.app.form_scroll.winfo_manager(),
                                         context,
@@ -1512,17 +1507,25 @@ class TestRealTkScanControls(unittest.TestCase):
                                         0.0,
                                         context,
                                     )
+                                    visible_bottom = self.app.form_canvas.canvasy(
+                                        viewport_height)
+                                    self.assertGreaterEqual(
+                                        visible_bottom + 2,
+                                        content_height,
+                                        context,
+                                    )
+                                    self.app.form_canvas.yview_moveto(0.0)
                                 checks += 1
         finally:
             self.root.tk.call("tk", "scaling", base_scaling)
-            self.app._set_ui_font(size_delta=0, persist=False)
-            self.app._set_binary_control_style("buttons", persist=False)
+            self.app._set_ui_font(
+                family=base_family, size_delta=0, persist=False)
             self.root.geometry("1840x1020+0+0")
             self.root.update()
         self.assertEqual(
             checks,
-            len(gui._BINARY_CONTROL_STYLE_OPTIONS)
-            * 2
+            len(families)
+            * 3
             * len(gui._UI_FONT_SIZE_OPTIONS)
             * len(geometries)
             * len(pages),

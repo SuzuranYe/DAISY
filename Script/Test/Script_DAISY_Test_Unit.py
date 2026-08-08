@@ -37,7 +37,6 @@ class TestGuiArguments(unittest.TestCase):
             "window_size": [1600, 900],
             "font_family": "Segoe UI",
             "font_size_delta": 1,
-            "binary_control_style": "dropdowns",
             "completion_sound_enabled": True,
             "last_task_key": "verify",
             "manual_tool_paths": {
@@ -68,7 +67,7 @@ class TestGuiArguments(unittest.TestCase):
                     "window_size": [10, 20],
                     "font_family": "",
                     "font_size_delta": 99,
-                    "binary_control_style": "unknown",
+                    "binary_control_style": "dropdowns",
                     "completion_sound_enabled": "yes",
                     "confirm_close_when_idle": "no",
                     "last_task_key": "storage_list",
@@ -85,6 +84,7 @@ class TestGuiArguments(unittest.TestCase):
                 }, handle)
             loaded = gui.load_gui_preferences(path)
         self.assertEqual(loaded, gui.default_gui_preferences())
+        self.assertNotIn("binary_control_style", loaded)
 
     def test_legacy_page_preferences_migrate_to_unified_pages(self):
         expected = {
@@ -109,7 +109,6 @@ class TestGuiArguments(unittest.TestCase):
         app.default_window_size = (1920, 1080)
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
-        app.binary_control_style = "dropdowns"
         app.completion_sound_enabled = True
         app.task = gui.TASK_BY_KEY["verify"]
         app.manual_tool_paths = {
@@ -132,7 +131,7 @@ class TestGuiArguments(unittest.TestCase):
 
         payload = save.call_args.args[0]
         self.assertEqual(payload["last_task_key"], "verify")
-        self.assertEqual(payload["binary_control_style"], "dropdowns")
+        self.assertNotIn("binary_control_style", payload)
         self.assertTrue(payload["completion_sound_enabled"])
         self.assertNotIn("saved_values", payload)
         self.assertEqual(payload["manual_tool_paths"], {
@@ -1541,7 +1540,6 @@ class TestGuiArguments(unittest.TestCase):
         app.default_window_size = (1920, 1080)
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
-        app.binary_control_style = "buttons"
         app.completion_sound_enabled = False
         app._available_ui_font_families = lambda: (
             "Microsoft YaHei UI", "Segoe UI")
@@ -1606,13 +1604,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "cascade"],
-            ["默认窗口大小", "界面字体", "开关选项样式"],
+            ["默认窗口大小", "界面字体"],
         )
-        self.assertEqual(
-            [entry["label"] for entry in app.binary_control_style_menu.entries
-             if entry["kind"] == "radiobutton"],
-            ["按钮模式", "下拉菜单模式"],
-        )
+        self.assertFalse(hasattr(app, "binary_control_style_menu"))
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "checkbutton"],
@@ -2405,6 +2399,7 @@ class TestGuiArguments(unittest.TestCase):
     def test_real_tk_reopens_last_page_with_safe_options_only(self):
         preferences = gui.default_gui_preferences()
         preferences["last_task_key"] = "verify"
+        # 旧开发版偏好可能残留该键；现行 GUI 必须忽略并固定使用按钮。
         preferences["binary_control_style"] = "dropdowns"
         preferences["manual_tool_paths"] = {
             "exiftool": r"C:\Tools\exiftool.exe",
@@ -2420,8 +2415,8 @@ class TestGuiArguments(unittest.TestCase):
         root, app = self._real_tk_app(preferences)
 
         self.assertEqual(app.task.key, "verify")
-        self.assertEqual(app.binary_control_style, "dropdowns")
-        self.assertEqual(app.binary_control_style_var.get(), "dropdowns")
+        self.assertFalse(hasattr(app, "binary_control_style"))
+        self.assertFalse(hasattr(app, "binary_control_style_var"))
         self.assertEqual(app.saved_values, preferences["task_options"])
         self.assertEqual(
             app.manual_tool_paths, preferences["manual_tool_paths"])
@@ -2477,7 +2472,6 @@ class TestGuiArguments(unittest.TestCase):
             },
         }
         app.completion_sound_enabled = True
-        app.binary_control_style = "dropdowns"
 
         with patch.object(
                 gui.messagebox, "askyesno", return_value=True), \
@@ -2490,10 +2484,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.task.key, "env_check")
         self.assertEqual(app.manual_tool_paths, {})
         self.assertEqual(app.saved_values, {})
-        self.assertEqual(
-            app.binary_control_style,
-            defaults["binary_control_style"],
-        )
+        self.assertNotIn("binary_control_style", defaults)
+        self.assertNotIn(
+            "binary_control_style", saved.call_args.args[0])
         self.assertEqual(
             app.completion_sound_enabled,
             defaults["completion_sound_enabled"],
@@ -2538,47 +2531,45 @@ class TestGuiArguments(unittest.TestCase):
         self.assertTrue(button.winfo_manager())
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_1080p_both_binary_styles_fit_without_scrolling(self):
+    def test_real_tk_1080p_button_ui_pages_fit_without_scrolling(self):
         root, app = self._real_tk_app()
         app._select_task("scan", save_current=False)
         root.update()
         description_heights = set()
-        for _label, style in gui._BINARY_CONTROL_STYLE_OPTIONS:
-            app._set_binary_control_style(style, persist=False)
-            for task_key in gui._TASK_MENU_ORDER:
-                app._select_task(task_key, save_current=False)
-                root.update()
-                context = f"{task_key} · {style}"
-                content_height = app._form_content_height()
-                viewport_height = int(app.form_canvas.winfo_height())
-                self.assertLessEqual(
-                    content_height,
-                    viewport_height + gui._FORM_SCROLL_OVERFLOW_TOLERANCE,
-                    f"{context} 默认表单超出 1080P 可视区",
-                )
-                self.assertFalse(
-                    app.form_scroll.winfo_manager(),
-                    f"{context} 内容未溢出时不应显示滚动条",
-                )
-                for delta in (-120, -120, 120, 120):
-                    app._scroll_form(
-                        types.SimpleNamespace(delta=delta, num=0))
-                root.update_idletasks()
-                first, last = (
-                    float(value) for value in app.form_canvas.yview())
-                self.assertEqual(
-                    first, 0.0,
-                    f"{context} 内容未溢出时不应响应纵向滚动",
-                )
-                self.assertGreaterEqual(
-                    last,
-                    1.0 - (
-                        gui._FORM_SCROLL_OVERFLOW_TOLERANCE
-                        / max(1, viewport_height)
-                    ),
-                    f"{context} 容差内几何不能形成可见滚动区",
-                )
-                description_heights.add(app.desc_label.winfo_reqheight())
+        for task_key in gui._TASK_MENU_ORDER:
+            app._select_task(task_key, save_current=False)
+            root.update()
+            context = f"{task_key} · buttons-only"
+            content_height = app._form_content_height()
+            viewport_height = int(app.form_canvas.winfo_height())
+            self.assertLessEqual(
+                content_height,
+                viewport_height + gui._FORM_SCROLL_OVERFLOW_TOLERANCE,
+                f"{context} 默认表单超出 1080P 可视区",
+            )
+            self.assertFalse(
+                app.form_scroll.winfo_manager(),
+                f"{context} 内容未溢出时不应显示滚动条",
+            )
+            for delta in (-120, -120, 120, 120):
+                app._scroll_form(
+                    types.SimpleNamespace(delta=delta, num=0))
+            root.update_idletasks()
+            first, last = (
+                float(value) for value in app.form_canvas.yview())
+            self.assertEqual(
+                first, 0.0,
+                f"{context} 内容未溢出时不应响应纵向滚动",
+            )
+            self.assertGreaterEqual(
+                last,
+                1.0 - (
+                    gui._FORM_SCROLL_OVERFLOW_TOLERANCE
+                    / max(1, viewport_height)
+                ),
+                f"{context} 容差内几何不能形成可见滚动区",
+            )
+            description_heights.add(app.desc_label.winfo_reqheight())
         self.assertEqual(
             len(description_heights), 1,
             "各页面副标题应保持统一单行高度",
