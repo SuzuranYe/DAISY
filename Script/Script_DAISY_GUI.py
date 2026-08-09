@@ -2246,7 +2246,6 @@ _SPACING_STANDARD = 12
 _SPACING_SECTION = 16
 _SPACING_OUTER = 24
 _PANEL_HEADER_PADX = _SPACING_SECTION
-_PANEL_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _STANDARD_BUTTON_GAP = _SPACING_STANDARD
 _PANEL_ACTION_BUTTON_GAP = _STANDARD_BUTTON_GAP
 _PANEL_GAP = _SPACING_STANDARD
@@ -2257,6 +2256,12 @@ _FORM_SECTION_PADY = (_SPACING_COMPACT, 0)
 _FORM_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _FILE_PICKER_BUTTON_WIDTH = 12
 _FILE_PICKER_BUTTON_PADDING = (10, 5)
+_PANEL_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
+_TASK_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
+_TASK_ACTION_BUTTON_PADDING = (
+    _STANDARD_BUTTON_PADDING[0] - 1,
+    _STANDARD_BUTTON_PADDING[1],
+)
 _ENVIRONMENT_BUTTON_WIDTH = _SIX_COLUMN_BUTTON_WIDTH
 _ENVIRONMENT_BUTTON_PADDING = (4, 4)
 _FORM_FIELD_TITLE_MAX_CHARS = 6
@@ -4211,21 +4216,6 @@ class ParseModulePool(tk.Frame):
         self.buttons: dict[str, tk.Button] = {}
         self.cards: list[tk.Button] = []
         self._layout_signature: tuple[int, int] | None = None
-        if inspection is None:
-            tk.Label(
-                self, text="请先选择并解析输入数据库。",
-                bg=_SURFACE, fg=_MUTED, anchor="w",
-                font=("Microsoft YaHei UI", 9),
-            ).pack(fill="x", padx=10, pady=9)
-            return
-
-        requested = set(_lines(initial))
-        if not self.editable:
-            requested = {
-                module.spec.module_id for module in inspection.modules
-                if module.selectable and self.preset in module.spec.presets
-            }
-
         self.actions = tk.Frame(self, bg=_SURFACE)
         all_button = ttk.Button(
             self.actions, text="全选", style="FilePicker.TButton",
@@ -4238,16 +4228,57 @@ class ParseModulePool(tk.Frame):
             width=_FILE_PICKER_BUTTON_WIDTH, command=self.clear_selection,
         )
         clear_button.pack(side="left")
-        if self.editable:
-            self.actions.pack(
-                fill="x", padx=_SPACING_INLINE,
-                pady=(_SPACING_INLINE, 0),
-            )
-
         self.card_host = tk.Frame(self, bg=_SURFACE)
         self.card_host.pack(
             fill="x", padx=_SPACING_INLINE, pady=_SPACING_INLINE)
-        self.card_host.grid_anchor("center")
+        self.card_host.grid_anchor("w")
+        self.card_host.bind("<Configure>", self._layout_cards)
+        self.set_inspection(
+            inspection, preset=self.preset, initial=initial,
+            empty_text="请先选择并解析输入数据库。",
+        )
+
+    def set_inspection(
+        self,
+        inspection: dbparse.ParseDatabaseInspection | None,
+        *,
+        preset: str,
+        initial: object = "",
+        empty_text: str = "请先选择并解析输入数据库。",
+    ) -> None:
+        """原位更新识别结果，避免重建整张设置表单造成闪烁。"""
+        self.inspection = inspection
+        self.preset = str(preset or "full-audit")
+        self.editable = self.preset == "custom" and inspection is not None
+        self.actions.pack_forget()
+        for child in self.card_host.winfo_children():
+            child.destroy()
+        self.variables.clear()
+        self.buttons.clear()
+        self.cards.clear()
+        self._layout_signature = None
+        for column in range(8):
+            self.card_host.grid_columnconfigure(
+                column, weight=0, minsize=0, uniform="")
+        if inspection is None:
+            tk.Label(
+                self.card_host, text=empty_text,
+                bg=_SURFACE, fg=_MUTED, anchor="w",
+                font=("Microsoft YaHei UI", 9),
+            ).pack(fill="x", padx=2, pady=7)
+            return
+
+        requested = set(_lines(initial))
+        if not self.editable:
+            requested = {
+                module.spec.module_id for module in inspection.modules
+                if module.selectable and self.preset in module.spec.presets
+            }
+        if self.editable:
+            self.actions.pack(
+                fill="x", padx=_SPACING_INLINE,
+                pady=(_SPACING_INLINE, 0), before=self.card_host,
+            )
         for module in inspection.modules:
             module_id = module.spec.module_id
             selected = module.selectable and module_id in requested
@@ -4278,27 +4309,15 @@ class ParseModulePool(tk.Frame):
                 detail_parts.append(str(module.reason).rstrip("。"))
             detail = "；".join(part for part in detail_parts if part) + "。"
             attach_tooltip(button, detail)
-        self.card_host.bind("<Configure>", self._layout_cards)
         self.after_idle(self._layout_cards)
 
     def invalidate(self) -> None:
         """输入路径变化后原位清除旧识别结果，不读取新数据库。"""
-        if self.inspection is None:
-            return
-        self.inspection = None
-        self.editable = False
-        self.actions.pack_forget()
-        for child in self.card_host.winfo_children():
-            child.destroy()
-        self.variables.clear()
-        self.buttons.clear()
-        self.cards.clear()
-        self._layout_signature = None
-        tk.Label(
-            self.card_host, text="请点击「解析数据库」识别当前输入。",
-            bg=_SURFACE, fg=_MUTED, anchor="w",
-            font=("Microsoft YaHei UI", 9),
-        ).pack(fill="x", padx=2, pady=7)
+        self.set_inspection(
+            None,
+            preset=self.preset,
+            empty_text="请点击「解析数据库」识别当前输入。",
+        )
 
     def set_preset(
         self, preset: str, *, initial: object | None = None,
@@ -5346,7 +5365,7 @@ class DaisyApp:
         self._set_status("当前页面已恢复默认。")
 
     def _reset_software_settings(self) -> None:
-        """恢复 GUI 用户配置；不删除业务产物，也不卸载任何依赖。"""
+        """恢复软件默认状态；不删除业务产物，也不卸载任何依赖。"""
         if self._task_is_active():
             messagebox.showinfo(
                 "任务运行中",
@@ -5355,19 +5374,32 @@ class DaisyApp:
             )
             return
         if not messagebox.askyesno(
-            "重置软件设置",
-            "这会恢复默认窗口、字体和提示音，"
-            "清除已保存的任务选项、手动工具路径与续传提示。\n\n"
+            "重置软件",
+            "这会恢复默认窗口、字体和提示音，清除任务选项、手动工具路径、"
+            "续传提示、日志、进度和可重建缓存。\n\n"
             "不会卸载任何工具，也不会删除源档案、快照、报告或其他任务产物。"
             "确定继续吗？",
             icon="warning", parent=self.root,
         ):
             return
+        session_count = (
+            clear_session_tool_cache(self.detected_tools)
+            + len(self.manual_tool_paths)
+        )
+        cache_cleanup = clean_project_caches()
         defaults = default_gui_preferences()
         self.gui_preferences = defaults
         self.saved_values = {}
         self.manual_tool_paths = {}
         self.recovery_scans = []
+        self.storage_disk_choices = ()
+        self.storage_disk_options = ()
+        self.environment_missing_names = ()
+        self.environment_missing_reasons = {}
+        self.missing_installable_tools = ()
+        self.runtime_capabilities.clear()
+        self.parse_inspection = None
+        self.parse_inspection_path = ""
         raw_size = defaults["window_size"]
         self.default_window_size = (int(raw_size[0]), int(raw_size[1]))
         self.ui_font_family = str(defaults["font_family"])
@@ -5387,12 +5419,35 @@ class DaisyApp:
         self._apply_interface_font_preferences()
         self._set_default_window_size(
             self.default_window_size, persist=False)
+        if getattr(self, "mini_mode", False):
+            self._leave_mini_mode()
+        self._set_task_toolbar_expanded(True)
+        self._set_settings_expanded(True)
+        self._set_progress_expanded(False)
+        self._set_log_expanded(False)
+        self._set_command_preview_expanded(False)
+        self._clear_log()
         self._refresh_tool_path_menu_labels()
         self._refresh_recovery_card()
         self._select_task("env_check", save_current=False)
         self._save_gui_preferences()
-        self._set_status(
-            "软件设置已恢复默认；源档案、已有结果和已安装工具未改变。")
+        removed = (
+            session_count
+            + len(cache_cleanup.directories)
+            + len(cache_cleanup.files)
+        )
+        summary = (
+            f"软件已重置；已清理 {removed} 项会话数据或可重建缓存。"
+        )
+        self._set_status(summary)
+        if cache_cleanup.errors:
+            messagebox.showwarning(
+                "部分缓存未清理",
+                summary + "\n\n" + "\n".join(cache_cleanup.errors),
+                parent=self.root,
+            )
+        else:
+            messagebox.showinfo("软件已重置", summary, parent=self.root)
 
     def _play_completion_sound(self) -> None:
         """播放非阻塞系统提示音；不可用时回退到 Tk 响铃。"""
@@ -5950,12 +6005,6 @@ class DaisyApp:
             command=lambda: self._set_result_directory_prompt(
                 self.result_directory_prompt_enabled_var.get()),
         )
-        settings_menu.add_separator()
-        settings_menu.add_command(
-            label="恢复设置…",
-            command=self._reset_software_settings,
-        )
-
         self.task_toolbar_visible_var = tk.BooleanVar(value=True)
         self.settings_visible_var = tk.BooleanVar(value=True)
         self.progress_visible_var = tk.BooleanVar(value=False)
@@ -6049,10 +6098,11 @@ class DaisyApp:
         header = tk.Frame(panel, bg=_SURFACE)
         form_pad = (
             _SPACING_SECTION if self.compact_layout else _SPACING_OUTER)
+        self.task_toolbar_header_horizontal_pad = self.content_pad + form_pad
         self.task_toolbar_horizontal_pad = (
             self.content_pad + form_pad + _SPACING_STANDARD + 1)
         header.pack(
-            fill="x", padx=self.task_toolbar_horizontal_pad,
+            fill="x", padx=self.task_toolbar_header_horizontal_pad,
             pady=(_SPACING_COMPACT, _SPACING_COMPACT),
         )
         tk.Label(
@@ -6061,7 +6111,7 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
         self.task_toolbar_toggle_button = ttk.Button(
-            header, text="收起模块", style="Mini.TButton",
+            header, text="收起模块", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_task_toolbar,
         )
@@ -6071,15 +6121,15 @@ class DaisyApp:
             "展开或收起顶部功能模块。",
         )
         self.clear_cache_button = ttk.Button(
-            header, text="重置会话", style="Mini.TButton",
+            header, text="重置软件", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._clear_tool_cache,
+            command=self._reset_software_settings,
         )
         self.clear_cache_button.pack(
             side="right", padx=(0, _STANDARD_BUTTON_GAP))
         attach_tooltip(
             self.clear_cache_button,
-            "清空当前会话的表单、工具路径、硬盘清单、日志、进度和可重建缓存。",
+            "恢复软件默认设置，并清空会话数据与可重建缓存；不会删除任务产物。",
         )
 
         body = tk.Frame(panel, bg=_SURFACE)
@@ -6130,7 +6180,7 @@ class DaisyApp:
         command,
         state: str = "normal",
     ) -> tk.Button:
-        """创建与表单模式按钮几何完全一致的任务操作按钮。"""
+        """创建与面板工具同宽、与表单模式同高的任务操作按钮。"""
         palettes = {
             "primary": (
                 _GREEN_DARK, "white", _GREEN_DEEP, "white", _GREEN_DARK),
@@ -6139,8 +6189,8 @@ class DaisyApp:
             "stop": (
                 _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
             "result": (
-                _TASK_TOOLBAR_BACKGROUND, _AMBER_DEEP,
-                _TASK_TOOLBAR_HOVER, _AMBER_DEEP, _TASK_TOOLBAR_HOVER),
+                _TASK_TOOLBAR_BACKGROUND, _TASK_TOOLBAR_FOREGROUND,
+                _TASK_TOOLBAR_HOVER, _TASK_TOOLBAR_FOREGROUND, _BORDER),
             "secondary": (
                 _CONTROL, _TEXT, _CONTROL_HOVER, _TEXT, _BORDER),
         }
@@ -6148,7 +6198,7 @@ class DaisyApp:
             palettes[tone])
         return tk.Button(
             master, text=text, command=command, state=state,
-            width=_STANDARD_BUTTON_WIDTH,
+            width=_TASK_ACTION_BUTTON_WIDTH,
             relief="flat", bd=0, highlightthickness=1,
             highlightbackground=border, highlightcolor=border,
             bg=background, fg=foreground,
@@ -6157,8 +6207,8 @@ class DaisyApp:
             disabledforeground=foreground,
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
             anchor="center", justify="center",
-            padx=_STANDARD_BUTTON_PADDING[0],
-            pady=_STANDARD_BUTTON_PADDING[1],
+            padx=_TASK_ACTION_BUTTON_PADDING[0],
+            pady=_TASK_ACTION_BUTTON_PADDING[1],
             takefocus=True,
         )
 
@@ -6224,7 +6274,7 @@ class DaisyApp:
             2, weight=1, uniform="settings_header_action")
         self.reset_current_settings_button = ttk.Button(
             self.settings_actions, text="恢复默认",
-            style="PanelHeader.TButton",
+            style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._reset_current_task_settings,
         )
@@ -6236,7 +6286,7 @@ class DaisyApp:
         )
         self.settings_toggle_button = ttk.Button(
             self.settings_actions, text="收起设置",
-            style="PanelHeader.TButton",
+            style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_settings_panel,
         )
@@ -6368,7 +6418,7 @@ class DaisyApp:
         progress_actions.grid_columnconfigure(
             2, weight=1, uniform="panel_header_action")
         self.mini_mode_button = ttk.Button(
-            progress_actions, text="小窗模式", style="PanelHeader.TButton",
+            progress_actions, text="小窗模式", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_mini_mode, state="normal",
         )
@@ -6378,7 +6428,7 @@ class DaisyApp:
             "进入只显示进度和运行控制的小窗。",
         )
         self.progress_toggle_button = ttk.Button(
-            progress_actions, text="收起进度", style="PanelHeader.TButton",
+            progress_actions, text="收起进度", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_progress_panel,
         )
@@ -6551,7 +6601,7 @@ class DaisyApp:
         log_actions.grid_columnconfigure(
             4, weight=1, uniform="panel_header_action")
         self.clear_log_button = ttk.Button(
-            log_actions, text="清空日志", style="PanelHeader.TButton",
+            log_actions, text="清空日志", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._clear_log,
         )
@@ -6561,7 +6611,7 @@ class DaisyApp:
             "清空主界面与独立窗口中的运行日志。",
         )
         self.open_log_window_button = ttk.Button(
-            log_actions, text="独立窗口", style="PanelHeader.TButton",
+            log_actions, text="独立窗口", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._open_log_window,
         )
@@ -6571,7 +6621,7 @@ class DaisyApp:
             "在独立窗口中打开并实时同步运行日志。",
         )
         self.log_toggle_button = ttk.Button(
-            log_actions, text="收起日志", style="PanelHeader.TButton",
+            log_actions, text="收起日志", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_log_panel,
         )
@@ -6650,7 +6700,8 @@ class DaisyApp:
             fill="x", pady=(_SPACING_INLINE, 0))
         execution_action_area = tk.Frame(action_button_area, bg=_BG)
         self.execution_action_area = execution_action_area
-        execution_action_area.pack(fill="x")
+        execution_action_area.pack(
+            fill="x", padx=(0, _PANEL_HEADER_PADX + 1))
         execution_action_area.grid_columnconfigure(0, weight=1)
         self.stop_button = self._create_task_action_button(
             execution_action_area, text="停止", tone="control",
@@ -7003,7 +7054,7 @@ class DaisyApp:
         )
         save_state = (
             "normal"
-            if scan_active and state in ("pause_requested", "paused")
+            if scan_active and state == "paused"
             else "disabled"
         )
         stop_state = (
@@ -7849,18 +7900,7 @@ class DaisyApp:
                 "选择数据库，再点击「解析数据库」查看可用的数据模块。"
             )
         else:
-            descriptor = inspection.descriptor
-            type_label = (
-                "封存快照" if descriptor.database_type == "snapshot"
-                else "Diff 数据库"
-            )
-            available = inspection.module_state_counts.get("available", 0)
-            detail_text = (
-                f"已解析{type_label}；"
-                f"{self._parse_database_version_text(descriptor)}；"
-                f"数据库结构版本 {descriptor.schema_version}；"
-                f"可用数据模块 {available} 项。数据库变化后请重新解析。"
-            )
+            detail_text = self._parse_database_detection_detail(inspection)
         self.parse_detect_button = ttk.Button(
             panel, text="解析数据库", style="DiscoveryAction.TButton",
             width=_FORM_ACTION_BUTTON_WIDTH,
@@ -8409,6 +8449,23 @@ class DaisyApp:
         )
         return f"{label} {display}"
 
+    def _parse_database_detection_detail(
+        self, inspection: dbparse.ParseDatabaseInspection,
+    ) -> str:
+        """返回解析操作行使用的稳定摘要。"""
+        descriptor = inspection.descriptor
+        type_label = (
+            "封存快照" if descriptor.database_type == "snapshot"
+            else "Diff 数据库"
+        )
+        available = inspection.module_state_counts.get("available", 0)
+        return (
+            f"已解析{type_label}；"
+            f"{self._parse_database_version_text(descriptor)}；"
+            f"数据库结构版本 {descriptor.schema_version}；"
+            f"可用数据模块 {available} 项。数据库变化后请重新解析。"
+        )
+
     def _invalidate_parse_database_selection(self) -> None:
         """路径变化时清除旧识别结果；只有解析按钮可以读取数据库。"""
         if self.task.key != "parse_db" or self.parse_detection_active:
@@ -8459,9 +8516,19 @@ class DaisyApp:
 
         previous_path = str(getattr(self, "parse_inspection_path", ""))
         self.saved_values["parse_db"] = values
+        module_pool = self.values.get("parse_modules")
         if (previous_path and os.path.normcase(previous_path)
                 != os.path.normcase(database)):
             self.saved_values["parse_db"].pop("parse_modules", None)
+            if isinstance(module_pool, ParseModulePool):
+                module_pool.invalidate()
+        if (isinstance(module_pool, ParseModulePool)
+                and module_pool.inspection is None):
+            module_pool.set_inspection(
+                None,
+                preset=str(values.get("preset") or "full-audit"),
+                empty_text="正在解析数据库…",
+            )
         self.parse_inspection = None
         self.parse_inspection_path = ""
         self.parse_detection_generation += 1
@@ -8469,11 +8536,14 @@ class DaisyApp:
         self.parse_detection_active = True
         if self.parse_detect_button is not None:
             self.parse_detect_button.configure(state="disabled")
+        detail = getattr(self, "parse_detection_detail_label", None)
+        if detail is not None:
+            detail.configure(
+                text="正在解析数据库版本、结构和数据模块…",
+                fg=_GREEN_DEEP,
+            )
         self.run_button.configure(state="disabled")
         self._set_task_navigation_state("disabled")
-        self._set_settings_expanded(False)
-        self._set_progress_expanded(True)
-        self._set_log_expanded(True)
         self._reset_progress("解析数据库")
         self.progress_target_label.configure(text=database, fg=_TEXT)
         self.progress_stage_label.configure(
@@ -8532,10 +8602,22 @@ class DaisyApp:
             self._append_log(
                 f"解析数据库失败：{error or '未提供失败原因'}\n", "error")
             if self.task.key == "parse_db":
-                self._build_form()
-            self._set_settings_expanded(True)
-            self._set_progress_expanded(True)
-            self._set_log_expanded(True)
+                module_pool = self.values.get("parse_modules")
+                if isinstance(module_pool, ParseModulePool):
+                    module_pool.set_inspection(
+                        None,
+                        preset=str(
+                            self.saved_values.get("parse_db", {}).get(
+                                "preset") or "full-audit"),
+                        empty_text="解析失败；请检查日志后重试。",
+                    )
+                detail = getattr(
+                    self, "parse_detection_detail_label", None)
+                if detail is not None:
+                    detail.configure(
+                        text="解析失败；请检查文件与运行日志后重试。",
+                        fg=_DANGER,
+                    )
             self._set_status("解析数据库失败；请检查文件与日志。", _DANGER)
             self.run_button.configure(state="normal")
             if self.parse_detect_button is not None:
@@ -8564,16 +8646,31 @@ class DaisyApp:
         self.progress_detail_label.configure(text=summary, fg=_SUCCESS)
         self._append_log(f"数据库已解析：{summary}\n", "success")
         if self.task.key == "parse_db":
-            self._build_form()
-        self._set_settings_expanded(True)
-        self._set_progress_expanded(False)
-        self._set_log_expanded(False)
+            saved = self.saved_values.get("parse_db", {})
+            module_pool = self.values.get("parse_modules")
+            if isinstance(module_pool, ParseModulePool):
+                module_pool.set_inspection(
+                    inspection,
+                    preset=str(saved.get("preset") or "full-audit"),
+                    initial=saved.get("parse_modules", ""),
+                )
+                self._apply_font_to_tree(module_pool)
+            detail = getattr(self, "parse_detection_detail_label", None)
+            if detail is not None:
+                detail.configure(
+                    text=self._parse_database_detection_detail(inspection),
+                    fg=_TEXT,
+                )
+            self.form_inner.update_idletasks()
+            self._schedule_form_scroll_sync()
         self._set_status(
             f"已解析{summary}；可调整导出范围、数据模块和输出格式。",
             _SUCCESS,
         )
         self.run_button.configure(state="normal")
-        self._position_form_scroll(0.0)
+        if self.parse_detect_button is not None:
+            self.parse_detect_button.configure(state="normal")
+        self._update_preview()
 
     def _browse(self, spec: FieldSpec, variable: tk.StringVar) -> None:
         initial = variable.get().strip()
@@ -8877,8 +8974,8 @@ class DaisyApp:
             (_GREEN, _GREEN_DEEP, _GREEN_DARK, "white", _GREEN_DARK)
             if highlighted else
             (
-                _TASK_TOOLBAR_BACKGROUND, _AMBER_DEEP,
-                _TASK_TOOLBAR_HOVER, _AMBER_DEEP, _TASK_TOOLBAR_HOVER,
+                _TASK_TOOLBAR_BACKGROUND, _TASK_TOOLBAR_FOREGROUND,
+                _TASK_TOOLBAR_HOVER, _TASK_TOOLBAR_FOREGROUND, _BORDER,
             )
         )
         background, foreground, active_background, active_foreground, border = (
@@ -9055,58 +9152,8 @@ class DaisyApp:
             widget.configure(state="disabled")
 
     def _clear_tool_cache(self) -> None:
-        if self.process is not None or self.worker_starting or self.run_jobs:
-            messagebox.showinfo(
-                "暂不能重置会话",
-                "任务队列运行期间不能重置当前会话。",
-                parent=self.root,
-            )
-            return
-        if not messagebox.askyesno(
-                "重置当前会话",
-                "这会清空所有页面已填写的目录和参数、手动工具路径、硬盘清单、"
-                "运行日志、进度和可重建缓存，并返回运行环境检测页。\n\n"
-                "已生成的快照、硬盘档案 ZIP 和导出结果不会被删除。确定继续吗？",
-                icon="warning", parent=self.root):
-            return
-        session_count = (
-            clear_session_tool_cache(self.detected_tools)
-            + len(self.manual_tool_paths)
-        )
-        self.manual_tool_paths.clear()
-        disk = clean_project_caches()
-        self.saved_values.clear()
-        self.storage_disk_choices = ()
-        self.storage_disk_options = ()
-        self.environment_missing_names = ()
-        self.environment_missing_reasons = {}
-        self.missing_installable_tools = ()
-        self.runtime_capabilities.clear()
-        if getattr(self, "mini_mode", False):
-            self._leave_mini_mode()
-        self._set_task_toolbar_expanded(True)
-        self._set_settings_expanded(True)
-        self._set_progress_expanded(False)
-        self._set_log_expanded(False)
-        self._set_command_preview_expanded(False)
-        self._clear_log()
-        self._refresh_tool_path_menu_labels()
-        self._select_task("env_check", save_current=False)
-        self._set_status("就绪")
-
-        removed = (
-            session_count + len(disk.directories) + len(disk.files)
-        )
-        summary = f"当前会话已重置；已清理 {removed} 项可重建缓存。"
-        if disk.errors:
-            messagebox.showwarning(
-                "部分缓存未清理",
-                summary + "\n\n" + "\n".join(disk.errors),
-                parent=self.root,
-            )
-        else:
-            messagebox.showinfo(
-                "会话已重置", summary, parent=self.root)
+        """兼容旧内部调用；重置入口已统一为“重置软件”。"""
+        self._reset_software_settings()
 
     def _append_log(self, text: str, tag: str | None = None) -> None:
         text = text.replace("\r\n", "\n").replace("\r", "\n")

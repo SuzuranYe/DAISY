@@ -277,11 +277,13 @@ class TestScanControlProtocol(unittest.TestCase):
         app.mini_pause_button = _ButtonProbe()
         app.save_scan_button = _ButtonProbe()
         app.mini_save_button = _ButtonProbe()
+        app.run_button = _ButtonProbe()
         app.stop_button = _ButtonProbe()
         app.mini_stop_button = _ButtonProbe()
+        app._layout_action_buttons = Mock()
         for state, pause_text, pause_state in (
                 ("running", "暂停", "normal"),
-                ("pause_requested", "暂停", "disabled"),
+                ("pause_requested", "继续", "disabled"),
                 ("paused", "继续", "normal"),
                 ("save_exit_requested", "暂停", "disabled")):
             app.scan_control_state = state
@@ -290,6 +292,9 @@ class TestScanControlProtocol(unittest.TestCase):
                 app.pause_scan_button.options["text"], pause_text)
             self.assertEqual(
                 app.pause_scan_button.options["state"], pause_state)
+            if state == "pause_requested":
+                self.assertEqual(
+                    app.save_scan_button.options["state"], "disabled")
         app.scan_control_state = "paused"
         app._refresh_scan_controls()
         self.assertEqual(app.save_scan_button.options["state"], "normal")
@@ -304,8 +309,10 @@ class TestScanControlProtocol(unittest.TestCase):
         app.mini_pause_button = _ButtonProbe()
         app.save_scan_button = _ButtonProbe()
         app.mini_save_button = _ButtonProbe()
+        app.run_button = _ButtonProbe()
         app.stop_button = _ButtonProbe()
         app.mini_stop_button = _ButtonProbe()
+        app._layout_action_buttons = Mock()
         app.scan_control_state = "running"
         app._refresh_scan_controls()
         self.assertEqual(app.pause_scan_button.options["state"], "normal")
@@ -841,6 +848,8 @@ class TestRealTkScanControls(unittest.TestCase):
 
         self.app._select_task("parse_db", save_current=False)
         self.app.values["database"].set(snapshot)
+        original_form = self.app.form_inner
+        original_pool = self.app.values["parse_modules"]
         self.app._detect_parse_database()
         deadline = time.monotonic() + 10
         while self.app.parse_detection_active \
@@ -850,6 +859,8 @@ class TestRealTkScanControls(unittest.TestCase):
         self.root.update()
 
         self.assertFalse(self.app.parse_detection_active)
+        self.assertIs(self.app.form_inner, original_form)
+        self.assertIs(self.app.values["parse_modules"], original_pool)
         self.assertIsNotNone(self.app.parse_inspection)
         self.assertEqual(
             self.app.parse_inspection.compatibility_mode,
@@ -945,6 +956,12 @@ class TestRealTkScanControls(unittest.TestCase):
                             pool = self.app.values["parse_modules"]
                             host_left = pool.card_host.winfo_rootx()
                             host_right = host_left + pool.card_host.winfo_width()
+                            self.assertEqual(
+                                pool.card_host.tk.call(
+                                    "grid", "anchor", pool.card_host._w),
+                                "w", context)
+                            self.assertEqual(
+                                pool.cards[0].winfo_rootx(), host_left, context)
                             for card in pool.cards:
                                 self.assertGreaterEqual(
                                     card.winfo_rootx(), host_left, context)
@@ -952,13 +969,9 @@ class TestRealTkScanControls(unittest.TestCase):
                                     card.winfo_rootx() + card.winfo_width(),
                                     host_right + 1, context,
                                 )
-                                checkbox = next(
-                                    child for child in card.winfo_children()
-                                    if isinstance(child, gui.tk.Checkbutton)
-                                )
                                 self.assertGreaterEqual(
-                                    checkbox.winfo_width() + 1,
-                                    checkbox.winfo_reqwidth(), context,
+                                    card.winfo_width() + 1,
+                                    card.winfo_reqwidth(), context,
                                 )
                             combinations += 1
         finally:
@@ -1003,7 +1016,9 @@ class TestRealTkScanControls(unittest.TestCase):
         self.app._detect_parse_database()
         wait_for_detection()
         self.assertIsNotNone(self.app.parse_inspection)
-        self.assertTrue(self.app.values["parse_modules"].cards)
+        original_form = self.app.form_inner
+        original_pool = self.app.values["parse_modules"]
+        self.assertTrue(original_pool.cards)
 
         self.app.values["database"].set(invalid)
         with patch.object(gui.messagebox, "showerror") as shown:
@@ -1012,14 +1027,16 @@ class TestRealTkScanControls(unittest.TestCase):
         shown.assert_called_once()
         self.assertIsNone(self.app.parse_inspection)
         pool = self.app.values["parse_modules"]
+        self.assertIs(self.app.form_inner, original_form)
+        self.assertIs(pool, original_pool)
         self.assertIsInstance(pool, gui.ParseModulePool)
         self.assertIsNone(pool.inspection)
         self.assertEqual(pool.cards, [])
         self.assertNotIn(
             "parse_modules", self.app.saved_values.get("parse_db", {}))
         self.assertTrue(self.app.settings_expanded)
-        self.assertTrue(self.app.progress_expanded)
-        self.assertTrue(self.app.log_expanded)
+        self.assertFalse(self.app.progress_expanded)
+        self.assertFalse(self.app.log_expanded)
         self.assertEqual(
             self.app.progress_stage_label.cget("text"), "解析数据库失败")
 
@@ -1049,6 +1066,8 @@ class TestRealTkScanControls(unittest.TestCase):
 
         self.app._select_task("parse_db", save_current=False)
         self.app.values["database"].set(snapshot)
+        original_form = self.app.form_inner
+        original_pool = self.app.values["parse_modules"]
         with patch.object(
                 gui.dbparse, "inspect_parse_database",
                 side_effect=delayed_inspection):
@@ -1056,9 +1075,11 @@ class TestRealTkScanControls(unittest.TestCase):
             self.assertTrue(entered.wait(2))
             self.root.update()
             self.assertTrue(self.app.parse_detection_active)
-            self.assertFalse(self.app.settings_expanded)
-            self.assertTrue(self.app.progress_expanded)
-            self.assertTrue(self.app.log_expanded)
+            self.assertTrue(self.app.settings_expanded)
+            self.assertFalse(self.app.progress_expanded)
+            self.assertFalse(self.app.log_expanded)
+            self.assertIs(self.app.form_inner, original_form)
+            self.assertIs(self.app.values["parse_modules"], original_pool)
             self.assertEqual(
                 self.app.progress_stage_label.cget("text"),
                 "解析数据库 · 正在分析",
@@ -1075,6 +1096,8 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertTrue(self.app.settings_expanded)
         self.assertFalse(self.app.progress_expanded)
         self.assertFalse(self.app.log_expanded)
+        self.assertIs(self.app.form_inner, original_form)
+        self.assertIs(self.app.values["parse_modules"], original_pool)
 
     def test_visible_binary_fields_use_toggle_buttons_not_comboboxes(
         self,

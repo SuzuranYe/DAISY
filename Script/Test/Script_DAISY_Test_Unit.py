@@ -1156,6 +1156,14 @@ class TestGuiArguments(unittest.TestCase):
             app.open_output_button.cget("background"),
             gui._TASK_TOOLBAR_BACKGROUND,
         )
+        unselected_toolbar = app.task_toolbar_buttons["diff"]
+        for option in (
+                "background", "foreground", "activebackground",
+                "activeforeground", "highlightbackground"):
+            self.assertEqual(
+                app.open_output_button.cget(option),
+                unselected_toolbar.cget(option),
+            )
 
         app.process_task_key = "scan"
         app.process = object()
@@ -1185,19 +1193,50 @@ class TestGuiArguments(unittest.TestCase):
             [button.cget("text") for button in paused_visible],
             ["保存并退出", "打开结果目录", "继续", "停止"],
         )
+        self.assertEqual(app.save_scan_button.cget("state"), "disabled")
+        app.scan_control_state = "paused"
+        app._refresh_scan_controls()
         self.assertEqual(app.save_scan_button.cget("state"), "normal")
         app.process = None
         app.process_task_key = None
         app.scan_control_state = "idle"
         app._set_run_action_mode(False)
         app._refresh_scan_controls()
+        log_buttons = (
+            app.clear_log_button,
+            app.open_log_window_button,
+            app.log_toggle_button,
+        )
         self.assertEqual(
-            {(button.winfo_width(), button.winfo_height())
-             for button in visible},
-            {standard_size},
+            [button.winfo_width() for button in visible],
+            [button.winfo_width() for button in log_buttons],
+        )
+        self.assertEqual(
+            [button.winfo_rootx() for button in visible],
+            [button.winfo_rootx() for button in log_buttons],
+        )
+        self.assertEqual(
+            {button.winfo_height() for button in visible},
+            {standard_size[1]},
         )
         self.assertIs(app.clear_cache_button.master,
                       app.task_toolbar_toggle_button.master)
+        self.assertEqual(app.clear_cache_button.cget("text"), "重置软件")
+        for button in (
+                app.task_toolbar_toggle_button,
+                app.settings_toggle_button,
+                app.progress_toggle_button,
+                app.log_toggle_button):
+            self.assertEqual(button.cget("style"), "FilePicker.TButton")
+            self.assertEqual(
+                (button.winfo_width(), button.winfo_height()),
+                (app.clear_log_button.winfo_width(),
+                 app.clear_log_button.winfo_height()),
+            )
+        self.assertEqual(
+            app.task_toolbar_toggle_button.winfo_rootx(),
+            app.settings_toggle_button.winfo_rootx(),
+        )
 
         labels = {
             widget.cget("text"): widget
@@ -2112,7 +2151,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "command"],
-            ["恢复设置…"],
+            [],
         )
         self.assertEqual(
             [
@@ -3112,12 +3151,18 @@ class TestGuiArguments(unittest.TestCase):
         }
         app.completion_sound_enabled = True
         app.result_directory_prompt_enabled = True
+        cleanup = gui.ProjectCacheCleanup((), (), ())
 
         with patch.object(
                 gui.messagebox, "askyesno", return_value=True), \
+                patch.object(gui.messagebox, "showinfo") as shown, \
+                patch.object(
+                    gui, "clear_session_tool_cache", return_value=0), \
+                patch.object(
+                    gui, "clean_project_caches", return_value=cleanup), \
                 patch.object(gui, "save_gui_preferences") as saved, \
                 patch.object(gui.os, "remove") as removed:
-            app._reset_software_settings()
+            app.clear_cache_button.invoke()
             root.update()
 
         defaults = gui.default_gui_preferences()
@@ -3140,9 +3185,11 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(payload["manual_tool_paths"], {})
         self.assertEqual(payload["task_options"], {})
         removed.assert_not_called()
+        shown.assert_called_once()
+        self.assertEqual(app.clear_cache_button.cget("text"), "重置软件")
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_current_page_reset_is_large_and_page_scoped(self):
+    def test_real_tk_current_page_reset_is_page_scoped_and_compact(self):
         root, app = self._real_tk_app()
         app.saved_values["scan"] = {
             "scan_mode": "full",
@@ -3154,7 +3201,7 @@ class TestGuiArguments(unittest.TestCase):
         root.update()
         button = app.reset_current_settings_button
         self.assertEqual(button.cget("text"), "恢复默认")
-        self.assertEqual(button.cget("style"), "PanelHeader.TButton")
+        self.assertEqual(button.cget("style"), "FilePicker.TButton")
         self.assertEqual(int(button.cget("width")),
                          gui._PANEL_ACTION_BUTTON_WIDTH)
 
@@ -3914,6 +3961,11 @@ class TestGuiArguments(unittest.TestCase):
             int(pool.card_host.pack_info()["padx"]), gui._SPACING_INLINE)
         self.assertEqual(
             int(pool.card_host.pack_info()["pady"]), gui._SPACING_INLINE)
+        self.assertEqual(
+            pool.card_host.tk.call(
+                "grid", "anchor", pool.card_host._w),
+            "w",
+        )
         first = pool.buttons[specs[0].module_id]
         second = pool.buttons[specs[1].module_id]
         unavailable = pool.buttons[specs[2].module_id]
@@ -5488,83 +5540,11 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(os.path.isfile(ordinary))
             self.assertTrue(os.path.isdir(excluded))
 
-    def test_gui_cache_button_restores_cold_start_session_state(self):
+    def test_legacy_cache_reset_call_uses_unified_software_reset(self):
         app = object.__new__(gui.DaisyApp)
-        app.root = object()
-        app.process = None
-        app.worker_starting = False
-        app.run_jobs = []
-        app.detected_tools = {
-            "exiftool": {
-                "path": r"C:\Tools\exiftool.exe", "verified": True,
-            },
-        }
-        app.manual_tool_paths = {
-            "ffprobe": r"C:\Tools\ffprobe.exe",
-        }
-        app.saved_values = {"full_scan": {"roots": r"E:\Archive"}}
-        app.storage_disk_choices = (("PhysicalDrive3", "3"),)
-        app.storage_disk_options = (object(),)
-        app.environment_missing_names = ("sevenzip",)
-        app.environment_missing_reasons = {
-            "sevenzip": "not found",
-        }
-        app.missing_installable_tools = ("sevenzip",)
-        app.runtime_capabilities = {
-            "rawpy_libraw": {"available": False},
-        }
-        app.mini_mode = False
-        calls = []
-        app._set_task_toolbar_expanded = (
-            lambda value: calls.append(("toolbar", value)))
-        app._set_settings_expanded = (
-            lambda value: calls.append(("settings", value)))
-        app._set_progress_expanded = (
-            lambda value: calls.append(("progress", value)))
-        app._set_log_expanded = (
-            lambda value: calls.append(("log", value)))
-        app._set_command_preview_expanded = (
-            lambda value: calls.append(("preview", value)))
-        app._clear_log = lambda: calls.append(("clear_log", True))
-        app._refresh_tool_path_menu_labels = (
-            lambda: calls.append(("tool_menu", True)))
-        app._select_task = (
-            lambda key, save_current=False:
-            calls.append(("task", key, save_current)))
-        app._set_status = (
-            lambda text, colour=None: calls.append(("status", text)))
-        cleanup = gui.ProjectCacheCleanup(
-            directories=(os.path.join("Script", "__pycache__"),),
-            files=(os.path.join("Script", "orphan.pyc"),),
-            errors=(),
-        )
-
-        with (
-            patch.object(gui, "clean_project_caches", return_value=cleanup),
-            patch.object(gui.messagebox, "askyesno", return_value=True),
-            patch.object(gui.messagebox, "showinfo") as shown,
-        ):
+        with patch.object(app, "_reset_software_settings") as reset:
             app._clear_tool_cache()
-
-        self.assertEqual(app.detected_tools, {})
-        self.assertEqual(app.manual_tool_paths, {})
-        self.assertEqual(app.saved_values, {})
-        self.assertEqual(app.storage_disk_choices, ())
-        self.assertEqual(app.storage_disk_options, ())
-        self.assertEqual(app.environment_missing_names, ())
-        self.assertEqual(app.environment_missing_reasons, {})
-        self.assertEqual(app.missing_installable_tools, ())
-        self.assertEqual(app.runtime_capabilities, {})
-        self.assertIn(("toolbar", True), calls)
-        self.assertIn(("settings", True), calls)
-        self.assertIn(("progress", False), calls)
-        self.assertIn(("log", False), calls)
-        self.assertIn(("preview", False), calls)
-        self.assertIn(("clear_log", True), calls)
-        self.assertIn(("task", "env_check", False), calls)
-        self.assertIn(("status", "就绪"), calls)
-        shown.assert_called_once()
-        self.assertIn("已清理 4 项可重建缓存", shown.call_args.args[1])
+        reset.assert_called_once_with()
 
     def test_multi_root_default_separates_and_preserves_order(self):
         root_specs = [r"Alpha=E:\Archive A", r"Beta=F:\Archive B"]
