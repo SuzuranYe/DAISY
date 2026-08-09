@@ -1,7 +1,7 @@
-"""RAW 深度校验工作 JSONL、最终伴随 JSON 与 Issues 板块投影。
+"""RAW 深度校验工作 JSONL、最终伴随 JSON 与问题报告板块投影。
 
-本模块不打开 SQLite。工作日志以 snapshot UUID 和冻结配置摘要绑定；valid／unsupported
-记录不保存路径，只有 invalid／timeout／error 在最终报告中保留问题路径。
+本模块不打开 SQLite。工作日志以 snapshot UUID 和冻结配置摘要绑定；valid/unsupported
+记录不保存路径，只有 invalid/timeout/error 在最终报告中保留问题路径。
 """
 from __future__ import annotations
 
@@ -23,6 +23,21 @@ RAW_RESULT_STATUSES = frozenset((
     "valid", "unsupported", "invalid", "timeout", "error",
 ))
 RAW_ISSUE_STATUSES = frozenset(("invalid", "timeout", "error"))
+_RAW_STATE_LABELS = {
+    "executed": "已执行",
+    "incomplete": "未完成",
+}
+_RAW_FORMAT_MODE_LABELS = {
+    "sample": "抽样",
+    "all": "全部",
+}
+_RAW_STATUS_LABELS = {
+    "valid": "有效",
+    "unsupported": "不支持",
+    "invalid": "解码失败",
+    "timeout": "超时",
+    "error": "工具故障",
+}
 
 
 def _canonical_json(value: object) -> str:
@@ -59,7 +74,7 @@ class RawEvidenceBinding:
         if not str(self.snapshot_uuid).strip():
             raise ValueError("RAW 证据绑定缺少 snapshot_uuid")
         if self.format_mode not in ("sample", "all"):
-            raise ValueError("RAW 深检只能绑定 sample／all 格式范围")
+            raise ValueError("RAW 深度校验只能使用抽样或全部格式范围")
         percent = float(self.format_sample_percent)
         if not 0.0 <= percent <= 100.0:
             raise ValueError("RAW 证据格式抽样比例必须在 0～100")
@@ -121,7 +136,7 @@ def _validate_result_record(record: Mapping[str, object]) -> None:
     if status in ("valid", "unsupported"):
         if path is not None or detail is not None:
             raise core.PreflightError(
-                "RAW valid／unsupported 记录不得保存路径或明细")
+                "RAW valid/unsupported 记录不得保存路径或明细")
     else:
         if not isinstance(path, str) or not path:
             raise core.PreflightError("RAW 问题记录缺少逻辑路径")
@@ -234,7 +249,7 @@ class RawEvidenceJournal:
         if header.get("binding_sha256") != self.binding.fingerprint \
                 or header.get("binding") != self.binding.as_dict():
             raise core.PreflightError(
-                "RAW 工作证据与 snapshot UUID／冻结配置不一致")
+                "RAW 工作证据与快照 UUID 或冻结配置不一致")
 
     def _load_existing(self) -> None:
         with open(self.path, "rb") as handle:
@@ -294,7 +309,7 @@ class RawEvidenceJournal:
         outcome: dbraw.RawDecodeOutcome,
     ) -> dict[str, object]:
         if outcome.outcome not in ("completed", "timeout", "crashed"):
-            raise ValueError("暂停／停止的 RAW worker 不能写入终态证据")
+            raise ValueError("暂停或停止的 RAW 工作进程不能写入终态证据")
         status = str(outcome.status or "error")
         if status not in RAW_RESULT_STATUSES:
             status = "error"
@@ -422,7 +437,7 @@ def build_raw_report(
             "processed": processed,
             "not_processed": len(selected) - processed,
             "coverage_note": (
-                "RAW 范围继承本次格式校验选择；sample 不代表全部 RAW。"
+                "RAW 范围继承本次格式校验选择；抽样不代表全部 RAW。"
             ),
         },
         "counts": counts,
@@ -470,7 +485,7 @@ def validate_raw_report(report: Mapping[str, object]) -> None:
 
 
 def raw_report_payload(report: Mapping[str, object]) -> bytes:
-    """生成已验证的 UTF-8 无 BOM／LF 最终 JSON 字节。"""
+    """生成已验证的 UTF-8 无 BOM/LF 最终 JSON 字节。"""
     validate_raw_report(report)
     payload = (
         json.dumps(report, ensure_ascii=False, indent=2) + "\n"
@@ -483,7 +498,7 @@ def raw_report_payload(report: Mapping[str, object]) -> bytes:
 def raw_issue_section_payload(
     report: Mapping[str, object],
 ) -> dict[str, object]:
-    """把伴随报告投影为 DBS-10 可消费的通用 Issues 板块。"""
+    """把伴随报告投影为 DBS-10 可消费的通用问题报告板块。"""
     validate_raw_report(report)
     if report.get("state") != "executed":
         return {
@@ -549,19 +564,22 @@ def render_raw_issue_section(
     lines = ["## RAW 深度校验问题", ""]
     if report is None:
         lines.extend([
-            "NULL（本次未执行、旧库未记录或不适用）",
+            "NULL（本次未执行或旧库未记录）",
             "",
         ])
         return "\n".join(lines)
     validate_raw_report(report)
     selection = report["selection"]
     problems = report["problems"]
+    state = str(report["state"])
+    format_mode = str(selection["format_mode"])
     lines.extend([
-        f"- 状态：{report['state']}",
-        f"- 范围：{selection['format_mode']}；RAW 候选 "
-        f"{selection['raw_candidate_total']}；选中 "
-        f"{selection['raw_selected_total']}；已处理 {selection['processed']}",
-        f"- unsupported：{report['counts']['unsupported']}（仅计数，不列路径）",
+        f"- 执行状态：{_RAW_STATE_LABELS.get(state, state)}",
+        f"- 校验范围：{_RAW_FORMAT_MODE_LABELS.get(format_mode, format_mode)}；"
+        f"RAW 候选：{selection['raw_candidate_total']}；纳入校验："
+        f"{selection['raw_selected_total']}；已处理：{selection['processed']}",
+        f"- 不支持的 RAW 文件：{report['counts']['unsupported']}"
+        "（仅统计，不列路径）",
         "",
     ])
     if not problems:
@@ -575,8 +593,9 @@ def render_raw_issue_section(
         "|---|---|---|---|",
     ])
     for row in problems:
+        status = str(row["status"])
         lines.append(
-            f"| {_markdown_cell(row['status'])} | "
+            f"| {_markdown_cell(_RAW_STATUS_LABELS.get(status, status))} | "
             f"`{_markdown_cell(row['path'])}` | "
             f"{_markdown_cell(row.get('code'))} | "
             f"{_markdown_cell(row.get('detail'))} |"
@@ -591,7 +610,7 @@ def publish_raw_report(
     *,
     output_path: str | None = None,
 ) -> str:
-    """以 UTF-8 无 BOM／LF、staging、校验和 no-clobber 发布伴随 JSON。"""
+    """以 UTF-8 无 BOM/LF、暂存、校验和不覆盖方式发布伴随 JSON。"""
     validate_raw_report(report)
     target = os.path.abspath(output_path or raw_report_path(snapshot_path))
     directory = os.path.dirname(target)

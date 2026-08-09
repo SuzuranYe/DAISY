@@ -306,7 +306,7 @@ class TestScanPublication(unittest.TestCase):
             markdown = stream.read()
         self.assertIn("## 哈希问题", markdown)
         self.assertIn("verify_mismatch", markdown)
-        self.assertEqual(1, markdown.count("# DAISY 问题报告"))
+        self.assertEqual(1, markdown.count("# DAISY 快照问题报告"))
         con = sqlite3.connect(
             Path(publication.final_path).resolve(strict=True).as_uri()
             + "?mode=ro",

@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 数据库解析稳定投影测试。
+"""DAISY 档案数据解析稳定投影测试。
 
 测试夹具和发布产物只位于工作区 ``.test_runtime``。测试不访问数据库中记录
 的源路径，不枚举、附加或终止其它进程；所有投影均通过统一 Reader 只读连接。
@@ -470,6 +470,23 @@ class TestParseProjection(unittest.TestCase):
                 "overview", "file_changes", "directory_changes",
                 "evidence_notes",
             }.issubset(seen))
+            overview = list(projection.iter_module_rows(
+                con, descriptor, "overview", batch_rows=1))
+            overview_by_key = {
+                str(row["key"]): row for row in overview
+            }
+            self.assertEqual(
+                overview_by_key["schema_version"]["label"],
+                "数据库结构版本",
+            )
+            self.assertEqual(
+                overview_by_key["mode"]["value"],
+                "v1.4.1-compatible",
+            )
+            self.assertEqual(
+                overview_by_key["content_changed"]["label"],
+                "内容变化",
+            )
             self.assertEqual(
                 statuses["enumeration_gaps"].state, "empty")
             with self.assertRaises(core.PreflightError):

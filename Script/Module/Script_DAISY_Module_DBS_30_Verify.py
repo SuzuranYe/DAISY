@@ -1,8 +1,8 @@
-r"""DBS-30 统一核验：stat、内容哈希与格式校验的只读编排入口。
+r"""DBS-30 档案数据核验：文件状态、哈希与格式校验的只读编排入口。
 
-旧 ``check-hash``／``check-format`` 命令继续保持 v1.5.1 参数和输出；本入口只读
-消费 schema 3／4 封存快照，并发布一份 Markdown 人读报告和一份 JSON 技术证据。
-统一核验支持进程内暂停／继续／停止，但不提供跨重启续传，因而明确拒绝
+旧 ``check-hash``/``check-format`` 命令继续保持 v1.5.1 参数和输出；本入口只读
+消费 schema 3/4 封存快照，并发布一份 Markdown 阅读报告和一份 JSON 技术证据。
+档案数据核验支持进程内暂停／继续／停止，但不提供跨重启续传，因而明确拒绝
 ``save_exit`` 控制动作。
 """
 from __future__ import annotations
@@ -27,9 +27,9 @@ import Script_DAISY_Lib_DBS_11_Verify_Run as verifyrun
 
 _STAGES = {
     "stat": (1, "文件状态"),
-    "hash": (2, "内容哈希"),
+    "hash": (2, "哈希复检"),
     "format": (3, "格式校验"),
-    "raw": (4, "RAW 深检"),
+    "raw": (4, "RAW 深度校验"),
 }
 _STAGES_TOTAL = len(_STAGES)
 _TIMEOUT_ACTIONS = (
@@ -38,7 +38,7 @@ _TIMEOUT_ACTIONS = (
 
 
 class VerificationReporter:
-    """把统一核验事件映射为 GUI 协议和紧凑控制台进度。"""
+    """把档案数据核验事件映射为 GUI 协议和紧凑控制台进度。"""
 
     def __init__(self, *, quiet: bool, default_decision: str) -> None:
         self.quiet = quiet
@@ -91,7 +91,7 @@ class VerificationReporter:
             self._last_console_progress[stage] = now
             suffix = f"{int(processed):,}/{int(total):,}"
             if problems:
-                suffix += f" · 问题 {problems:,}"
+                suffix += f" · 受影响文件 {problems:,}"
             if payload.get("unverifiable"):
                 suffix += f" · 不可核验 {int(payload['unverifiable']):,}"
             print(
@@ -129,7 +129,7 @@ class VerificationReporter:
                 problems = int(clean.get("problems") or 0)
                 summary = f"处理 {processed:,}"
                 if problems:
-                    summary += f" · 问题 {problems:,}"
+                    summary += f" · 受影响文件 {problems:,}"
                 core.emit_gui_event(
                     "progress_finish",
                     stage_idx=index,
@@ -150,7 +150,8 @@ class VerificationReporter:
                 not_processed = int(clean.get("not_processed") or 0)
                 tool = str(clean.get("tool") or "外部工具")
                 summary = (
-                    f"{tool} 故障熔断 · 已处理 {processed:,}/{total:,} · "
+                    f"{tool} 连续故障，核验已停止 · "
+                    f"已处理 {processed:,}/{total:,} · "
                     f"未处理 {not_processed:,}"
                 )
                 core.emit_gui_event(
@@ -172,11 +173,11 @@ class VerificationReporter:
                 decision_text = {
                     "continue_waiting": "继续等待",
                     "skip_and_record": "跳过并记录",
-                    "stop_and_resume": "停止（核验不可跨重启续传）",
+                    "stop_and_resume": "停止并保留结果",
                 }[self.default_decision]
                 print(
-                    "!! 单文件无可观察进展达到阈值："
-                    f"{clean.get('file')}（{clean.get('threshold_seconds')}s）；"
+                    "警告：单文件无可观察进展达到阈值："
+                    f"{clean.get('file')}（{clean.get('threshold_seconds')} 秒）；"
                     f"无人操作时默认：{decision_text}",
                     file=sys.stderr,
                     flush=True,
@@ -247,62 +248,70 @@ class VerificationCommandRouter:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "DBS-30 统一核验：全量文件状态＋可选独立校验工具；"
+            "档案数据核验：核对全部文件状态，并可选复检哈希、格式、容器结构与 RAW 解码；"
             "输入快照只读"
         ),
     )
-    parser.add_argument("--snapshot", required=True)
+    parser.add_argument(
+        "--snapshot", required=True, help="作为核验基准的封存快照")
     parser.add_argument(
         "--root", action="append", required=True,
-        help="当前根目录；单根可直接给路径，多根逐项使用 label=路径",
+        help="当前根目录；单根可直接给路径，多根逐项使用「根目录名=路径」",
     )
     parser.add_argument(
         "--hash", choices=("off", "sample", "all"), default="sample",
-        help="内容哈希范围；默认抽样",
+        help="哈希复检范围；默认抽样",
     )
-    parser.add_argument("--hash-sample-percent", type=float)
+    parser.add_argument(
+        "--hash-sample-percent", type=float, help="哈希复检抽样比例")
     parser.add_argument(
         "--format", choices=("off", "sample", "all"), default="off",
         help="格式校验范围；默认关闭",
     )
-    parser.add_argument("--format-sample-percent", type=float)
+    parser.add_argument(
+        "--format-sample-percent", type=float, help="格式校验抽样比例")
     parser.add_argument(
         "--format-tool", action="append",
         choices=verifyrun.FORMAT_TOOL_IDS,
         help=(
-            "格式校验执行器，可重复指定；省略时保持旧行为并启用全部"
-            "执行器"
+            "格式校验工具，可重复指定；启用格式校验且省略本参数时使用全部工具"
         ),
     )
     parser.add_argument(
         "--raw-deep-validation", action="store_true",
-        help="独立使用隔离 rawpy／LibRaw 实际解码 RAW；默认关闭",
+        help="使用隔离的 rawpy/LibRaw 子进程实际解码 RAW；默认关闭",
     )
     parser.add_argument(
         "--timeout-action", choices=_TIMEOUT_ACTIONS,
-        help="单文件达到动态阈值后的默认处置；默认继续等待",
+        help="单文件达到动态阈值后的默认处置；停止会保留已完成结果并生成报告，但不能跨重启续传",
     )
-    parser.add_argument("--hash-timeout-seconds", type=float)
-    parser.add_argument("--format-timeout-seconds", type=float)
-    parser.add_argument("--raw-timeout-seconds", type=float)
+    parser.add_argument(
+        "--hash-timeout-seconds", type=float, help="覆盖哈希无进展阈值")
+    parser.add_argument(
+        "--format-timeout-seconds", type=float,
+        help="覆盖格式校验无进展阈值")
+    parser.add_argument(
+        "--raw-timeout-seconds", type=float, help="覆盖 RAW 解码无进展阈值")
     parser.add_argument(
         "--show-current-file", action="store_true",
-        help="发送正在核验的相对文件路径；默认关闭",
+        help="在结构化进度中发送当前相对路径；默认关闭",
     )
     parser.add_argument(
         "--control-stdin", action="store_true",
-        help="从 stdin 接收 daisy-control-v1 UTF-8 JSONL；不支持保存退出",
+        help="从标准输入接收 daisy-control-v1 UTF-8 JSONL；不支持保存并退出",
     )
-    parser.add_argument("--report-dir")
-    parser.add_argument("--powershell-path")
-    parser.add_argument("--exiftool-path")
-    parser.add_argument("--ffprobe-path")
-    parser.add_argument("--sevenzip-path")
+    parser.add_argument(
+        "--report-dir", help="报告输出目录；默认 Output/Reports")
+    parser.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
+    parser.add_argument("--exiftool-path", help="ExifTool 可执行文件路径")
+    parser.add_argument("--ffprobe-path", help="ffprobe 可执行文件路径")
+    parser.add_argument("--sevenzip-path", help="7-Zip 可执行文件路径")
     parser.add_argument(
         "--force", action="store_true",
-        help="文件名指纹缺失时仍继续（不符仍拒绝）",
+        help="允许缺少文件名指纹的旧库继续；指纹不一致仍拒绝",
     )
-    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--quiet", action="store_true", help="不显示常规控制台进度")
     return parser
 
 
@@ -319,7 +328,7 @@ def verification_options(args: argparse.Namespace) \
     if args.hash == "off" and (
             args.powershell_path or args.hash_timeout_seconds is not None):
         raise core.PreflightError(
-            "哈希关闭时不接受 PowerShell 路径或哈希 timeout")
+            "哈希复检关闭时不能指定 PowerShell 路径或哈希超时阈值")
     if args.format == "off" and args.format_tool:
         raise core.PreflightError(
             "--format-tool 仅用于已启用的 --format")
@@ -330,7 +339,7 @@ def verification_options(args: argparse.Namespace) \
         args.format_timeout_seconds is not None,
     )):
         raise core.PreflightError(
-            "格式校验关闭时不接受格式工具路径或格式 timeout")
+            "格式校验关闭时不能指定格式工具路径或格式校验超时阈值")
     selected_set = set(selected_format_tools) if args.format != "off" else set()
     for tool_id, path in (
         ("exiftool", args.exiftool_path),
@@ -344,7 +353,7 @@ def verification_options(args: argparse.Namespace) \
             and not args.raw_deep_validation \
             and args.timeout_action is not None:
         raise core.PreflightError(
-            "仅执行文件状态时不接受 timeout 默认处置")
+            "仅核对文件状态时不能指定超时处置")
     try:
         return verifyrun.VerificationOptions(
             hash_mode=args.hash,
@@ -378,6 +387,16 @@ def _tool_overrides(args: argparse.Namespace) -> dict[str, str | None]:
     }
 
 
+def _section_state_label(section: dict[str, object]) -> str:
+    """把技术状态转换为不会误导用户的简短显示文字。"""
+    return {
+        "executed": "已执行",
+        "unavailable": "NULL（缺少可用基准）",
+        "stopped": "未完成",
+        "failed": "失败",
+    }.get(str(section.get("state") or ""), "NULL（未执行）")
+
+
 def _print_report_summary(
     report: dict[str, object],
     publication: verifyrun.VerificationPublication,
@@ -387,25 +406,41 @@ def _print_report_summary(
     hashed = sections["hash"]
     formatted = sections["format"]
     raw = sections["raw"]
+    def problem_files(section: dict[str, object]) -> str:
+        if section.get("state") not in ("executed", "stopped", "failed"):
+            return "NULL"
+        explicit = section.get("problem_files")
+        value = (
+            int(explicit)
+            if isinstance(explicit, int) and not isinstance(explicit, bool)
+            else len(section.get("problems") or [])
+        )
+        return f"{value:,}"
+
+    def count(section: dict[str, object], key: str) -> str:
+        if section.get("state") not in ("executed", "stopped", "failed"):
+            return "NULL"
+        return f"{int(section.get(key) or 0):,}"
+
     print(
-        f"文件状态：核对 {int(stat.get('checked') or 0):,} | "
-        f"问题 {len(stat.get('problems') or []):,}")
+        f"文件状态：已处理 {count(stat, 'checked')}｜"
+        f"受影响文件 {problem_files(stat)}")
     print(
-        f"内容哈希：{hashed.get('state')} | "
-        f"核对 {int(hashed.get('checked') or 0):,} | "
-        f"不可核验 {int(hashed.get('unverifiable') or 0):,} | "
-        f"问题 {len(hashed.get('problems') or []):,}")
+        f"哈希：{_section_state_label(hashed)}｜"
+        f"已处理 {count(hashed, 'processed')}｜"
+        f"不可核验 {count(hashed, 'unverifiable')}｜"
+        f"受影响文件 {problem_files(hashed)}")
     print(
-        f"格式校验：{formatted.get('state')} | "
-        f"核对 {int(formatted.get('checked') or 0):,} | "
-        f"不支持 {int(formatted.get('unsupported') or 0):,} | "
-        f"问题 {len(formatted.get('problems') or []):,}")
+        f"格式校验：{_section_state_label(formatted)}｜"
+        f"已处理 {count(formatted, 'processed')}｜"
+        f"不支持 {count(formatted, 'unsupported')}｜"
+        f"受影响文件 {problem_files(formatted)}")
     print(
-        f"RAW 深检：{raw.get('state')} | "
-        f"核对 {int(raw.get('checked') or 0):,} | "
-        f"不支持 {int(raw.get('unsupported') or 0):,} | "
-        f"问题 {len(raw.get('problems') or []):,}")
-    print(f"人读报告：{publication.markdown_path}")
+        f"RAW 深度校验：{_section_state_label(raw)}｜"
+        f"已处理 {count(raw, 'processed')}｜"
+        f"不支持 {count(raw, 'unsupported')}｜"
+        f"受影响文件 {problem_files(raw)}")
+    print(f"Markdown 报告：{publication.markdown_path}")
     print(f"技术证据：{publication.json_path}")
 
 
@@ -482,7 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     _print_report_summary(report, publication)
     conclusion = str(report.get("conclusion") or "")
     if conclusion == "passed":
-        print("结论：在本次覆盖口径内未发现问题。")
+        print("结论：在本次核验范围内未发现问题。")
         return 0
     if conclusion == "stopped":
         print(
@@ -492,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     if conclusion == "failed":
         print(
-            "结论：外部工具故障已熔断；报告只代表已处理范围。",
+            "结论：外部工具连续故障，核验已停止；报告只代表已处理范围。",
             file=sys.stderr,
         )
         return 1

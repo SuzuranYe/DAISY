@@ -1,8 +1,8 @@
 """DAISY 运行环境能力模型与隔离探测。
 
-数据库能力继续由 DBS-05 Reader 负责；本模块只描述运行时工具／Python 可选能力。
-rawpy 探测始终在本调用新建的 ``spawn`` 子进程中执行，导入失败或 native 崩溃不会
-进入 Tk 主进程，也不会影响其它进程。
+数据库能力继续由 DBS-05 Reader 负责；本模块只描述运行时工具和 Python 可选能力。
+rawpy 探测始终在本调用新建的 ``spawn`` 子进程中执行，导入失败或原生库崩溃不会
+进入 Tk 主进程，也不会影响其他进程。
 """
 from __future__ import annotations
 
@@ -78,14 +78,14 @@ def _rawpy_probe_child(connection) -> None:
         except ModuleNotFoundError as exc:
             connection.send({
                 "state": "unavailable",
-                "reason": f"未安装 rawpy：{exc}",
+                "reason": f"当前 Python 环境找不到 rawpy：{exc}",
             })
             return
         except (ImportError, OSError) as exc:
             connection.send({
                 "state": "incompatible",
                 "reason": (
-                    f"rawpy／LibRaw 无法加载：{type(exc).__name__}: {exc}"
+                    f"rawpy/LibRaw 无法加载：{type(exc).__name__}: {exc}"
                 )[:2048],
             })
             return
@@ -171,9 +171,9 @@ def probe_rawpy_capability(
     poll_seconds: float = 0.05,
     _probe_target: Callable[[object], None] | None = None,
 ) -> RuntimeCapability:
-    """在精确 ``spawn`` 子进程中探测 rawpy／LibRaw，并返回结构化状态。"""
+    """在精确 ``spawn`` 子进程中探测 rawpy/LibRaw，并返回结构化状态。"""
     if timeout_seconds <= 0 or poll_seconds <= 0:
-        raise ValueError("rawpy 探测 timeout 与 poll 必须大于 0")
+        raise ValueError("rawpy 探测超时阈值与轮询间隔必须大于 0")
     context = multiprocessing.get_context("spawn")
     receive, send = context.Pipe(duplex=False)
     process = context.Process(
@@ -235,7 +235,7 @@ def probe_rawpy_capability(
     if timed_out:
         return _raw_capability(
             "timeout",
-            reason=f"rawpy 隔离探测超过 {timeout_seconds:g}s",
+            reason=f"rawpy 隔离探测超过 {timeout_seconds:g} 秒",
             details=details,
         )
     if not reaped or exitcode != 0:
@@ -243,7 +243,7 @@ def probe_rawpy_capability(
             "crashed",
             reason=(
                 "rawpy 隔离探测异常退出"
-                f"（exitcode={exitcode!r}，reaped={reaped}）"
+                f"（退出码={exitcode!r}，已回收={'是' if reaped else '否'}）"
             ),
             details=details,
         )
@@ -273,7 +273,7 @@ def probe_rawpy_capability(
             details=details,
         )
     if state != "available" and not reason:
-        reason = "rawpy／LibRaw 当前不可用"
+        reason = "rawpy/LibRaw 当前不可用"
     return _raw_capability(
         state,
         version=version,

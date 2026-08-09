@@ -1,4 +1,4 @@
-"""v1.6.0 统一核验中的 RAW 从属阶段、能力预检与只读报告测试。"""
+"""档案数据核验中的 RAW 从属阶段、能力预检与只读报告测试。"""
 from __future__ import annotations
 
 import json
@@ -231,6 +231,10 @@ class TestUnifiedVerifyRaw(unified_fixture._Fixture):
         self.assertEqual(raw["selected"], 240)
         self.assertEqual(raw["valid"], 240)
         self.assertEqual(raw["problems"], [])
+        self.assertEqual(
+            raw["coverage_note"],
+            "RAW 深度校验独立检查全部候选 RAW，不受格式校验范围限制。",
+        )
         self.assertEqual(report["conclusion"], "passed")
         self.assertEqual(unified_fixture._identity(snapshot), baseline)
 

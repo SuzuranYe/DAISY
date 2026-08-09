@@ -1,4 +1,4 @@
-"""v1.5.1 兼容核验入口与 v1.6.0 统一核验的业务投影对照。"""
+"""v1.5.1 兼容核验入口与档案数据核验的业务投影对照。"""
 from __future__ import annotations
 
 import os

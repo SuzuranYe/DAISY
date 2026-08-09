@@ -1,7 +1,7 @@
 """DAISY DBS 哈希模块：三模式＋溯源＋独立实现抽验。
 
-实现 full／incremental／none 三种模式、五项复用条件、计算溯源、
-schema 3 既有 stall 观测、schema 4 受控工作进程和 PowerShell 独立抽验。
+实现 full/incremental/none 三种模式、五项复用条件、计算溯源、
+schema 3 既有无进展观测、schema 4 受控工作进程和 PowerShell 哈希复检。
 哈希 valid 的条件是摘要非空、读取字节等于文件大小，并且读取前后
 size 和 mtime 一致。
 """
@@ -173,9 +173,9 @@ class AtomicTimeoutDecision:
 
     def choose(self, decision: str, source: str = "user") -> bool:
         if decision not in HASH_TIMEOUT_DECISIONS:
-            raise ValueError(f"未知 timeout 决策：{decision}")
+            raise ValueError(f"未知超时处置：{decision}")
         if source not in dbstate.DECISION_SOURCES or source == "none":
-            raise ValueError(f"未知 timeout 决策来源：{source}")
+            raise ValueError(f"未知超时处置来源：{source}")
         with self._lock:
             if self._choice is not None:
                 return False
@@ -184,7 +184,7 @@ class AtomicTimeoutDecision:
 
     def resolve(self, default_decision: str) -> TimeoutChoice:
         if default_decision not in HASH_TIMEOUT_DECISIONS:
-            raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+            raise ValueError(f"未知默认超时处置：{default_decision}")
         default_source = (
             "default" if default_decision == "continue_waiting"
             else "advanced_policy"
@@ -201,7 +201,7 @@ class AtomicTimeoutDecision:
 
 
 class HashWorkerControl:
-    """控制线程写入生命周期动作与当前 worker 的 timeout 决策。"""
+    """控制线程写入生命周期动作与当前工作进程的超时处置。"""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -213,9 +213,9 @@ class HashWorkerControl:
 
     def _request(self, action: str, source: str) -> bool:
         if action not in ("pause", "save_exit", "stop"):
-            raise ValueError(f"未知 worker 控制动作：{action}")
+            raise ValueError(f"未知工作进程控制动作：{action}")
         if source not in dbstate.DECISION_SOURCES or source == "none":
-            raise ValueError(f"未知 worker 控制来源：{source}")
+            raise ValueError(f"未知工作进程控制来源：{source}")
         with self._lock:
             if self._action is not None or self._timeout_choice is not None \
                     or self._timeout_terminal:
@@ -239,10 +239,10 @@ class HashWorkerControl:
     def bind_worker(self, worker_pid: int) -> None:
         process_id = int(worker_pid)
         if process_id <= 0:
-            raise ValueError("worker PID 必须大于 0")
+            raise ValueError("工作进程 PID 必须大于 0")
         with self._lock:
             if self._worker_pid not in (None, process_id):
-                raise RuntimeError("控制器仍绑定到另一个 worker")
+                raise RuntimeError("控制器仍绑定到另一个工作进程")
             self._worker_pid = process_id
             self._timeout_open = False
             self._timeout_choice = None
@@ -257,7 +257,7 @@ class HashWorkerControl:
                 self._timeout_terminal = False
 
     def open_timeout_decision(self, worker_pid: int) -> bool:
-        """只为当前 worker 打开决定窗口；已打开时保留现有选择。"""
+        """只为当前工作进程打开处置窗口；已打开时保留现有选择。"""
         with self._lock:
             if self._worker_pid != int(worker_pid) or self._action is not None \
                     or self._timeout_terminal:
@@ -266,7 +266,7 @@ class HashWorkerControl:
             return True
 
     def close_timeout_decision(self, worker_pid: int) -> None:
-        """关闭当前 worker 的决定窗口，并丢弃尚未执行的过时选择。"""
+        """关闭当前工作进程的处置窗口，并丢弃尚未执行的过时选择。"""
         with self._lock:
             if self._worker_pid == int(worker_pid):
                 self._timeout_open = False
@@ -280,9 +280,9 @@ class HashWorkerControl:
         source: str = "user",
     ) -> bool:
         if decision not in HASH_TIMEOUT_DECISIONS:
-            raise ValueError(f"未知 timeout 决策：{decision}")
+            raise ValueError(f"未知超时处置：{decision}")
         if source not in dbstate.DECISION_SOURCES or source == "none":
-            raise ValueError(f"未知 timeout 决策来源：{source}")
+            raise ValueError(f"未知超时处置来源：{source}")
         with self._lock:
             if self._worker_pid != int(worker_pid):
                 return False
@@ -314,16 +314,16 @@ class HashWorkerControl:
         preferred: TimeoutChoice | None = None,
     ) -> TimeoutChoice:
         if default_decision not in HASH_TIMEOUT_DECISIONS:
-            raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+            raise ValueError(f"未知默认超时处置：{default_decision}")
         default_source = (
             "default" if default_decision == "continue_waiting"
             else "advanced_policy"
         )
         with self._lock:
             if self._worker_pid != int(worker_pid):
-                raise RuntimeError("timeout 决策不属于当前 worker")
+                raise RuntimeError("超时处置不属于当前工作进程")
             if not self._timeout_open:
-                raise RuntimeError("当前 worker 没有打开 timeout 决策窗口")
+                raise RuntimeError("当前工作进程没有打开超时处置窗口")
             choice = self._timeout_choice or preferred or TimeoutChoice(
                 default_decision, default_source)
             self._timeout_open = False
@@ -424,7 +424,7 @@ def hash_no_progress_timeout_for_size(
     if size < 0:
         raise ValueError("size_bytes 不能小于 0")
     if minimum_seconds <= 0 or step_bytes <= 0 or seconds_per_step <= 0:
-        raise ValueError("timeout policy 参数必须大于 0")
+        raise ValueError("超时策略参数必须大于 0")
     steps = max(1, math.ceil(size / step_bytes))
     return float(max(minimum_seconds, steps * seconds_per_step))
 
@@ -509,12 +509,12 @@ def run_hash_worker(
     worker_start_timeout_seconds: float = 30.0,
     _worker_target=None,
 ) -> HashWorkerOutcome:
-    """监督本次创建的单文件 worker；只用精确句柄终止和回收。"""
+    """监督本次创建的单文件工作进程；只用精确句柄终止和回收。"""
     if (chunk_bytes <= 0 or stall_seconds <= 0 or poll_seconds <= 0
             or worker_start_timeout_seconds <= 0):
         raise ValueError("chunk、stall 和 poll 参数必须大于 0")
     if default_decision not in HASH_TIMEOUT_DECISIONS:
-        raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+        raise ValueError(f"未知默认超时处置：{default_decision}")
     normalized = os.path.abspath(os.fspath(path))
     if expected_size is None:
         try:
@@ -533,7 +533,7 @@ def run_hash_worker(
         if timeout_seconds is None else float(timeout_seconds)
     )
     if threshold_seconds <= 0:
-        raise ValueError("timeout_seconds 必须大于 0")
+        raise ValueError("超时阈值必须大于 0")
 
     label = str(display_name or os.path.basename(normalized))
     owned_control = control or HashWorkerControl()
@@ -934,11 +934,11 @@ def run_independent_hash_process(
     poll_seconds: float = 0.05,
     _popen_factory=None,
 ) -> IndependentHashOutcome:
-    """监督一个 Get-FileHash 进程；无进展时沿用 schema 4 timeout 决策。"""
+    """监督一个 Get-FileHash 进程；无进展时沿用 schema 4 超时处置。"""
     if stall_seconds <= 0 or poll_seconds <= 0:
         raise ValueError("stall 和 poll 参数必须大于 0")
     if default_decision not in HASH_TIMEOUT_DECISIONS:
-        raise ValueError(f"未知默认 timeout 决策：{default_decision}")
+        raise ValueError(f"未知默认超时处置：{default_decision}")
     normalized = os.path.abspath(os.fspath(path))
     if expected_size is None:
         try:
@@ -957,7 +957,7 @@ def run_independent_hash_process(
         if timeout_seconds is None else float(timeout_seconds)
     )
     if threshold_seconds <= 0:
-        raise ValueError("timeout_seconds 必须大于 0")
+        raise ValueError("超时阈值必须大于 0")
     shell = os.path.abspath(os.fspath(powershell))
     if _popen_factory is None and not os.path.isfile(shell):
         raise core.PreflightError(f"PowerShell 路径不存在：{shell}")
@@ -1308,7 +1308,7 @@ def _hash_worker_tool_failure(
         operation="content_hash",
         failure_kind=str(outcome.failure_kind),
         message=(
-            "内容哈希隔离 worker 运行故障："
+            "哈希隔离工作进程运行故障："
             f"{outcome.failure_kind}"
         ),
         pid=outcome.worker_pid,
@@ -1339,7 +1339,7 @@ def process_hash_attempt_v4(
     poll_seconds: float = 0.05,
     _worker_target=None,
 ) -> HashWorkerOutcome:
-    """以 schema 4 attempt 包裹单文件 worker，并原子提交当前哈希。"""
+    """以 schema 4 处理尝试包裹单文件工作进程，并原子提交当前哈希。"""
     row = con.execute(
         "SELECT size_bytes FROM entries WHERE entry_id=?",
         (entry_id,),
@@ -1955,7 +1955,7 @@ def process_hash_stage_v4(
                         operation="content_hash",
                         failure_kind="worker_start_failed",
                         message=(
-                            "内容哈希隔离 worker 无法启动："
+                            "哈希隔离工作进程无法启动："
                             f"{type(exc).__name__}: {exc}"
                         )[:2048],
                         errno=getattr(exc, "errno", None),
@@ -2153,15 +2153,15 @@ def classify_read_performance_candidates(
             promote(
                 int(row["performance_id"]),
                 "high",
-                f"最长无进展 {longest:.3f}s 达到动态阈值 "
-                f"{threshold:.3f}s",
+                f"最长无进展 {longest:.3f} 秒，达到动态阈值 "
+                f"{threshold:.3f} 秒",
             )
         elif longest >= HASH_STALL_SECONDS:
             promote(
                 int(row["performance_id"]),
                 "low",
-                f"最长无进展 {longest:.3f}s 达到早期 stall 告警 "
-                f"{HASH_STALL_SECONDS}s",
+                f"最长无进展 {longest:.3f} 秒，达到早期停滞告警 "
+                f"{HASH_STALL_SECONDS} 秒",
             )
 
     finalized: dict[int, tuple[str, str | None]] = {}
@@ -2212,7 +2212,7 @@ class PreviousSnapshot:
         self.path = path
         self.uuid = uuid_
         self.has_file_issues = has_file_issues
-        self._index = index      # (当前 label, path_key) -> rec | "ambiguous"
+        self._index = index      # （当前 label，path_key）-> rec | "ambiguous"
 
     def lookup(self, label: str, path_key: str):
         rec = self._index.get((label, path_key))
@@ -2225,16 +2225,16 @@ def load_previous(prev_path: str,
 
     SQLite 损坏、扫描未完成、枚举缺口、哈希失败或 unstable 一律拒绝。
     单纯存在损坏／空白／无法解析的源文件不妨碍其他有效哈希复用；新扫描会
-    重新读取元数据，并按当前结果生成自己的 Issues.md。"""
+    重新读取元数据，并按当前结果生成自己的 _Issues.md 问题报告。"""
     if not os.path.isfile(prev_path):
         raise core.PreflightError(f"上一快照不存在：{prev_path}")
     recorded = core.filename_sha256_high32(prev_path)
     if recorded is None:
-        raise core.PreflightError(f"上一快照文件名缺少 SHA-256 高32bit 指纹：{prev_path}")
+        raise core.PreflightError(f"上一快照文件名缺少 8 位 SHA-256 指纹：{prev_path}")
     actual = core.sha256_file(prev_path)[:8].upper()
     if recorded != actual:
         raise core.PreflightError(
-            f"上一快照文件名高32bit指纹不符：记录 {recorded}，实际 {actual}")
+            f"上一快照文件名指纹不符：记录 {recorded}，实际 {actual}")
     con, descriptor = dbreader.open_database(
         prev_path, expected_type="snapshot")
     try:
@@ -2315,7 +2315,7 @@ def load_previous(prev_path: str,
 
 def reuse_decision(entry: dict, prev: dict | None) -> tuple[bool, str]:
     """判断上一快照条目能否复用；存在性与唯一性由 lookup 负责。
-    返回 (可否复用, reuse_basis 或拒绝原因)。"""
+    返回（可否复用，reuse_basis 或拒绝原因）。"""
     if prev is None:
         return False, "no_previous_entry"
     if entry["size"] != prev["size"] or entry["mtime"] != prev["mtime"]:
@@ -2341,15 +2341,15 @@ def process_hash_stage(con: sqlite3.Connection, mode: str,
                        on_progress=None, on_event=None,
                        error_warn_ratio: float = 0.2,
                        error_abort_ratio: float = 0.5) -> dict:
-    """按 hash_status='pending' 逐文件哈希/复用入库。
+    """按 hash_status='pending' 逐文件哈希／复用入库。
 
-    max_files 为内部测试钩子：处理 N 个文件后模拟中断（KeyboardInterrupt）。
+    max_files 为内部测试钩子：处理 N 个文件后模拟中断 (KeyboardInterrupt)。
     错误率 >warn 时告警继续，>abort 时中止并保留 partial。
     """
     if mode not in ("full", "incremental"):
         raise ValueError(f"mode={mode}")
     if mode == "incremental" and previous is None:
-        raise core.PreflightError("增量模式需要 previous（--previous-snapshot）")
+        raise core.PreflightError("增量模式需要 previous (--previous-snapshot)")
     cur = con.execute("UPDATE entries SET hash_status='skipped'"
                       " WHERE hash_status IN ('pending','processing')"
                       " AND is_placeholder=1")       # 云占位文件恒为 skipped
@@ -2458,7 +2458,7 @@ def process_hash_stage(con: sqlite3.Connection, mode: str,
     return stats
 
 
-# === 独立实现抽验（PowerShell Get-FileHash） ===
+# === 独立实现抽验 (PowerShell Get-FileHash) ===
 _PS_PROBE = (
     "if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {"
     " [Console]::Error.Write('Get-FileHash unavailable'); exit 3 };"
@@ -2570,7 +2570,7 @@ _PS_BATCH_SIZE = 200
 
 def get_filehash_batch(paths: list[str], powershell: str | None = None,
                        on_progress=None) -> list[str | None]:
-    """独立实现批量 SHA-256（Get-FileHash）。逐批一个 PS 进程，按行号回配；
+    """独立实现批量 SHA-256 (Get-FileHash)。逐批一个 PS 进程，按行号回配；
     返回与 paths 等长的小写 hex 列表，读不到者为 None。"""
     if not paths:
         return []

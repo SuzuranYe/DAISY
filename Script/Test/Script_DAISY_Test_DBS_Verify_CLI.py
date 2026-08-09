@@ -1,4 +1,4 @@
-"""v1.6.0 统一核验命令入口、控制协议与只读发布专项测试。"""
+"""档案数据核验命令入口、控制协议与只读发布专项测试。"""
 from __future__ import annotations
 
 import contextlib
@@ -160,7 +160,19 @@ class TestVerificationCLIEndToEnd(unified_fixture._Fixture):
         self.assertEqual(report["conclusion"], "passed")
         self.assertEqual(report["sections"]["hash"]["state"], "NULL")
         self.assertEqual(report["sections"]["format"]["state"], "NULL")
-        self.assertIn("人读报告：", completed.stdout)
+        self.assertIn(
+            "哈希：NULL（未执行）｜已处理 NULL｜不可核验 NULL｜受影响文件 NULL",
+            completed.stdout,
+        )
+        self.assertIn(
+            "格式校验：NULL（未执行）｜已处理 NULL｜不支持 NULL｜受影响文件 NULL",
+            completed.stdout,
+        )
+        self.assertIn(
+            "RAW 深度校验：NULL（未执行）｜已处理 NULL｜不支持 NULL｜受影响文件 NULL",
+            completed.stdout,
+        )
+        self.assertIn("Markdown 报告：", completed.stdout)
         self.assertIn("技术证据：", completed.stdout)
 
     def test_missing_file_returns_one_and_publishes_issues(self) -> None:

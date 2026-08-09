@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 快照 Issues 分板块只读分析与 Markdown 渲染。"""
+"""DAISY 快照问题的分板块只读分析与 Markdown 渲染。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,13 +13,13 @@ import Script_DAISY_Lib_DBS_06_Verify as dbverify
 
 
 ISSUE_SECTIONS = (
-    ("enumeration", "枚举问题"),
+    ("enumeration", "目录枚举问题"),
     ("hash", "哈希问题"),
-    ("metadata", "Exif／元数据问题"),
+    ("metadata", "元数据问题"),
     ("format", "格式校验问题"),
     ("raw", "RAW 深度校验问题"),
     ("performance", "读取性能异常候选"),
-    ("runtime", "运行／证据问题"),
+    ("runtime", "运行与证据问题"),
 )
 DETAIL_LIMIT = 200
 WARNING_DENSITY_THRESHOLD = 100
@@ -27,33 +27,33 @@ _COPY_INDEX_RE = re.compile(r"(?i)(copy)\d+")
 _LEVEL_TITLES = (
     ("need_action", "需要处理"),
     ("candidate", "待复核候选"),
-    ("information", "信息性诊断"),
+    ("information", "补充信息"),
 )
 _INFORMATION_LABELS = {
     "failed_roots": "枚举失败根目录",
     "problem_directories": "枚举异常目录",
     "hash_coverage": "哈希覆盖",
-    "error_records": "错误记录",
+    "error_records": "异常记录",
     "current_attempt_records": "当前失败尝试记录",
-    "status_only_files": "仅状态异常文件",
-    "unsupported_or_unrecognized_files": "未支持／未识别文件（仅统计）",
+    "status_only_files": "仅有异常状态的文件",
+    "unsupported_or_unrecognized_files": "不支持或未识别的文件（仅统计）",
     "diagnostic_records": "诊断记录总数",
     "diagnostic_total_files": "诊断涉及文件总数",
-    "reportable_diagnostic_records": "需呈现诊断记录",
-    "reportable_diagnostic_files": "需呈现诊断影响文件",
-    "normalized_diagnostic_families": "归一化诊断家族",
-    "folded_minor_records": "折叠 [minor] warning",
-    "folded_warning_records": "折叠普通 warning",
-    "folded_validation_records": "折叠 validation",
-    "high_density_warning_files": "高密度 warning 候选文件",
-    "unsupported_files": "unsupported 文件（仅统计）",
+    "reportable_diagnostic_records": "报告内诊断记录",
+    "reportable_diagnostic_files": "报告内诊断涉及文件",
+    "normalized_diagnostic_families": "归并后的诊断类别",
+    "folded_minor_records": "未展开的次要警告",
+    "folded_warning_records": "未展开的普通警告",
+    "folded_validation_records": "未展开的字段规范化提示",
+    "high_density_warning_files": "高密度警告候选文件",
+    "unsupported_files": "不支持的文件（仅统计）",
     "raw_candidate_files": "RAW 候选文件",
-    "raw_selected_files": "RAW 选中文件",
-    "raw_processed_files": "RAW 已处理文件",
-    "raw_unsupported_files": "RAW unsupported 文件（仅统计）",
+    "raw_selected_files": "纳入校验的 RAW 文件",
+    "raw_processed_files": "已处理的 RAW 文件",
+    "raw_unsupported_files": "不支持的 RAW 文件（仅统计）",
     "high_confidence_records": "高置信度候选记录",
-    "low_confidence_files": "低置信度候选（仅留库）",
-    "failed_or_abandoned_sessions": "失败／异常结束 session",
+    "low_confidence_files": "低置信度候选（仅记录于数据库）",
+    "failed_or_abandoned_sessions": "失败或异常结束的扫描会话",
     "failed_stages": "当前失败阶段",
     "tool_failure_events": "聚合工具故障事件",
 }
@@ -65,6 +65,87 @@ _FOLDED_INFORMATION_KEYS = frozenset((
     "folded_validation_records",
     "low_confidence_files",
 ))
+
+_STATUS_LABELS = {
+    "ok": "正常",
+    "done": "完成",
+    "failed": "失败",
+    "error": "异常",
+    "timeout": "超时",
+    "unstable": "扫描期间发生变化",
+    "skipped": "已跳过",
+    "skipped_policy": "按策略跳过",
+    "cancelled": "已取消",
+    "abandoned": "异常结束",
+    "not_applicable": "不适用",
+    "valid": "有效",
+    "invalid": "校验失败",
+    "unsupported": "不支持",
+    "unknown": "无法判定",
+    "high": "高置信度",
+    "failed_recoverable": "失败但可续传",
+    "failed_terminal": "失败且不可续传",
+    "tool_failure_aggregated": "聚合工具故障",
+    "NULL": "NULL",
+}
+_COVERAGE_LABELS = {
+    "full": "完整",
+    "partial": "部分",
+    "none": "无",
+}
+_STAGE_LABELS = {
+    "enumerate": "目录枚举",
+    "hash": "哈希计算",
+    "metadata": "元数据提取",
+    "format": "格式校验",
+    "rescan": "文件状态复查",
+    "verify_hash": "哈希复检",
+    "verify_format": "格式复检",
+    "seal": "快照封存",
+    "publish": "结果发布",
+}
+_MEDIA_KIND_LABELS = {
+    "photo_raw": "RAW 照片",
+    "photo_jpeg": "JPEG 照片",
+    "image_gif": "GIF 图像",
+    "photo_working": "图像工作文件",
+    "video_mp4": "普通视频",
+    "video_crm": "Cinema RAW Light 视频",
+    "audio": "音频",
+    "archive": "压缩包",
+    "document": "文档",
+    "other": "其他文件",
+}
+_ORIGIN_LABELS = {
+    "computed": "本次计算",
+    "reused": "复用",
+}
+
+
+def _display_status(value: object) -> str:
+    text = str(value or "")
+    return _STATUS_LABELS.get(text, text)
+
+
+def _display_statuses(value: object) -> str:
+    text = str(value or "")
+    status_pattern = "|".join(
+        re.escape(code)
+        for code in sorted(_STATUS_LABELS, key=len, reverse=True)
+    )
+    return re.sub(
+        rf"(?P<prefix>[=：])(?P<status>{status_pattern})(?![A-Za-z0-9_])",
+        lambda match: (
+            match.group("prefix")
+            + _STATUS_LABELS[match.group("status")]
+        ),
+        text,
+    )
+
+
+def _display_stage(value: object) -> str:
+    text = str(value or "")
+    return _STAGE_LABELS.get(text, text or "未记录")
 
 
 @dataclass(frozen=True)
@@ -80,11 +161,11 @@ class IssueSection:
 
     def __post_init__(self) -> None:
         if self.execution not in ("executed", "null"):
-            raise ValueError(f"未知 Issues 执行状态：{self.execution}")
+            raise ValueError(f"未知问题报告执行状态：{self.execution}")
         if self.execution == "null" and (
                 self.issue_files is not None
                 or self.issue_records is not None):
-            raise ValueError("NULL 板块不能伪造 0 条结果")
+            raise ValueError("NULL 板块的问题计数必须为空")
 
     @property
     def reportable(self) -> bool:
@@ -131,7 +212,7 @@ def _detail(
     advice: object = "",
 ) -> dict[str, object]:
     if level not in {item[0] for item in _LEVEL_TITLES}:
-        raise ValueError(f"未知 Issues 明细层级：{level}")
+        raise ValueError(f"未知问题报告明细层级：{level}")
     return {
         "root_label": str(root_label or ""),
         "relative_path": str(relative_path or ""),
@@ -178,7 +259,7 @@ def _enumeration_section(
     ):
         details.append(_detail(
             *row,
-            statuses=f"枚举={row[2]}",
+            statuses=f"枚举：{row[2]}",
             advice="确认根目录可访问后重试枚举",
         ))
     remaining = max(0, row_limit - len(details))
@@ -192,13 +273,13 @@ def _enumeration_section(
         ):
             details.append(_detail(
                 *row,
-                statuses=f"枚举={row[2]}",
+                statuses=f"枚举：{row[2]}",
                 advice="确认目录权限与可用性后重试枚举",
             ))
     total = root_count + dir_count
     return IssueSection(
         "enumeration",
-        "枚举问题",
+        "目录枚举问题",
         "executed",
         None,
         0,
@@ -224,7 +305,7 @@ def _hash_section(
         return _null_section(
             "hash",
             "哈希问题",
-            capability.reason or "本次扫描未执行内容哈希",
+            capability.reason or "本次扫描未执行哈希",
         )
     attempt_clause = "0"
     attempt_problem_statuses = (
@@ -320,7 +401,7 @@ def _hash_section(
         details.append(_detail(
             *row[:3],
             "；".join(messages),
-            statuses=f"元数据={row[3]}；哈希={row[2]}；格式={row[4]}",
+            statuses=f"元数据：{row[3]}；哈希：{row[2]}；格式：{row[4]}",
             advice=advice,
         ))
     return IssueSection(
@@ -350,7 +431,7 @@ def _metadata_section(
     scan_kind = str(descriptor.identity.get("scan_kind") or "")
     if scan_kind == "quick":
         return _null_section(
-            "metadata", "Exif／元数据问题", "Quick 未执行元数据提取")
+            "metadata", "元数据问题", "快速扫描未执行元数据提取")
     has_diagnostics = _capability_queryable(descriptor, "diagnostics")
     diagnostic_action = "0"
     diagnostic_candidate = "0"
@@ -554,7 +635,7 @@ def _metadata_section(
         if (not messages
                 and folded_warning_count >= WARNING_DENSITY_THRESHOLD):
             messages = (
-                "同一文件折叠的普通／[minor] warning 达 "
+                "同一文件未展开的普通或次要警告达到 "
                 f"{folded_warning_count} 条",
             )
         action = bool(row[10])
@@ -564,22 +645,22 @@ def _metadata_section(
         elif row[2] == "unstable":
             advice = "确认扫描期间文件未变化后重新扫描"
         elif action:
-            advice = "检查源文件、错误码与 metadata_diagnostics 后重试"
+            advice = "检查源文件、错误码与数据库元数据诊断记录后重试"
         else:
-            advice = "人工复核候选；完整诊断保留在 metadata_diagnostics"
+            advice = "人工复核候选；完整诊断保留在数据库元数据诊断表"
         details.append(_detail(
             *row[:3],
             "；".join(messages),
             level=level,
             statuses=(
-                f"元数据={row[2]}；哈希={row[3]}；格式={row[4]}；"
-                f"呈现诊断={int(row[7]) + int(row[8])}"
+                f"元数据：{row[2]}；哈希：{row[3]}；格式：{row[4]}；"
+                f"报告内诊断：{int(row[7]) + int(row[8])}"
             ),
             advice=advice,
         ))
     return IssueSection(
         "metadata",
-        "Exif／元数据问题",
+        "元数据问题",
         "executed",
         None,
         issue_files,
@@ -647,7 +728,7 @@ def _format_section(
         details.append(_detail(
             *row[:3],
             row[5],
-            statuses=f"元数据={row[3]}；哈希={row[4]}；格式={row[2]}",
+            statuses=f"元数据：{row[3]}；哈希：{row[4]}；格式：{row[2]}",
             advice=advice,
         ))
     return IssueSection(
@@ -717,17 +798,20 @@ def _performance_section(
             "不可计算" if throughput is None else f"{throughput:.3f} MiB/s"
         )
         evidence = (
-            f"{row[3] or '数据库未记录候选依据'}；大小={row[4]} B；"
-            f"读取={row[5]} B；总耗时={elapsed:.3f} s；"
-            f"活跃读取={float(row[7]):.3f} s；平均吞吐={throughput_text}；"
-            f"stall={row[8]}；最长 stall={float(row[9]):.3f} s；"
-            f"最终偏移={row[10]}；session={row[11]}"
+            f"{row[3] or '数据库未记录候选依据'}；文件大小：{row[4]} 字节；"
+            f"已读取：{row[5]} 字节；总用时：{elapsed:.3f} 秒；"
+            f"有效读取：{float(row[7]):.3f} 秒；平均吞吐：{throughput_text}；"
+            f"停顿次数：{row[8]}；最长停顿：{float(row[9]):.3f} 秒；"
+            f"最终偏移：{row[10]}；扫描会话 ID：{row[11] or '未记录'}"
         )
         details.append(_detail(
             *row[:3],
             evidence,
             level="candidate",
-            statuses=f"候选=high；阶段={row[12]}；来源={row[13]}",
+            statuses=(
+                f"候选：高置信度；阶段：{_display_stage(row[12])}；"
+                f"来源：{_ORIGIN_LABELS.get(str(row[13]), row[13])}"
+            ),
             advice="需要人工复核，不能据此认定物理坏区或设备故障",
         ))
     return IssueSection(
@@ -755,8 +839,8 @@ def _runtime_section(
     if descriptor.schema_version < 4:
         return _null_section(
             "runtime",
-            "运行／证据问题",
-            "v1.4.1/schema 3 未记录 session 与阶段恢复证据",
+            "运行与证据问题",
+            "v1.4.1 的数据库结构版本 3 未记录扫描会话与阶段续传证据",
         )
     session_count = _count(
         con,
@@ -784,7 +868,7 @@ def _runtime_section(
         tool_events.append((str(session_id), payload))
     details = []
     for session_id, payload in tool_events[:row_limit]:
-        tool = str(payload.get("tool") or "external_tool")
+        tool = str(payload.get("tool") or "外部工具")
         failure_count = int(payload.get("consecutive_failures") or 0)
         not_processed = int(payload.get("not_processed") or 0)
         first_entry = payload.get("first_unprocessed_entry_id")
@@ -792,21 +876,25 @@ def _runtime_section(
         kinds = payload.get("not_processed_by_media_kind")
         kind_text = ""
         if isinstance(kinds, dict) and kinds:
-            kind_text = "；分类=" + "、".join(
-                f"{key}:{value}" for key, value in sorted(kinds.items())
+            kind_text = "；文件类型：" + "、".join(
+                f"{_MEDIA_KIND_LABELS.get(str(key), key)} {value} 个"
+                for key, value in sorted(kinds.items())
             )
+        first_text = "未记录" if first_entry is None else str(first_entry)
+        last_text = "未记录" if last_entry is None else str(last_entry)
         detail = (
-            f"{tool} 连续工具故障 {failure_count} 次后熔断；"
-            f"未处理 {not_processed}；entry_id={first_entry}～{last_entry}"
+            f"{tool} 连续发生 {failure_count} 次工具故障，阶段已停止；"
+            f"未处理条目：{not_processed}；条目 ID 范围："
+            f"{first_text}～{last_text}"
             f"{kind_text}"
         )
         details.append(_detail(
             "",
-            f"session {session_id}",
+            f"扫描会话 {session_id}",
             "tool_failure_aggregated",
             detail,
-            statuses="阶段=failed_recoverable；源文件问题=未归因",
-            advice="确认工具健康后恢复；未处理条目会从文件边界重试",
+            statuses="阶段状态：失败但可续传；未归因于源文件",
+            advice="确认工具可用后续传；未处理条目会从文件边界重试",
         ))
     for row in con.execute(
             "SELECT '',stage,state,checkpoint_json FROM stage_checkpoints"
@@ -815,9 +903,12 @@ def _runtime_section(
             (max(0, row_limit - len(details)),),
         ):
         details.append(_detail(
-            *row,
-            statuses=f"阶段={row[2]}",
-            advice="检查 checkpoint 与运行事件后恢复或重新执行该阶段",
+            "",
+            _display_stage(row[1]),
+            row[2],
+            "该阶段未正常完成；阶段检查点明细保存在数据库中。",
+            statuses=f"阶段状态：{_display_status(row[2])}",
+            advice="检查阶段检查点与运行事件后续传或重新执行该阶段",
         ))
     remaining = max(0, row_limit - len(details))
     if remaining:
@@ -832,14 +923,14 @@ def _runtime_section(
             details.append(_detail(
                 *row,
                 level="candidate",
-                statuses=f"session={row[2]}",
-                advice="这是历史运行证据；确认后续 session 已完整恢复",
+                statuses=f"扫描会话状态：{_display_status(row[2])}",
+                advice="这是历史运行证据；请确认后续扫描会话已处理未完成范围",
             ))
     tool_event_count = len(tool_events)
     total = session_count + stage_count + tool_event_count
     return IssueSection(
         "runtime",
-        "运行／证据问题",
+        "运行与证据问题",
         "executed",
         None,
         0,
@@ -858,7 +949,7 @@ def _runtime_section(
 def _validate_row_limit(row_limit: int) -> int:
     if isinstance(row_limit, bool) or not isinstance(row_limit, int) \
             or row_limit <= 0:
-        raise ValueError("Issues row_limit 必须是正整数")
+        raise ValueError("问题报告明细上限必须是正整数")
     return row_limit
 
 
@@ -921,7 +1012,8 @@ def _analyze_snapshot_connection(
             " database_integrity FROM snapshot_info WHERE id=1"
         ).fetchone()
         if info is None:
-            raise core.PreflightError("Issues 分析缺少 snapshot_info id=1")
+            raise core.PreflightError(
+                "问题报告分析缺少 snapshot_info id=1")
         return {
             "database": str(database),
             "schema_version": descriptor.schema_version,
@@ -936,7 +1028,8 @@ def _analyze_snapshot_connection(
             "analyzed_at_utc": core.now_utc_iso(),
         }
     except sqlite3.Error as exc:
-        raise core.PreflightError(f"Issues 只读分析失败：{exc}") from exc
+        raise core.PreflightError(
+            f"问题报告只读分析失败：{exc}") from exc
 
 
 def analyze_snapshot_issue_connection(
@@ -958,7 +1051,7 @@ def analyze_snapshot_issue_connection(
         )
     elif current.database_type != "snapshot" or not current.sealed:
         raise core.PreflightError(
-            "Issues 连接分析只接受完整封存快照描述符")
+            "问题报告连接分析只接受完整封存快照描述符")
     return _analyze_snapshot_connection(
         con,
         current,
@@ -973,7 +1066,7 @@ def analyze_snapshot_issues(
     require_sealed: bool = True,
     row_limit: int = DETAIL_LIMIT,
 ) -> dict[str, object]:
-    """只读分析 schema 3／4 快照；NULL 与执行后 0 严格分开。"""
+    """只读分析 schema 3/4 快照；NULL 与执行后 0 严格分开。"""
     limit = _validate_row_limit(row_limit)
     con, descriptor = dbreader.open_database(
         snapshot_path,
@@ -998,7 +1091,7 @@ def render_snapshot_issues(
     include_clean: bool = False,
     section_overrides: dict[str, dict[str, object]] | None = None,
 ) -> str | None:
-    """渲染固定板块；只有 unsupported／低置信度时不生成 Issues。"""
+    """渲染固定板块；只有不支持类型／低置信度候选时不生成报告。"""
     sections = list(analysis.get("sections") or [])
     by_id = {
         str(section.get("id")): dict(section)
@@ -1007,34 +1100,35 @@ def render_snapshot_issues(
     overrides = dict(section_overrides or {})
     unknown = sorted(set(overrides) - {item[0] for item in ISSUE_SECTIONS})
     if unknown:
-        raise ValueError(f"未知 Issues 板块覆盖：{unknown}")
+        raise ValueError(f"未知问题报告板块覆盖：{unknown}")
     for section_id, override in overrides.items():
         if not isinstance(override, dict):
-            raise ValueError(f"Issues 板块覆盖必须是对象：{section_id}")
+            raise ValueError(
+                f"问题报告板块覆盖必须是对象：{section_id}")
         execution = str(override.get("execution") or "")
         if execution not in ("executed", "null"):
             raise ValueError(
-                f"Issues 板块覆盖执行状态无效：{section_id}")
+                f"问题报告板块覆盖执行状态无效：{section_id}")
         issue_files = override.get("issue_files")
         issue_records = override.get("issue_records")
         if execution == "null" and (
                 issue_files is not None or issue_records is not None):
-            raise ValueError(f"NULL 板块覆盖不能伪造 0：{section_id}")
+            raise ValueError(f"NULL 板块覆盖的问题计数必须为空：{section_id}")
         if execution == "executed":
             try:
                 issue_files = int(issue_files or 0)
                 issue_records = int(issue_records or 0)
             except (TypeError, ValueError) as exc:
                 raise ValueError(
-                    f"Issues 板块覆盖计数无效：{section_id}") from exc
+                    f"问题报告板块覆盖计数无效：{section_id}") from exc
             if issue_files < 0 or issue_records < 0:
                 raise ValueError(
-                    f"Issues 板块覆盖计数不能为负：{section_id}")
+                    f"问题报告板块覆盖计数不能为负：{section_id}")
         details = override.get("details") or []
         information = override.get("information") or {}
         if not isinstance(details, list) or not isinstance(information, dict):
             raise ValueError(
-                f"Issues 板块覆盖明细或信息无效：{section_id}")
+                f"问题报告板块覆盖明细或信息无效：{section_id}")
         title = dict(ISSUE_SECTIONS)[section_id]
         by_id[section_id] = {
             **override,
@@ -1053,18 +1147,18 @@ def render_snapshot_issues(
     if not include_clean and not reportable:
         return None
     lines = [
-        "# DAISY 问题报告",
+        "# DAISY 快照问题报告",
         "",
-        *core.report_markdown_lines("DBS 快照问题报告"),
+        *core.report_markdown_lines("快照问题报告"),
         f"- 数据库：`{artifact_filename or analysis.get('database', '')}`",
         f"- 快照 UUID：`{analysis.get('snapshot_uuid', '')}`",
-        f"- 原扫描器版本：`{analysis.get('scanner_version', '')}`",
-        f"- schema：`{analysis.get('schema_version', '')}`",
-        "- 说明：本报告是数据库证据的人读提炼；不表示 SQLite 本身损坏。",
+        f"- 数据库生成程序版本：`{analysis.get('scanner_version', '')}`",
+        f"- 数据库结构版本：`{analysis.get('schema_version', '')}`",
+        "- 说明：本报告汇总数据库中需要关注的证据；不表示 SQLite 数据库损坏。",
         "",
         "## 板块状态",
         "",
-        "| 板块 | 执行状态 | 问题文件 | 问题记录 |",
+        "| 板块 | 执行状态 | 受影响文件 | 问题记录 |",
         "| --- | --- | ---: | ---: |",
     ]
     for section_id, title in ISSUE_SECTIONS:
@@ -1089,11 +1183,11 @@ def render_snapshot_issues(
             lines.append(
                 "- 执行状态：NULL（"
                 + str(section.get("reason") or "未执行或未记录") + "）")
-            lines.append("- 问题文件：NULL")
+            lines.append("- 受影响文件：NULL")
             lines.append("- 问题记录：NULL")
             continue
         lines.append("- 执行状态：已执行")
-        lines.append(f"- 问题文件：{section.get('issue_files', 0)}")
+        lines.append(f"- 受影响文件：{section.get('issue_files', 0)}")
         lines.append(f"- 问题记录：{section.get('issue_records', 0)}")
         information = section.get("information") or {}
         details = section.get("details") or []
@@ -1104,14 +1198,31 @@ def render_snapshot_issues(
                 "detail_total", section.get("issue_files", 0))
             evidence_tables = information.get(
                 "evidence_tables", "数据库对应证据表")
-            lines.append(f"- 明细：已展示 {len(details)}／共 {detail_total}")
-            lines.append(f"- 完整证据表：`{evidence_tables}`")
+            lines.append(f"- 明细：已展示 {len(details)}，共 {detail_total}")
+            evidence_parts: list[str] = []
+            for evidence_table in str(evidence_tables).split("、"):
+                evidence_table = evidence_table.strip()
+                suffix = ""
+                if evidence_table.endswith("（若有）"):
+                    evidence_table = evidence_table[:-4]
+                    suffix = "（若有）"
+                evidence_parts.append(
+                    f"`{evidence_table}`{suffix}"
+                    if evidence_table else ""
+                )
+            lines.append(
+                "- 详细证据表：" + "、".join(
+                    part for part in evidence_parts if part))
             for key, value in information.items():
                 if key in _FOLDED_INFORMATION_KEYS or key in (
                         "detail_total", "evidence_tables"):
                     continue
                 label = _INFORMATION_LABELS.get(str(key), str(key))
-                lines.append(f"- {label}：{value}")
+                display_value = (
+                    _COVERAGE_LABELS.get(str(value), str(value))
+                    if key == "hash_coverage" else value
+                )
+                lines.append(f"- {label}：{display_value}")
         if details:
             for level, level_title in _LEVEL_TITLES:
                 level_rows = [
@@ -1125,16 +1236,16 @@ def render_snapshot_issues(
                     "",
                     f"### {level_title}",
                     "",
-                    "| 根标签 | 相对路径／对象 | 当前结论 | 状态汇总 |"
-                    " 错误／依据 | 建议操作 |",
+                    "| 根目录名 | 相对路径／对象 | 当前结论 | 状态汇总 |"
+                    " 说明／依据 | 建议操作 |",
                     "| --- | --- | --- | --- | --- | --- |",
                 ])
                 for row in level_rows:
                     values = (
                         row.get("root_label"),
                         row.get("relative_path"),
-                        row.get("status"),
-                        row.get("statuses"),
+                        _display_status(row.get("status")),
+                        _display_statuses(row.get("statuses")),
                         row.get("detail"),
                         row.get("advice"),
                     )
@@ -1150,19 +1261,19 @@ def render_snapshot_issues(
                     folded_information.append(
                         (_INFORMATION_LABELS.get(key, key), value))
         if folded_information:
-            lines.extend(["", "### 信息性诊断", ""])
+            lines.extend(["", "### 补充统计", ""])
             for label, value in sorted(folded_information):
                 lines.append(f"- {label}：{value}")
     lines.extend([
         "",
         "## 说明",
         "",
-        "unknown／unsupported／unrecognized format 只显示去重总数，"
+        "`unknown`（无法判定）、`unsupported`（不支持）和未识别格式只显示去重总数，"
         "不列路径，也不会单独触发本报告。",
-        "普通 warning、`[minor]` warning、validation 和低置信度性能样本"
-        "保留在 SQLite，不在这里冒充需要处理的问题。",
+        "普通警告、次要警告、字段规范化提示和低置信度性能样本"
+        "保留在 SQLite，不列为需要处理的问题。",
         "读取性能异常仅是待复核候选，不能据此认定物理坏区或设备故障。",
-        "报告明细有上限；完整逐文件证据以各板块列出的 SQLite 表为准。",
+        "报告明细有上限；详细逐文件证据以各板块列出的 SQLite 表为准。",
         "",
     ])
     return "\n".join(lines)
@@ -1198,7 +1309,7 @@ def build_snapshot_issue_report_from_connection(
     include_clean: bool = False,
     section_overrides: dict[str, dict[str, object]] | None = None,
 ) -> str | None:
-    """供 schema 4 发布事务在只读副本上生成最终命名的人读报告。"""
+    """供 schema 4 发布事务在只读副本上生成最终命名的 Markdown 阅读报告。"""
     analysis = analyze_snapshot_issue_connection(
         con,
         database=artifact_filename,

@@ -1,7 +1,7 @@
 """Script_DAISY_Module_ENV_01_Env_Check：ENV-01 运行环境检测。
 
 只检查 DAISY 所需工具、版本、冒烟样本、只读断言与 SHA-256 自检；不读取
-用户档案，也不执行性能测试。
+源档案，也不执行性能测试。
 """
 from __future__ import annotations
 
@@ -32,6 +32,13 @@ _TOOL_DISPLAY_NAMES = {
 }
 _GUI_INSTALLABLE_TOOLS = frozenset(
     ("exiftool", "ffprobe", "sevenzip", "smartctl"))
+_CAPABILITY_STATE_LABELS = {
+    "available": "可用",
+    "unavailable": "不可用",
+    "incompatible": "不兼容",
+    "crashed": "探测进程异常退出",
+    "timeout": "探测超时",
+}
 
 
 def inspect_local_tools(
@@ -97,16 +104,19 @@ def inspect_runtime_capabilities() -> dict[str, dict[str, object]]:
 
 def main() -> int:
     core.force_utf8_io()
-    ap = argparse.ArgumentParser(description="ENV-01 运行环境检测")
-    ap.add_argument("--output-dir", default="Output/Reports")
-    ap.add_argument("--exiftool-path")
-    ap.add_argument("--ffprobe-path")
-    ap.add_argument("--sevenzip-path")
-    ap.add_argument("--powershell-path")
-    ap.add_argument("--smartctl-path")
+    ap = argparse.ArgumentParser(
+        description="运行环境检测：检测工具版本、可用性和 RAW 解码能力")
+    ap.add_argument(
+        "--output-dir", default="Output/Reports",
+        help="环境报告输出目录；默认 Output/Reports")
+    ap.add_argument("--exiftool-path", help="ExifTool 可执行文件路径")
+    ap.add_argument("--ffprobe-path", help="ffprobe 可执行文件路径")
+    ap.add_argument("--sevenzip-path", help="7-Zip 可执行文件路径")
+    ap.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
+    ap.add_argument("--smartctl-path", help="smartctl 可执行文件路径")
     args = ap.parse_args()
 
-    print("== DAISY ENV-01 运行环境检测 ==")
+    print("== DAISY 运行环境检测 ==")
     prog = core.Progress(1, 1, "运行环境检测")
     explicit = {
         "exiftool": args.exiftool_path,
@@ -145,11 +155,11 @@ def main() -> int:
         summary = version if state == "available" else reason
         print(
             f"  {capability.get('title', capability.get('id', ''))}："
-            f"{state}"
+            f"{_CAPABILITY_STATE_LABELS.get(state, '未知')}"
             + (f" · {summary}" if summary else "")
         )
     if issues:
-        print("缺失或不可用：", file=sys.stderr)
+        print("未就绪的工具：", file=sys.stderr)
         for issue in issues:
             print(
                 f"  {issue['display']}：{issue['reason']}",
@@ -167,7 +177,7 @@ def main() -> int:
         smart_scan = smartctl.scan(args.smartctl_path)
         if not smart_scan.devices:
             raise core.PreflightError(
-                "smartctl 只读扫描未发现物理硬盘；请检查权限、驱动或转接盒。")
+                "smartctl 设备枚举未发现硬盘；请检查权限、驱动或转接盒。")
         tools["smartctl"] = core.resolved_tool_info(
             "smartctl", smart_scan.executable,
             explicit=bool(args.smartctl_path),
@@ -179,7 +189,7 @@ def main() -> int:
             timeout=60,
         )
         if not storage_inventory.records:
-            raise core.PreflightError("Windows 存储查询未发现物理硬盘。")
+            raise core.PreflightError("Windows 存储查询未发现硬盘。")
         with tempfile.TemporaryDirectory() as td:
             sample = os.path.join(td, "powershell_hash_smoke.bin")
             with open(sample, "wb") as f:
@@ -195,10 +205,9 @@ def main() -> int:
     except (core.PreflightError, storage_core.DaisySmartError) as exc:
         print(f"环境不就绪：\n{exc}", file=sys.stderr)
         return 2
-    print(
-        "  SHA-256 NIST 向量 / 五工具冒烟＋存储只读查询断言：通过")
+    print("  SHA-256 NIST 向量、五项工具功能与存储只读查询：通过")
 
-    report = {**core.report_metadata("ENV-01 运行环境检测"),
+    report = {**core.report_metadata("运行环境检测"),
               "generated_at_utc": core.now_utc_iso(),
               "scanner_version": core.SCANNER_VERSION, "tools": tools,
               "runtime_capabilities": runtime_capabilities,
@@ -216,7 +225,7 @@ def main() -> int:
         f"Env_Check_{time.strftime('%Y-%m-%d_%H-%M-%S')}.json")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
-    prog.finish("五工具、版本、冒烟、存储只读查询与 SHA-256 自检通过")
+    prog.finish("五项工具、版本、Windows 存储只读查询与 SHA-256 自检通过")
     print(f"\n报告：{out}")
     return 0
 

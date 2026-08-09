@@ -1,4 +1,4 @@
-"""v1.6.0 统一核验、受控格式 worker 与人读报告专项测试。"""
+"""档案数据核验、受控格式工作进程与 Markdown 报告专项测试。"""
 from __future__ import annotations
 
 import hashlib
@@ -316,6 +316,9 @@ class TestUnifiedVerificationModel(_Fixture):
         self.assertNotIn("秘密.unknown", encoded)
         self.assertNotIn("秘密.unknown", markdown)
         self.assertIn("只记录总数", markdown)
+        self.assertIn("受影响文件", markdown)
+        self.assertIn("报告生成工具", markdown)
+        self.assertIn("数据库生成程序版本", markdown)
 
     def test_hash_tool_circuit_is_one_aggregate_problem(self) -> None:
         snapshot = self.snapshot({
@@ -575,6 +578,11 @@ class TestVerificationReportPublication(_Fixture):
         self.assertIn("## 哈希问题", markdown)
         self.assertIn("## 格式校验问题", markdown)
         self.assertIn("NULL（本次未执行）", markdown)
+        self.assertIn("已处理 NULL；不可核验 NULL", markdown)
+        self.assertIn("已处理 NULL；不支持 NULL", markdown)
+        self.assertIn("- 不可核验：NULL", markdown)
+        self.assertIn("- 未识别或不支持的格式：NULL", markdown)
+        self.assertIn("- RAW 候选：NULL；纳入校验：NULL；不可核验：NULL", markdown)
         self.assertEqual(
             [name for name in os.listdir(self.reports) if ".partial." in name],
             [],

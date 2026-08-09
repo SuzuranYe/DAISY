@@ -114,7 +114,7 @@ class TestScanRawConfig(unittest.TestCase):
         with self.assertRaisesRegex(core.PreflightError, "必须依附"):
             scan_cli._new_config(self.parse(
                 "--root", "Archive", "--raw-deep-validation"), "full")
-        with self.assertRaisesRegex(core.PreflightError, "Quick"):
+        with self.assertRaisesRegex(core.PreflightError, "快速扫描"):
             scan_cli._new_config(self.parse(
                 "--mode", "quick", "--root", "Archive",
                 "--format-validation", "all",

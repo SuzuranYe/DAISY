@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 数据库解析技术 writer 与安全发布测试。"""
+"""DAISY 档案数据解析技术写入与安全发布测试。"""
 from __future__ import annotations
 
 import csv

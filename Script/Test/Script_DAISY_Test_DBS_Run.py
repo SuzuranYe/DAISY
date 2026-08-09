@@ -1245,7 +1245,7 @@ class TestScanEvidencePipeline(_RunFixture):
         )
         try:
             with self.assertRaisesRegex(
-                    core.PreflightError, "Quick.*不能启用格式校验"):
+                core.PreflightError, "快速扫描.*不能启用格式校验"):
                 dbrun.run_scan_evidence_stages(
                     handle, dbrun.RunCommandRouter())
             self.assertEqual(0, handle.connection.execute(
@@ -1790,7 +1790,7 @@ class TestRunResume(_RunFixture):
         dbstate.stop_run(handle.connection, reason="user_stop")
         dbrun.close_handle(handle, release_lease=True)
         with self.assertRaisesRegex(
-                core.PreflightError, "明确手动恢复"):
+                core.PreflightError, "明确手动续传"):
             dbrun.resume_run(self.partial)
         resumed = dbrun.resume_run(self.partial, manual=True)
         try:

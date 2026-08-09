@@ -1,21 +1,21 @@
-r"""Script_DAISY_Lib_DBS_07_Parse：DBS 数据库解析与旧报告 writer。
+r"""Script_DAISY_Lib_DBS_07_Parse：DBS 档案数据解析与旧报告写入器。
 
 快照导出（分组清单＋簿记，多 CSV、UTF-8 无 BOM、LF；规范化字段不剔除）：
   Tree.csv / Tree_dirs.csv                 —— 树
   Exif_inventory_photo/video/working/document.csv —— EXIF 组
   GPS_inventory_video.csv                       —— 视频规范化 GPS 点
-  Stream_inventory_video/audio.csv         —— ffmpeg 组
+  Stream_inventory_video/audio.csv         —— ffprobe 组
   Hash_inventory.csv                       —— 哈希组
   Archive_inventory.csv / _members.csv     —— 压缩包组
   Summary.csv / Errors.csv / Metadata_diagnostics.csv —— 簿记与诊断
   （raw_payloads 为 zlib BLOB，不入 CSV——用 SQL 直接查询快照库）
 
 Diff 数据库导出：
-  Diff_summary.md（status×evidence 交叉表、失败子树醒目段、内容/结构双维度
+  Diff_summary.md（status×evidence 交叉表、失败子树醒目段、内容／结构双维度
   结论、propagated 单列声明、覆盖声明）＋ Diff_details.csv
   ＋ Diff_dirs.csv / Diff_hash_groups.csv / Diff_subtrees.csv
 
-两种输入都保留完整技术 CSV，并额外生成面向人工阅读的 Report_Excel.xlsx：
+两种输入都保留完整机器字段 CSV，并额外生成便于阅读的 Report_Excel.xlsx：
 中文工作表与字段、冻结表头、筛选、语义列宽；超过 Excel 行上限时自动分表。
 
 用法：
@@ -61,7 +61,7 @@ _EXCEL_SHEET_NAMES = {
     "Archive_inventory.csv": "压缩包清单",
     "Archive_inventory_members.csv": "压缩包成员",
     "Metadata_diagnostics.csv": "元数据诊断",
-    "Errors.csv": "错误明细",
+    "Errors.csv": "异常记录",
     "Summary.csv": "快照概览",
     "Diff_details.csv": "文件变化",
     "Diff_dirs.csv": "目录变化",
@@ -71,38 +71,38 @@ _EXCEL_SHEET_NAMES = {
 _EXCEL_HEADER_NAMES = {
     "key": "项目",
     "value": "内容",
-    "path": "完整路径",
-    "old_path": "旧完整路径",
-    "new_path": "新完整路径",
-    "root_label": "根标签",
-    "old_root_label": "旧根标签",
-    "new_root_label": "新根标签",
+    "path": "文件逻辑路径",
+    "old_path": "基准逻辑路径",
+    "new_path": "对比逻辑路径",
+    "root_label": "根目录名",
+    "old_root_label": "基准根目录名",
+    "new_root_label": "对比根目录名",
     "rel_path": "相对路径",
-    "old_rel_path": "旧相对路径",
-    "new_rel_path": "新相对路径",
+    "old_rel_path": "基准相对路径",
+    "new_rel_path": "对比相对路径",
     "name": "文件名",
     "extension": "扩展名",
     "media_kind": "文件类型",
     "size_bytes": "大小（字节）",
-    "old_size": "旧大小（字节）",
-    "new_size": "新大小（字节）",
-    "created_at_utc": "创建时间（UTC）",
-    "modified_at_utc": "修改时间（UTC）",
-    "old_mtime_utc": "旧修改时间（UTC）",
-    "new_mtime_utc": "新修改时间（UTC）",
-    "observed_at_utc": "观察时间（UTC）",
-    "parsed_at_utc": "解析时间（UTC）",
-    "started_at_utc": "开始时间（UTC）",
-    "finished_at_utc": "完成时间（UTC）",
+    "old_size": "基准大小（字节）",
+    "new_size": "对比大小（字节）",
+    "created_at_utc": "创建时间 (UTC)",
+    "modified_at_utc": "修改时间 (UTC)",
+    "old_mtime_utc": "基准修改时间 (UTC)",
+    "new_mtime_utc": "对比修改时间 (UTC)",
+    "observed_at_utc": "观察时间 (UTC)",
+    "parsed_at_utc": "解析时间 (UTC)",
+    "started_at_utc": "开始时间 (UTC)",
+    "finished_at_utc": "完成时间 (UTC)",
     "enum_status": "枚举状态",
-    "old_enum_status": "旧枚举状态",
-    "new_enum_status": "新枚举状态",
+    "old_enum_status": "基准枚举状态",
+    "new_enum_status": "对比枚举状态",
     "meta_status": "元数据状态",
     "hash_status": "哈希状态",
     "status": "状态",
     "evidence": "证据等级",
     "reason": "原因",
-    "message": "信息",
+    "message": "说明",
     "error_message": "错误信息",
     "error_code": "错误码",
     "diagnostic_code": "诊断码",
@@ -111,11 +111,11 @@ _EXCEL_HEADER_NAMES = {
     "field_name": "字段",
     "raw_value": "原始值",
     "hash_hex": "SHA-256",
-    "old_hash_hex": "旧 SHA-256",
-    "new_hash_hex": "新 SHA-256",
+    "old_hash_hex": "基准 SHA-256",
+    "new_hash_hex": "对比 SHA-256",
     "origin": "哈希来源",
-    "old_hash_origin": "旧哈希来源",
-    "new_hash_origin": "新哈希来源",
+    "old_hash_origin": "基准哈希来源",
+    "new_hash_origin": "对比哈希来源",
     "algorithm": "算法",
     "failure_reason": "失败原因",
     "camera_make": "相机品牌",
@@ -124,7 +124,7 @@ _EXCEL_HEADER_NAMES = {
     "lens_model": "镜头型号",
     "lens_serial": "镜头序列号",
     "capture_time_raw": "拍摄时间（原始）",
-    "capture_time_utc": "拍摄时间（UTC）",
+    "capture_time_utc": "拍摄时间 (UTC)",
     "capture_time_source": "拍摄时间来源",
     "width": "宽度",
     "height": "高度",
@@ -144,10 +144,10 @@ _EXCEL_HEADER_NAMES = {
     "member_path": "成员路径",
     "uncompressed_bytes": "解压后字节数",
     "compressed_bytes": "压缩后字节数",
-    "old_count": "旧数量",
-    "new_count": "新数量",
+    "old_count": "基准数量",
+    "new_count": "对比数量",
     "classification": "分类",
-    "side": "侧别",
+    "side": "对比侧",
     "affected_estimate": "预计影响数",
     "tool": "工具",
     "tool_version": "工具版本",
@@ -166,13 +166,35 @@ _EXCEL_VALUE_NAMES = {
     "document": "文档",
     "other": "其他文件",
     "done": "完成",
-    "error": "错误",
+    "ok": "正常",
+    "error": "异常",
     "timeout": "超时",
-    "unstable": "不稳定",
+    "unstable": "扫描期间发生变化",
     "skipped": "已跳过",
     "not_applicable": "不适用",
     "valid": "有效",
+    "invalid": "校验失败",
+    "unsupported": "不支持",
     "failed": "失败",
+    "cancelled": "已取消",
+    "abandoned": "异常中止",
+    "pending": "等待处理",
+    "processing": "处理中",
+    "running": "运行中",
+    "active": "运行中",
+    "pause_requested": "已请求暂停",
+    "paused": "已暂停",
+    "saved": "已保存",
+    "stopped": "已停止",
+    "succeeded": "成功",
+    "skipped_policy": "按策略跳过",
+    "complete": "已完成",
+    "completed": "已完成",
+    "sealing": "正在封存",
+    "sealed_unpublished": "已封存，尚未发布",
+    "published": "已发布",
+    "failed_recoverable": "失败但可续传",
+    "failed_terminal": "失败且不可续传",
     "unchanged": "未变化",
     "added": "新增",
     "deleted": "删除",
@@ -185,11 +207,13 @@ _EXCEL_VALUE_NAMES = {
     "unknown": "无法判定",
     "independent_computation": "独立计算",
     "propagated_single_computation": "同次计算沿用",
-    "heuristic_file_id": "File ID 启发式",
+    "heuristic_file_id": "NTFS-ID 启发式",
     "stat_only": "仅文件属性",
     "insufficient": "证据不足",
     "computed": "本次计算",
     "reused": "复用",
+    "old": "基准",
+    "new": "对比",
 }
 
 
@@ -203,20 +227,20 @@ def _write_csv(path: str, header: list, rows: list) -> None:
 def _write_report_guide(
     folder: str, source_kind: str, source_path: str,
 ) -> str:
-    """建立人读入口；完整技术字段仍保留在各 CSV。"""
+    """建立阅读入口；完整数据字段仍保留在各 CSV。"""
     name = "Report_guide.csv"
     kind_label = "封存快照" if source_kind == "snapshot" else "Diff 数据库"
     _write_csv(
         os.path.join(folder, name),
         ["key", "value"],
         [
-            ("报告用途", "供人工浏览、筛选和追溯 DAISY 结果"),
+            ("报告用途", "阅读、筛选和追溯 DAISY 结果"),
             ("输入类型", kind_label),
             ("输入数据库", os.path.basename(source_path)),
-            ("建议打开", f"{_EXCEL_WORKBOOK_NAME}（中文兼容）"),
+            ("优先打开", _EXCEL_WORKBOOK_NAME),
             (
-                "完整数据",
-                "同目录 CSV 保留数据库字段名与完整值，适合脚本和审计",
+                "结构化数据",
+                "同目录 CSV 保留数据库字段名与完整值，供脚本和进一步分析",
             ),
             (
                 "CSV 编码",
@@ -280,6 +304,7 @@ def _excel_row(header: list[str], row: list[str]) -> list[str]:
         if field_name in {
             "media_kind", "meta_status", "hash_status", "status",
             "evidence", "origin", "old_hash_origin", "new_hash_origin",
+            "side",
         }:
             display_value = _EXCEL_VALUE_NAMES.get(value, value)
         else:
@@ -561,7 +586,7 @@ def _write_excel_workbook(folder: str, files: list[str]) -> str:
 def _write_report_info(folder: str) -> str:
     """写入不破坏业务 CSV 表头的独立报告身份页。"""
     name = "Report_info.csv"
-    identity = core.report_metadata("DBS-41 结果报告导出")
+    identity = core.report_metadata("档案数据解析")
     _write_csv(
         os.path.join(folder, name), ["key", "value"],
         list(identity.items()),
@@ -587,7 +612,7 @@ class ParsePageSpec:
 
 @dataclass(frozen=True)
 class ParseModuleSpec:
-    """数据库解析模块的稳定注册信息；writer 不直接决定模块能力。"""
+    """档案数据解析模块的稳定注册信息；写入器不直接决定模块能力。"""
 
     module_id: str
     title: str
@@ -607,7 +632,7 @@ class ParseModuleSpec:
 
 @dataclass(frozen=True)
 class ParseModuleStatus:
-    """一个解析模块在已识别数据库中的可选状态。"""
+    """一个数据模块在已识别数据库中的可选状态。"""
 
     spec: ParseModuleSpec
     state: str
@@ -642,6 +667,15 @@ class ParseModuleStatus:
                 dict(item) for item in self.optional_capabilities
             ],
         }
+
+
+PARSE_MODULE_STATE_LABELS = {
+    "available": "可导出",
+    "empty": "0 条记录",
+    "unavailable": "无可用记录",
+    "incompatible": "版本不兼容",
+    "invalid": "结构异常",
+}
 
 
 @dataclass(frozen=True)
@@ -679,7 +713,7 @@ class ParseDatabaseInspection:
 
 @dataclass(frozen=True)
 class ParseExportPlan:
-    """内容选择与格式选择的正交、可序列化计划。"""
+    """数据模块与输出格式相互独立的可序列化计划。"""
 
     preset: str
     module_ids: tuple[str, ...]
@@ -705,7 +739,7 @@ PARSE_FORMATS = ("html", "xlsx", "csv", "jsonl")
 
 
 class CsvQueryWriter:
-    """保持 v1.5.1 CSV 编码、表头和值语义的 writer。"""
+    """保持 v1.5.1 CSV 编码、表头和值语义的写入器。"""
 
     format_id = "csv"
 
@@ -725,7 +759,7 @@ class CsvQueryWriter:
 
 
 class LegacyExcelWriter:
-    """从旧技术 CSV 生成既有 Report_Excel.xlsx 的 writer。"""
+    """从旧技术 CSV 生成既有 Report_Excel.xlsx 的写入器。"""
 
     format_id = "xlsx"
 
@@ -778,7 +812,7 @@ _SNAPSHOT_MODULES = (
             " JOIN roots r ON r.root_id = d.root_id"
             " ORDER BY r.root_label, d.rel_path",
         ),),
-        description="目录树、root 和枚举状态",
+        description="目录树、根目录和枚举状态",
     ),
     ParseModuleSpec(
         "photo_metadata", "照片信息", "snapshot", ("photo_metadata",),
@@ -788,7 +822,7 @@ _SNAPSHOT_MODULES = (
     ParseModuleSpec(
         "video_metadata", "视频信息", "snapshot", ("video_metadata",),
         (_entry_page("Exif_inventory_video.csv", "video_metadata"),),
-        description="视频文件级格式化元数据",
+        description="视频文件级规范化元数据",
     ),
     ParseModuleSpec(
         "video_gps", "视频定位", "snapshot", ("video_gps",),
@@ -804,7 +838,7 @@ _SNAPSHOT_MODULES = (
         "document_metadata", "文档信息", "snapshot",
         ("document_metadata",),
         (_entry_page("Exif_inventory_document.csv", "document_metadata"),),
-        description="PDF／Office 文档格式化字段",
+        description="PDF/Office 文档规范化字段",
     ),
     ParseModuleSpec(
         "media_streams", "媒体轨道", "snapshot", ("media_streams",),
@@ -828,10 +862,10 @@ _SNAPSHOT_MODULES = (
         description="压缩包及其成员摘要",
     ),
     ParseModuleSpec(
-        "diagnostics", "诊断证据", "snapshot", ("diagnostics",),
+        "diagnostics", "元数据诊断", "snapshot", ("diagnostics",),
         (_entry_page(
             "Metadata_diagnostics.csv", "metadata_diagnostics"),),
-        description="错误与元数据诊断的原始证据",
+        description="工具诊断与字段规范化记录",
     ),
     ParseModuleSpec(
         "issues", "问题摘要", "snapshot", ("issues",),
@@ -848,24 +882,24 @@ _SNAPSHOT_MODULES = (
             " LEFT JOIN dirs d ON d.dir_id = er.dir_id"
             " ORDER BY er.error_pk",
         ),),
-        description="枚举、哈希、元数据、格式与性能问题",
+        description="按板块汇总问题、未执行项目与性能候选",
         optional_capabilities=(
             "format_checks", "read_performance", "entry_attempts",
         ),
         presets=frozenset(("human-summary", "full-audit")),
     ),
     ParseModuleSpec(
-        "raw_payloads", "原始数据", "snapshot", ("raw_payloads",),
+        "raw_payloads", "工具原始输出", "snapshot", ("raw_payloads",),
         schema3_fallback=True,
         formats=frozenset(("html", "xlsx", "jsonl")),
         privacy_level="sensitive_raw",
-        description="ExifTool／ffprobe canonical JSON 原始载荷",
+        description="ExifTool 与 ffprobe 保存的原始 JSON",
         legacy_export=False,
     ),
     ParseModuleSpec(
         "run_history", "运行历史", "snapshot", ("run_history",),
         schema3_fallback=True,
-        description="manifest、会话、事件、尝试和工具来源",
+        description="运行清单、会话、事件、处理尝试与工具来源",
         optional_capabilities=(
             "run_sessions", "entry_attempts", "read_performance",
             "format_checks",
@@ -883,7 +917,7 @@ _DIFF_MODULES = (
     ParseModuleSpec(
         "overview", "对比概览", "diff", ("overview",),
         formats=frozenset(("html", "xlsx", "csv")),
-        description="双侧身份、覆盖率、root 配对与结论",
+        description="双侧身份、覆盖率、根目录对应与结论",
         presets=frozenset(("human-summary", "full-audit")),
     ),
     ParseModuleSpec(
@@ -912,7 +946,7 @@ _DIFF_MODULES = (
                 label="new_root_label", relative="new_rel_path")
             + " AS new_path, * FROM diff_dirs ORDER BY path_key",
         ),),
-        description="目录增删、状态变化与 unknown",
+        description="目录增删、状态变化与未知范围",
     ),
     ParseModuleSpec(
         "content_groups", "内容分组", "diff", ("content_groups",),
@@ -920,7 +954,7 @@ _DIFF_MODULES = (
             "Diff_hash_groups.csv",
             "SELECT * FROM diff_hash_groups ORDER BY group_id",
         ),),
-        description="哈希多重集、副本和硬链接变化",
+        description="相同内容文件、副本与硬链接变化",
     ),
     ParseModuleSpec(
         "enumeration_gaps", "枚举缺口", "diff", ("enumeration_gaps",),
@@ -929,7 +963,7 @@ _DIFF_MODULES = (
             "SELECT * FROM diff_subtrees"
             " ORDER BY side, root_label, rel_path",
         ),),
-        description="失败子树、影响范围与 unknown 传播",
+        description="未完整枚举的目录范围及其影响",
         presets=frozenset(("human-summary", "full-audit")),
     ),
     ParseModuleSpec(
@@ -974,21 +1008,21 @@ def _registered_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
 
 
 def parse_modules(database_type: str) -> tuple[ParseModuleSpec, ...]:
-    """返回面向 v1.6.0 产品界面的完整稳定模块目录。"""
+    """返回面向当前产品界面的完整稳定数据模块目录。"""
     registered = {
         module.module_id: module
         for module in _registered_modules(database_type)
     }
     order = _PARSE_MODULE_ORDER[database_type]
     if set(registered) != set(order):
-        raise RuntimeError(f"{database_type} 解析模块目录与稳定顺序不一致")
+        raise RuntimeError(f"{database_type} 数据模块目录与稳定顺序不一致")
     return tuple(registered[module_id] for module_id in order)
 
 
 def parse_module_statuses(
     descriptor: dbreader.DatabaseDescriptor,
 ) -> tuple[ParseModuleStatus, ...]:
-    """把 Reader 能力折叠成卡片状态；不把 empty／NULL 伪装可选。"""
+    """把 Reader 能力折叠成卡片状态；不把 empty/NULL 伪装可选。"""
     priority = {
         "available": 0,
         "empty": 1,
@@ -1004,7 +1038,7 @@ def parse_module_statuses(
                 capability = descriptor.capability(capability_id)
             except KeyError as exc:
                 raise RuntimeError(
-                    f"解析模块 {spec.module_id} 引用了未登记能力"
+                    f"数据模块 {spec.module_id} 引用了未登记能力"
                     f" {capability_id}"
                 ) from exc
             required.append(capability)
@@ -1014,7 +1048,7 @@ def parse_module_statuses(
                 optional.append(descriptor.capability(capability_id))
             except KeyError as exc:
                 raise RuntimeError(
-                    f"解析模块 {spec.module_id} 引用了未登记可选能力"
+                    f"数据模块 {spec.module_id} 引用了未登记可选能力"
                     f" {capability_id}"
                 ) from exc
         state = max(required, key=lambda item: priority[item.state]).state
@@ -1029,14 +1063,31 @@ def parse_module_statuses(
             else None
         )
         reason_fallbacks = {
-            "empty": "已执行但没有记录",
+            "empty": "已执行，未生成记录",
             "unavailable": "此数据库未记录或未执行该能力",
             "incompatible": "当前读取器不兼容该能力",
             "invalid": "能力记录无效",
         }
+        state_labels = PARSE_MODULE_STATE_LABELS
+        display_titles = {
+            "raw_payloads": "工具原始输出",
+        }
+        def display_reason(capability) -> str:
+            reason = str(
+                capability.reason
+                or reason_fallbacks.get(
+                    capability.state, "未记录状态原因"))
+            if capability.capability_id == "raw_payloads":
+                reason = (
+                    reason.replace("原始元数据载荷", "工具原始输出")
+                    .replace("原始载荷", "工具原始输出")
+                )
+            return reason
+
         reasons = [
-            f"{capability.capability_id}={capability.state}："
-            f"{capability.reason or reason_fallbacks.get(capability.state, '状态原因未知')}"
+            f"{display_titles.get(capability.capability_id, capability.title)}："
+            f"{state_labels.get(capability.state, capability.state)}；"
+            f"{display_reason(capability)}"
             for capability in required
             if capability.state != "available"
         ]
@@ -1054,9 +1105,10 @@ def parse_module_statuses(
     return tuple(result)
 
 
-def _compatibility_mode(
+def compatibility_mode(
     descriptor: dbreader.DatabaseDescriptor,
 ) -> str:
+    """返回档案数据解析统一使用的兼容模式标识。"""
     if descriptor.database_type == "snapshot":
         return (
             "v1.4.1-compatible"
@@ -1064,10 +1116,28 @@ def _compatibility_mode(
         )
     old_schema = int(descriptor.identity["old_schema_version"])
     new_schema = int(descriptor.identity["new_schema_version"])
-    return (
-        "v1.4.1-compatible"
-        if (old_schema, new_schema) == (3, 3) else "cross-version"
-    )
+    if (old_schema, new_schema) == (3, 3):
+        return "v1.4.1-compatible"
+    if (old_schema, new_schema) == (4, 4):
+        return "v1.6.0-native"
+    return "cross-version"
+
+
+COMPATIBILITY_MODE_LABELS = {
+    "v1.4.1-compatible": "v1.4.1 兼容模式",
+    "v1.6.0-native": "数据库结构版本 4 模式",
+    "cross-version": "跨版本对比模式",
+}
+
+
+def compatibility_mode_label(mode: object) -> str:
+    """把兼容模式标识转换为统一的显示名称。"""
+    value = str(mode or "")
+    return COMPATIBILITY_MODE_LABELS.get(value, value)
+
+
+# 保留内部旧名称，避免既有调用方在 v1.6.1 开发期失效。
+_compatibility_mode = compatibility_mode
 
 
 def inspect_parse_database(
@@ -1075,7 +1145,7 @@ def inspect_parse_database(
     *,
     verify_integrity: bool = False,
 ) -> ParseDatabaseInspection:
-    """只读识别解析输入；快速阶段不读取整个 schema 4 文件核摘要。"""
+    """只读识别解析输入；快速阶段不读取整个 schema 4 文件摘要。"""
     con, descriptor = dbreader.open_database(
         path,
         require_sealed=True,
@@ -1090,7 +1160,7 @@ def inspect_parse_database(
         descriptor=descriptor,
         file_size_bytes=int(file_size),
         integrity_checked=bool(verify_integrity),
-        compatibility_mode=_compatibility_mode(descriptor),
+        compatibility_mode=compatibility_mode(descriptor),
         modules=parse_module_statuses(descriptor),
     )
 
@@ -1114,10 +1184,10 @@ def plan_parse_export(
     include: Iterable[str] = (),
     formats: Iterable[str] = ("html",),
 ) -> ParseExportPlan:
-    """验证模块／格式组合；预设不会暗中开启或移除输出格式。"""
+    """验证数据模块／格式组合；导出范围不会暗中改变输出格式。"""
     normalized_preset = str(preset).strip().casefold()
     if normalized_preset not in PARSE_PRESETS:
-        raise core.PreflightError(f"未知解析内容预设：{preset}")
+        raise core.PreflightError(f"未知导出范围：{preset}")
     requested_modules = _normalize_tokens(include)
     requested_formats = _normalize_tokens(formats)
     unknown_formats = [
@@ -1126,9 +1196,9 @@ def plan_parse_export(
     ]
     if unknown_formats:
         raise core.PreflightError(
-            "未知解析输出格式：" + "、".join(unknown_formats))
+            "未知输出格式：" + "、".join(unknown_formats))
     if not requested_formats:
-        raise core.PreflightError("至少选择一种解析输出格式")
+        raise core.PreflightError("至少选择一种输出格式")
 
     by_id = {module.spec.module_id: module for module in inspection.modules}
     unknown_modules = [
@@ -1137,13 +1207,15 @@ def plan_parse_export(
     ]
     if unknown_modules:
         raise core.PreflightError(
-            "当前数据库类型没有解析模块：" + "、".join(unknown_modules))
+            "当前数据库类型没有以下数据模块：" + "、".join(unknown_modules))
     for module_id in requested_modules:
         module = by_id[module_id]
         if not module.selectable:
             detail = f"：{module.reason}" if module.reason else ""
+            state_label = PARSE_MODULE_STATE_LABELS.get(
+                module.state, module.state)
             raise core.PreflightError(
-                f"解析模块 {module_id} 为 {module.state}，不可选择{detail}")
+                f"数据模块 {module_id} 的状态为「{state_label}」，不可选择{detail}")
 
     selected = []
     if normalized_preset != "custom":
@@ -1156,7 +1228,7 @@ def plan_parse_export(
             selected.append(module_id)
     if not selected:
         raise core.PreflightError(
-            "当前预设没有可选模块；请选择有记录的模块或更换数据库")
+            "当前导出范围没有可导出的数据模块；请选择可导出的数据模块或更换数据库")
 
     format_modules: dict[str, tuple[str, ...]] = {}
     for format_id in requested_formats:
@@ -1166,7 +1238,7 @@ def plan_parse_export(
         )
         if not compatible:
             raise core.PreflightError(
-                f"所选模块均不支持输出格式 {format_id}")
+                f"所选数据模块均不支持输出格式 {format_id}")
         format_modules[format_id] = compatible
     unsupported = [
         module_id for module_id in selected
@@ -1184,8 +1256,9 @@ def plan_parse_export(
         module = by_id[module_id]
         if module.spec.privacy_level == "sensitive_raw":
             privacy_notices.append(
-                "原始数据可能包含位置、设备、软件和作者信息；"
-                "HTML／XLSX 只允许受限预览，完整值优先写入 JSONL。"
+                "工具原始输出可能包含位置、设备、软件和作者信息；"
+                "HTML 只提供有限预览，XLSX 受单元格长度限制；"
+                "完整值请导出 JSONL。"
             )
     return ParseExportPlan(
         preset=normalized_preset,
@@ -1365,6 +1438,24 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
     mapping = json.loads(info["root_mapping_json"])
     counts_json = json.loads(info["counts_json"]) if info["counts_json"] else {}
 
+    def human_names(values):
+        names = [
+            f"`{_md_escape(str(value))}`"
+            for value in (values or ())
+        ]
+        return "、".join(names) or "无"
+
+    def human_pairs(values):
+        pairs = []
+        for pair in values or ():
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                pairs.append(
+                    f"`{_md_escape(str(pair[0]))}` → "
+                    f"`{_md_escape(str(pair[1]))}`")
+            else:
+                pairs.append(f"`{_md_escape(str(pair))}`")
+        return "；".join(pairs) or "无"
+
     def conclusion(breaking, kind, caveats, caveat_kinds):
         if breaking:
             return f"**不一致**（{breaking} 条{kind}差异）"
@@ -1375,63 +1466,76 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
 
     content_conclusion = conclusion(
         content_breaking, "内容", content_caveats,
-        "unknown/hash_missing/unstable")
+        "无法判定、缺少哈希或扫描期间发生变化")
     structure_conclusion = conclusion(
         structure_breaking, "结构", structure_caveats,
-        "unknown——枚举失败或碰撞")
+        "无法判定——枚举失败或碰撞")
+    coverage_labels = {"full": "完整", "partial": "部分", "none": "无"}
+    old_coverage = coverage_labels.get(
+        str(info["old_hash_coverage"]), str(info["old_hash_coverage"]))
+    new_coverage = coverage_labels.get(
+        str(info["new_hash_coverage"]), str(info["new_hash_coverage"]))
 
     lines = [
-        "# Diff 摘要",
+        "# 档案快照对比摘要",
         "",
-        *core.report_markdown_lines("DBS-41 结果报告导出"),
+        *core.report_markdown_lines("档案数据解析"),
         "",
-        f"- 旧快照：`{info['old_snapshot_file']}`（uuid `{info['old_snapshot_uuid']}`，"
-        f"hash_coverage=**{info['old_hash_coverage']}**）",
-        f"- 新快照：`{info['new_snapshot_file']}`（uuid `{info['new_snapshot_uuid']}`，"
-        f"hash_coverage=**{info['new_hash_coverage']}**）",
-        f"- 生成（UTC）：{info['created_at_utc']}；工具版本：{info['tool_version']}"
-        + ("；**forced=1（不完整输入：文件名高32bit指纹缺失被越过）**"
+        f"- 基准快照：`{info['old_snapshot_file']}`（UUID `{info['old_snapshot_uuid']}`，"
+        f"哈希覆盖：**{old_coverage}**）",
+        f"- 对比快照：`{info['new_snapshot_file']}`（UUID `{info['new_snapshot_uuid']}`，"
+        f"哈希覆盖：**{new_coverage}**）",
+        f"- Diff 数据库生成时间 (UTC)：{info['created_at_utc']}；"
+        f"Diff 数据库生成程序版本：{info['tool_version']}"
+        + ("；**已允许文件名指纹缺失**"
            if info["forced"] else ""),
-        f"- root 配对：{mapping['pairs']}"
-        + ("（**单根自动配对**：label 不同，按挂载内容直接对比）"
+        f"- 根目录配对：{human_pairs(mapping.get('pairs'))}"
+        + ("（**单根自动配对**：根目录名不同，按挂载内容直接对比）"
            if mapping.get("auto_paired") else "")
-        + (f"；未配对旧侧 {mapping['unpaired_old']}、新侧 {mapping['unpaired_new']}"
-           f"（未配对 root 整体计入增删）"
-           if mapping["unpaired_old"] or mapping["unpaired_new"] else ""),
+        + (f"；未配对基准侧：{human_names(mapping.get('unpaired_old'))}；"
+           f"未配对对比侧：{human_names(mapping.get('unpaired_new'))}"
+           f"（未配对根目录整体计入增删）"
+           if mapping.get("unpaired_old") or mapping.get("unpaired_new") else ""),
         "",
         "## 双维度结论",
         "",
         f"- 内容维度（哈希多重集）：{content_conclusion}",
         f"- 结构维度（路径树）：{structure_conclusion}"
-        + ("（hash_missing/unstable 条目双侧均已配对存在，"
+        + ("（`hash_missing`/`unstable` 条目双侧均已配对存在，"
            "不影响存在性结论）" if content_caveats > structure_caveats else ""),
         "",
-        "## 状态 × evidence",
+        "## 状态 × 证据",
         "",
-        "| status | evidence | 数量 |",
+        "| 状态 | 证据 | 数量 |",
         "|---|---|---:|",
     ]
     for st in sorted(se):
         for ev in sorted(se[st]):
-            lines.append(f"| {st} | {ev} | {se[st][ev]:,} |")
+            lines.append(
+                f"| {_EXCEL_VALUE_NAMES.get(st, st)} | "
+                f"{_EXCEL_VALUE_NAMES.get(ev, ev)} | {se[st][ev]:,} |")
     lines.append("")
     if same_evidence:
         lines.append("「内容相同」证据分布："
-                     + "；".join(f"{ev}={c:,}"
-                                 for ev, c in sorted(same_evidence.items()))
+                     + "；".join(
+                         f"{_EXCEL_VALUE_NAMES.get(ev, ev)}（`{ev}`）：{c:,}"
+                         for ev, c in sorted(same_evidence.items()))
                      + "。")
         if same_evidence.get("propagated_single_computation"):
-            lines.append("注意：propagated_single_computation 表示两侧追溯到"
-                         "**同一次计算事件**（哈希被抄录传递），"
+            lines.append("注意：`propagated_single_computation` 表示两侧追溯到"
+                         "**同一次计算事件**（哈希由同一次计算结果传递到两侧），"
                          "**不构成独立验证**，不得表述为「已验证一致」。")
         lines.append("")
     if subtrees:
-        lines.append("## ⚠ 枚举失败子树（其下差异一律 unknown，绝不判增删）")
+        lines.append("## 枚举缺口（其下差异无法判定，不计为新增或删除）")
         lines.append("")
         for s in subtrees:
-            rel = s["rel_path"] if s["rel_path"] else "<root 级失败>"
-            lines.append(f"- [{s['side']}] `{_md_escape(s['root_label'])}"
-                         f"\\{_md_escape(rel)}`（{s['enum_status']}，"
+            rel = s["rel_path"] if s["rel_path"] else "<根目录级失败>"
+            lines.append(
+                f"- [{_EXCEL_VALUE_NAMES.get(s['side'], s['side'])}] "
+                f"`{_md_escape(s['root_label'])}"
+                         f"\\{_md_escape(rel)}`（"
+                         f"{_EXCEL_VALUE_NAMES.get(s['enum_status'], s['enum_status'])}，"
                          f"另一侧受影响约 {s['affected_estimate']} 条）")
         lines.append("")
     lines.append("## 目录维度")
@@ -1439,19 +1543,21 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
     dir_counts: dict = {}
     for d in dirs:
         dir_counts[d["status"]] = dir_counts.get(d["status"], 0) + 1
-    lines.append("，".join(f"{k}={v:,}" for k, v in sorted(dir_counts.items()))
+    lines.append("；".join(
+        f"{_EXCEL_VALUE_NAMES.get(key, key)}：{value:,}"
+        for key, value in sorted(dir_counts.items()))
                  or "（无目录记录）")
     for d in dir_changed[:_LIST_CAP]:
         lbl = (d["old_root_label"] if d["old_rel_path"] is not None
                else d["new_root_label"]) or ""
         rel = (d["old_rel_path"] if d["old_rel_path"] is not None
                else d["new_rel_path"])
-        lines.append(f"- {d['status']}: "
+        lines.append(f"- {_EXCEL_VALUE_NAMES.get(d['status'], d['status'])}："
                      f"`{_md_escape(lbl)}\\{_md_escape(rel)}`"
                      + (f"（{d['reason']}）" if d["reason"] else ""))
     if len(dir_changed) > _LIST_CAP:
         lines.append(f"- …共 {len(dir_changed)} 条目录级变更，"
-                     "详见 Diff_dirs.csv")
+                     "详见 `Diff_dirs.csv`。")
     lines.append("")
     lines.append("## 重复内容组变化")
     lines.append("")
@@ -1459,27 +1565,33 @@ def export_diff(diff_path: str, output_dir: str) -> dict:
         for g in changed_groups[:_LIST_CAP]:
             lines.append(f"- `{g['hash_hex'][:16]}…`：{g['old_count']} → "
                          f"{g['new_count']}"
-                         + (f"（新侧硬链接组 {g['new_hardlink_sets']}）"
+                         + (f"（对比侧硬链接组 {g['new_hardlink_sets']}）"
                             if g["new_hardlink_sets"] else ""))
         if len(changed_groups) > _LIST_CAP:
             lines.append(f"- …共 {len(changed_groups)} 组，"
-                         "详见 Diff_hash_groups.csv")
+                         "详见 `Diff_hash_groups.csv`。")
     else:
         lines.append("（无副本数量变化）")
     lines.append("")
-    lines.append("## 启发式结论（单列，不与哈希确证混计）")
+    lines.append("## 辅助判断（不与哈希证据合并统计）")
     lines.append("")
-    lines.append(f"file_id 启发移动判定：{heur:,} 条"
-                 "（依据 NTFS 文件标识＋size＋mtime，非内容证据）。")
+    lines.append(f"NTFS-ID 辅助移动判断：{heur:,} 条"
+                 "（依据 NTFS 文件标识、文件大小和修改时间，非内容证据）。")
     lines.append("")
     lines.append("## 覆盖声明")
     lines.append("")
-    lines.append(f"- 双侧 hash_coverage：旧={info['old_hash_coverage']}，"
-                 f"新={info['new_hash_coverage']}（hash_coverage=none 侧"
-                 "缺少哈希时只得出 hash_missing，不构成校验失败）")
+    lines.append(f"- 双侧哈希覆盖：基准侧为 {old_coverage}；"
+                 f"对比侧为 {new_coverage}。当 `hash_coverage=none` 时，该侧"
+                 "没有哈希，只得出 `hash_missing`，不构成校验失败。")
     pr = counts_json.get("payload_rows", {})
-    lines.append(f"- raw payload 行数：旧={pr.get('old')}，新={pr.get('new')}"
-                 "（任一侧缺失的条目 metadata_changed 未评估）")
+    old_payload_rows = pr.get("old")
+    new_payload_rows = pr.get("new")
+    lines.append(
+        f"- 工具原始输出行数：基准侧为 "
+        f"{old_payload_rows if old_payload_rows is not None else '未记录'}；"
+        f"对比侧为 "
+        f"{new_payload_rows if new_payload_rows is not None else '未记录'}。"
+        "（任一侧缺失时，不评估对应条目的 `metadata_changed`）")
     lines.append("")
     with open(os.path.join(folder, "Diff_summary.md"), "w",
               encoding="utf-8", newline="\n") as f:

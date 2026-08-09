@@ -1,8 +1,8 @@
-r"""DAISY v1.6.0 统一扫描入口：Full／Quick、暂停恢复与 schema 4 发布。
+r"""DAISY v1.6.0 统一扫描入口：完整／快速、暂停、续传与 schema 4 发布。
 
-旧 ``full-scan``／``quick-scan`` 命令在兼容期内继续存在；新 GUI 将
+旧 ``full-scan``/``quick-scan`` 命令在兼容期内继续存在；新 GUI 将
 DBS-11 完整档案扫描与 DBS-12 快速档案扫描映射到本入口，以共享同一套
-session、lease、worker 与发布编排。
+会话、占用锁、工作进程与发布编排。
 """
 from __future__ import annotations
 
@@ -39,14 +39,14 @@ import Script_DAISY_Lib_ENV_01_Capabilities as envcap
 STAGES_TOTAL = 9
 QUICK_MIN_FREE_BYTES = 200 * 1024 * 1024
 _STAGES = {
-    "enumerate": (2, "枚举"),
-    "hash": (3, "内容哈希"),
-    "metadata": (4, "元数据"),
+    "enumerate": (2, "目录枚举"),
+    "hash": (3, "哈希计算"),
+    "metadata": (4, "元数据提取"),
     "format": (5, "格式校验"),
-    "rescan": (6, "最终复扫"),
-    "verify_hash": (7, "独立抽验"),
+    "rescan": (6, "文件状态复查"),
+    "verify_hash": (7, "哈希复检"),
     "seal": (8, "封存检查"),
-    "publish": (9, "原子发布"),
+    "publish": (9, "结果发布"),
 }
 _TIMEOUT_ACTIONS = (
     "continue_waiting", "skip_and_record", "stop_and_resume",
@@ -155,7 +155,7 @@ class ScanReporter:
                 suffix += f" · {int(bytes_done) / 1e9:.2f} GB"
             errors = int(normalized.get("errors") or 0)
             if errors:
-                suffix += f" · 问题 {errors:,}"
+                suffix += f" · 异常记录 {errors:,}"
             print(f"[{_STAGES[stage][0]}/{STAGES_TOTAL}] "
                   f"{_STAGES[stage][1]} | {suffix}", flush=True)
 
@@ -190,13 +190,13 @@ class ScanReporter:
                 summary_fields = [
                     ("processed", "处理"), ("files", "文件"),
                     ("matched", "一致"), ("mismatched", "不一致"),
-                    ("source_error", "文件问题"),
+                    ("source_error", "源文件问题"),
                     ("tool_error", "工具故障"),
                     ("timeout", "超时"),
                     ("not_applicable", "不适用"), ("skipped", "跳过"),
                 ]
                 if "source_error" not in clean:
-                    summary_fields.insert(4, ("error", "错误"))
+                    summary_fields.insert(4, ("error", "异常记录"))
                 for key, label in summary_fields:
                     if clean.get(key) is not None:
                         summary_parts.append(f"{label} {clean[key]}")
@@ -222,8 +222,8 @@ class ScanReporter:
                 not_processed = int(clean.get("not_processed") or 0)
                 tool = str(clean.get("tool") or "外部工具")
                 summary = (
-                    f"{tool} 故障熔断 · 已处理 {processed:,}/{total:,} · "
-                    f"待恢复 {not_processed:,}"
+                    f"{tool} 连续故障，阶段已停止 · "
+                    f"已处理 {processed:,}/{total:,} · 待续传 {not_processed:,}"
                 )
                 core.emit_gui_event(
                     "progress_fail",
@@ -236,8 +236,8 @@ class ScanReporter:
                 )
             if event == "threshold_reached" and not self.quiet:
                 print(
-                    "!! 单文件连续无进展达到阈值："
-                    f"{clean.get('file')}（{clean.get('threshold_seconds')}s）。"
+                    "警告：单文件连续无进展达到阈值："
+                    f"{clean.get('file')}（{clean.get('threshold_seconds')} 秒）。"
                     "默认继续等待；可由 GUI 选择跳过或停止并保留续传。",
                     file=sys.stderr,
                     flush=True,
@@ -264,82 +264,116 @@ class ScanReporter:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "统一扫描：选择 Full 或 Quick，创建可暂停、可跨重启恢复的 "
-            "schema 4 快照"
+            "档案扫描建库：选择完整或快速模式，创建可暂停并可跨重启续传的"
+            "数据库结构版本 4 快照"
         ),
     )
-    parser.add_argument("--mode", choices=("full", "quick"))
+    parser.add_argument(
+        "--mode", choices=("full", "quick"),
+        help="新建扫描模式：full=完整，quick=快速",
+    )
     parser.add_argument(
         "--root", action="append", default=[],
-        help="新建扫描的档案根，可重复；语法 label=路径 或 路径",
+        help="新建扫描的档案根目录，可重复；格式为路径或「根目录名=路径」",
     )
-    parser.add_argument("--output-dir")
-    parser.add_argument("--resume", help="恢复 schema 4 .partial.sqlite")
+    parser.add_argument(
+        "--output-dir", help="快照输出目录；默认 Output/Snapshots")
+    parser.add_argument(
+        "--resume",
+        help="续传数据库结构版本 4 的未完成快照 (.partial.sqlite)")
     parser.add_argument(
         "--manual-resume", action="store_true",
-        help="明确恢复已停止的任务；普通暂停恢复不需要",
+        help="续传已停止的任务时必须指定；同一进程内暂停后继续无需指定",
     )
     parser.add_argument(
         "--hash", choices=("none", "incremental", "full"),
+        help=("哈希模式：none=关闭，incremental=兼容复用上一快照，"
+              "full=完整计算 SHA-256；现行 GUI 仅使用关闭或完整"),
     )
-    parser.add_argument("--previous-snapshot")
-    parser.add_argument("--map-root", action="append", default=[])
-    parser.add_argument("--verify-sample-percent", type=float)
+    parser.add_argument(
+        "--previous-snapshot", help="兼容增量哈希使用的上一份封存快照")
+    parser.add_argument(
+        "--map-root", action="append", default=[],
+        help="兼容增量哈希的根目录名对应；格式为「基准根目录名=当前根目录名」，可重复",
+    )
+    parser.add_argument(
+        "--verify-sample-percent", type=float,
+        help="主哈希完成后的独立复检比例",
+    )
     parser.add_argument(
         "--metadata-storage", choices=("complete", "normalized"),
+        help="兼容旧元数据范围参数：全量或基础；不能与逐工具范围同时使用",
+    )
+    parser.add_argument(
+        "--metadata-exiftool-mode",
+        choices=("complete", "normalized", "off"),
+        help="ExifTool 元数据范围：全量、基础或关闭",
+    )
+    parser.add_argument(
+        "--metadata-ffprobe-mode",
+        choices=("complete", "normalized", "off"),
+        help="ffprobe 元数据范围：全量、基础或关闭",
     )
     parser.add_argument(
         "--no-metadata-exiftool",
         dest="metadata_exiftool",
         action="store_false",
         default=None,
-        help="关闭元数据阶段的 ExifTool 采集；默认启用",
+        help="关闭元数据阶段的 ExifTool 采集；完整扫描默认启用",
     )
     parser.add_argument(
         "--no-metadata-ffprobe",
         dest="metadata_ffprobe",
         action="store_false",
         default=None,
-        help="关闭元数据阶段的 ffprobe 探测；默认启用",
+        help="关闭元数据阶段的 ffprobe 采集；完整扫描默认启用",
     )
     parser.add_argument(
         "--format-validation", choices=("off", "sample", "all"),
+        help="兼容参数：扫描期间的格式校验范围；默认关闭",
     )
-    parser.add_argument("--format-sample-percent", type=float)
+    parser.add_argument(
+        "--format-sample-percent", type=float,
+        help="抽样格式校验的比例",
+    )
     parser.add_argument(
         "--raw-deep-validation",
         action="store_true",
         default=None,
-        help="在格式校验选中范围内使用隔离 rawpy worker 实际解码 RAW",
+        help="兼容参数：在格式校验范围内使用隔离的 rawpy/LibRaw 子进程解码 RAW",
     )
     parser.add_argument(
         "--raw-timeout-seconds",
         type=float,
-        help="RAW 单文件无进展阈值覆盖；默认使用 90s／9 GiB 阶梯",
+        help="覆盖 RAW 单文件无进展阈值；默认每 9 GiB 增加 90 秒",
     )
-    parser.add_argument("--no-file-id", action="store_true", default=None)
+    parser.add_argument(
+        "--no-file-id", action="store_true", default=None,
+        help="不采集 NTFS-ID",
+    )
     parser.add_argument(
         "--timeout-action", choices=_TIMEOUT_ACTIONS,
-        help="无进展达到动态阈值后的默认处置；默认继续等待",
+        help="单文件达到动态无进展阈值后的默认处置；默认继续等待",
     )
     parser.add_argument(
         "--retry-mode", choices=("pending", "transient", "all-unsuccessful"),
         default="pending",
-        help="本 session 的哈希处理范围",
+        help="续传时选择要重试的哈希条目：仅未处理、瞬时失败或全部未成功",
     )
     parser.add_argument(
         "--show-current-file", action="store_true",
-        help="发送正在处理的相对文件路径；默认关闭",
+        help="在结构化进度中发送当前相对路径；默认关闭",
     )
     parser.add_argument(
         "--control-stdin", action="store_true",
-        help="从 stdin 接收 daisy-control-v1 UTF-8 JSONL 控制消息",
+        help="从标准输入接收 daisy-control-v1 UTF-8 JSONL 控制消息",
     )
-    parser.add_argument("--exiftool-path")
-    parser.add_argument("--ffprobe-path")
-    parser.add_argument("--sevenzip-path")
-    parser.add_argument("--powershell-path")
-    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--exiftool-path", help="ExifTool 可执行文件路径")
+    parser.add_argument("--ffprobe-path", help="ffprobe 可执行文件路径")
+    parser.add_argument("--sevenzip-path", help="7-Zip 可执行文件路径")
+    parser.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
+    parser.add_argument(
+        "--quiet", action="store_true", help="不显示常规控制台进度")
     return parser
 
 
@@ -418,12 +452,12 @@ def _requested_raw_capability() -> dict[str, object]:
     return payload
 
 
-def _format_tokens(mode: str) -> list[str]:
-    if mode == "sample":
-        return ["Fmt-Sample"]
-    if mode == "all":
-        return ["Fmt-All"]
-    return []
+def _scan_snapshot_stem(labels: list[str], mode: str) -> str:
+    """生成只区分完整／快速模式的统一扫描快照名。"""
+    if mode not in ("full", "quick"):
+        raise ValueError(f"未知扫描模式：{mode}")
+    return core.snapshot_name(
+        labels, "Full" if mode == "full" else "Quick")
 
 
 def _new_config(
@@ -431,51 +465,81 @@ def _new_config(
     mode: str,
 ) -> dict[str, object]:
     hash_mode = args.hash or ("full" if mode == "full" else "none")
-    metadata_storage = args.metadata_storage or (
+    legacy_metadata_storage = args.metadata_storage or (
         "complete" if mode == "full" else "normalized")
-    metadata_exiftool = args.metadata_exiftool is not False
-    metadata_ffprobe = args.metadata_ffprobe is not False
+    if args.metadata_storage is not None and (
+            args.metadata_exiftool_mode is not None
+            or args.metadata_ffprobe_mode is not None):
+        raise core.PreflightError(
+            "--metadata-storage 不能与逐工具元数据范围同时使用")
+
+    def selected_metadata_mode(tool_name: str) -> str:
+        explicit_mode = getattr(args, f"metadata_{tool_name}_mode")
+        legacy_switch = getattr(args, f"metadata_{tool_name}")
+        if explicit_mode is not None and legacy_switch is not None:
+            raise core.PreflightError(
+                f"{tool_name} 不能同时使用范围参数和旧关闭参数")
+        if explicit_mode is not None:
+            return str(explicit_mode)
+        if legacy_switch is False:
+            return "off"
+        return str(legacy_metadata_storage)
+
+    metadata_exiftool_mode = selected_metadata_mode("exiftool")
+    metadata_ffprobe_mode = selected_metadata_mode("ffprobe")
+    if mode == "quick":
+        metadata_exiftool_mode = "off"
+        metadata_ffprobe_mode = "off"
+    metadata_exiftool = metadata_exiftool_mode != "off"
+    metadata_ffprobe = metadata_ffprobe_mode != "off"
+    metadata_storage = (
+        "complete"
+        if "complete" in (metadata_exiftool_mode, metadata_ffprobe_mode)
+        else "normalized"
+    )
     format_mode = args.format_validation or "off"
     raw_enabled = bool(args.raw_deep_validation)
     if mode == "quick":
         if hash_mode != "none":
-            raise core.PreflightError("Quick 不能启用内容哈希")
+            raise core.PreflightError("快速扫描不能启用哈希")
         if args.metadata_storage not in (None, "normalized"):
-            raise core.PreflightError("Quick 不能启用元数据提取")
+            raise core.PreflightError("快速扫描不能启用元数据提取")
         if args.metadata_exiftool is not None \
-                or args.metadata_ffprobe is not None:
-            raise core.PreflightError("Quick 不接受元数据工具开关")
+                or args.metadata_ffprobe is not None \
+                or args.metadata_exiftool_mode is not None \
+                or args.metadata_ffprobe_mode is not None:
+            raise core.PreflightError("快速扫描不接受元数据工具开关")
         if format_mode != "off":
-            raise core.PreflightError("Quick 不能启用格式校验")
+            raise core.PreflightError("快速扫描不能启用格式校验")
         if args.previous_snapshot or args.map_root:
-            raise core.PreflightError("Quick 不接受增量快照或根标签映射")
+            raise core.PreflightError("快速扫描不接受增量快照或根目录名对应")
         if args.verify_sample_percent is not None:
-            raise core.PreflightError("Quick 不接受独立哈希抽验比例")
+            raise core.PreflightError("快速扫描不接受哈希复检比例")
         if args.format_sample_percent is not None:
-            raise core.PreflightError("Quick 不接受格式校验抽样比例")
+            raise core.PreflightError("快速扫描不接受格式校验抽样比例")
         if raw_enabled or args.raw_timeout_seconds is not None:
-            raise core.PreflightError("Quick 不能启用 RAW 深度校验")
+            raise core.PreflightError("快速扫描不能启用 RAW 深度校验")
         if args.timeout_action is not None:
-            raise core.PreflightError("Quick 不接受哈希 timeout 处置")
+            raise core.PreflightError("快速扫描不接受哈希超时处置")
         if any((
             args.exiftool_path, args.ffprobe_path,
             args.sevenzip_path, args.powershell_path,
         )):
-            raise core.PreflightError("Quick 不调用外部解析或哈希工具")
+            raise core.PreflightError("快速扫描不调用外部解析或哈希工具")
     if hash_mode == "incremental" and not args.previous_snapshot:
         raise core.PreflightError(
             "--hash incremental 需要 --previous-snapshot")
     if hash_mode != "incremental" and (
             args.previous_snapshot or args.map_root):
         raise core.PreflightError(
-            "--previous-snapshot／--map-root 仅用于 incremental")
+            "--previous-snapshot/--map-root 仅用于 incremental")
     if hash_mode == "none" and args.powershell_path:
         raise core.PreflightError(
             "哈希关闭时不接受 --powershell-path")
     if hash_mode == "none" and not raw_enabled \
             and args.timeout_action is not None:
         raise core.PreflightError(
-            "哈希与 RAW 深检均关闭时不接受 --timeout-action")
+            "哈希与 RAW 深度校验均关闭时不接受 --timeout-action")
     if format_mode != "sample" and args.format_sample_percent is not None:
         raise core.PreflightError(
             "--format-sample-percent 仅用于 --format-validation sample")
@@ -488,11 +552,11 @@ def _new_config(
     if args.raw_timeout_seconds is not None:
         raw_timeout_seconds = float(args.raw_timeout_seconds)
         if not math.isfinite(raw_timeout_seconds) or raw_timeout_seconds <= 0:
-            raise core.PreflightError("RAW timeout 必须是大于 0 的有限秒数")
+            raise core.PreflightError("RAW 超时阈值必须是大于 0 的有限秒数")
     verify_percent = _finite_percent(
         1.0 if args.verify_sample_percent is None
         else args.verify_sample_percent,
-        "独立哈希抽验比例",
+        "哈希复检比例",
         allow_zero=True,
     )
     format_percent = _finite_percent(
@@ -514,6 +578,8 @@ def _new_config(
         "metadata_storage": metadata_storage,
         "metadata_exiftool": metadata_exiftool,
         "metadata_ffprobe": metadata_ffprobe,
+        "metadata_exiftool_mode": metadata_exiftool_mode,
+        "metadata_ffprobe_mode": metadata_ffprobe_mode,
         "format_validation": format_mode,
         "format_sample_percent": format_percent,
         "raw_deep_validation": raw_enabled,
@@ -545,6 +611,8 @@ def _create_new_run(
     mode = args.mode or "full"
     output_dir = os.path.abspath(args.output_dir or "Output/Snapshots")
     config = _new_config(args, mode)
+    args.metadata_exiftool = bool(config["metadata_exiftool"])
+    args.metadata_ffprobe = bool(config["metadata_ffprobe"])
     raw_capability = (
         _requested_raw_capability()
         if bool(config.get("raw_deep_validation")) else None
@@ -561,25 +629,11 @@ def _create_new_run(
         )
     )
     preflight.finish(
-        "输出目录与空间通过（Quick 无工具依赖）"
+        "输出目录与空间通过（快速扫描无工具依赖）"
         if mode == "quick" else "工具、标准向量、只读断言与输出空间通过"
     )
-    tokens = core.snapshot_profile_tokens(
-        mode,
-        hash_mode=str(config["hash"]),
-        raw_payload=config["metadata_storage"] == "complete",
-        file_id=not bool(config["no_file_id"]),
-    )
-    tokens.extend(_format_tokens(str(config["format_validation"])))
-    if mode == "full" and not bool(config["metadata_exiftool"]):
-        tokens.append("No-Exif")
-    if mode == "full" and not bool(config["metadata_ffprobe"]):
-        tokens.append("No-FFprobe")
-    stem = core.snapshot_name(
-        [label for label, _path in roots],
-        "Full" if mode == "full" else "Quick",
-        tokens,
-    )
+    stem = _scan_snapshot_stem(
+        [label for label, _path in roots], mode)
     config["snapshot_stem"] = stem
     publish_stem = os.path.join(output_dir, stem)
     working_name = core.snapshot_working_name(stem)
@@ -604,11 +658,11 @@ def _frozen_tool(
 ) -> tuple[str, str]:
     value = tools.get(name)
     if not isinstance(value, dict):
-        raise core.PreflightError(f"partial 缺少冻结的 {name} 工具记录")
+        raise core.PreflightError(f"未完成快照缺少冻结的 {name} 工具记录")
     path = str(value.get("path") or "")
     version = str(value.get("version") or "")
     if not path or not version:
-        raise core.PreflightError(f"partial 的 {name} 工具记录不完整")
+        raise core.PreflightError(f"未完成快照中的 {name} 工具记录不完整")
     return path, version
 
 
@@ -622,7 +676,7 @@ def _same_tool(
     if os.path.normcase(os.path.abspath(frozen[0])) != os.path.normcase(
             os.path.abspath(current_path)) or frozen[1] != current_version:
         raise core.PreflightError(
-            f"恢复前 {name} 路径或版本发生变化："
+            f"续传前 {name} 路径或版本发生变化："
             f"冻结={frozen[0]} / {frozen[1]}；"
             f"当前={current_path} / {current_version}"
         )
@@ -634,12 +688,12 @@ def _same_raw_capability(
 ) -> None:
     frozen = frozen_tools.get(envcap.RAW_CAPABILITY_ID)
     if not isinstance(frozen, dict):
-        raise core.PreflightError("partial 缺少冻结的 rawpy／LibRaw 能力")
+        raise core.PreflightError("未完成快照缺少冻结的 rawpy/LibRaw 能力")
     frozen_details = frozen.get("details")
     current_details = current.get("details")
     if not isinstance(frozen_details, dict) \
             or not isinstance(current_details, dict):
-        raise core.PreflightError("rawpy／LibRaw 能力明细不完整")
+        raise core.PreflightError("rawpy/LibRaw 能力明细不完整")
     frozen_identity = (
         frozen.get("state"),
         frozen.get("version"),
@@ -654,7 +708,7 @@ def _same_raw_capability(
     )
     if frozen_identity != current_identity:
         raise core.PreflightError(
-            "恢复前 rawpy／LibRaw 版本或能力发生变化："
+            "续传前 rawpy/LibRaw 版本或能力发生变化："
             f"冻结={frozen_identity!r}；当前={current_identity!r}"
         )
 
@@ -666,10 +720,10 @@ def _resume_preflight(
     config = preview.config
     mode = str(config.get("phase") or "")
     if mode not in ("full", "quick"):
-        raise core.PreflightError(f"partial 的扫描模式无效：{mode!r}")
+        raise core.PreflightError(f"未完成快照中的扫描模式无效：{mode!r}")
     if args.mode is not None and args.mode != mode:
         raise core.PreflightError(
-            f"--mode {args.mode} 与 partial 冻结模式 {mode} 不一致")
+            f"--mode {args.mode} 与未完成快照中的冻结模式 {mode} 不一致")
     forbidden = {
         "--root": bool(args.root),
         "--output-dir": args.output_dir is not None,
@@ -678,6 +732,8 @@ def _resume_preflight(
         "--map-root": bool(args.map_root),
         "--verify-sample-percent": args.verify_sample_percent is not None,
         "--metadata-storage": args.metadata_storage is not None,
+        "--metadata-exiftool-mode": args.metadata_exiftool_mode is not None,
+        "--metadata-ffprobe-mode": args.metadata_ffprobe_mode is not None,
         "--no-metadata-exiftool": args.metadata_exiftool is not None,
         "--no-metadata-ffprobe": args.metadata_ffprobe is not None,
         "--format-validation": args.format_validation is not None,
@@ -694,20 +750,23 @@ def _resume_preflight(
     supplied = [flag for flag, present in forbidden.items() if present]
     if supplied:
         raise core.PreflightError(
-            "恢复必须沿用 partial 的冻结参数，请移除：" + "、".join(supplied))
+            "续传必须沿用未完成快照中的冻结参数，请移除：" + "、".join(supplied))
     if preview.run_state in ("published", "failed_terminal"):
-        raise core.PreflightError(
-            f"状态 {preview.run_state} 不能恢复")
+        message = (
+            "已发布的快照不能续传"
+            if preview.run_state == "published"
+            else "任务已进入不可续传的失败状态"
+        )
+        raise core.PreflightError(message)
     if preview.run_state == "stopped" and not args.manual_resume:
-        raise core.PreflightError("stopped partial 需要用户明确手动恢复")
+        raise core.PreflightError("已停止的未完成快照需要用户明确手动续传")
     if preview.lease_classification in ("active_local", "active_foreign"):
         raise core.PreflightError(
-            "partial 仍由有效 owner 使用，拒绝运行恢复预检："
-            f"{preview.lease_classification}")
+            "未完成快照仍由有效任务占用，不能续传")
     if preview.run_state == "sealed_unpublished":
         preflight = core.Progress(
-            1, STAGES_TOTAL, "发布恢复预检", args.quiet)
-        preflight.finish("sealed 身份与 lease 状态可接管；不访问源目录或工具")
+            1, STAGES_TOTAL, "续传发布预检", args.quiet)
+        preflight.finish("封存身份与任务占用状态可接管；未访问源目录或工具")
         return config
     if bool(config.get("raw_deep_validation")):
         _same_raw_capability(
@@ -716,16 +775,14 @@ def _resume_preflight(
         )
     for _label, root in preview.roots:
         core.validate_root(root)
-    preflight = core.Progress(1, STAGES_TOTAL, "恢复预检", args.quiet)
+    preflight = core.Progress(1, STAGES_TOTAL, "续传预检", args.quiet)
     if mode == "quick":
         tools: dict[str, object] = {}
         _quick_preflight(os.path.dirname(preview.partial_path))
     else:
-        metadata_exiftool = config.get("metadata_exiftool", True)
-        metadata_ffprobe = config.get("metadata_ffprobe", True)
-        if not isinstance(metadata_exiftool, bool) \
-                or not isinstance(metadata_ffprobe, bool):
-            raise core.PreflightError("partial 的元数据工具开关无效")
+        metadata_modes = dbrun.metadata_tool_modes(config)
+        metadata_exiftool = metadata_modes["exiftool"] != "off"
+        metadata_ffprobe = metadata_modes["ffprobe"] != "off"
         format_enabled = str(
             config.get("format_validation") or "off") != "off"
         required_names = ["sevenzip"]
@@ -750,7 +807,7 @@ def _resume_preflight(
                 "powershell", ps_path, explicit=True, version=ps_version)
             _same_tool("powershell", frozen_ps, current_ps)
             tools["powershell"] = current_ps
-    preflight.finish("冻结身份、源目录、工具与输出目录均可恢复")
+    preflight.finish("冻结身份、源目录、工具与输出目录均符合续传要求")
     return config
 
 
@@ -854,7 +911,7 @@ def _raw_tool_failure(
             failure_kind=str(outcome.failure_kind),
             message=str(
                 outcome.detail
-                or f"RAW 隔离 worker 运行故障：{outcome.failure_kind}"
+                or f"RAW 隔离工作进程运行故障：{outcome.failure_kind}"
             )[:2048],
             pid=outcome.worker_pid or None,
             returncode=outcome.worker_exitcode,
@@ -864,7 +921,7 @@ def _raw_tool_failure(
 
 
 class RawScanIntegration:
-    """Full 格式校验的外部 RAW 从属阶段与联合发布上下文。"""
+    """完整扫描格式校验的外部 RAW 从属阶段与联合发布上下文。"""
 
     def __init__(
         self,
@@ -877,36 +934,41 @@ class RawScanIntegration:
             raise ValueError("RAW 扫描上下文只能用于已启用配置")
         mode = str(config.get("format_validation") or "off")
         if mode not in ("sample", "all"):
-            raise core.PreflightError("RAW 深检冻结配置没有有效格式范围")
+            raise core.PreflightError(
+                "RAW 深度校验的冻结配置缺少有效校验范围")
         runtime = dbstate.load_runtime(handle.connection)
         tools_row = handle.connection.execute(
             "SELECT tools_json FROM run_sessions WHERE session_id=?",
             (runtime.active_session_id,),
         ).fetchone()
         if tools_row is None:
-            raise core.PreflightError("RAW 深检缺少当前 session 工具证据")
+            raise core.PreflightError(
+                "RAW 深度校验缺少本次运行的工具证据")
         try:
             tools = json.loads(str(tools_row[0]))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise core.PreflightError("RAW 深检工具证据无法解析") from exc
+            raise core.PreflightError(
+                "RAW 深度校验的工具证据格式无效") from exc
         capability = (
             tools.get(envcap.RAW_CAPABILITY_ID)
             if isinstance(tools, dict) else None
         )
         if not isinstance(capability, dict):
-            raise core.PreflightError("RAW 深检缺少冻结能力")
+            raise core.PreflightError(
+                "RAW 深度校验缺少冻结的能力信息")
         details = capability.get("details")
         if not isinstance(details, dict) \
                 or capability.get("state") != "available" \
                 or capability.get("isolated") is not True \
                 or details.get("worker_reaped") is not True \
                 or not capability.get("version"):
-            raise core.PreflightError("RAW 深检冻结能力不完整或不是隔离可用状态")
+            raise core.PreflightError(
+                "RAW 深度校验的能力信息不完整，或隔离子进程不可用")
         snapshot_row = handle.connection.execute(
             "SELECT snapshot_uuid FROM snapshot_info WHERE id=1"
         ).fetchone()
         if snapshot_row is None:
-            raise core.PreflightError("RAW 深检缺少 snapshot UUID")
+            raise core.PreflightError("RAW 深度校验缺少快照 UUID")
         percent = (
             100.0 if mode == "all"
             else float(config.get("format_sample_percent", 10.0))
@@ -1104,7 +1166,7 @@ class RawScanIntegration:
                         self.binding,
                         size_bytes=expected_size,
                         code="source_identity_changed",
-                        detail="RAW 解码前 size／mtime 已改变",
+                        detail="RAW 解码前 size/mtime 已改变",
                     )
                 else:
                     def worker_event(event: str, **payload: object) -> None:
@@ -1133,7 +1195,7 @@ class RawScanIntegration:
                             size_bytes=expected_size,
                             code="worker_start_failed",
                             detail=(
-                                "RAW worker 无法启动："
+                                "RAW 工作进程无法启动："
                                 f"{type(exc).__name__}: {exc}"
                             ),
                             failure_kind="worker_start_failed",
@@ -1180,7 +1242,7 @@ class RawScanIntegration:
                                     self.binding,
                                     size_bytes=expected_size,
                                     code="source_changed_during_decode",
-                                    detail="RAW 解码期间 size／mtime 已改变",
+                                    detail="RAW 解码期间 size/mtime 已改变",
                                 ),
                                 elapsed_seconds=outcome.elapsed_seconds,
                                 threshold_seconds=outcome.threshold_seconds,
@@ -1372,7 +1434,8 @@ class RawScanIntegration:
         artifact_filename: str,
     ) -> str | None:
         if not self._report_cache:
-            raise core.PreflightError("RAW 伴随报告尚未构建，拒绝生成 Issues")
+            raise core.PreflightError(
+                "RAW 深度校验伴随报告尚未生成，不能创建问题报告")
         section = rawevidence.raw_issue_section_payload(self._report_cache)
         return dbissues.build_snapshot_issue_report_from_connection(
             con,
@@ -1518,7 +1581,7 @@ def _run_handle(
     except (OSError, sqlite3.Error, core.PreflightError) as exc:
         _recover_open_handle(handle, str(exc))
         reporter.event("lease_heartbeat_failed", error=str(exc))
-        print(f"\nlease 心跳无法启动：{exc}", file=sys.stderr)
+        print(f"\n任务占用心跳无法启动：{exc}", file=sys.stderr)
         return 1
     heartbeat_stopped = False
     if args.control_stdin:
@@ -1542,10 +1605,10 @@ def _run_handle(
         heartbeat_stopped = heartbeat.stop(timeout_seconds=10.0)
         if not heartbeat_stopped:
             raise core.PreflightError(
-                "lease 心跳线程未在封存前停止，拒绝封存")
+                "任务占用心跳线程未在封存前停止，拒绝封存")
         if heartbeat.error is not None:
             raise core.PreflightError(
-                f"lease 心跳失败，拒绝封存：{heartbeat.error}")
+                f"任务占用心跳失败，拒绝封存：{heartbeat.error}")
         if reporter.event_log_error is not None:
             raise core.PreflightError(
                 "运行事件证据写入失败，拒绝封存："
@@ -1613,7 +1676,7 @@ def _run_handle(
             partial=os.path.basename(handle.partial_path),
         )
         print(
-            f"\n已安全中断并保留恢复证据：{handle.partial_path}",
+            f"\n已安全中断并保留续传证据：{handle.partial_path}",
             file=sys.stderr,
         )
         return 130
@@ -1623,14 +1686,14 @@ def _run_handle(
         else:
             _recover_open_handle(handle, str(exc))
         reporter.event("run_failed", error=str(exc))
-        print(f"\n扫描失败并保留可诊断 partial：{exc}", file=sys.stderr)
+        print(f"\n扫描失败；已保留可诊断的未完成快照：{exc}", file=sys.stderr)
         return 1
     finally:
         if not heartbeat_stopped:
             heartbeat_stopped = heartbeat.stop(timeout_seconds=10.0)
             if not heartbeat_stopped:
                 heartbeat_errors.append(RuntimeError(
-                    "lease 心跳线程未在退出前停止"))
+                    "任务占用心跳线程未在退出前停止"))
         if inbox is not None:
             inbox.stop()
 
@@ -1638,7 +1701,7 @@ def _run_handle(
     if heartbeat_errors:
         _recover_open_handle(handle, str(heartbeat_errors[-1]))
         print(
-            f"\nlease 心跳失败，已保留恢复证据：{heartbeat_errors[-1]}",
+            f"\n任务占用心跳失败；已保留续传证据：{heartbeat_errors[-1]}",
             file=sys.stderr,
         )
         return 1
@@ -1657,18 +1720,18 @@ def _run_handle(
         )
         print(
             f"\n快照：{publication.final_path}"
-            "\nmanifest、session、attempt 与运行证据：已内置于 SQLite",
+            "\n运行清单、会话、处理尝试与运行证据：已写入 SQLite",
         )
         if publication.issue_report_path:
             print(
-                "!! 数据库已完整封存；另有源文件或扫描证据问题："
+                "警告：数据库已完整封存；另有源文件或扫描证据问题："
                 f"{publication.issue_report_path}",
                 file=sys.stderr,
             )
         for artifact_path in publication.artifact_paths:
-            print(f"RAW 伴随报告：{artifact_path}")
+            print(f"RAW 深度校验伴随报告：{artifact_path}")
         for warning in publication.warnings:
-            print(f"!! {warning}", file=sys.stderr)
+            print(f"警告：{warning}", file=sys.stderr)
         return 0
     reporter.event(
         "run_result",
@@ -1678,28 +1741,28 @@ def _run_handle(
     )
     if state == "save_exit":
         print(
-            "\n进度已安全保存；下次打开 DAISY 后可选择恢复："
+            "\n进度已安全保存；下次打开 DAISY 后可选择续传："
             f"\n{handle.partial_path}",
         )
         return 75
     if state == "stopped":
         print(
-            "\n任务已停止并保留审计证据；不会主动建议恢复，"
+            "\n任务已停止并保留审计证据；不会主动提示续传，"
             f"可手动选择：\n{handle.partial_path}",
             file=sys.stderr,
         )
         return 130
     if state == "failed_recoverable":
         print(
-            "\n扫描阶段因外部工具故障熔断；已保留已完成结果和可恢复证据，"
-            "未处理文件没有被批量记成源文件错误。修复工具环境后可恢复："
+            "\n外部工具连续故障，扫描阶段已停止；已保留已完成结果和续传证据，"
+            "未处理文件没有被批量记成源文件问题。修复工具环境后可续传："
             f"\n{handle.partial_path}",
             file=sys.stderr,
         )
         return 1
     print(
-        f"\n扫描返回未识别状态 {state!r}；partial 已保留："
-        f"{handle.partial_path}",
+        f"\n扫描返回未识别状态 {state!r}；未完成快照已保留："
+        f"\n{handle.partial_path}",
         file=sys.stderr,
     )
     return 1
@@ -1727,7 +1790,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, sqlite3.Error) as exc:
         if handle is not None:
             _recover_open_handle(handle, str(exc))
-        print(f"扫描入口失败并已保留恢复证据：{exc}", file=sys.stderr)
+        print(f"扫描入口失败并已保留续传证据：{exc}", file=sys.stderr)
         return 1
     finally:
         if handle is not None:

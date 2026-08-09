@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 哈希工作进程、无进展 timeout 与决策测试。"""
+"""DAISY 哈希工作进程、无进展超时与处置测试。"""
 from __future__ import annotations
 
 import hashlib

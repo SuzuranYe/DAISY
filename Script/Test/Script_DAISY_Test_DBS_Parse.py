@@ -1,4 +1,4 @@
-"""DBS Parse 模块注册表、writer 与 DBS-41 兼容入口测试。"""
+"""DBS 解析模块注册表、写入器与 DBS-41 兼容入口测试。"""
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
@@ -182,7 +182,7 @@ class TestLegacyExportWrapper(unittest.TestCase):
             self.assertEqual(legacy_export.main(), 0)
         export_snapshot.assert_called_once_with(
             "input.sqlite", "Output/Reports")
-        self.assertIn("导出目录:Report", stdout.getvalue())
+        self.assertIn("导出目录：Report", stdout.getvalue())
 
         stderr = io.StringIO()
         with mock.patch.object(
@@ -281,7 +281,7 @@ class TestExportSnapshot(_ParseFixture):
             self.assertIn("文件清单", workbook_xml)
             tree_sheet = book.read(
                 "xl/worksheets/sheet3.xml").decode("utf-8")
-            self.assertIn("完整路径", tree_sheet)
+            self.assertIn("文件逻辑路径", tree_sheet)
             self.assertIn("照片.bin", tree_sheet)
 
     def test_snapshot_export_video_gps_points(self):
@@ -365,7 +365,7 @@ class TestExportDiff(_ParseFixture):
         with open(os.path.join(folder, "Diff_summary.md"),
                   encoding="utf-8") as handle:
             md = handle.read()
-        self.assertIn("content_changed", md)
+        self.assertIn("内容变化", md)
         self.assertIn("independent_computation", md)
         self.assertIn("hash_coverage", md)
         self.assertIn("内容维度", md)

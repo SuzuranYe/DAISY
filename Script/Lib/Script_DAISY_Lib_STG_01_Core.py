@@ -17,8 +17,8 @@ from typing import Any, Iterable
 
 
 APP_NAME = "DAISY"
-APP_TITLE = "DAISY 存储设备信息登记"
-APP_VERSION = "1.6.1"
+APP_TITLE = "DAISY 硬盘信息登记"
+APP_VERSION = "1.6.2"
 APP_AUTHOR = "Suzuran Ye"
 APP_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 ARCHIVE_SCHEMA_VERSION = 3
@@ -104,7 +104,7 @@ class Progress:
         if not self.quiet:
             print(
                 f"[{self.stage_idx}/{self.stage_total}] {self.name} 完成："
-                f"{summary}（{elapsed:.1f}s）",
+                f"{summary}（{elapsed:.1f} 秒）",
                 flush=True,
             )
 

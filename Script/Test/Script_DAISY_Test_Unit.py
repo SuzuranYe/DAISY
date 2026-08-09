@@ -115,6 +115,12 @@ class TestGuiArguments(unittest.TestCase):
             "ffprobe": r"C:\Tools\ffprobe.exe",
         }
         app.saved_values = {
+            "scan": {
+                "roots": r"E:\私人档案",
+                "scan_mode": "full",
+                "metadata_exiftool_mode": "normalized",
+                "metadata_ffprobe_mode": "off",
+            },
             "verify": {
                 "snapshot": r"E:\私人档案\snapshot.sqlite",
                 "root_map": r"E:\私人档案",
@@ -144,6 +150,11 @@ class TestGuiArguments(unittest.TestCase):
             "timeout_action": "skip_and_record",
             "show_current_file": True,
         })
+        self.assertEqual(payload["task_options"]["scan"], {
+            "scan_mode": "full",
+            "metadata_exiftool_mode": "normalized",
+            "metadata_ffprobe_mode": "off",
+        })
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertNotIn("snapshot", serialized)
         self.assertNotIn("root_map", serialized)
@@ -153,10 +164,19 @@ class TestGuiArguments(unittest.TestCase):
         for task in gui.TASKS:
             for spec in task.fields:
                 title_limit = (
-                    8 if spec.label.isascii()
+                    gui._FORM_FIELD_ASCII_TITLE_MAX_CHARS
+                    if spec.label.isascii()
                     else gui._FORM_FIELD_TITLE_MAX_CHARS)
+                measured_title = (
+                    spec.label
+                    if spec.label.isascii()
+                    else "".join(
+                        character for character in spec.label
+                        if "\u4e00" <= character <= "\u9fff"
+                    )
+                )
                 self.assertLessEqual(
-                    len(spec.label), title_limit,
+                    len(measured_title), title_limit,
                     f"{task.key}.{spec.key}: {spec.label}",
                 )
                 self.assertLessEqual(
@@ -173,12 +193,15 @@ class TestGuiArguments(unittest.TestCase):
             ("scan", "start_mode"): "生成方式",
             ("scan", "root_batch_mode"): "建库方式",
             ("scan", "resume"): "续传快照",
-            ("scan", "collect_file_id"): "NTFS标识",
+            ("scan", "metadata_storage"): "元数据",
+            ("scan", "hash_mode"): "哈希",
+            ("scan", "collect_file_id"): "NTFS-ID",
             ("verify", "root_map"): "档案根目录",
             ("verify", "force"): "指纹降级",
             ("diff", "old"): "基准快照",
             ("diff", "new"): "对比快照",
-            ("storage_collect", "summary_txt"): "简化文本",
+            ("diff", "map_root"): "根目录名配对",
+            ("storage_collect", "summary_txt"): "简化报告",
         }
         actual = {
             (task.key, spec.key): spec.label
@@ -193,7 +216,7 @@ class TestGuiArguments(unittest.TestCase):
             gui.TASK_BY_KEY["env_check"].nav, "ENV-01  运行环境检测")
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "DBS-91  DAISY功能自检",
+            "DBS-91  DAISY 功能自检",
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
@@ -241,12 +264,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             metadata_storage.choices,
             (
-                ("全量元数据：基础字段＋原始工具输出", "complete"),
+                ("全量元数据：基础字段＋工具原始输出", "complete"),
                 ("基础元数据：仅保留规范化常用字段", "normalized"),
             ),
         )
-        self.assertIn("视频和音频还通过 ffprobe", metadata_storage.help)
-        self.assertIn("GIF 在基础范围只使用 ExifTool", metadata_storage.help)
+        self.assertIn("音视频记录容器与流", metadata_storage.help)
+        self.assertIn("GIF 使用 ExifTool", metadata_storage.help)
         self.assertEqual(metadata_storage.kind, "choice")
         for spec in (
                 full_fields["collect_file_id"],
@@ -363,17 +386,20 @@ class TestGuiArguments(unittest.TestCase):
         full = gui.build_tool_args("scan", {
             "scan_mode": "full", "start_mode": "new",
             "roots": r"E:\Archive",
-            "metadata_exiftool": False,
-            "metadata_ffprobe": True,
-            "metadata_storage": "complete",
+            "metadata_exiftool_mode": "normalized",
+            "metadata_ffprobe_mode": "off",
             "hash_mode": "full",
         })
         self.assertEqual(full[full.index("--mode") + 1], "full")
         self.assertNotIn("--format-validation", full)
         self.assertNotIn("--raw-deep-validation", full)
-        self.assertIn("--no-metadata-exiftool", full)
         self.assertEqual(
-            full[full.index("--metadata-storage") + 1], "complete")
+            full[full.index("--metadata-exiftool-mode") + 1],
+            "normalized",
+        )
+        self.assertEqual(
+            full[full.index("--metadata-ffprobe-mode") + 1], "off")
+        self.assertNotIn("--metadata-storage", full)
         self.assertEqual(full[full.index("--hash") + 1], "full")
         self.assertIn("--hash", full)
         self.assertIn("--control-stdin", full)
@@ -391,7 +417,9 @@ class TestGuiArguments(unittest.TestCase):
             "snapshot": r"E:\Runs\A.sqlite",
             "root_map": r"archive=E:\Archive",
             "verify_builtin": True,
+            "verify_exiftool": False,
             "verify_ffprobe": True,
+            "verify_sevenzip": False,
             "raw_deep_validation": True,
         })
         self.assertEqual(verify[verify.index("--hash") + 1], "off")
@@ -437,8 +465,8 @@ class TestGuiArguments(unittest.TestCase):
                 "--root", "--output-dir", "--no-file-id", "--resume"},
             "scan": {
                 "--root", "--output-dir", "--hash",
-                "--verify-sample-percent", "--metadata-storage",
-                "--no-metadata-exiftool", "--no-metadata-ffprobe",
+                "--verify-sample-percent", "--metadata-exiftool-mode",
+                "--metadata-ffprobe-mode",
                 "--no-file-id", "--resume", "--exiftool-path",
                 "--ffprobe-path", "--sevenzip-path", "--powershell-path",
                 "--timeout-action", "--retry-mode",
@@ -518,13 +546,13 @@ class TestGuiArguments(unittest.TestCase):
             if spec.key == "summary_txt"
         )
         self.assertEqual(summary_spec.kind, "choice_flag")
-        self.assertEqual(summary_spec.default, False)
+        self.assertEqual(summary_spec.default, True)
         self.assertEqual(summary_spec.flag_value, True)
         self.assertEqual(
             summary_spec.choices,
             (
                 ("不生成", False),
-                ("生成 ZIP 外部 TXT", True),
+                ("生成", True),
             ),
         )
 
@@ -559,17 +587,17 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_storage_collect_requires_valid_disk_pool_numbers(self):
         self.assertIn(
-            "请填写“物理硬盘池”。",
+            "请填写「硬盘选择」。",
             gui.validate_values("storage_collect", {"disk_number": ""}),
         )
         for invalid in ("-1", "3.0", "disk3"):
             self.assertIn(
-                "“物理硬盘池”包含无效编号，请重新检测并选择。",
+                "「硬盘选择」包含无效编号，请重新检测并选择。",
                 gui.validate_values(
                     "storage_collect", {"disk_number": invalid}),
             )
         self.assertNotIn(
-            "“物理硬盘池”包含无效编号，请重新检测并选择。",
+            "「硬盘选择」包含无效编号，请重新检测并选择。",
             gui.validate_values(
                 "storage_collect", {"disk_number": "0\n3"}),
         )
@@ -607,7 +635,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual([option.disk_number for option in options], [3, 4])
         self.assertTrue(options[0].selectable)
         self.assertFalse(options[1].selectable)
-        self.assertEqual(options[1].reason, "smartctl 未关联")
+        self.assertEqual(options[1].reason, "无法读取 SMART 信息")
 
         app = object.__new__(gui.DaisyApp)
         app.storage_disk_choices = ()
@@ -665,7 +693,7 @@ class TestGuiArguments(unittest.TestCase):
         task_key, jobs = calls[2]
         self.assertEqual(task_key, "storage_list")
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0].label, "检测物理硬盘")
+        self.assertEqual(jobs[0].label, "检测硬盘")
         self.assertEqual(jobs[0].values, {})
 
         snapshot_args = gui.build_tool_args(
@@ -796,8 +824,16 @@ class TestGuiArguments(unittest.TestCase):
                     "--exact", "--source", "--accept-source-agreements",
                     "--accept-package-agreements", "--disable-interactivity"):
                 self.assertIn(required, command)
+            query = gui.dependency_latest_version_command(name, winget)
+            self.assertEqual(query[0], winget)
+            self.assertEqual(query[1], "show")
+            self.assertEqual(query[query.index("--id") + 1], package_id)
+            self.assertNotIn("--versions", query)
+            self.assertNotIn("install", query)
         with self.assertRaises(ValueError):
             gui.dependency_install_command("arbitrary")
+        with self.assertRaises(ValueError):
+            gui.dependency_latest_version_command("arbitrary")
 
         python_path = r"C:\Python314\python.exe"
         rawpy_command = gui.python_capability_install_command(
@@ -811,8 +847,37 @@ class TestGuiArguments(unittest.TestCase):
             "only-if-needed",
         )
         self.assertEqual(rawpy_command[-1], "rawpy")
+        rawpy_query = gui.python_capability_latest_version_command(
+            "rawpy", python_path)
+        self.assertEqual(rawpy_query[0], python_path)
+        self.assertEqual(
+            rawpy_query[1:6], ["-m", "pip", "index", "versions", "rawpy"])
+        self.assertNotIn("install", rawpy_query)
         with self.assertRaises(ValueError):
             gui.python_capability_install_command("arbitrary", python_path)
+        with self.assertRaises(ValueError):
+            gui.python_capability_latest_version_command(
+                "arbitrary", python_path)
+
+    def test_gui_latest_version_parsers_accept_winget_and_pip_outputs(self):
+        self.assertEqual(
+            gui.parse_winget_latest_version(
+                "找到 ExifTool\n版本\n-------------\n13.40\n13.39\n"),
+            "13.40",
+        )
+        self.assertEqual(
+            gui.parse_winget_latest_version(
+                "Found 7-Zip\nVersion: 25.01\nPublisher: Igor Pavlov\n"),
+            "25.01",
+        )
+        self.assertEqual(
+            gui.parse_pip_latest_version(
+                "rawpy (0.25.1)\nAvailable versions: 0.25.1, 0.25.0\n"
+                "  INSTALLED: 0.24.0\n  LATEST: 0.25.1\n"),
+            "0.25.1",
+        )
+        self.assertIsNone(gui.parse_winget_latest_version("No package found"))
+        self.assertIsNone(gui.parse_pip_latest_version("ERROR: network"))
 
     def test_gui_dependency_install_targets_only_selected_allowlisted_tool(
             self):
@@ -826,12 +891,11 @@ class TestGuiArguments(unittest.TestCase):
 
         with patch.object(
                 gui, "discover_winget",
-                return_value=r"C:\WindowsApps\winget.exe"), \
-                patch.object(
-                    gui.messagebox, "askyesno", return_value=True):
+                return_value=r"C:\WindowsApps\winget.exe"):
             app._install_tool("ffprobe")
 
-        self.assertEqual(started[0][0], gui._DEPENDENCY_INSTALL_KEY)
+        self.assertEqual(
+            started[0][0], gui._DEPENDENCY_VERSION_CHECK_KEY)
         jobs = started[0][1]
         self.assertEqual(
             [job.values["tool_name"] for job in jobs],
@@ -840,15 +904,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertTrue(all(
             job.values["winget_path"] == r"C:\WindowsApps\winget.exe"
             for job in jobs))
-
-        started.clear()
-        with patch.object(
-                gui, "discover_winget",
-                return_value=r"C:\WindowsApps\winget.exe"), \
-                patch.object(
-                    gui.messagebox, "askyesno", return_value=False):
-            app._install_tool("exiftool")
-        self.assertEqual(started, [])
+        self.assertEqual(jobs[0].values["installer_kind"], "winget")
 
     def test_gui_rawpy_install_targets_current_python_only(self):
         app = object.__new__(gui.DaisyApp)
@@ -860,26 +916,353 @@ class TestGuiArguments(unittest.TestCase):
         app._begin_run_jobs = lambda key, jobs: started.append((key, jobs))
         python_path = r"C:\Python314\python.exe"
 
-        with patch.object(gui, "_console_python", return_value=python_path), \
-                patch.object(
-                    gui.messagebox, "askyesno", return_value=True):
+        with patch.object(gui, "_console_python", return_value=python_path):
             app._install_python_capability("rawpy")
 
-        self.assertEqual(started[0][0], gui._DEPENDENCY_INSTALL_KEY)
+        self.assertEqual(
+            started[0][0], gui._DEPENDENCY_VERSION_CHECK_KEY)
         job = started[0][1][0]
-        self.assertEqual(job.label, "rawpy／LibRaw")
+        self.assertEqual(job.label, "rawpy/LibRaw")
         self.assertEqual(job.values, {
             "tool_name": "rawpy",
+            "display_name": "rawpy/LibRaw",
             "installer_kind": "pip",
             "python_path": python_path,
+            "before_version": "尚未检测",
         })
 
-        started.clear()
-        with patch.object(gui, "_console_python", return_value=python_path), \
-                patch.object(
-                    gui.messagebox, "askyesno", return_value=False):
-            app._install_python_capability("rawpy")
+    def test_gui_install_confirmation_and_recheck_report_versions(self):
+        app = object.__new__(gui.DaisyApp)
+        app.process = None
+        app.run_jobs = []
+        app.worker_starting = False
+        app.root = object()
+        app.detected_tools = {
+            "ffprobe": {
+                "path": r"C:\Tools\ffprobe.exe",
+                "version": "7.1",
+                "verified": True,
+            },
+        }
+        app.runtime_capabilities = {}
+        app.environment_missing_names = ()
+        started = []
+        prompts = []
+        logs = []
+        app._begin_run_jobs = lambda key, jobs: started.append((key, jobs))
+        app._append_log = lambda text, tag=None: logs.append((text, tag))
+        app._set_status = lambda _text, _colour=None: None
+        app._set_settings_expanded = lambda _value: None
+
+        def confirm(_title, message, **_options):
+            prompts.append(message)
+            return True
+
+        with patch.object(
+                gui, "discover_winget",
+                return_value=r"C:\WindowsApps\winget.exe"):
+            app._install_tool("ffprobe")
+
+        self.assertEqual(len(started), 1)
+        self.assertEqual(
+            started[0][0], gui._DEPENDENCY_VERSION_CHECK_KEY)
+        query_job = started[0][1][0]
+        with patch.object(gui.messagebox, "askyesno", side_effect=confirm):
+            app._finish_dependency_version_query(
+                query_job, 0,
+                "Found FFmpeg\nVersion\n-------\n8.0\n7.1\n",
+            )
+
+        self.assertEqual(len(started), 2)
+        self.assertEqual(started[1][0], gui._DEPENDENCY_INSTALL_KEY)
+        self.assertIn("当前检测版本：7.1", prompts[0])
+        self.assertIn("软件源最新版本：8.0", prompts[0])
+        report = app.pending_install_version_report
+        self.assertIsNotNone(report)
+        self.assertEqual(report.before_version, "7.1")
+        self.assertEqual(report.latest_version, "8.0")
+        report.install_returncode = 0
+        app.process_task_key = "env_check"
+        app.environment_missing_reasons = {}
+        app.missing_installable_tools = ()
+        app._cache_detected_tools = lambda _payload: None
+        app._refresh_tool_cache_labels = lambda: None
+        app._apply_environment_inventory({
+            "tools": {
+                "ffprobe": {
+                    "path": r"C:\Tools\ffprobe.exe",
+                    "version": "8.0",
+                    "verified": True,
+                },
+            },
+            "missing": [],
+        })
+        statuses = []
+        app._set_status = (
+            lambda text, colour=None: statuses.append((text, colour)))
+
+        app._finish_install_version_report(recheck_returncode=0)
+
+        combined_log = "".join(text for text, _tag in logs)
+        self.assertIn("当前版本（安装前）：7.1", combined_log)
+        self.assertIn("软件源最新版本（查询时）：8.0", combined_log)
+        self.assertIn("更新后版本：8.0", combined_log)
+        self.assertIn("版本已更新", combined_log)
+        self.assertIn("7.1 → 8.0", statuses[0][0])
+        self.assertIsNone(app.pending_install_version_report)
+
+    def test_gui_latest_version_query_cancel_or_failure_never_installs(self):
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        started = []
+        logs = []
+        statuses = []
+        settings = []
+        app._begin_run_jobs = lambda key, jobs: started.append((key, jobs))
+        app._append_log = lambda text, tag=None: logs.append((text, tag))
+        app._set_status = (
+            lambda text, colour=None: statuses.append((text, colour)))
+        app._set_settings_expanded = lambda value: settings.append(value)
+        job = gui.RunJob("ExifTool", {
+            "tool_name": "exiftool",
+            "display_name": "ExifTool",
+            "installer_kind": "winget",
+            "winget_path": r"C:\WindowsApps\winget.exe",
+            "before_version": "13.39",
+        })
+
+        with patch.object(gui.messagebox, "askyesno", return_value=False):
+            app._finish_dependency_version_query(
+                job, 0, "版本\n-------\n13.40\n")
         self.assertEqual(started, [])
+        self.assertTrue(settings[-1])
+
+        with patch.object(gui.messagebox, "showerror") as shown:
+            app._finish_dependency_version_query(job, 2, "network failed")
+        shown.assert_called_once()
+        self.assertEqual(started, [])
+        self.assertIn("未执行安装", statuses[-1][0])
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_form_rows_and_verification_buttons_share_global_spacing(self):
+        root, app = self._real_tk_app()
+        app.saved_values["scan"] = {
+            "scan_mode": "full", "start_mode": "new",
+        }
+        app._select_task("scan", save_current=False)
+        root.update()
+
+        scan_mode = app.values["scan_mode"]
+        generation_mode = app.values["start_mode"]
+        metadata = app.values["metadata_storage"]
+        file_id = app.values["collect_file_id"]
+        content_hash = app.values["hash_mode"]
+
+        def visible_gap(upper, lower):
+            return (
+                lower.winfo_rooty()
+                - upper.winfo_rooty()
+                - upper.winfo_height()
+            )
+
+        for upper, lower in (
+                (scan_mode, generation_mode),
+                (metadata, file_id),
+                (file_id, content_hash)):
+            self.assertEqual(
+                visible_gap(upper, lower), gui._FORM_FIELD_GAP)
+
+        scan_buttons = list(scan_mode.buttons.values())
+        metadata_buttons = (
+            metadata.exiftool_button.button,
+            metadata.ffprobe_button.button,
+        )
+        standard_buttons = (
+            *scan_buttons, *generation_mode.buttons.values(),
+            *metadata_buttons, file_id.button, content_hash.button,
+        )
+        standard_size = (
+            scan_buttons[0].winfo_width(),
+            scan_buttons[0].winfo_height(),
+        )
+        self.assertEqual(
+            {(button.winfo_width(), button.winfo_height())
+             for button in standard_buttons},
+            {standard_size},
+        )
+        for buttons in (scan_buttons, list(metadata_buttons)):
+            internal_gap = (
+                buttons[1].winfo_rootx()
+                - buttons[0].winfo_rootx()
+                - buttons[0].winfo_width()
+            )
+            self.assertEqual(internal_gap, gui._STANDARD_BUTTON_GAP)
+
+        for controls in (app.utility_buttons, app.execution_buttons):
+            visible = sorted(
+                (button for button in controls if button.winfo_ismapped()),
+                key=lambda button: button.winfo_rootx(),
+            )
+            for left, right in zip(visible, visible[1:]):
+                self.assertEqual(
+                    right.winfo_rootx() - left.winfo_rootx()
+                    - left.winfo_width(),
+                    gui._STANDARD_BUTTON_GAP,
+                )
+
+        labels = {
+            widget.cget("text"): widget
+            for widget in app.form_inner.winfo_children()
+            if isinstance(widget, gui.tk.Label)
+            and widget.cget("text") in ("扫描模式", "生成方式")
+        }
+        for label_text, control in (
+                ("扫描模式", scan_mode),
+                ("生成方式", generation_mode)):
+            label = labels[label_text]
+            label_center = label.winfo_rooty() + label.winfo_height() / 2
+            control_center = (
+                control.winfo_rooty() + control.winfo_height() / 2)
+            self.assertAlmostEqual(label_center, control_center, delta=1.0)
+
+        app._select_task("verify", save_current=False)
+        root.update()
+        verification = app.values["verify_builtin"]
+        verification_buttons = [
+            control.button for control in verification.controls.values()]
+        self.assertEqual(
+            {(button.winfo_width(), button.winfo_height())
+             for button in verification_buttons},
+            {standard_size},
+        )
+        for left, right in zip(
+                verification_buttons, verification_buttons[1:]):
+            self.assertEqual(
+                right.winfo_rootx() - left.winfo_rootx()
+                - left.winfo_width(),
+                gui._STANDARD_BUTTON_GAP,
+            )
+
+        panels = (
+            app.task_card, app.progress_panel,
+            app.log_panel, app.command_panel,
+        )
+        for upper, lower in zip(panels, panels[1:]):
+            self.assertEqual(
+                lower.winfo_rooty() - upper.winfo_rooty()
+                - upper.winfo_height(),
+                gui._PANEL_GAP,
+            )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_latest_version_run_finishes_into_confirmation_stage(self):
+        root, app = self._real_tk_app()
+        app._select_task("env_check", save_current=False)
+        job = gui.RunJob("ExifTool", {
+            "tool_name": "exiftool",
+            "display_name": "ExifTool",
+            "installer_kind": "winget",
+            "winget_path": r"C:\WindowsApps\winget.exe",
+            "before_version": "13.39",
+        })
+        app.process_task_key = gui._DEPENDENCY_VERSION_CHECK_KEY
+        app.run_jobs = [job]
+        app.run_job_index = 0
+        app.run_results = [0]
+        app.run_outcomes = [None]
+        app.dependency_version_query_output = "Version: 13.40\n"
+        app.stop_requested = False
+        app.save_exit_requested = False
+        app.worker_starting = False
+        app.close_after_stop = False
+
+        with patch.object(
+                app, "_finish_dependency_version_query") as finished:
+            app._finalize_run(0.1)
+
+        finished.assert_called_once_with(job, 0, "Version: 13.40\n")
+        self.assertEqual(app.dependency_version_query_output, "")
+        self.assertIsNone(app.process_task_key)
+
+    def test_gui_install_version_report_does_not_reuse_stale_cache(self):
+        app = object.__new__(gui.DaisyApp)
+        app.process_task_key = "env_check"
+        app.detected_tools = {
+            "sevenzip": {
+                "path": r"C:\Tools\7z.exe",
+                "version": "24.09",
+                "verified": True,
+            },
+        }
+        app.environment_missing_names = ()
+        app.environment_missing_reasons = {}
+        app.missing_installable_tools = ()
+        app.pending_install_version_report = gui.InstallVersionReport(
+            "sevenzip", "7-Zip", "24.09", install_returncode=0)
+        app._cache_detected_tools = lambda _payload: None
+        app._refresh_tool_cache_labels = lambda: None
+
+        app._apply_environment_inventory({
+            "tools": {},
+            "missing": [{
+                "name": "sevenzip",
+                "reason": "synthetic missing",
+                "installable": True,
+            }],
+        })
+
+        report = app.pending_install_version_report
+        self.assertEqual(report.after_version, "未检测到")
+        self.assertTrue(report.inventory_received)
+
+    def test_gui_rawpy_install_version_comes_from_isolated_inventory(self):
+        payload = {
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID: {
+                    "state": "available",
+                    "version": "0.25.1",
+                },
+            },
+        }
+        self.assertEqual(
+            gui.DaisyApp._install_version_from_inventory("rawpy", payload),
+            "0.25.1",
+        )
+
+        app = object.__new__(gui.DaisyApp)
+        app.pending_install_version_report = gui.InstallVersionReport(
+            "rawpy", "rawpy/LibRaw", "0.24.0",
+            install_returncode=1, after_version="0.25.1",
+            inventory_received=True,
+        )
+        logs = []
+        app._append_log = lambda text, tag=None: logs.append((text, tag))
+        app._set_status = lambda _text, _colour=None: None
+
+        app._finish_install_version_report(recheck_returncode=0)
+
+        self.assertIn("更新后版本：0.25.1", logs[0][0])
+        self.assertIn("安装命令未成功", logs[0][0])
+        self.assertNotIn("结果：版本已更新", logs[0][0])
+
+    def test_gui_install_report_does_not_claim_an_unknown_version(self):
+        app = object.__new__(gui.DaisyApp)
+        app.pending_install_version_report = gui.InstallVersionReport(
+            "exiftool", "ExifTool", "尚未检测",
+            latest_version="13.40", install_returncode=0,
+            after_version="版本未知", inventory_received=True,
+        )
+        logs = []
+        statuses = []
+        app._append_log = lambda text, tag=None: logs.append((text, tag))
+        app._set_status = (
+            lambda text, colour=None: statuses.append((text, colour)))
+
+        app._finish_install_version_report(recheck_returncode=0)
+
+        self.assertIn("工具当前可用，但未能识别版本", logs[0][0])
+        self.assertNotIn("安装后已检测到版本", logs[0][0])
+        self.assertIn("版本未知", statuses[0][0])
 
     def test_environment_install_buttons_are_independent(self):
         class ButtonProbe:
@@ -913,7 +1296,7 @@ class TestGuiArguments(unittest.TestCase):
                 *gui._INSTALLABLE_PYTHON_CAPABILITIES,
             )
         }
-        app.admin_mode_switch = SwitchProbe()
+        app.admin_mode_button = SwitchProbe()
         app.is_administrator = False
 
         app._refresh_environment_actions()
@@ -921,19 +1304,14 @@ class TestGuiArguments(unittest.TestCase):
         for name in gui._INSTALLABLE_TOOL_PACKAGES:
             button = app.install_tool_buttons[name]
             self.assertEqual(button.options["state"], "normal")
-            self.assertEqual(
-                button.options["text"],
-                f"安装 {gui._TOOL_DISPLAY_NAMES[name]}",
-            )
         rawpy_button = app.install_tool_buttons["rawpy"]
         self.assertEqual(rawpy_button.options["state"], "normal")
-        self.assertEqual(rawpy_button.options["text"], "安装 rawpy")
         self.assertEqual(
-            app.admin_mode_switch.options["enabled"],
+            app.admin_mode_button.options["enabled"],
             os.name == "nt",
         )
         self.assertEqual(
-            app.admin_mode_switch.options["value"], False)
+            app.admin_mode_button.options["value"], False)
 
         app.process = object()
         app._refresh_environment_actions()
@@ -942,13 +1320,13 @@ class TestGuiArguments(unittest.TestCase):
             for button in app.install_tool_buttons.values()
         ))
         self.assertEqual(
-            app.admin_mode_switch.options["enabled"], False)
+            app.admin_mode_button.options["enabled"], False)
 
         app.process = None
         app.is_administrator = True
         app._refresh_environment_actions()
-        self.assertEqual(app.admin_mode_switch.options["value"], True)
-        self.assertEqual(app.admin_mode_switch.options["enabled"], False)
+        self.assertEqual(app.admin_mode_button.options["value"], True)
+        self.assertEqual(app.admin_mode_button.options["enabled"], False)
 
     def test_environment_summary_displays_local_versions(self):
         cache = {
@@ -1056,7 +1434,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(sync_calls, [True])
         self.assertEqual(app.root.geometries, ["1248x640+1936+20"])
 
-    def test_normal_minimum_width_follows_full_function_modules(self):
+    def test_normal_minimum_width_uses_supported_toolbar_floor(self):
         class RootProbe:
             def __init__(self):
                 self.minimum_sizes = []
@@ -1079,22 +1457,23 @@ class TestGuiArguments(unittest.TestCase):
         app.root = RootProbe()
         app.task_toolbar_panel = ToolbarProbe(936)
         app.normal_min_size = (760, 680)
+        app.normal_width_cap = 1200
         app.command_preview_expanded = False
         app.mini_mode = False
         app._sync_task_toolbar_minimum_width()
-        self.assertEqual(app.normal_min_size, (936, 680))
-        self.assertEqual(app.root.minimum_sizes[-1], (936, 680))
+        self.assertEqual(app.normal_min_size, (1100, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
 
         app.task_toolbar_panel.width = 820
         app._sync_task_toolbar_minimum_width()
-        self.assertEqual(app.normal_min_size, (936, 680))
-        self.assertEqual(app.root.minimum_sizes[-1], (936, 680))
+        self.assertEqual(app.normal_min_size, (1100, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
 
         app.task_toolbar_panel.width = 1400
         app.normal_width_cap = 1200
         app._sync_task_toolbar_minimum_width()
-        self.assertEqual(app.normal_min_size, (1200, 680))
-        self.assertEqual(app.root.minimum_sizes[-1], (1200, 680))
+        self.assertEqual(app.normal_min_size, (1100, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
 
     def test_utility_buttons_wrap_without_reordering(self):
         widths = (118, 118, 118, 181)
@@ -1105,7 +1484,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         for row in rows:
             occupied = sum(widths[index] for index in row)
-            occupied += 8 * max(0, len(row) - 1)
+            occupied += gui._STANDARD_BUTTON_GAP * max(0, len(row) - 1)
             self.assertLessEqual(occupied, 380)
         self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
 
@@ -1195,6 +1574,16 @@ class TestGuiArguments(unittest.TestCase):
                 force.choices,
                 (("不启用", False), ("启用", True)),
             )
+        diff_force = next(
+            spec for spec in gui.TASK_BY_KEY["diff"].fields
+            if spec.key == "force")
+        self.assertTrue(diff_force.top_menu)
+        self.assertEqual(diff_force.section, "高级设置")
+        diff_map = next(
+            spec for spec in gui.TASK_BY_KEY["diff"].fields
+            if spec.key == "map_root")
+        self.assertEqual(diff_map.kind, "root_label_map")
+        self.assertEqual(diff_map.section, "根目录名配对")
 
     def test_scan_hash_recheck_uses_default_and_is_not_persisted(self):
         args = gui.build_tool_args(
@@ -1279,7 +1668,8 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("archive_schema_version=3", spec)
         self.assertIn("不创建、读取或修改\n数据库", spec)
         self.assertIn("### 11.8 创建后自动核验准入", spec)
-        self.assertIn("不读取旧结构", spec)
+        self.assertIn("当前只读取 STG 归档 schema 3", spec)
+        self.assertIn("不兼容\n早期协议", spec)
         self.assertIn("不提供按 mtime 静默跳过", spec)
         evolution_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Version_Evolution.md")
@@ -1291,6 +1681,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.5.1", evolution)
         self.assertIn("DAISY v1.6.0", evolution)
         self.assertIn("DAISY v1.6.1", evolution)
+        self.assertIn("DAISY v1.6.2", evolution)
         self.assertIn("STG-11 硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
@@ -1351,7 +1742,16 @@ class TestGuiArguments(unittest.TestCase):
     def test_run_button_label_is_unified(self):
         self.assertEqual(gui._RUN_BUTTON_TEXT, "开始任务")
 
-    def test_selected_top_task_style_uses_unified_deep_green(self):
+    def test_top_task_palette_is_light_beige_with_distinct_selection(self):
+        self.assertEqual(gui._TASK_TOOLBAR_BACKGROUND, "#edd7ad")
+        self.assertEqual(gui._TASK_TOOLBAR_HOVER, "#e2c38b")
+        self.assertEqual(gui._TASK_TOOLBAR_SELECTED, "#d7b36b")
+        self.assertEqual(gui._TASK_TOOLBAR_SELECTED_HOVER, "#c99f50")
+        self.assertEqual(gui._TASK_TOOLBAR_FOREGROUND, gui._AMBER_DEEP)
+        self.assertNotEqual(
+            gui._TASK_TOOLBAR_BACKGROUND, gui._TASK_TOOLBAR_SELECTED)
+
+    def test_primary_and_stop_button_styles_are_stable(self):
         class StyleProbe:
             def __init__(self):
                 self.configurations = {}
@@ -1388,37 +1788,6 @@ class TestGuiArguments(unittest.TestCase):
                 gui, "_create_combobox_chevron", return_value=object()),
         ):
             app._configure_styles()
-
-        for _section, (prefix, _accent, deep, soft) in (
-                gui._TASK_MENU_SECTION_COLOURS.items()):
-            name = f"{prefix}.TopTaskSelected.TButton"
-            configured = style.configurations[name]
-            self.assertEqual(
-                configured["background"],
-                gui._BLOCK_SELECTION_BACKGROUND,
-            )
-            self.assertEqual(
-                configured["foreground"],
-                gui._BLOCK_SELECTION_FOREGROUND,
-            )
-            self.assertEqual(configured["bordercolor"], gui._BORDER)
-            self.assertEqual(configured["focusthickness"], 0)
-            self.assertEqual(
-                configured["font"],
-                ("Microsoft YaHei UI", 11, "bold"),
-            )
-            self.assertTrue(all(
-                colour == gui._BLOCK_SELECTION_BACKGROUND
-                for _states, colour
-                in style.mappings[name]["background"]
-            ))
-            self.assertNotIn("focus", str(style.layouts[name]).lower())
-        normal = style.configurations["Env.TopTask.TButton"]
-        self.assertEqual(normal["foreground"], gui._GREEN_DEEP)
-        self.assertEqual(
-            style.mappings["Env.TopTask.TButton"]["foreground"],
-            [("disabled", gui._GREEN_DEEP)],
-        )
         primary = style.configurations["Primary.TButton"]
         self.assertEqual(
             primary["background"], gui._UNIFIED_ACTION_BACKGROUND)
@@ -1557,7 +1926,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             top_labels,
             [
-                "文件", "面板", "高级", "设置", "视图", "帮助",
+                "文件", "功能", "高级", "设置", "视图", "帮助",
             ],
         )
         file_menu = app.app_menu.entries[0]["menu"]
@@ -1574,7 +1943,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "cascade"],
-            ["工具路径", "扫描行为", "核验行为"],
+            ["工具路径", "扫描行为", "核验行为", "对比行为"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
@@ -1584,9 +1953,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "command"],
-            ["显示命令预览", "DAISY功能自检"],
+            ["显示命令预览", "DAISY 功能自检"],
         )
-        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 6])
+        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 3, 7])
         self.assertEqual(
             app.app_menu.options["background"], gui._MENU_BACKGROUND)
         self.assertEqual(len("工具路径"), 4)
@@ -1597,9 +1966,26 @@ class TestGuiArguments(unittest.TestCase):
                 if entry["kind"] == "command"
             ],
             [
-                f"{gui._TOOL_DISPLAY_NAMES[name]} 路径：自动发现"
+                f"{gui._TOOL_DISPLAY_NAMES[name]}：尚未检测"
                 for name in gui._TOOL_PATH_MENU_ORDER
-            ] + ["全部恢复自动发现"],
+            ] + ["清除全部手动路径"],
+        )
+        app.detected_tools = {
+            "exiftool": {
+                "path": r"C:\Tools\ExifTool\exiftool.exe",
+                "verified": True,
+            },
+        }
+        self.assertEqual(
+            app._tool_path_menu_label("exiftool"),
+            r"ExifTool：已检测：C:\Tools\ExifTool\exiftool.exe",
+        )
+        app.manual_tool_paths = {
+            "exiftool": r"D:\Manual\exiftool.exe",
+        }
+        self.assertEqual(
+            app._tool_path_menu_label("exiftool"),
+            r"ExifTool：手动：D:\Manual\exiftool.exe",
         )
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
@@ -1624,7 +2010,7 @@ class TestGuiArguments(unittest.TestCase):
                 if entry["kind"] == "command"
             ],
             [
-                "折叠功能模块", "折叠任务设置",
+                "收起功能模块", "收起任务设置",
                 "展开运行进度", "展开运行日志", "进入小窗模式",
             ],
         )
@@ -1701,9 +2087,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.view_menu.labels,
             {
-                0: "折叠功能模块",
+                0: "收起功能模块",
                 2: "展开任务设置",
-                3: "折叠运行进度",
+                3: "收起运行进度",
                 4: "展开运行日志",
                 6: "进入小窗模式",
             },
@@ -1807,7 +2193,7 @@ class TestGuiArguments(unittest.TestCase):
         app.run_jobs = []
         app.is_administrator = False
         app.install_tool_buttons = {}
-        app.admin_mode_switch = SwitchProbe()
+        app.admin_mode_button = SwitchProbe()
         app._save_gui_preferences = Mock()
         with (
             patch.object(gui.os, "name", "nt"),
@@ -1834,13 +2220,52 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.root.destroy_calls, 0)
         app._save_gui_preferences.assert_called_once_with()
         shown.assert_called_once()
-        self.assertEqual(app.admin_mode_switch.options["value"], False)
-        self.assertEqual(app.admin_mode_switch.options["enabled"], True)
+        self.assertEqual(app.admin_mode_button.options["value"], False)
+        self.assertEqual(app.admin_mode_button.options["enabled"], True)
 
         with patch.object(
                 gui, "restart_as_windows_administrator") as restart:
             app._request_admin_mode(False)
         restart.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_admin_mode_control_is_a_fixed_button_without_switch_canvas(self):
+        gui._enable_dpi_awareness()
+        root = gui.tk.Tk()
+        root.withdraw()
+        requested = []
+        try:
+            control = gui.AdminModeButton(
+                root,
+                value=False,
+                enabled=True,
+                command=requested.append,
+            )
+            control.pack()
+            root.update_idletasks()
+            self.assertIsInstance(control.button, gui.tk.Button)
+            self.assertFalse(any(
+                isinstance(widget, gui.tk.Canvas)
+                for widget in control.winfo_children()
+            ))
+            self.assertEqual(control.button.cget("text"), "管理员模式")
+            size = (
+                control.button.winfo_reqwidth(),
+                control.button.winfo_reqheight(),
+            )
+            control.button.invoke()
+            self.assertEqual(requested, [True])
+            control.set_mode(value=True, enabled=False)
+            root.update_idletasks()
+            self.assertEqual(control.button.cget("background"), gui._GREEN_DARK)
+            self.assertEqual(str(control.button.cget("state")), "disabled")
+            self.assertEqual(
+                size,
+                (control.button.winfo_reqwidth(),
+                 control.button.winfo_reqheight()),
+            )
+        finally:
+            root.destroy()
 
     def test_active_close_requires_one_confirmation(self):
         class RootProbe:
@@ -1946,7 +2371,7 @@ class TestGuiArguments(unittest.TestCase):
         app._refresh_mini_action()
         self.assertEqual(
             app.mini_mode_button.options,
-            {"text": "小窗运行", "state": "normal"},
+            {"text": "小窗模式", "state": "normal"},
         )
 
         calls = []
@@ -1998,11 +2423,17 @@ class TestGuiArguments(unittest.TestCase):
             gui._UNIFIED_ACTION_FOREGROUND,
         )
         self.assertEqual(
-            environment_button.options["style"], "Env.TopTask.TButton")
+            environment_button.options["bg"],
+            gui._TASK_TOOLBAR_BACKGROUND)
         self.assertEqual(
-            database_button.options["style"],
-            "Env.TopTaskSelected.TButton",
-        )
+            environment_button.options["activebackground"],
+            gui._TASK_TOOLBAR_HOVER)
+        self.assertEqual(
+            database_button.options["bg"],
+            gui._TASK_TOOLBAR_SELECTED)
+        self.assertEqual(
+            database_button.options["activebackground"],
+            gui._TASK_TOOLBAR_SELECTED_HOVER)
 
     def test_top_task_toolbar_collapses_without_changing_selection(self):
         class BodyProbe:
@@ -2113,7 +2544,10 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app.settings_title_row.options,
-            {"padx": 24, "pady": (8, 5)},
+            {
+                "padx": gui._SPACING_OUTER,
+                "pady": (gui._SPACING_INLINE, gui._SPACING_COMPACT),
+            },
         )
 
     def test_top_task_toolbar_keeps_one_fixed_equal_row(self):
@@ -2160,13 +2594,21 @@ class TestGuiArguments(unittest.TestCase):
             len(label) == gui._FORM_FIELD_TITLE_MAX_CHARS
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
-        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 12)
-        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (14, 10))
-        self.assertEqual(gui._TASK_TOOLBAR_STYLE_PREFIX, "Env")
+        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 0)
+        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (34, 7))
+        self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1100)
+        self.assertEqual(
+            gui._TASK_TOOLBAR_BUTTON_PADDING[1] * 6,
+            gui._STANDARD_BUTTON_PADDING[1] * 7,
+        )
         self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._TEXT)
         self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
         with patch.object(
-                gui.DaisyApp, "_sync_task_toolbar_minimum_width") as sync:
+                gui.DaisyApp, "_fit_task_toolbar_buttons") as fit, \
+                patch.object(
+                    gui.DaisyApp,
+                    "_sync_task_toolbar_minimum_width",
+                ) as sync:
             for available in (1600, 1000, 760, 520):
                 app._layout_task_toolbar(
                     types.SimpleNamespace(width=available))
@@ -2182,6 +2624,7 @@ class TestGuiArguments(unittest.TestCase):
                         (0, column),
                     )
             sync.assert_called_once_with()
+            fit.assert_called_once_with()
         grid_calls = sum(
             button.grid_calls
             for button in app.task_toolbar_buttons.values()
@@ -2425,8 +2868,8 @@ class TestGuiArguments(unittest.TestCase):
         verification = app.values["verify_builtin"].get_values()
         self.assertTrue(verification["verify_builtin"])
         self.assertTrue(verification["verify_ffprobe"])
-        self.assertFalse(verification["verify_exiftool"])
-        self.assertFalse(verification["verify_sevenzip"])
+        self.assertTrue(verification["verify_exiftool"])
+        self.assertTrue(verification["verify_sevenzip"])
         self.assertFalse(verification["raw_deep_validation"])
         self.assertEqual(
             app.gui_preferences["last_task_key"], "verify")
@@ -2509,12 +2952,12 @@ class TestGuiArguments(unittest.TestCase):
         app._select_task("scan", save_current=False)
         root.update()
         button = app.reset_current_settings_button
+        self.assertEqual(button.cget("text"), "恢复默认")
         self.assertEqual(button.cget("style"), "PanelHeader.TButton")
         self.assertEqual(int(button.cget("width")),
                          gui._PANEL_ACTION_BUTTON_WIDTH)
 
-        with patch.object(
-                gui.messagebox, "askyesno", return_value=True), \
+        with patch.object(gui.messagebox, "askyesno") as asked, \
                 patch.object(app, "_save_gui_preferences") as saved:
             button.invoke()
             root.update()
@@ -2523,6 +2966,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.saved_values["verify"], {"verify_builtin": True})
         self.assertEqual(set(app.values), {"scan_mode"})
+        asked.assert_not_called()
         saved.assert_called_once_with()
 
         app._set_settings_expanded(False)
@@ -2536,10 +2980,37 @@ class TestGuiArguments(unittest.TestCase):
         app._select_task("scan", save_current=False)
         root.update()
         description_heights = set()
+        button_checks = 0
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
         for task_key in gui._TASK_MENU_ORDER:
             app._select_task(task_key, save_current=False)
             root.update()
             context = f"{task_key} · buttons-only"
+            for button in (
+                    widget for widget in descendants(root)
+                    if isinstance(widget, (gui.tk.Button, gui.ttk.Button))):
+                if isinstance(button, gui.tk.Button):
+                    font_spec = button.cget("font")
+                else:
+                    style_name = button.cget("style") or "TButton"
+                    font_spec = app.style.lookup(style_name, "font")
+                actual_font = gui.tkfont.Font(root=root, font=font_spec)
+                self.assertEqual(
+                    abs(int(actual_font.actual("size"))),
+                    gui._UI_BODY_FONT_SIZE,
+                    f"{context} · {button.cget('text')}",
+                )
+                self.assertEqual(
+                    actual_font.actual("weight"),
+                    "normal",
+                    f"{context} · {button.cget('text')}",
+                )
+                button_checks += 1
             content_height = app._form_content_height()
             viewport_height = int(app.form_canvas.winfo_height())
             self.assertLessEqual(
@@ -2574,10 +3045,49 @@ class TestGuiArguments(unittest.TestCase):
             len(description_heights), 1,
             "各页面副标题应保持统一单行高度",
         )
+        self.assertGreaterEqual(button_checks, 90)
+        admin_button = app.admin_mode_button.button
+        self.assertIsInstance(app.admin_mode_button, gui.AdminModeButton)
+        self.assertIsInstance(admin_button, gui.tk.Button)
+        self.assertFalse(any(
+            isinstance(widget, gui.tk.Canvas)
+            for widget in app.admin_mode_button.winfo_children()
+        ))
+        actual_font = gui.tkfont.Font(
+            root=root, font=admin_button.cget("font"))
+        self.assertEqual(
+            abs(int(actual_font.actual("size"))),
+            gui._UI_BODY_FONT_SIZE,
+        )
+        self.assertEqual(actual_font.actual("weight"), "normal")
+        ancestors = []
+        current = app.admin_mode_button
+        while current is not None:
+            ancestors.append(current)
+            current = getattr(current, "master", None)
+        self.assertIn(app.form_inner, ancestors)
+        self.assertNotIn(app.task_toolbar_panel, ancestors)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_independent_log_is_singleton_and_synchronized(self):
         root, app = self._real_tk_app()
+        app._set_log_expanded(True)
+        root.update()
+        tooltip = app.clear_log_button._daisy_tooltip
+        tooltip_binding = app.clear_log_button.bind("<Enter>")
+        self.assertEqual(
+            tooltip.text, "清空主界面与独立窗口中的运行日志。")
+        self.assertIs(
+            gui.attach_tooltip(app.clear_log_button, tooltip.text), tooltip)
+        self.assertEqual(
+            app.clear_log_button.bind("<Enter>"), tooltip_binding)
+        tooltip._show()
+        root.update_idletasks()
+        self.assertIsNotNone(tooltip._window)
+        tooltip_label = tooltip._window.winfo_children()[0]
+        self.assertEqual(tooltip_label.cget("text"), tooltip.text)
+        tooltip._hide()
+
         first = gui.TASKS[0].title + "\n"
         second = gui.TASKS[-1].title + "\n"
         app._append_log(first, "meta")
@@ -2608,10 +3118,44 @@ class TestGuiArguments(unittest.TestCase):
         root, app = self._real_tk_app()
         app._select_task("env_check", save_current=False)
         root.update()
+        self.assertEqual(
+            app.desc_label.cget("text"),
+            "检测各功能所需工具和可选能力。",
+        )
+        self.assertEqual(
+            gui.TASK_BY_KEY["verify"].description,
+            "按快照核对现有文件，检查格式、容器与 RAW 解码。",
+        )
+        for task_key in gui._TASK_TOOLBAR_KEYS:
+            for redundant_text in (
+                    "不读取档案", "不保存设置", "不回写数据库"):
+                self.assertNotIn(
+                    redundant_text,
+                    gui.TASK_BY_KEY[task_key].description,
+                    task_key,
+                )
+        self.assertEqual(gui._UI_BODY_FONT_SIZE, 10)
+        for style_name in (
+                "TLabel", "TEntry", "Daisy.TCombobox",
+                "FormAction.TButton"):
+            actual_font = gui.tkfont.Font(
+                root=root, font=app.style.lookup(style_name, "font"))
+            self.assertEqual(
+                abs(int(actual_font.actual("size"))),
+                10,
+                style_name,
+            )
+        for button in app.task_toolbar_buttons.values():
+            actual_font = gui.tkfont.Font(
+                root=root, font=button.cget("font"))
+            self.assertEqual(abs(int(actual_font.actual("size"))), 10)
+            self.assertIsInstance(button, gui.tk.Button)
         self.assertTrue(app.install_tool_buttons)
         install_positions = set()
         for button in app.install_tool_buttons.values():
-            self.assertEqual(button.cget("style"), "FormAction.TButton")
+            self.assertIsInstance(button, gui.tk.Button)
+            self.assertEqual(button.cget("anchor"), "center")
+            self.assertEqual(button.cget("justify"), "center")
             self.assertLess(button.winfo_reqwidth(), 220)
             self.assertGreaterEqual(
                 button.winfo_width(), button.winfo_reqwidth())
@@ -2621,13 +3165,82 @@ class TestGuiArguments(unittest.TestCase):
             ))
         self.assertEqual(
             install_positions,
-            {(0, 0), (0, 2), (0, 4), (0, 6), (0, 8)},
+            {(0, 0), (0, 2), (0, 4), (0, 8), (0, 10)},
         )
+        self.assertEqual(
+            set(app.environment_install_buttons),
+            set(gui._ENVIRONMENT_STATUS_ORDER),
+        )
+        self.assertEqual(
+            {
+                (int(button.grid_info()["row"]),
+                 int(button.grid_info()["column"]))
+                for button in app.environment_install_buttons.values()
+            },
+            {(0, 0), (0, 2), (0, 4), (0, 6), (0, 8), (0, 10)},
+        )
+        for dependency_name in gui._ENVIRONMENT_STATUS_ORDER:
+            status_button = app.environment_status_buttons[dependency_name]
+            install_button = app.environment_install_buttons[dependency_name]
+            full_name = gui._ENVIRONMENT_BUTTON_LABELS[dependency_name]
+            self.assertEqual(
+                status_button.cget("text").splitlines()[0], full_name)
+            self.assertEqual(
+                install_button.cget("text").splitlines()[0], full_name)
+            self.assertEqual(status_button.cget("anchor"), "center")
+            self.assertEqual(status_button.cget("justify"), "center")
+            self.assertEqual(install_button.cget("anchor"), "center")
+            self.assertEqual(install_button.cget("justify"), "center")
+            self.assertLessEqual(
+                abs(status_button.winfo_rootx()
+                    - install_button.winfo_rootx()),
+                1,
+            )
+            self.assertLessEqual(
+                abs(status_button.winfo_width()
+                    - install_button.winfo_width()),
+                1,
+            )
+            self.assertLessEqual(
+                abs(status_button.winfo_height()
+                    - install_button.winfo_height()),
+                1,
+            )
         self.assertIn("rawpy", app.install_tool_buttons)
         self.assertEqual(
             app.install_tool_buttons["rawpy"].cget("text"),
-            "安装 rawpy",
+            "rawpy/LibRaw\n安装或更新",
         )
+        for dependency_name, button in app.install_tool_buttons.items():
+            self.assertEqual(
+                button.cget("text"),
+                f"{gui._INSTALL_BUTTON_LABELS[dependency_name]}\n安装或更新",
+            )
+        self.assertEqual(
+            app.environment_install_buttons["powershell"].cget("text"),
+            "PowerShell\n系统提供",
+        )
+        self.assertEqual(
+            app.environment_install_buttons["powershell"].cget("state"),
+            "disabled",
+        )
+        self.assertEqual(
+            app.install_tool_buttons["exiftool"]._daisy_tooltip.text,
+            "先查询软件源最新版本；确认后使用 WinGet 安装或更新 ExifTool。",
+        )
+        self.assertEqual(
+            app.install_tool_buttons["rawpy"]._daisy_tooltip.text,
+            "先查询软件源最新版本；确认后使用当前 Python 的 pip 安装或更新 "
+            "rawpy/LibRaw。",
+        )
+        self.assertEqual(
+            app.environment_install_buttons[
+                "powershell"]._daisy_tooltip.text,
+            "PowerShell 由 Windows 系统提供。",
+        )
+        for button in app.install_tool_buttons.values():
+            self.assertNotIn("不会连带", button._daisy_tooltip.text)
+            self.assertNotIn("只按需", button._daisy_tooltip.text)
 
         app._select_task("full_scan", save_current=False)
         root.update()
@@ -2698,17 +3311,177 @@ class TestGuiArguments(unittest.TestCase):
         )
 
         app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_jobs = [gui.RunJob("检测硬盘", {})]
         app.run_job_index = 0
         app._begin_progress()
         self.assertEqual(
             app.progress_stage_label.cget("text"),
-            "检测物理硬盘 · 正在启动",
+            "检测硬盘 · 正在启动",
         )
         self.assertIn(
             "正在查询 Windows 存储接口与 smartctl",
             app.progress_detail_label.cget("text"),
         )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_environment_pending_buttons_detect_and_share_size(self):
+        root, app = self._real_tk_app()
+        app.detected_tools = {}
+        app.environment_missing_names = ()
+        app.environment_missing_reasons = {}
+        app.runtime_capabilities = {}
+        with patch.object(app, "_run") as detect:
+            app._select_task("env_check", save_current=False)
+            root.update()
+            self.assertIsNone(app.admin_mode_button)
+            self.assertFalse(any(
+                isinstance(widget, gui.AdminModeButton)
+                for widget in self._tk_descendants(app.task_toolbar_panel)
+            ))
+            for dependency_name in gui._ENVIRONMENT_STATUS_ORDER:
+                status_button = app.environment_status_buttons[
+                    dependency_name]
+                install_button = app.environment_install_buttons[
+                    dependency_name]
+                self.assertEqual(
+                    status_button.cget("background"), gui._CONTROL)
+                self.assertEqual(
+                    status_button.cget("foreground"), gui._MUTED)
+                self.assertEqual(status_button.cget("cursor"), "hand2")
+                self.assertEqual(
+                    (status_button.winfo_width(),
+                     status_button.winfo_height()),
+                    (install_button.winfo_width(),
+                     install_button.winfo_height()),
+                )
+            app.environment_status_buttons["exiftool"].invoke()
+            detect.assert_called_once_with()
+
+        text_labels = {
+            child.cget("text")
+            for child in self._tk_descendants(app.form_inner)
+            if isinstance(child, gui.tk.Label)
+        }
+        self.assertFalse(any(
+            text.startswith("可安装或更新下列工具")
+            for text in text_labels
+        ))
+
+        app._select_task("storage_collect", save_current=False)
+        root.update()
+        self.assertIsInstance(app.admin_mode_button, gui.AdminModeButton)
+        ancestors = []
+        current = app.admin_mode_button
+        while current is not None:
+            ancestors.append(current)
+            current = getattr(current, "master", None)
+        self.assertIn(app.form_inner, ancestors)
+        self.assertNotIn(app.task_toolbar_panel, ancestors)
+        summary = app.values["summary_txt"]
+        self.assertIsInstance(summary, gui.BooleanToggleButton)
+        self.assertTrue(summary.get())
+        self.assertEqual(summary.button.cget("text"), "生成")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_parse_formats_are_toggle_buttons(self):
+        root, app = self._real_tk_app()
+        app._select_task("parse_db", save_current=False)
+        root.update()
+        preset = app.values["preset"]
+        self.assertIsInstance(preset, gui.ChoiceButtonGroup)
+        self.assertEqual(preset.get(), "full-audit")
+        self.assertEqual(
+            set(preset.buttons), {"human-summary", "full-audit", "custom"})
+        self.assertEqual(
+            preset.buttons["full-audit"].cget("background"),
+            gui._BLOCK_SELECTION_BACKGROUND,
+        )
+        formats = app.values["formats"]
+        self.assertIsInstance(formats, gui.MultiChoicePool)
+        self.assertEqual(set(formats.buttons), {"html", "xlsx", "csv", "jsonl"})
+        self.assertTrue(all(
+            isinstance(button, gui.tk.Button)
+            and not isinstance(button, gui.tk.Checkbutton)
+            for button in formats.buttons.values()
+        ))
+        self.assertEqual(
+            len({button.winfo_width()
+                 for button in formats.buttons.values()}), 1)
+        self.assertEqual(
+            len({button.winfo_height()
+                 for button in formats.buttons.values()}), 1)
+        self.assertEqual(formats.get(), "html\nxlsx\ncsv\njsonl")
+        self.assertTrue(all(
+            button.cget("background") == gui._GREEN_DARK
+            for button in formats.buttons.values()
+        ))
+        formats.buttons["csv"].invoke()
+        root.update_idletasks()
+        self.assertEqual(formats.get(), "html\nxlsx\njsonl")
+        self.assertEqual(
+            formats.buttons["csv"].cget("background"), gui._AMBER)
+
+        input_label = next(
+            child for child in app.form_inner.winfo_children()
+            if isinstance(child, gui.tk.Label)
+            and child.cget("text") == "输入数据库"
+        )
+        input_row = int(input_label.grid_info()["row"])
+        input_cell = next(
+            child for child in app.form_inner.winfo_children()
+            if isinstance(child, gui.tk.Frame)
+            and int(child.grid_info().get("row", -1)) == input_row
+            and int(child.grid_info().get("column", -1)) == 1
+        )
+        parse_button = app.parse_detect_button
+        self.assertEqual(parse_button.cget("text"), "解析数据库")
+        self.assertEqual(parse_button.cget("style"), "FormAction.TButton")
+        self.assertIs(parse_button.master.master, app.form_inner)
+        self.assertIsNot(parse_button.master, input_cell)
+        parse_panel_info = parse_button.master.grid_info()
+        self.assertEqual(int(parse_panel_info["column"]), 0)
+        self.assertEqual(int(parse_panel_info["columnspan"]), 2)
+        self.assertGreater(int(parse_panel_info["row"]), input_row)
+        parse_button_x = parse_button.winfo_rootx()
+        parse_button_width = parse_button.winfo_width()
+
+        app.values["preset"].buttons["human-summary"].invoke()
+        root.update()
+        self.assertEqual(app.values["preset"].get(), "human-summary")
+        self.assertEqual(app.values["parse_modules"].preset, "human-summary")
+        self.assertEqual(
+            app.values["formats"].get(), "html\nxlsx\njsonl")
+
+        app._select_task("storage_collect", save_current=False)
+        root.update()
+        self.assertEqual(app.storage_detect_button.cget("text"), "检测硬盘")
+        self.assertLessEqual(
+            abs(app.storage_detect_button.winfo_rootx() - parse_button_x), 1)
+        self.assertEqual(
+            app.storage_detect_button.winfo_width(), parse_button_width)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_progress_palette_matches_log_palette(self):
+        _root, app = self._real_tk_app()
+        self.assertEqual(
+            app.progress_panel.cget("background"), gui._LOG_BG)
+        self.assertEqual(
+            app.progress_panel.cget("background"),
+            app.log_panel.cget("background"),
+        )
+        self.assertEqual(app.progress_inner.cget("background"), gui._LOG_BG)
+        self.assertEqual(app.progress_body.cget("background"), gui._LOG_BG)
+        self.assertEqual(
+            app.progress_header.cget("background"), gui._LOG_HEADER)
+        self.assertEqual(
+            app.progress_title_label.cget("background"), gui._LOG_HEADER)
+        for label in (
+                app.progress_target_label, app.current_file_title_label,
+                app.current_file_label, app.queue_title_label,
+                app.queue_detail_label, app.queue_percent_label,
+                app.progress_stage_label, app.progress_detail_label,
+                app.progress_percent_label):
+            self.assertEqual(label.cget("background"), gui._LOG_BG)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_titles_and_directory_actions_share_alignment(self):
@@ -2753,7 +3526,7 @@ class TestGuiArguments(unittest.TestCase):
             for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
                 app._set_ui_font(
                     family=family, size_delta=size_delta, persist=False)
-                assert_page_alignment(f"{family}／{size_delta:+d}")
+                assert_page_alignment(f"{family}/{size_delta:+d}")
                 combinations += 1
         self.assertGreaterEqual(combinations, 6)
 
@@ -2785,7 +3558,7 @@ class TestGuiArguments(unittest.TestCase):
         output_label = next(
             child for child in app.form_inner.winfo_children()
             if (isinstance(child, gui.tk.Label)
-                and child.cget("text") == "快照目录")
+                and child.cget("text") == "快照保存目录")
         )
         output_row = int(output_label.grid_info()["row"])
         output_cell = next(
@@ -2856,7 +3629,7 @@ class TestGuiArguments(unittest.TestCase):
         app._set_progress_expanded(True)
         app._set_log_expanded(True)
         app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_jobs = [gui.RunJob("检测硬盘", {})]
         app.run_job_index = 0
         app.run_results = [0]
         app.stop_requested = False
@@ -2886,7 +3659,7 @@ class TestGuiArguments(unittest.TestCase):
         app._set_progress_expanded(True)
         app._set_log_expanded(True)
         app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_jobs = [gui.RunJob("检测硬盘", {})]
         app.run_job_index = 0
         app.run_results = [2]
         app.stop_requested = False
@@ -2915,7 +3688,7 @@ class TestGuiArguments(unittest.TestCase):
         app._set_progress_expanded(True)
         app._set_log_expanded(True)
         app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测物理硬盘", {})]
+        app.run_jobs = [gui.RunJob("检测硬盘", {})]
         app.run_job_index = 0
         app.run_results = [0]
         app.stop_requested = False
@@ -3025,6 +3798,71 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(checked, len(expected_specs))
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_primary_copy_and_tooltip_wrapping_are_clear(self):
+        root, app = self._real_tk_app()
+        expected_descriptions = {
+            "env_check": "检测各功能所需工具和可选能力。",
+            "scan": "扫描档案目录，生成可对比、可续传的快照。",
+            "diff": "比较两份快照，记录文件增删、变化、移动与复制。",
+            "verify": "按快照核对现有文件，检查格式、容器与 RAW 解码。",
+            "parse_db": "解析快照或 Diff，按所选数据模块和格式导出。",
+            "storage_collect": "采集硬盘、分区、卷与 SMART 信息，生成硬盘档案。",
+        }
+        tooltip_texts = set()
+        for task_key, expected in expected_descriptions.items():
+            task = gui.TASK_BY_KEY[task_key]
+            self.assertEqual(task.description, expected)
+            self.assertNotIn("\n", task.description)
+            for spec in task.fields:
+                if spec.help:
+                    self.assertNotIn("\n", spec.help, f"{task_key}.{spec.key}")
+                    tooltip_texts.add(spec.help)
+            app._select_task(task_key, save_current=False)
+            root.update()
+            self.assertEqual(app.desc_label.cget("text"), expected)
+            for target in self._tk_descendants(root):
+                tooltip = getattr(target, "_daisy_tooltip", None)
+                if isinstance(tooltip, gui.ToolTip) and tooltip.text:
+                    tooltip_texts.add(tooltip.text)
+
+        for text in tooltip_texts:
+            for internal_word in (
+                    "内部 STG-11", "受监督", "不伪装", "原子发布",
+                    "不会连带", "只按需", "恢复卡片", "可导出内容",
+                    "内容模块", "导出模块", "自动发现", "检测物理硬盘",
+                    "内容预设", "简化文本", "保存进度并退出",
+                    "SMART 读取状态", "问题文件", "生成器版本",
+                    "rawpy／LibRaw"):
+                self.assertNotIn(internal_word, text, text)
+
+        font = gui.tkfont.Font(
+            root=root, family=app.ui_font_family,
+            size=gui._UI_BODY_FONT_SIZE,
+        )
+        punctuation_tolerance = font.measure("。")
+        for width in (240, 320, 480):
+            for text in tooltip_texts:
+                rendered = gui._tooltip_display_text(text, font, width)
+                lines = rendered.splitlines()
+                self.assertTrue(lines, text)
+                for line in lines:
+                    self.assertTrue(line, text)
+                    self.assertEqual(line, line.strip(), text)
+                    self.assertNotIn(line[0], gui._TOOLTIP_NO_LINE_START, text)
+                    self.assertNotIn(line[-1], gui._TOOLTIP_NO_LINE_END, text)
+                    self.assertLessEqual(
+                        font.measure(line), width + punctuation_tolerance,
+                        text,
+                    )
+                if len(lines) > 1:
+                    self.assertGreaterEqual(
+                        font.measure(lines[-1]), width * 0.12, text)
+        self.assertEqual(
+            gui._CONTROL_ACTION_LABELS["save_exit"], "保存并退出")
+        self.assertNotIn(
+            "DBS 数据库生成程序版本", gui.about_message())
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_binary_scan_setting_uses_amber_green_button(self):
         root, app = self._real_tk_app()
         app.saved_values["scan"] = {
@@ -3115,18 +3953,87 @@ class TestGuiArguments(unittest.TestCase):
         app._select_task("full_scan", save_current=False)
         root.update()
         field_label = next(
-            child for child in app.form_inner.winfo_children()
-            if (isinstance(child, gui.tk.Label)
-                and child.cget("text") == "NTFS标识")
+                child for child in app.form_inner.winfo_children()
+                if (isinstance(child, gui.tk.Label)
+                    and child.cget("text") == "NTFS-ID")
         )
         label_font = gui.tkfont.Font(
             root=root, font=field_label.cget("font"))
         self.assertEqual(int(field_label.cget("width")), 0)
         self.assertGreaterEqual(
             field_label.winfo_width(),
-            label_font.measure("NTFS标识"),
+            label_font.measure("NTFS-ID"),
         )
         self.assertEqual(field_label.cget("anchor"), "e")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_top_toolbar_matches_form_button_shape_and_ratio(self):
+        root, app = self._real_tk_app()
+        app._select_task("scan", save_current=False)
+        root.update()
+        mode_button = next(iter(app.values["scan_mode"].buttons.values()))
+        top_buttons = [
+            app.task_toolbar_buttons[key] for key in gui._TASK_TOOLBAR_KEYS]
+        self.assertTrue(all(
+            isinstance(button, gui.tk.Button) for button in top_buttons))
+        self.assertEqual(
+            {button.winfo_width() for button in top_buttons},
+            {top_buttons[0].winfo_width()},
+        )
+        self.assertEqual(
+            {button.winfo_height() for button in top_buttons},
+            {top_buttons[0].winfo_height()},
+        )
+        for button in top_buttons:
+            self.assertEqual(button.cget("relief"), "flat")
+            self.assertEqual(int(button.cget("borderwidth")), 0)
+            self.assertEqual(int(button.cget("highlightthickness")), 1)
+        self.assertEqual(mode_button.cget("relief"), "flat")
+        self.assertEqual(int(mode_button.cget("borderwidth")), 0)
+        self.assertEqual(int(mode_button.cget("highlightthickness")), 1)
+        top_ratio = (
+            top_buttons[0].winfo_width() / top_buttons[0].winfo_height())
+        mode_ratio = mode_button.winfo_width() / mode_button.winfo_height()
+        self.assertLessEqual(abs(top_ratio / mode_ratio - 1.0), 0.18)
+        first, last = top_buttons[0], top_buttons[-1]
+        left_gap = first.winfo_x()
+        right_gap = (
+            app.task_toolbar_body.winfo_width()
+            - last.winfo_x() - last.winfo_width())
+        self.assertLessEqual(left_gap, 1)
+        self.assertGreater(right_gap, left_gap)
+        self.assertEqual(
+            app.task_toolbar_buttons["scan"].cget("background"),
+            gui._TASK_TOOLBAR_SELECTED,
+        )
+        self.assertEqual(
+            app.task_toolbar_buttons["diff"].cget("background"),
+            gui._TASK_TOOLBAR_BACKGROUND,
+        )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_diff_uses_explicit_root_label_pairs_and_advanced_force(self):
+        root, app = self._real_tk_app()
+        app._select_task("diff", save_current=False)
+        root.update()
+        self.assertNotIn("force", app.values)
+        editor = app.values["map_root"]
+        self.assertIsInstance(editor, gui.RootLabelMapEditor)
+        self.assertEqual(
+            editor.old_header.cget("text"), "基准根目录名")
+        self.assertEqual(
+            editor.new_header.cget("text"), "对比根目录名")
+        editor.old_input.set("旧档案")
+        editor.new_input.set("新档案")
+        self.assertTrue(editor.add_pair())
+        root.update()
+        self.assertEqual(editor.get(), "旧档案=新档案")
+        app._set_diff_advanced_value("force", True)
+        values = app._collect_values()
+        self.assertTrue(values["force"])
+        args = gui.build_tool_args("diff", values)
+        self.assertEqual(args[args.index("--map-root") + 1], "旧档案=新档案")
+        self.assertIn("--force", args)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_single_line_fields_share_height_and_vertical_axis(self):
@@ -3508,7 +4415,7 @@ class TestGuiArguments(unittest.TestCase):
         app.run_jobs = []
         app.run_button = WidgetProbe()
         app.install_tool_buttons = {}
-        app.admin_mode_switch = AdminProbe()
+        app.admin_mode_button = AdminProbe()
         app.is_administrator = False
         calls = []
         app._set_stop_state = lambda state: calls.append(("stop", state))
@@ -3568,6 +4475,8 @@ class TestGuiArguments(unittest.TestCase):
         for returncodes, outcomes, task_key, stopped, saved in (
                 ([], [], "scan", False, False),
                 ([0], [None], "storage_list", False, False),
+                ([0], [None], gui._DEPENDENCY_VERSION_CHECK_KEY,
+                 False, False),
                 ([0], [None], gui._DEPENDENCY_INSTALL_KEY, False, False),
                 ([0], [None], "scan", True, False),
                 ([0], ["save_exit"], "scan", False, True),
@@ -3624,6 +4533,9 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_task_titles_match_menu_names(self):
         for task in gui.TASKS:
+            if task.key == "storage_list":
+                self.assertEqual(task.nav, f"内部步骤：{task.title}")
+                continue
             menu_name = task.nav.split(maxsplit=1)[1]
             self.assertEqual(task.title, menu_name)
         for task_key in gui._TASK_MENU_ORDER:
@@ -3637,7 +4549,7 @@ class TestGuiArguments(unittest.TestCase):
             )
         self.assertEqual(
             gui.task_display_title(gui._PROJECT_SELF_TEST_KEY),
-            "DAISY功能自检",
+            "DAISY 功能自检",
         )
 
     def test_final_task_numbering_and_menu_order(self):
@@ -3645,10 +4557,10 @@ class TestGuiArguments(unittest.TestCase):
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
                 "ENV-01  运行环境检测",
-                "DBS-10  档案扫描",
-                "DBS-21  快照变更分析",
-                "DBS-30  数据核验",
-                "DBS-41  数据库解析",
+                "DBS-10  档案扫描建库",
+                "DBS-21  档案快照对比",
+                "DBS-30  档案数据核验",
+                "DBS-41  档案数据解析",
                 "STG-11  硬盘信息登记",
             ],
         )
@@ -3659,13 +4571,13 @@ class TestGuiArguments(unittest.TestCase):
              "Script_DAISY_Module_DBS_10_Scan"),
             ("scan", "quick_scan", "DBS-12  快速档案扫描",
              "Script_DAISY_Module_DBS_10_Scan"),
-            ("diff", "diff", "DBS-21  快照变更分析",
+            ("diff", "diff", "DBS-21  档案快照对比",
              "Script_DAISY_Module_DBS_21_Diff"),
-            ("check-hash", "check_hash", "DBS-31  内容哈希核验",
+            ("check-hash", "check_hash", "DBS-31  哈希核验",
              "Script_DAISY_Module_DBS_31_Check_Hash"),
-            ("check-format", "check_format", "DBS-32  文件结构核验",
+            ("check-format", "check_format", "DBS-32  格式校验",
              "Script_DAISY_Module_DBS_32_Check_Format"),
-            ("export-report", "export_report", "DBS-41  结果报告导出",
+            ("export-report", "export_report", "DBS-41  旧版报告导出",
              "Script_DAISY_Module_DBS_41_Export_Report"),
             ("storage-collect", "storage_collect", "STG-11  硬盘信息登记",
              "Script_DAISY_Module_STG_11_Collect"),
@@ -3678,7 +4590,11 @@ class TestGuiArguments(unittest.TestCase):
             module_path = os.path.join(_MODULE, module + ".py")
             self.assertTrue(os.path.isfile(module_path))
             with open(module_path, encoding="utf-8") as handle:
-                self.assertIn(" ".join(nav.split()), handle.read())
+                module_text = handle.read()
+            if task_key == "export_report":
+                self.assertIn("旧版报告导出兼容入口", module_text)
+            else:
+                self.assertIn(" ".join(nav.split()), module_text)
         scan_module = "Script_DAISY_Module_DBS_10_Scan"
         self.assertEqual(entry.COMMANDS["scan"][0], scan_module)
         self.assertTrue(os.path.isfile(os.path.join(
@@ -3708,7 +4624,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "DBS-91  DAISY功能自检",
+            "DBS-91  DAISY 功能自检",
         )
         self.assertNotIn(gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
         self.assertEqual(
@@ -3724,9 +4640,6 @@ class TestGuiArguments(unittest.TestCase):
             gui._STG_ADMIN_TASKS,
             {"storage_list", "storage_collect"},
         )
-        for task_key in gui._STG_ADMIN_TASKS:
-            self.assertIn(
-                "管理员权限", gui.TASK_BY_KEY[task_key].description)
         self.assertEqual(gui._TASK_MENU_SECTIONS[-1][1], ("storage_collect",))
         for task_key in gui._STG_ADMIN_TASKS:
             app = object.__new__(gui.DaisyApp)
@@ -3736,7 +4649,7 @@ class TestGuiArguments(unittest.TestCase):
             with patch.object(
                     gui.messagebox, "askyesno", return_value=False) as ask:
                 self.assertFalse(app._confirmation({}))
-            self.assertIn("顶部管理员模式开关", ask.call_args.args[1])
+            self.assertIn("页面内的管理员模式按钮", ask.call_args.args[1])
 
     def test_validation_tasks_require_current_root(self):
         for task_key in ("check_hash", "check_format"):
@@ -3746,7 +4659,7 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(root_field.required)
             issues = gui.validate_values(
                 task_key, {"snapshot": __file__, "root_map": ""})
-            self.assertIn("请填写“档案根目录”。", issues)
+            self.assertIn("请填写「档案根目录」。", issues)
 
     def test_validation_task_args_include_current_root(self):
         with tempfile.TemporaryDirectory() as current_root:
@@ -3774,7 +4687,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.1")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.2")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
@@ -3796,16 +4709,17 @@ class TestGuiArguments(unittest.TestCase):
                 core.PROJECT_NAME, core.PROJECT_FULL_NAME,
                 core.PROJECT_AUTHOR, core.SCANNER_VERSION):
             self.assertIn(token, title)
-        self.assertIn(f"Author: {core.PROJECT_AUTHOR}", title)
         about = gui.about_message()
         for token in (
-                "环境：", "数据：", "硬盘：",
-                f"DBS SQLite schema：{core.SCHEMA_VERSION}",
-                f"DBS 元数据 profile：{gui.metadata.PROFILE_VERSION}",
-                f"STG 归档 schema：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
-                f"DBS 完整快照最低读取器：v{core.MIN_READER_VERSION}",
-                "未完成 partial：仅允许相同生成器版本",
-                "DBS 与 STG 数据模型彼此独立"):
+                "环境：", "档案：", "硬盘：",
+                f"统一扫描数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
+                f"旧版兼容快照结构版本：{core.SCHEMA_VERSION}",
+                f"DBS 元数据配置版本：{gui.metadata.PROFILE_VERSION}",
+                f"STG 归档结构版本：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
+                f"DBS 封存快照只读兼容基线：v{core.MIN_READER_VERSION}",
+                "统一扫描续传：按数据库结构版本 4 的续传规则检查",
+                "旧版兼容入口：仅续传数据库生成程序版本相同的结构版本 3 未完成快照",
+                "快照数据库与硬盘档案彼此独立"):
             self.assertIn(token, about)
         self.assertIn(gui._PROJECT_CONTACT, about)
         self.assertIn(gui._PROJECT_CONTACT, gui.contact_message())
@@ -3842,7 +4756,7 @@ class TestGuiArguments(unittest.TestCase):
         })
         self.assertEqual(fraction, 25.0)
         for token in (
-                "2/4", "ETA", "错误 1", "不适用 7", "跳过 3"):
+                "2/4", "预计剩余", "异常记录 1", "不适用 7", "跳过 3"):
             self.assertIn(token, detail)
 
     def test_progress_target_uses_full_current_root_for_single_and_queue(self):
@@ -4088,7 +5002,7 @@ class TestGuiArguments(unittest.TestCase):
         separate = gui.root_confirmation_text(
             "full_scan", {"roots": roots})
         self.assertIn(
-            "将对以下文件夹分别运行完整档案扫描并分别生成数据库：",
+            "将按完整扫描模式处理以下文件夹，每个文件夹分别生成一个数据库：",
             separate,
         )
         self.assertIn(os.path.abspath(r"E:\Archive A"), separate)
@@ -4101,7 +5015,7 @@ class TestGuiArguments(unittest.TestCase):
                 "root_batch_mode": gui._ROOT_BATCH_COMBINED,
             },
         )
-        self.assertIn("共同生成一个数据库", combined)
+        self.assertIn("合并生成一个数据库", combined)
         self.assertEqual(
             gui.root_confirmation_text(
                 "full_scan", {"start_mode": "resume", "roots": roots}),
@@ -4147,11 +5061,11 @@ class TestGuiArguments(unittest.TestCase):
                     "root_batch_mode": gui._ROOT_BATCH_COMBINED,
                 },
             )
-            self.assertTrue(any("根标签不能重复" in issue
+            self.assertTrue(any("根目录名不能重复" in issue
                                 for issue in label_issues))
             malformed = gui.validate_values(
                 "quick_scan", {"roots": "Broken="})
-            self.assertTrue(any("应为 label=路径" in issue
+            self.assertTrue(any("应为「根目录名=路径」" in issue
                                 for issue in malformed))
 
     def test_full_resume_is_never_split_into_a_directory_queue(self):
@@ -4525,7 +5439,7 @@ class TestFinalize(_SnapshotFixture):
         self.assertEqual(counts["has_file_issues"], True)
         with open(issue, encoding="utf-8") as handle:
             report = handle.read()
-        self.assertIn("数据库完整性正常", report)
+        self.assertIn("| 数据库完整性 | 正常 |", report)
         self.assertIn("源文件或扫描证据问题", report)
 
     def test_unrecognized_format_stays_in_database_but_not_issues_md(self):
@@ -5036,6 +5950,42 @@ class TestRawBackendCoverage(unittest.TestCase):
                  for x in self._ExifWorker.extracted],
                 ["legacy.doc", "motion.gif", "photo.jfif", "still.cr3"])
             self.assertEqual(stats["ffprobe_payloads"], 0)
+            con.close()
+
+    def test_per_tool_payload_ranges_are_independent(self):
+        with tempfile.TemporaryDirectory() as td:
+            con = self._snapshot(td)
+            tools = {
+                "exiftool": {"path": "unused", "version": "13.test"},
+                "ffprobe": {"path": "unused", "version": "8.test"},
+                "sevenzip": {"path": "unused", "version": "24.test"},
+            }
+            with patch.object(
+                    meta, "ExifToolWorker", self._ExifWorker), \
+                    patch.object(
+                        meta, "ffprobe_full",
+                        side_effect=self._gif_ffprobe):
+                meta.process_metadata_stage(
+                    con,
+                    tools,
+                    retain_exiftool_payload=False,
+                    retain_ffprobe_payload=True,
+                )
+            self.assertEqual(
+                con.execute(
+                    "SELECT e.rel_path,p.provider FROM raw_payloads p"
+                    " JOIN entries e ON e.entry_id=p.entry_id"
+                    " ORDER BY e.rel_path,p.provider"
+                ).fetchall(),
+                [("motion.gif", "ffprobe")],
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT meta_status FROM entries"
+                    " WHERE rel_path='opaque.bin'"
+                ).fetchone(),
+                ("not_applicable",),
+            )
             con.close()
 
 
@@ -6848,7 +7798,7 @@ class TestQuickScan(unittest.TestCase):
         self.assertEqual(
             issue, os.path.splitext(db)[0] + "_Issues.md")
         with open(os.path.join(diffs, issue), encoding="utf-8") as handle:
-            self.assertIn("降级准入", handle.read())
+            self.assertIn("指纹降级", handle.read())
 
 
 if __name__ == "__main__":

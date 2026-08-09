@@ -199,12 +199,12 @@ class TestSchema4Contract(_StateFixture):
 
     def test_initialization_rejects_empty_duplicate_or_invalid_identity(self) -> None:
         con = sqlite3.connect(":memory:")
-        with self.assertRaisesRegex(core.PreflightError, "至少需要一个 root"):
+        with self.assertRaisesRegex(core.PreflightError, "至少需要一个根目录"):
             self.initialize(con, roots=[])
         con.close()
 
         con = sqlite3.connect(":memory:")
-        with self.assertRaisesRegex(core.PreflightError, "root label 重复"):
+        with self.assertRaisesRegex(core.PreflightError, "根目录名重复"):
             self.initialize(con, roots=[("同名", "X:/A"), ("同名", "X:/B")])
         con.close()
 
@@ -258,7 +258,7 @@ class TestRunStateMachine(_StateFixture):
             stopped = state.stop_run(con, now_utc=_LATER)
             self.assertEqual(("stopped", "manual_only"), (
                 stopped.run_state, stopped.resume_hint))
-            with self.assertRaisesRegex(core.PreflightError, "手动恢复"):
+            with self.assertRaisesRegex(core.PreflightError, "手动续传"):
                 state.start_resume_session(
                     con, config={}, tools={}, manual=False)
             resumed = state.start_resume_session(
@@ -580,7 +580,7 @@ class TestAttemptsAndRecovery(_StateFixture):
             state.begin_sealing(con)
             state.mark_sealed_unpublished(con)
             with self.assertRaisesRegex(
-                    core.PreflightError, "不需要异常终止恢复"):
+                    core.PreflightError, "不需要异常中断修复"):
                 state.recover_interrupted(
                     con, reason="publish_owner_lost")
             resumed = state.start_publication_retry_session(
@@ -751,7 +751,7 @@ class TestEventJournalAndLease(_StateFixture):
 
         with open(path, "wb") as handle:
             handle.write(b"broken")
-        with self.assertRaisesRegex(core.PreflightError, "明确恢复"):
+        with self.assertRaisesRegex(core.PreflightError, "明确的续传"):
             state.acquire_lease_file(
                 path,
                 _SESSION_ID,

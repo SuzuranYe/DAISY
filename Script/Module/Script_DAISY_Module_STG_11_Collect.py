@@ -21,25 +21,33 @@ import Script_DAISY_Lib_STG_05_Archive as archive
 
 
 _LIST_MODE_ARGUMENT = "--list"
+_COLLECTION_STATUS_LABELS = {
+    "complete": "完整",
+    "complete_with_warnings": "完整，但有提示",
+    "incomplete": "不完整",
+}
 
 
 def _list_disks(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="STG-11 硬盘信息登记的内部列盘步骤")
-    parser.add_argument("--smartctl-path")
-    parser.add_argument("--powershell-path")
-    parser.add_argument("--json", action="store_true", dest="as_json")
+        description="检测硬盘：只读列出硬盘，并标明可用的 SMART 读取目标")
+    parser.add_argument("--smartctl-path", help="smartctl 可执行文件路径")
+    parser.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
+    parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="以 JSON 输出检测结果",
+    )
     args = parser.parse_args(argv)
     try:
         progress = core.Progress(
-            1, 1, "读取物理硬盘清单", quiet=args.as_json)
+            1, 1, "检测硬盘", quiet=args.as_json)
         scan = service.scan_targets(
             smartctl_path=args.smartctl_path,
             powershell_path=args.powershell_path,
         )
-        progress.finish(f"发现 {len(scan.targets)} 个目标")
+        progress.finish(f"检测到 {len(scan.targets)} 块硬盘")
     except core.DaisySmartError as exc:
-        print(f"扫描失败：{exc}", file=sys.stderr)
+        print(f"检测硬盘失败：{exc}", file=sys.stderr)
         return 2
     if args.as_json:
         print(json.dumps(scan.to_dict(), ensure_ascii=False, indent=2))
@@ -49,7 +57,7 @@ def _list_disks(argv: list[str]) -> int:
         targets=[target.to_dict() for target in scan.targets],
         warnings=list(scan.warnings),
     )
-    print("物理盘        盘符          资源管理器名称                    型号                         SMART")
+    print("硬盘          盘符          资源管理器名称                    型号                         SMART 读取目标")
     print("-" * 112)
     for target in scan.targets:
         record = target.windows
@@ -58,7 +66,7 @@ def _list_disks(argv: list[str]) -> int:
         model = record.model if record else "—"
         smart_state = (
             f"{target.smart_device.name} -d {target.smart_device.device_type}"
-            if target.smart_device else "不可用"
+            if target.smart_device else "无可用目标"
         )
         print(
             f"{target.physical_label:<13} {letters:<13} "
@@ -73,22 +81,30 @@ def _list_disks(argv: list[str]) -> int:
 
 def _collect_disk(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="STG-11 硬盘信息登记：只读采集单块硬盘并生成 DAISY ZIP")
-    parser.add_argument("--disk-number", type=int, required=True)
+        description="硬盘信息登记：只读采集单块硬盘并生成硬盘档案 ZIP")
     parser.add_argument(
-        "--output-dir", default=os.path.join(_BASE, "Output", "Storage"))
-    parser.add_argument("--smartctl-path")
-    parser.add_argument("--powershell-path")
+        "--disk-number", type=int, required=True,
+        help="Windows 磁盘编号，例如 3 表示 PhysicalDrive3",
+    )
+    parser.add_argument(
+        "--output-dir", default=os.path.join(_BASE, "Output", "Storage"),
+        help="硬盘档案输出目录；默认 Output/Storage",
+    )
+    parser.add_argument("--smartctl-path", help="smartctl 可执行文件路径")
+    parser.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
     parser.add_argument(
         "--summary-txt",
         action="store_true",
-        help="在 ZIP 外同时输出简化 TXT 报告",
+        help="在 ZIP 外同时生成简化报告 (TXT)",
     )
-    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="以 JSON 输出归档结果",
+    )
     args = parser.parse_args(argv)
     try:
         scan_progress = core.Progress(
-            1, 3, "确认物理硬盘身份", quiet=args.as_json)
+            1, 3, "确认硬盘身份", quiet=args.as_json)
         scan = service.scan_targets(
             smartctl_path=args.smartctl_path,
             powershell_path=args.powershell_path,
@@ -103,9 +119,10 @@ def _collect_disk(argv: list[str]) -> int:
             powershell_path=args.powershell_path,
             smartctl_version=scan.smartctl_version,
         )
-        collect_progress.finish(collection.collection_status)
+        collect_progress.finish(_COLLECTION_STATUS_LABELS.get(
+            collection.collection_status, "状态未知"))
         archive_progress = core.Progress(
-            3, 3, "生成存储档案", quiet=args.as_json)
+            3, 3, "生成硬盘档案", quiet=args.as_json)
         result = archive.create_archive(
             collection,
             args.output_dir,
@@ -113,10 +130,10 @@ def _collect_disk(argv: list[str]) -> int:
         )
         archive_progress.finish(os.path.basename(result.path))
     except core.DaisySmartError as exc:
-        print(f"采集失败：{exc}", file=sys.stderr)
+        print(f"硬盘信息登记失败：{exc}", file=sys.stderr)
         return 2
     payload = {
-        "report_metadata": core.report_metadata("STG-11 硬盘信息登记"),
+        "report_metadata": core.report_metadata("硬盘信息登记"),
         "archive": result.path,
         "collection_status": collection.collection_status,
         "complete": collection.is_complete,
@@ -134,16 +151,18 @@ def _collect_disk(argv: list[str]) -> int:
     if args.as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        print(f"归档：{result.path}")
-        print(f"采集状态：{collection.collection_status}")
+        print(f"硬盘档案：{result.path}")
+        status_label = _COLLECTION_STATUS_LABELS.get(
+            collection.collection_status, "未知")
+        print(f"采集状态：{status_label}")
         print(f"ZIP SHA-256：{result.zip_sha256}")
         print(f"文件名指纹：{result.fingerprint}")
         if result.summary_report_path:
-            print(f"简化 TXT：{result.summary_report_path}")
+            print(f"简化报告：{result.summary_report_path}")
     if not collection.is_complete:
         print(
-            "警告：smartctl 存在访问或命令层错误；ZIP 已保留为诊断归档，"
-            "不能视为完整硬盘登记。",
+            "警告：本次采集出现访问或命令错误；ZIP 已保留为诊断归档，"
+            "不能视为完整的硬盘信息登记结果。",
             file=sys.stderr,
         )
         return 1

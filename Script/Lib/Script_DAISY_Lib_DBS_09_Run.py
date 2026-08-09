@@ -1,8 +1,8 @@
-"""DAISY schema 4 运行文件、控制协议、阶段停点与 lease 生命周期。
+"""DAISY schema 4 运行文件、控制协议、阶段停点与占用锁生命周期。
 
-这里封装 partial 的独占创建和明确恢复，以及扫描阶段的控制边界。所有 lease
-和 worker 操作只使用调用方给出的精确路径、lease ID 与进程句柄，不枚举或
-终止其它进程。
+这里封装未完成快照的独占创建和明确续传，以及扫描阶段的控制边界。所有占用锁
+和工作进程操作只使用调用方给出的精确路径、lease ID 与进程句柄，不枚举或
+终止其他进程。
 """
 from __future__ import annotations
 
@@ -149,9 +149,9 @@ def decode_control_line(line: str | bytes) -> ControlCommand:
         if decision not in (
             "continue_waiting", "skip_and_record", "stop_and_resume",
         ):
-            raise ValueError(f"未知 timeout 决策：{decision}")
+            raise ValueError(f"未知超时处置：{decision}")
     elif worker_pid is not None or decision is not None:
-        raise ValueError("只有 timeout_decision 可以携带 worker_pid/decision")
+        raise ValueError("只有 timeout_decision 可携带 worker_pid/decision")
     return ControlCommand(
         sequence=sequence,
         action=str(action),
@@ -293,7 +293,7 @@ class ControlInbox:
 
 
 class RunCommandRouter:
-    """把已验证命令路由到当前哈希 worker 或 paused 等待点。"""
+    """把已验证命令路由到当前哈希工作进程或暂停等待点。"""
 
     def __init__(
         self,
@@ -405,7 +405,7 @@ def lease_path_for_partial(partial_path: str) -> str:
     partial = _normalized(partial_path)
     if not partial.casefold().endswith(".partial.sqlite"):
         raise core.PreflightError(
-            f"schema 4 partial 路径后缀无效：{partial}")
+            f"schema 4 未完成快照的路径后缀无效：{partial}")
     return partial + LEASE_SUFFIX
 
 
@@ -425,7 +425,7 @@ def _readonly_connection(path: str) -> sqlite3.Connection:
         return sqlite3.connect(uri, uri=True)
     except (OSError, sqlite3.Error) as exc:
         raise core.PreflightError(
-            f"无法只读打开 schema 4 partial：{path}：{exc}") from exc
+            f"无法只读打开 schema 4 未完成快照：{path}：{exc}") from exc
 
 
 def _readwrite_connection(path: str) -> sqlite3.Connection:
@@ -434,7 +434,7 @@ def _readwrite_connection(path: str) -> sqlite3.Connection:
         return sqlite3.connect(uri, uri=True)
     except (OSError, sqlite3.Error) as exc:
         raise core.PreflightError(
-            f"无法读写打开 schema 4 partial：{path}：{exc}") from exc
+            f"无法读写打开 schema 4 未完成快照：{path}：{exc}") from exc
 
 
 def _session_payload(
@@ -447,7 +447,7 @@ def _session_payload(
         (session_id,),
     ).fetchone()
     if session is None:
-        raise core.PreflightError("partial 缺少 active session")
+        raise core.PreflightError("未完成快照缺少活动扫描会话")
     return (
         session[0] is not None,
         _json_object(session[1], "session config_json"),
@@ -463,17 +463,17 @@ def inspect_resume(
     pid_alive: Callable[[int], bool] | None = None,
     process_token: Callable[[int], str | None] | None = None,
 ) -> ResumePreview:
-    """只读检查恢复候选；不创建、接管或刷新 lease。"""
+    """只读检查续传候选；不创建、接管或刷新占用锁。"""
     partial = _normalized(partial_path)
     if not os.path.isfile(partial):
-        raise core.PreflightError(f"schema 4 partial 不存在：{partial}")
+        raise core.PreflightError(f"schema 4 未完成快照不存在：{partial}")
     lease_path = lease_path_for_partial(partial)
     con = _readonly_connection(partial)
     try:
         runtime = dbstate.load_runtime(con)
         if os.path.normcase(runtime.partial_path) != os.path.normcase(partial):
             raise core.PreflightError(
-                "partial 实际路径与数据库冻结身份不一致")
+                "未完成快照的实际路径与数据库冻结身份不一致")
         session_ended, config, tools = _session_payload(
             con, runtime.active_session_id)
         roots = tuple(
@@ -520,7 +520,7 @@ def _reserve_partial(path: str) -> None:
         os.close(descriptor)
     except FileExistsError as exc:
         raise core.PreflightError(
-            f"partial 已存在且不会覆盖：{path}") from exc
+            f"未完成快照已存在且不会覆盖：{path}") from exc
 
 
 def _remove_owned_sqlite_files(partial_path: str) -> None:
@@ -545,9 +545,9 @@ def create_run(
     session_id: str | None = None,
     lease_id: str | None = None,
 ) -> RunHandle:
-    """以 no-clobber 方式创建 schema 4 partial 和同身份 lease。"""
+    """以不覆盖方式创建 schema 4 未完成快照和同身份占用锁。"""
     if not roots:
-        raise core.PreflightError("schema 4 至少需要一个 root")
+        raise core.PreflightError("数据库结构版本 4 至少需要一个根目录")
     for _label, root_path in roots:
         core.validate_root(root_path)
     partial = _normalized(partial_path)
@@ -593,7 +593,7 @@ def create_run(
         con.commit()
         if runtime.active_session_id != lease.session_id:
             raise core.PreflightError(
-                "数据库 session 与 lease session 不一致")
+                "数据库扫描会话与占用锁会话不一致")
         return RunHandle(con, partial, lease_path, lease, False)
     except Exception:
         if con is not None:
@@ -617,7 +617,7 @@ def resume_run(
     pid_alive: Callable[[int], bool] | None = None,
     process_token: Callable[[int], str | None] | None = None,
 ) -> RunHandle:
-    """明确接管可恢复 partial，并创建新的 resume session。"""
+    """明确接管可续传的未完成快照，并创建新的续传会话。"""
     preview = inspect_resume(
         partial_path,
         pid_alive=pid_alive,
@@ -625,12 +625,12 @@ def resume_run(
     )
     if preview.run_state in ("published", "failed_terminal"):
         raise core.PreflightError(
-            f"状态 {preview.run_state} 不能恢复")
+            f"状态 {preview.run_state} 不能续传")
     if preview.run_state == "sealed_unpublished":
         raise core.PreflightError(
-            "sealed partial 只能使用只发布恢复入口，禁止重新扫描")
+            "已封存但未发布的工作快照只能重试发布，不能重新扫描")
     if preview.run_state == "stopped" and not manual:
-        raise core.PreflightError("stopped partial 需要用户明确手动恢复")
+        raise core.PreflightError("已停止的未完成快照需要用户明确手动续传")
     next_session = session_id or uuid.uuid4().hex
     next_lease = lease_id or uuid.uuid4().hex
     lease = dbstate.acquire_lease_file(
@@ -649,16 +649,16 @@ def resume_run(
         runtime = dbstate.load_runtime(con)
         if runtime.active_session_id != preview.active_session_id:
             raise core.PreflightError(
-                "partial 在恢复预览后更换了 active session，拒绝接管")
+                "未完成快照在续传预览后更换了活动会话，拒绝接管")
         if runtime.run_state in ("published", "failed_terminal"):
             raise core.PreflightError(
-                f"状态 {runtime.run_state} 不能恢复")
+                f"状态 {runtime.run_state} 不能续传")
         if runtime.run_state == "sealed_unpublished":
             raise core.PreflightError(
-                "sealed partial 只能使用只发布恢复入口，禁止重新扫描")
+                "已封存但未发布的工作快照只能重试发布，不能重新扫描")
         if runtime.run_state == "stopped" and not manual:
             raise core.PreflightError(
-                "stopped partial 需要用户明确手动恢复")
+                "已停止的未完成快照需要用户明确手动续传")
         session_ended, config, tools = _session_payload(
             con, runtime.active_session_id)
         dbstate.validate_resume_identity(
@@ -688,7 +688,7 @@ def resume_run(
         )
         if runtime.active_session_id != lease.session_id:
             raise core.PreflightError(
-                "恢复 session 与 lease session 不一致")
+                "续传会话与占用锁会话不一致")
         return RunHandle(
             con,
             preview.partial_path,
@@ -716,7 +716,7 @@ def resume_publication_run(
     pid_alive: Callable[[int], bool] | None = None,
     process_token: Callable[[int], str | None] | None = None,
 ) -> RunHandle:
-    """接管 sealed partial，只创建发布重试 session，不重新扫描源目录。"""
+    """接管已封存但未发布的工作快照，只创建发布重试会话。"""
     preview = inspect_resume(
         partial_path,
         pid_alive=pid_alive,
@@ -724,7 +724,7 @@ def resume_publication_run(
     )
     if preview.run_state != "sealed_unpublished":
         raise core.PreflightError(
-            f"状态 {preview.run_state} 不是待发布 sealed partial")
+            f"状态 {preview.run_state} 不是待发布的已封存工作快照")
     next_session = session_id or uuid.uuid4().hex
     next_lease = lease_id or uuid.uuid4().hex
     lease = dbstate.acquire_lease_file(
@@ -743,10 +743,10 @@ def resume_publication_run(
         runtime = dbstate.load_runtime(con)
         if runtime.run_state != "sealed_unpublished":
             raise core.PreflightError(
-                f"发布恢复时状态已变为 {runtime.run_state}")
+                f"发布重试时状态已变为 {runtime.run_state}")
         if runtime.active_session_id != preview.active_session_id:
             raise core.PreflightError(
-                "partial 在发布预览后更换了 active session，拒绝接管")
+                "未完成快照在发布预览后更换了活动会话，拒绝接管")
         _ended, config, tools = _session_payload(
             con, runtime.active_session_id)
         dbstate.validate_resume_identity(
@@ -769,7 +769,7 @@ def resume_publication_run(
         )
         if runtime.active_session_id != lease.session_id:
             raise core.PreflightError(
-                "发布恢复 session 与 lease session 不一致")
+                "发布重试会话与占用锁会话不一致")
         return RunHandle(
             con,
             preview.partial_path,
@@ -792,7 +792,7 @@ def record_publication_retry_failure(
     handle: RunHandle,
     error_message: str,
 ) -> None:
-    """在连接可能已关闭时，仍只写回同一 sealed partial 的失败证据。"""
+    """连接可能已关闭时，仍只写回同一已封存工作快照的失败证据。"""
     opened = None
     try:
         try:
@@ -814,7 +814,7 @@ def heartbeat_once(
     *,
     now_utc: str | None = None,
 ) -> dbstate.LeaseRecord:
-    """刷新精确 lease 文件和对应数据库 session。"""
+    """刷新精确占用锁文件和对应数据库扫描会话。"""
     con = _readwrite_connection(_normalized(partial_path))
     try:
         con.execute("PRAGMA foreign_keys=ON")
@@ -827,7 +827,7 @@ def heartbeat_once(
 
 
 class LeaseHeartbeat:
-    """仅刷新一个已知 partial/lease；失败后停止并暴露原异常。"""
+    """仅刷新一个已知未完成快照及其占用锁；失败后暴露原异常。"""
 
     def __init__(
         self,
@@ -837,7 +837,7 @@ class LeaseHeartbeat:
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         if interval_seconds <= 0:
-            raise ValueError("lease heartbeat 间隔必须大于 0")
+            raise ValueError("占用锁心跳间隔必须大于 0")
         self._partial_path = handle.partial_path
         self._lease_path = handle.lease_path
         self._lease_id = handle.lease.lease_id
@@ -857,7 +857,7 @@ class LeaseHeartbeat:
 
     def start(self) -> None:
         if self._thread is not None:
-            raise RuntimeError("lease heartbeat 已启动")
+            raise RuntimeError("占用锁心跳已启动")
         heartbeat_once(
             self._partial_path, self._lease_path, self._lease_id)
         self._thread = threading.Thread(
@@ -886,7 +886,7 @@ class LeaseHeartbeat:
 
     def stop(self, timeout_seconds: float = 2.0) -> bool:
         if timeout_seconds <= 0:
-            raise ValueError("lease heartbeat 停止等待必须大于 0")
+            raise ValueError("占用锁心跳停止等待时间必须大于 0")
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=timeout_seconds)
@@ -894,7 +894,7 @@ class LeaseHeartbeat:
 
 
 def close_handle(handle: RunHandle, *, release_lease: bool) -> None:
-    """关闭连接；仅在调用方明确声明时释放匹配的 lease。"""
+    """关闭连接；仅在调用方明确声明时释放匹配的占用锁。"""
     handle.connection.close()
     if release_lease:
         dbstate.release_lease_file(
@@ -1161,6 +1161,8 @@ def run_metadata_stage_controlled(
     retain_original_metadata: bool = True,
     metadata_exiftool: bool = True,
     metadata_ffprobe: bool = True,
+    retain_exiftool_payload: bool | None = None,
+    retain_ffprobe_payload: bool | None = None,
     timeout_policy: dict[str, object] | None = None,
     show_current_file: bool = False,
     on_progress: Callable[[int, dict[str, object]], None] | None = None,
@@ -1223,6 +1225,8 @@ def run_metadata_stage_controlled(
             retain_original_metadata=retain_original_metadata,
             metadata_exiftool=metadata_exiftool,
             metadata_ffprobe=metadata_ffprobe,
+            retain_exiftool_payload=retain_exiftool_payload,
+            retain_ffprobe_payload=retain_ffprobe_payload,
             timeout_policy=timeout_policy,
             on_progress=progress,
             should_stop=should_stop,
@@ -1428,7 +1432,7 @@ def run_format_stage_controlled(
     defer_completion: bool = False,
     _session_factory=None,
 ) -> dict[str, object]:
-    """运行 Full 可选格式校验；unsupported 只统计，不写为错误。"""
+    """运行完整扫描的可选格式校验；不支持的类型只统计，不写为错误。"""
     if mode not in ("off", "sample", "all"):
         raise core.PreflightError(f"格式校验模式无效：{mode!r}")
     if defer_completion and mode == "off":
@@ -1452,7 +1456,7 @@ def run_format_stage_controlled(
             "SELECT COUNT(*) FROM format_checks").fetchone()[0])
         if existing:
             raise core.PreflightError(
-                "格式校验已关闭，但 partial 中存在格式结果")
+                "格式校验已关闭，但未完成快照中存在格式结果")
         dbstate.update_stage_checkpoint(
             con,
             "format",
@@ -1616,7 +1620,7 @@ def run_format_stage_controlled(
                     )
                     if not before_match:
                         status = "unstable"
-                        detail = "校验前 size／mtime 已改变"
+                        detail = "校验前 size/mtime 已改变"
                     else:
                         status, detail = session.validate(
                             path, str(media_kind), spec)
@@ -1636,7 +1640,7 @@ def run_format_stage_controlled(
                             )
                             if not stat_match:
                                 status = "unstable"
-                                detail = "校验期间 size／mtime 已改变"
+                                detail = "校验期间 size/mtime 已改变"
                                 tool_failure = None
                 detail = None if detail is None else str(detail)[:2000]
                 finish_status = attempt_status.get(status, "error")
@@ -2263,7 +2267,7 @@ def run_independent_hash_stage_controlled(
     dbstate.require_v4_connection(con)
     if router.state != "running":
         raise core.PreflightError(
-            f"独立抽验要求 running 控制器，实际为 {router.state}")
+            f"哈希复检要求控制器处于运行状态，实际状态为 {router.state}")
     if isinstance(min_count, bool) or not isinstance(min_count, int) \
             or min_count < 0:
         raise ValueError("min_count 不能小于 0")
@@ -2271,7 +2275,7 @@ def run_independent_hash_stage_controlled(
     runtime = dbstate.load_runtime(con)
     if runtime.run_state != "running":
         raise core.PreflightError(
-            f"独立抽验要求 running，实际为 {runtime.run_state}")
+            f"哈希复检要求任务处于运行状态，实际状态为 {runtime.run_state}")
     coverage = str(con.execute(
         "SELECT hash_coverage FROM snapshot_info WHERE id=1"
     ).fetchone()[0])
@@ -2327,9 +2331,9 @@ def run_independent_hash_stage_controlled(
         )
         return saved
     if not isinstance(powershell_path, str) or not powershell_path:
-        raise core.PreflightError("独立抽验缺少冻结 PowerShell 路径")
+        raise core.PreflightError("哈希复检缺少冻结的 PowerShell 路径")
     if not isinstance(powershell_version, str) or not powershell_version:
-        raise core.PreflightError("独立抽验缺少冻结 PowerShell 版本")
+        raise core.PreflightError("哈希复检缺少冻结的 PowerShell 版本")
 
     _emit_control_event(
         on_event, "stage_started", stage="verify_hash")
@@ -2635,7 +2639,7 @@ def run_independent_hash_stage_controlled(
                     operation="verify_primary_recheck",
                     failure_kind="worker_start_failed",
                     message=(
-                        "主哈希复核 worker 无法启动："
+                        "主哈希复核工作进程无法启动："
                         f"{type(exc).__name__}: {exc}"
                     ),
                     errno=getattr(exc, "errno", None),
@@ -2933,6 +2937,32 @@ def _configured_root_mapping(value: object) -> dict[str, str]:
     return mapping
 
 
+_METADATA_TOOL_MODES = frozenset(("off", "normalized", "complete"))
+
+
+def metadata_tool_modes(config: dict[str, object]) -> dict[str, str]:
+    """读取每个元数据工具的冻结范围，并兼容旧全局范围配置。"""
+    storage = config.get("metadata_storage", "complete")
+    if storage not in ("complete", "normalized"):
+        raise core.PreflightError("冻结的 metadata_storage 无效")
+    modes: dict[str, str] = {}
+    for tool_name in ("exiftool", "ffprobe"):
+        enabled = config.get(f"metadata_{tool_name}", True)
+        if not isinstance(enabled, bool):
+            raise core.PreflightError("冻结的元数据工具开关必须是布尔值")
+        explicit = config.get(f"metadata_{tool_name}_mode")
+        mode = str(explicit) if explicit is not None else (
+            str(storage) if enabled else "off")
+        if mode not in _METADATA_TOOL_MODES:
+            raise core.PreflightError(
+                f"冻结的 {tool_name} 元数据范围无效：{mode!r}")
+        if explicit is not None and enabled != (mode != "off"):
+            raise core.PreflightError(
+                f"冻结的 {tool_name} 元数据范围与工具开关冲突")
+        modes[tool_name] = mode
+    return modes
+
+
 def _metadata_tools(
     tools: dict[str, object],
     *,
@@ -2949,13 +2979,13 @@ def _metadata_tools(
         value = tools.get(name)
         if not isinstance(value, dict):
             raise core.PreflightError(
-                f"当前 session 缺少 {name} 的路径／版本能力")
+                f"当前扫描会话缺少 {name} 的路径／版本能力")
         path = value.get("path")
         version = value.get("version")
         if not isinstance(path, str) or not path \
                 or not isinstance(version, str) or not version:
             raise core.PreflightError(
-                f"当前 session 的 {name} 路径／版本无效")
+                f"当前扫描会话中的 {name} 路径／版本无效")
         selected[name] = dict(value)
     return selected
 
@@ -2987,14 +3017,14 @@ def run_scan_evidence_stages(
     session_ended, config, tools = _session_payload(
         con, runtime.active_session_id)
     if session_ended:
-        raise core.PreflightError("当前 session 已结束，不能采集证据")
+        raise core.PreflightError("当前扫描会话已结束，不能采集证据")
     phase = str(config.get("phase") or "")
     if phase not in ("full", "quick"):
         raise core.PreflightError(f"冻结的扫描模式无效：{phase!r}")
     hash_mode = str(config.get("hash") or (
         "none" if phase == "quick" else "full"))
     if phase == "quick" and hash_mode != "none":
-        raise core.PreflightError("Quick 冻结配置不能启用哈希")
+        raise core.PreflightError("快速扫描的冻结配置不能启用哈希")
     if hash_mode not in ("none", "incremental", "full"):
         raise core.PreflightError(f"冻结的哈希模式无效：{hash_mode!r}")
     if hash_retry_mode not in ("pending", "transient", "all_unsuccessful"):
@@ -3007,16 +3037,10 @@ def run_scan_evidence_stages(
         raise core.PreflightError(
             f"冻结的格式校验模式无效：{format_mode!r}")
     if phase == "quick" and format_mode != "off":
-        raise core.PreflightError("Quick 冻结配置不能启用格式校验")
-    retain_original = config.get("metadata_storage", "complete") == "complete"
-    if phase == "full" and config.get("metadata_storage", "complete") \
-            not in ("complete", "normalized"):
-        raise core.PreflightError("冻结的 metadata_storage 无效")
-    metadata_exiftool = config.get("metadata_exiftool", True)
-    metadata_ffprobe = config.get("metadata_ffprobe", True)
-    if not isinstance(metadata_exiftool, bool) \
-            or not isinstance(metadata_ffprobe, bool):
-        raise core.PreflightError("冻结的元数据工具开关必须是布尔值")
+        raise core.PreflightError("快速扫描的冻结配置不能启用格式校验")
+    metadata_modes = metadata_tool_modes(config)
+    metadata_exiftool = metadata_modes["exiftool"] != "off"
+    metadata_ffprobe = metadata_modes["ffprobe"] != "off"
 
     def progress(stage: str, payload: dict[str, object]) -> None:
         if on_progress is not None:
@@ -3136,9 +3160,15 @@ def run_scan_evidence_stages(
                 metadata_ffprobe=metadata_ffprobe,
             ),
             router,
-            retain_original_metadata=retain_original,
+            retain_original_metadata=(
+                metadata_modes["exiftool"] == "complete"
+                and metadata_modes["ffprobe"] == "complete"),
             metadata_exiftool=metadata_exiftool,
             metadata_ffprobe=metadata_ffprobe,
+            retain_exiftool_payload=(
+                metadata_modes["exiftool"] == "complete"),
+            retain_ffprobe_payload=(
+                metadata_modes["ffprobe"] == "complete"),
             timeout_policy=config.get("exiftool_timeout_policy"),
             show_current_file=show_current_file,
             on_progress=lambda _index, payload: progress(
@@ -3498,6 +3528,7 @@ def _scan_manifest_payload(
                 "exiftool": config.get("metadata_exiftool", True),
                 "ffprobe": config.get("metadata_ffprobe", True),
             },
+            "tool_modes": metadata_tool_modes(config),
             "coverage": counts.get("metadata_coverage", {}),
             "has_source_file_issues": bool(
                 counts.get("has_source_file_issues")),
@@ -3554,14 +3585,14 @@ def seal_and_publish_scan(
     now_utc: str | None = None,
     on_event: Callable[..., None] | None = None,
 ) -> dbstate.PublicationResult:
-    """验证终态、封存 schema 4 partial，并以 no-clobber 发布数据库和 Issues。"""
+    """验证终态、封存 schema 4 未完成快照，并以不覆盖方式发布数据库和问题报告。"""
     con = handle.connection
     _require_scan_seal_ready(con)
     runtime = dbstate.load_runtime(con)
     session_ended, config, tools = _session_payload(
         con, runtime.active_session_id)
     if session_ended:
-        raise core.PreflightError("当前 session 已结束，不能封存")
+        raise core.PreflightError("当前扫描会话已结束，不能封存")
     hash_coverage = str(config.get("hash") or "none")
     if hash_coverage not in ("none", "incremental", "full"):
         raise core.PreflightError(
@@ -3570,14 +3601,14 @@ def seal_and_publish_scan(
         staging_path or runtime.publish_stem_path + ".publishing.sqlite")
     if os.path.normcase(os.path.dirname(staging)) != os.path.normcase(
             runtime.output_dir):
-        raise core.PreflightError("发布 staging 必须位于冻结输出目录")
+        raise core.PreflightError("发布暂存文件必须位于冻结的输出目录")
     if os.path.normcase(staging) in {
         os.path.normcase(runtime.partial_path),
         os.path.normcase(runtime.event_log_path),
         os.path.normcase(runtime.publish_stem_path),
         os.path.normcase(handle.lease_path),
     }:
-        raise core.PreflightError("发布 staging 与冻结运行路径冲突")
+        raise core.PreflightError("发布暂存文件与冻结的运行路径冲突")
 
     seal_started = False
     sealed = False
@@ -3759,7 +3790,7 @@ def run_scan_completion_stages(
     _independent_runner=None,
     _primary_runner=None,
 ) -> dict[str, object]:
-    """完成独立抽验、扫描专用阶段收尾、封存与发布。"""
+    """完成哈希复检、扫描专用阶段收尾、封存与发布。"""
     con = handle.connection
     runtime = dbstate.load_runtime(con)
     if runtime.run_state != "running":
@@ -3768,7 +3799,7 @@ def run_scan_completion_stages(
     session_ended, config, tools = _session_payload(
         con, runtime.active_session_id)
     if session_ended:
-        raise core.PreflightError("当前 session 已结束，不能完成扫描")
+        raise core.PreflightError("当前扫描会话已结束，不能完成扫描")
     powershell = tools.get("powershell")
     powershell_path = ""
     powershell_version = ""

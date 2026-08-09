@@ -747,6 +747,10 @@ def assert_same_disk(
 
 def render_report(record: core.WindowsDiskRecord) -> str:
     disk = record.disk
+    read_only = disk.get("is_read_only")
+    read_only_text = (
+        "未提供" if read_only is None else "是" if read_only else "否"
+    )
     lines = [
         "Windows 存储信息",
         "-" * 72,
@@ -757,11 +761,11 @@ def render_report(record: core.WindowsDiskRecord) -> str:
         f"总线：{record.bus_type or '未提供'}",
         f"分区样式：{record.partition_style or '未提供'}",
         f"容量：{core.format_bytes(record.size)}"
-        + (f"（{record.size} bytes）" if record.size is not None else ""),
-        f"逻辑／物理扇区：{disk.get('logical_sector_size') or '—'} / "
-        f"{disk.get('physical_sector_size') or '—'} bytes",
+        + (f"（{record.size} 字节）" if record.size is not None else ""),
+        f"逻辑／物理扇区：{disk.get('logical_sector_size') or '—'}／"
+        f"{disk.get('physical_sector_size') or '—'} 字节",
         f"Windows 健康状态：{disk.get('health_status') or '未提供'}",
-        f"只读属性：{disk.get('is_read_only')}",
+        f"只读属性：{read_only_text}",
         "",
         "分区与卷：",
     ]
@@ -790,7 +794,7 @@ def render_report(record: core.WindowsDiskRecord) -> str:
         lines.extend(["", "地址布局间隙（可能含分区表保留区）："])
         for gap in record.layout_gaps:
             lines.append(
-                f"  offset {gap.get('offset')}｜{core.format_bytes(core.int_or_none(gap.get('size')))}｜"
+                f"  偏移 {gap.get('offset')}｜{core.format_bytes(core.int_or_none(gap.get('size')))}｜"
                 f"{gap.get('kind')}"
             )
     reliability = record.data.get("storage_reliability_counter")
@@ -798,11 +802,11 @@ def render_report(record: core.WindowsDiskRecord) -> str:
         lines.extend(
             [
                 "",
-                "Windows Storage Reliability Counter：",
+                "Windows 存储可靠性计数器：",
                 f"  温度：{reliability.get('temperature_celsius')} °C",
                 f"  通电小时：{reliability.get('power_on_hours')}",
                 f"  磨损：{reliability.get('wear_percent')}",
-                f"  未校正读／写错误：{reliability.get('read_errors_uncorrected')} / "
+                f"  未校正读／写错误：{reliability.get('read_errors_uncorrected')}／"
                 f"{reliability.get('write_errors_uncorrected')}",
             ]
         )

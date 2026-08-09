@@ -1,11 +1,12 @@
-r"""Script_DAISY_Module_DBS_32_Check_Format：DBS-32 格式核验兼容入口。
+r"""Script_DAISY_Module_DBS_32_Check_Format：DBS-32 格式校验兼容入口。
 
 格式判据、工具调用和报告写出位于 Script_DAISY_Lib_DBS_06_Verify；本文件只保留
 既有 CLI、退出码和供旧调用方使用的函数名。
 
 用法：
-  python .\Script\Script_DAISY_MAIN.py check-format --snapshot .\Output\Snapshots\Scan_x.sqlite ^
-      --root "Archive2024=E:\Archive2024" [--sample-percent 100]
+  python .\Script\Script_DAISY_MAIN.py check-format `
+    --snapshot .\Output\Snapshots\Scan_x.sqlite `
+    --root "Archive2024=E:\Archive2024" [--sample-percent 100]
 """
 from __future__ import annotations
 
@@ -55,19 +56,23 @@ def validate_legacy_office(
 def main() -> int:
     core.force_utf8_io()
     parser = argparse.ArgumentParser(
-        description="DBS-32 文件结构核验（只读，独立报告）")
-    parser.add_argument("--snapshot", required=True)
+        description="兼容格式校验入口：只读检查并生成独立报告")
+    parser.add_argument(
+        "--snapshot", required=True, help="作为核验基准的封存快照")
     parser.add_argument(
         "--root", action="append", required=True,
-        help="当前根目录；单根可直接给路径，多根须逐项 label=当前路径")
-    parser.add_argument("--sample-percent", type=float, default=100.0)
-    parser.add_argument("--report-dir")
-    parser.add_argument("--exiftool-path")
-    parser.add_argument("--ffprobe-path")
-    parser.add_argument("--sevenzip-path")
+        help="当前档案根目录；单根可直接给路径，多根逐项使用「根目录名=路径」")
+    parser.add_argument(
+        "--sample-percent", type=float, default=100.0,
+        help="抽样比例；默认检查全部适用文件")
+    parser.add_argument(
+        "--report-dir", help="报告输出目录；默认 Output/Reports")
+    parser.add_argument("--exiftool-path", help="ExifTool 可执行文件路径")
+    parser.add_argument("--ffprobe-path", help="ffprobe 可执行文件路径")
+    parser.add_argument("--sevenzip-path", help="7-Zip 可执行文件路径")
     parser.add_argument(
         "--force", action="store_true",
-        help="文件名高32bit指纹缺失时仍继续（不符仍拒绝）")
+        help="允许缺少文件名指纹；指纹不一致仍拒绝")
     args = parser.parse_args()
     try:
         progress = core.Progress(1, 1, "格式校验")
@@ -87,21 +92,25 @@ def main() -> int:
         print(f"校验失败：{exc}", file=sys.stderr)
         return 2
     progress.finish(f"核对 {report['checked']:,} 条")
+    status_labels = {
+        "valid": "有效", "invalid": "校验失败", "unsupported": "不支持",
+        "missing": "缺失", "timeout": "超时", "error": "异常",
+    }
     print(
-        f"核对 {report['checked']:,} 条 | "
+        f"核对 {report['checked']:,} 项｜"
         + "，".join(
-            f"{key}={value:,}"
+            f"{status_labels.get(key, key)}：{value:,}"
             for key, value in sorted(report["counts"].items())
         )
-        + f" | 用时 {report['elapsed_s']}s"
+        + f"｜用时 {report['elapsed_s']} 秒"
     )
     for path in report["files"]:
         print(f"报告：{path}")
     if report["ok"]:
-        print("结论：全部通过（在本次口径内）")
+        print("结论：在本次口径内未发现无效或缺失文件；不支持类型不作结论。")
         return 0
     print(
-        "结论：发现 invalid/missing——详见报告；结合哈希层交叉解读",
+        "结论：发现无效或缺失文件。请查看报告，并结合哈希核验结果判断。",
         file=sys.stderr,
     )
     return 1

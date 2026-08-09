@@ -6,7 +6,7 @@ r"""Script_DAISY_Test_Tree：DAISY 合成测试树生成器。
   元数据阶段以 skipped 快进——黄金测试聚焦 Diff 语义，媒体解析由专门测试覆盖；
   pre_enum/post_enum/pre_finalize 钩子用于构造时序类场景（T11b/T16/T17）。
 - SCENARIOS＋CLI：把简单场景物化为「旧树 → 变换 → 新树」目录对供人工检视；
-  时序/权限/链条类场景（T11/T11b/T13/T14/T16/T17）由黄金测试直接编排。
+  时序／权限／链条类场景（T11/T11b/T13/T14/T16/T17）由黄金测试直接编排。
 
 用法：
   python .\Script\Test\Script_DAISY_Test_Tree.py --list
@@ -148,7 +148,7 @@ SCENARIOS = {
             "note": "备份核对（新树目录名不同、mtime 保留、创建时间自变）"},
 }
 
-# 时序/权限/链条类场景需运行时编排，注册表仅记录说明（黄金测试直接构造）
+# 时序／权限／链条类场景需运行时编排，注册表仅记录说明（黄金测试直接构造）
 SPECIAL_NOTES = {
     "T11": "模拟目录 PermissionError，构造 access_denied",
     "T11b": "pre_enum 钩子删除 root 构造 root 级枚举失败",
@@ -156,7 +156,7 @@ SPECIAL_NOTES = {
     "T14": "双侧独立全量（T01 同树即覆盖）",
     "T16": "post_enum 钩子同尺寸改写 → 复扫标 unstable",
     "T16b": "扫描期间新导入（单侧存在且 unstable）",
-    "T17": "post_enum 钩子置 is_placeholder=1（哈希/元数据跳过）",
+    "T17": "post_enum 钩子置 is_placeholder=1（哈希／元数据跳过）",
 }
 
 

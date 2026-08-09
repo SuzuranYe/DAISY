@@ -2,13 +2,13 @@ r"""Script_DAISY_Module_DBS_12_Quick_Scan：DBS-12 快速档案扫描——只�
 
 与 DBS-11 完整档案扫描采用同一快照格式（同 DDL、内嵌事件与清单），但**完全
 不接触外部工具**（无 ExifTool/ffprobe/7-Zip 依赖，未安装也能跑）、不哈希、
-不提取元数据：只登记文件树与文件信息（名称/扩展名/类型、大小、创建与修改
+不提取元数据：只登记文件树与文件信息（名称／扩展名／类型、大小、创建与修改
 时间 UTC 100ns、属性、NTFS 文件标识、云占位检测、逐目录枚举状态）。
 
 管线四阶段：轻预检（输出目录＋磁盘空间）→ 枚举 → 复扫校验 → 封存。
 分钟级完成，无续传（中断后直接重跑）。产物 hash_coverage='none'、媒体条目
 meta_status='skipped'，可直接被 Diff、核验与报表工具消费
-（Diff 对无哈希侧如实给 hash_missing——快扫只能发现树/大小/时间层面的变化，
+（Diff 对无哈希侧如实给 hash_missing——快扫只能发现树／大小／时间层面的变化，
 既不验证内容也不检查媒体可读性）。
 
 用法：
@@ -33,12 +33,15 @@ MIN_FREE_BYTES = 200 * 1024 * 1024
 def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(
-        description="DBS-12 快速档案扫描：仅文件信息的轻量快照")
+        description="兼容快速扫描入口：仅登记文件信息并生成轻量快照")
     ap.add_argument("--root", action="append", default=[], required=True,
-                    help="档案根文件夹，可重复；语法 label=路径 或 路径")
-    ap.add_argument("--output-dir", default="Output/Snapshots")
-    ap.add_argument("--no-file-id", action="store_true")
-    ap.add_argument("--quiet", action="store_true")
+                    help="档案根目录，可重复；格式为路径或「根目录名=路径」")
+    ap.add_argument(
+        "--output-dir", default="Output/Snapshots", help="快照输出目录")
+    ap.add_argument(
+        "--no-file-id", action="store_true", help="不采集 NTFS-ID")
+    ap.add_argument(
+        "--quiet", action="store_true", help="不显示常规控制台进度")
     args = ap.parse_args()
 
     # [1/4] 轻预检：不需要任何外部工具
@@ -98,8 +101,9 @@ def main() -> int:
             exclude_dirs={os.path.abspath(args.output_dir)},
             on_progress=lambda s: prog.update(s["files"], bytes_done=s["bytes"],
                                               errors=s["dir_errors"]))
-        prog.finish(f"{stats['files']:,} 文件 / {stats['dirs']:,} 目录 / "
-                    f"{stats['bytes']/1e9:.2f} GB / 目录错误 {stats['dir_errors']}")
+        prog.finish(f"{stats['files']:,} 个文件，{stats['dirs']:,} 个目录，"
+                    f"{stats['bytes']/1e9:.2f} GB，"
+                    f"目录错误 {stats['dir_errors']}")
         events.emit("stage_finished", stage="enumerate", **stats)
 
         # 状态快进：快扫不做哈希与元数据（语义与 --hash none/跳过一致）
@@ -117,7 +121,7 @@ def main() -> int:
         prog = core.Progress(3, STAGES_TOTAL, "复扫校验", args.quiet)
         events.emit("stage_started", stage="rescan")
         changed = core.rescan_check(con)
-        prog.finish(f"unstable {changed}")
+        prog.finish(f"扫描期间变化 {changed}")
         events.emit("stage_finished", stage="rescan", unstable=changed)
 
         # [4/4] 封存
@@ -137,15 +141,15 @@ def main() -> int:
         try:
             os.remove(base + ".events.jsonl")
         except OSError as exc:
-            print(f"!! 已封存，但无法删除已内置的临时事件日志：{exc}",
+            print(f"警告：已封存，但无法删除已内置的临时事件日志：{exc}",
                   file=sys.stderr)
         print(f"\n快照：{final}"
-              "\nSHA-256 高 32 bit：已大写后置于文件名"
+              "\n8 位 SHA-256 指纹：已大写后置于文件名"
               "\nmanifest 与事件日志：已内置于 SQLite")
         issue_report = core.artifact_issue_report_path(final)
         if os.path.isfile(issue_report):
-            print("!! SQLite 数据库已完整封存；另发现扫描证据问题"
-                  f"（枚举失败/unstable），问题报告：{issue_report}",
+            print("警告：SQLite 数据库已完整封存；另发现扫描证据问题"
+                  f"（枚举失败或扫描期间变化），问题报告：{issue_report}",
                   file=sys.stderr)
         return 0
 

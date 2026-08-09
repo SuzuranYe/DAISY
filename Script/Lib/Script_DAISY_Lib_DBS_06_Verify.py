@@ -1,6 +1,6 @@
 """DAISY DBS 核验功能的共用只读输入模型与业务服务。
 
-本模块合并 DBS-31／32 已有的快照准入、root 映射、stat／哈希巡检、
+本模块合并 DBS-31/32 已有的快照准入、根目录映射、文件状态／哈希核验、
 格式判据和报告落盘；旧 Module 只保留 CLI 与兼容函数名。
 
 本次职责调整不改变哈希抽样、格式判据、报告字段、退出码或输出文件命名。
@@ -34,12 +34,29 @@ _MEDIA_KINDS = {
 }
 _FFPROBE_KINDS = {"image_gif", "video_mp4", "video_crm", "audio"}
 FORMAT_VALIDATION_PROFILE = "daisy-format-v1"
+_FORMAT_STATUS_LABELS = {
+    "valid": "有效",
+    "invalid": "校验失败",
+    "unsupported": "不支持",
+    "missing": "缺失",
+    "timeout": "超时",
+    "error": "异常",
+}
 
 # 损坏模式表（v1，判据来自截断 JPG/MP4/CR3 与坏头 JPG 的探针输出）。
 _CORRUPT_RE = re.compile(
     r"(format error|truncated|error reading|corrupt|unknown file type"
     r"|file is empty|processing .+ after unknown .*header"
     r"|bad atom|invalid atom|not a valid)", re.I)
+
+
+def _verification_mode_text(value: object) -> str:
+    mode = str(value or "")
+    if mode == "full":
+        return "全量"
+    if mode.startswith("sample_") and mode.endswith("pct"):
+        return f"抽样 {mode[len('sample_'):-len('pct')]}%"
+    return mode or "未知"
 
 
 @dataclass
@@ -82,10 +99,10 @@ def _validate_snapshot_filename(path: str, force: bool) -> str:
     recorded = core.filename_sha256_high32(normalized)
     if recorded is not None:
         if recorded != core.sha256_file(normalized)[:8].upper():
-            raise core.PreflightError("快照文件名高32bit指纹不符")
+            raise core.PreflightError("快照文件名指纹不符")
     elif not force:
         raise core.PreflightError(
-            f"快照文件名缺少高32bit指纹（--force 可越过）：{normalized}")
+            f"快照文件名缺少指纹（可用 --force 明确允许继续）：{normalized}")
     return normalized
 
 
@@ -109,7 +126,7 @@ def open_verification_snapshot(
     force: bool = False,
     required_capabilities: Iterable[str] = ("files",),
 ) -> VerificationSnapshot:
-    """按既有 DBS-31／32 规则打开快照并解析当前 root 映射。"""
+    """按既有 DBS-31/32 规则打开快照并解析当前 root 映射。"""
     normalized = _validate_snapshot_filename(snapshot_path, force)
     connection, descriptor = dbreader.open_database(
         normalized, expected_type="snapshot")
@@ -153,7 +170,7 @@ def open_verification_snapshot(
         raise
 
 
-# === 内容哈希核验 ===
+# === 哈希核验 ===
 
 
 def patrol_hash(
@@ -310,7 +327,7 @@ def write_hash_report(
     requested_path: str | None = None,
 ) -> tuple[str, str | None]:
     """按 DBS-31 既有命名、字段和 Markdown 内容写出报告。"""
-    report["report_metadata"] = core.report_metadata("DBS-31 内容哈希核验")
+    report["report_metadata"] = core.report_metadata("DBS-31 哈希核验")
     if requested_path:
         report_path = os.path.abspath(requested_path)
         os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
@@ -328,19 +345,19 @@ def write_hash_report(
         issue_report = os.path.splitext(report_path)[0] + "_Issues.md"
         categories = (
             ("缺失", report["stat_missing"]),
-            ("stat 变化", report["stat_changed"]),
+            ("文件属性变化", report["stat_changed"]),
             ("哈希不一致", report["hash_mismatched"]),
-            ("哈希工具错误", report["hash_tool_error"]),
+            ("哈希工具故障", report["hash_tool_error"]),
         )
         lines = [
-            "# DAISY 内容哈希核验问题报告",
+            "# DAISY 哈希核验问题报告",
             "",
-            *core.report_markdown_lines("DBS-31 内容哈希核验"),
+            *core.report_markdown_lines("DBS-31 哈希核验"),
             "",
             f"- 快照：`{report['snapshot']}`",
             f"- 快照 UUID：`{report['snapshot_uuid']}`",
             f"- 核对时间：`{report['checked_at_utc']}`",
-            f"- 模式：`{report['mode']}`",
+            f"- 模式：{_verification_mode_text(report['mode'])}",
             "",
             "## 汇总",
             "",
@@ -358,7 +375,7 @@ def write_hash_report(
                     f"- `{core.markdown_cell(row.get('path'))}`")
             if len(rows) > 100:
                 lines.append(
-                    f"- …仅列出前 100／{len(rows)} 条，完整详情见 JSON。")
+                    f"- …仅列出前 100/{len(rows)} 条，完整详情见 JSON 报告。")
         with open(
             issue_report, "w", encoding="utf-8", newline="\n",
         ) as handle:
@@ -366,7 +383,7 @@ def write_hash_report(
     return report_path, issue_report
 
 
-# === 文件结构核验 ===
+# === 格式校验 ===
 
 
 def validate_zip(path: str) -> tuple[str, str | None]:
@@ -450,7 +467,7 @@ def validate_sevenzip(path: str, sevenzip: str) -> tuple[str, str | None]:
             operation="format_validate",
             failure_kind=f"tool_exit_{result.returncode}",
             recovered=True,
-            message=f"7-Zip 工具错误（退出码 {result.returncode}）",
+            message=f"7-Zip 工具故障（退出码 {result.returncode}）",
         )
     if result.stdout_truncated or result.stderr_truncated:
         raise toolruntime.failure_from_process(
@@ -472,7 +489,7 @@ def validate_sevenzip(path: str, sevenzip: str) -> tuple[str, str | None]:
 
 
 def parse_et_text(text: str) -> list[tuple[str, str]]:
-    """解析 exiftool -s 文本输出为 (标签, 值) 列表。"""
+    """解析 exiftool -s 文本输出为（标签，值）列表。"""
     out = []
     for line in text.splitlines():
         tag, separator, value = line.partition(":")
@@ -709,7 +726,7 @@ def validate_format_snapshot(
     on_progress=None,
     root_specs: list[str] | None = None,
 ) -> dict:
-    """执行 DBS-32 文件结构核验并写出既有报告集合。"""
+    """执行 DBS-32 格式校验并写出既有报告集合。"""
     verification = open_verification_snapshot(
         snapshot_path,
         root_map=root_map,
@@ -838,7 +855,7 @@ def validate_format_snapshot(
 
     ok = not counts.get("invalid") and not counts.get("missing")
     report = {
-        "report_metadata": core.report_metadata("DBS-32 文件结构核验"),
+        "report_metadata": core.report_metadata("DBS-32 格式校验"),
         "snapshot": os.path.basename(snapshot_path),
         "snapshot_uuid": uuid_,
         "mode": (
@@ -878,23 +895,26 @@ def validate_format_snapshot(
             ])
     files.append(base + ".csv")
     info_path = base + "_Info.csv"
-    identity = core.report_metadata("DBS-32 文件结构核验")
+    identity = core.report_metadata("DBS-32 格式校验")
     with open(info_path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["key", "value"])
         writer.writerows(identity.items())
     files.append(info_path)
+    status_summary = "，".join(
+        f"{_FORMAT_STATUS_LABELS.get(key, key)}：{value:,}"
+        for key, value in sorted(counts.items()))
     markdown = [
-        "# 文件结构核验报告",
+        "# DAISY 格式校验报告",
         "",
-        *core.report_markdown_lines("DBS-32 文件结构核验"),
+        *core.report_markdown_lines("DBS-32 格式校验"),
         "",
-        f"- 快照：`{report['snapshot']}`（uuid `{uuid_}`）",
-        f"- 口径：{report['mode']}；核对 {report['checked']:,} 条；"
-        f"用时 {report['elapsed_s']}s",
-        f"- 结果：" + "，".join(
-            f"{key}={value:,}" for key, value in sorted(counts.items())),
-        f"- 结论：{'全部通过（在本次口径内）' if ok else '**发现问题**'}",
+        f"- 快照：`{report['snapshot']}` (UUID: `{uuid_}`)",
+        f"- 口径：{_verification_mode_text(report['mode'])}；"
+        f"核对 {report['checked']:,} 条；用时 {report['elapsed_s']} 秒",
+        f"- 结果：{status_summary}",
+        "- 结论：在本次口径内未发现校验失败或缺失文件；"
+        "不支持类型不作结论。" if ok else "- 结论：**发现校验失败或缺失文件。**",
         "",
     ]
     problems = [
@@ -904,14 +924,16 @@ def validate_format_snapshot(
         markdown.append("")
         for row in problems[:50]:
             markdown.append(
-                f"- [{row['status']}] `{row['path']}`"
+                f"- [{_FORMAT_STATUS_LABELS.get(row['status'], row['status'])}] "
+                f"`{core.markdown_cell(row['path'])}`"
                 + (f"：{row['detail']}" if row["detail"] else ""))
         if len(problems) > 50:
-            markdown.append(f"- …共 {len(problems)} 条，详见 CSV")
+            markdown.append(f"- …共 {len(problems)} 条，详见 CSV 数据表。")
         markdown.append("")
         markdown.append(
-            "与哈希层交叉解读：哈希未变＋校验失败＝登记时就已损坏；"
-            "哈希已变＋校验失败＝文件在登记后发生损坏。")
+            "与哈希结果交叉解读：哈希未变只说明当前字节与基准一致，不能证明"
+            "建库时文件可正常解析；哈希变化说明字节已变化，损坏时间和原因仍需"
+            "结合历史证据判断。")
         markdown.append("")
     with open(base + ".md", "w", encoding="utf-8", newline="\n") as handle:
         handle.write("\n".join(markdown))

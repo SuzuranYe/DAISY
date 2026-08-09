@@ -1,9 +1,9 @@
-"""DAISY v1.6.0 统一核验编排、控制与人读报告。
+"""DAISY v1.6.0 档案数据核验编排、控制与 Markdown 阅读报告。
 
-本模块只读消费已经封存的 schema 3／4 快照，不修改输入数据库。旧版
-DBS-31／32 的兼容行为仍由 ``Script_DAISY_Lib_DBS_06_Verify`` 提供；
-这里实现新 ``verify`` 入口所需的严格前后 stat、独立哈希、受控格式 worker、
-共享暂停／timeout／停止协议，以及一份 Markdown＋一份 JSON 的报告发布。
+本模块只读消费已经封存的 schema 3/4 快照，不修改输入数据库。旧版
+DBS-31/32 的兼容行为仍由 ``Script_DAISY_Lib_DBS_06_Verify`` 提供；
+这里实现新 ``verify`` 入口所需的严格前后文件属性、独立哈希、受控格式工作进程、
+共享暂停／超时／停止协议，以及一份 Markdown＋一份 JSON 的报告发布。
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def _finite_percent(value: object, label: str) -> float:
 
 @dataclass(frozen=True)
 class VerificationOptions:
-    """一次统一核验的冻结选项；哈希与格式抽样口径互不复用。"""
+    """一次档案数据核验的冻结选项；哈希与格式抽样口径互不复用。"""
 
     hash_mode: str = "sample"
     hash_sample_percent: float = 1.0
@@ -72,30 +72,30 @@ class VerificationOptions:
 
     def __post_init__(self) -> None:
         if self.hash_mode not in HASH_MODES:
-            raise ValueError(f"未知哈希核验模式：{self.hash_mode}")
+            raise ValueError(f"未知哈希复检模式：{self.hash_mode}")
         if self.format_mode not in FORMAT_MODES:
-            raise ValueError(f"未知格式核验模式：{self.format_mode}")
+            raise ValueError(f"未知格式校验模式：{self.format_mode}")
         normalized_tools = tuple(str(item) for item in self.format_tools)
         if len(normalized_tools) != len(set(normalized_tools)):
-            raise ValueError("格式核验工具不能重复")
+            raise ValueError("格式校验工具不能重复")
         unknown_tools = set(normalized_tools) - _FORMAT_TOOL_ID_SET
         if unknown_tools:
             raise ValueError(
-                "未知格式核验工具：" + "、".join(sorted(unknown_tools)))
+                "未知格式校验工具：" + "、".join(sorted(unknown_tools)))
         if self.format_mode != "off" and not normalized_tools:
-            raise ValueError("启用格式核验时必须至少选择一个工具")
+            raise ValueError("启用格式校验时必须至少选择一个工具")
         object.__setattr__(self, "format_tools", normalized_tools)
         if self.raw_timeout_seconds is not None \
                 and not self.raw_deep_validation:
-            raise ValueError("RAW 深度校验关闭时不能设置 RAW timeout")
+            raise ValueError("RAW 深度校验关闭时不能设置 RAW 超时阈值")
         if self.timeout_decision not in TIMEOUT_DECISIONS:
-            raise ValueError(f"未知 timeout 默认处置：{self.timeout_decision}")
+            raise ValueError(f"未知超时处置：{self.timeout_decision}")
         _finite_percent(self.hash_sample_percent, "哈希抽样比例")
         _finite_percent(self.format_sample_percent, "格式抽样比例")
         for value, label in (
-            (self.hash_timeout_seconds, "哈希 timeout"),
-            (self.format_timeout_seconds, "格式 timeout"),
-            (self.raw_timeout_seconds, "RAW timeout"),
+            (self.hash_timeout_seconds, "哈希超时阈值"),
+            (self.format_timeout_seconds, "格式校验超时阈值"),
+            (self.raw_timeout_seconds, "RAW 超时阈值"),
         ):
             if value is not None and (
                     not math.isfinite(float(value)) or float(value) <= 0.0):
@@ -118,7 +118,7 @@ class VerificationOptions:
 
 
 class UnifiedVerificationControl:
-    """统一核验的进程内暂停／继续／停止和当前 worker 决策状态。"""
+    """档案数据核验的进程内暂停／继续／停止和当前工作进程决策状态。"""
 
     def __init__(self) -> None:
         self._condition = threading.Condition()
@@ -496,6 +496,28 @@ def _record_tool_failure_group(
     return group
 
 
+def _failure_kind_text(value: object) -> str:
+    kind = str(value or "tool_error")
+    labels = {
+        "tool_error": "工具故障",
+        "start_failed": "启动失败",
+        "worker_start_failed": "工作进程启动失败",
+        "start_timeout": "启动超时",
+        "worker_protocol_failed": "工作进程通信异常",
+        "native_crash": "原生进程崩溃",
+        "cleanup_failed": "进程回收失败",
+        "worker_not_reaped": "工作进程未回收",
+        "rawpy_unavailable": "rawpy 不可用",
+        "output_limit": "输出超过限制",
+        "output_limit_exceeded": "输出超过限制",
+        "protocol_invalid": "通信协议异常",
+        "unexpected_exit": "进程意外退出",
+    }
+    if kind.startswith("tool_exit_"):
+        return f"工具退出（代码 {kind.removeprefix('tool_exit_')}）"
+    return labels.get(kind, kind)
+
+
 def _tool_failure_problem_rows(
     groups: Mapping[tuple[object, ...], Mapping[str, object]],
 ) -> list[dict[str, object]]:
@@ -504,10 +526,10 @@ def _tool_failure_problem_rows(
         affected = int(group.get("affected_files") or 0)
         not_processed = int(group.get("not_processed") or 0)
         tool = str(group.get("tool") or "外部工具")
-        kind = str(group.get("failure_kind") or "tool_error")
+        kind = _failure_kind_text(group.get("failure_kind"))
         detail = (
-            f"{tool} 工具级故障 {kind}；影响已尝试文件 {affected} 个"
-            + (f"；熔断后未处理 {not_processed} 个" if not_processed else "")
+            f"{tool} 工具故障：{kind}；影响已尝试文件 {affected} 个"
+            + (f"；阶段停止后未处理 {not_processed} 个" if not_processed else "")
             + f"；{str(group.get('detail') or '').strip()}"
         ).rstrip("；")
         rows.append({
@@ -574,7 +596,7 @@ def _format_worker_main(connection) -> None:
         connection.send({"kind": "ready"})
         request = connection.recv()
         if not isinstance(request, dict):
-            raise ValueError("格式 worker 请求不是对象")
+            raise ValueError("格式校验工作进程收到的请求不是对象")
         spec_payload = request["spec"]
         spec = legacy.FormatValidatorSpec(
             str(spec_payload["validator"]),
@@ -582,7 +604,7 @@ def _format_worker_main(connection) -> None:
             str(spec_payload["tool_version"]),
         )
         if spec.validator not in ("zip", "pdf"):
-            raise ValueError("内置格式 worker 不允许启动外部工具")
+            raise ValueError("内置格式校验工作进程不允许启动外部工具")
         with legacy.FormatValidationSession(request.get("tools") or {}) \
                 as session:
             status, detail = session.validate(
@@ -649,23 +671,23 @@ def run_format_worker(
     worker_start_timeout_seconds: float = 30.0,
     _worker_target=None,
 ) -> FormatWorkerOutcome:
-    """监督一个内置格式 worker；它不允许创建任何工具孙进程。"""
+    """监督一个内置格式校验工作进程；它不允许创建工具子进程。"""
     if expected_size < 0:
         raise ValueError("expected_size 不能小于 0")
     if default_decision not in TIMEOUT_DECISIONS:
-        raise ValueError(f"未知 timeout 默认处置：{default_decision}")
+        raise ValueError(f"未知超时处置：{default_decision}")
     if poll_seconds <= 0 or worker_start_timeout_seconds <= 0:
-        raise ValueError("poll 与启动 timeout 必须大于 0")
+        raise ValueError("轮询间隔与启动超时阈值必须大于 0")
     if spec.validator not in ("zip", "pdf"):
         raise core.PreflightError(
             "外部格式校验必须使用直接工具句柄监督器，"
-            "不能交给可被强制终止的 Python worker")
+            "不能交给可被强制终止的 Python 工作进程")
     threshold_seconds = (
         dbhash.hash_no_progress_timeout_for_size(expected_size)
         if timeout_seconds is None else float(timeout_seconds)
     )
     if threshold_seconds <= 0:
-        raise ValueError("timeout_seconds 必须大于 0")
+        raise ValueError("超时阈值必须大于 0")
 
     normalized = os.path.abspath(path)
     label = str(display_name or os.path.basename(normalized))
@@ -728,10 +750,10 @@ def run_format_worker(
                     ready = True
                     break
             if not process.is_alive():
-                detail = "格式 worker 在握手前退出"
+                detail = "格式校验工作进程在通信就绪前退出"
                 break
             if time.monotonic() - started >= worker_start_timeout_seconds:
-                detail = "格式 worker 启动超时"
+                detail = "格式校验工作进程启动超时"
                 terminate = True
                 break
         if ready:
@@ -780,7 +802,7 @@ def run_format_worker(
                     emit("worker_crashed", file=label, error=detail)
                     break
             if not process.is_alive():
-                detail = detail or "格式 worker 未返回结果"
+                detail = detail or "格式校验工作进程未返回结果"
                 break
 
             now = time.monotonic()
@@ -859,7 +881,7 @@ def run_format_worker(
     if outcome == "completed" and (not reaped or exitcode != 0):
         outcome = "crashed"
         status = "error"
-        detail = "格式 worker 未干净退出并回收"
+        detail = "格式校验工作进程未正常退出并回收"
     elif outcome == "timeout":
         status = "timeout"
     elif outcome == "crashed":
@@ -870,7 +892,7 @@ def run_format_worker(
             failure_kind = "native_crash"
         elif not reaped:
             failure_kind = "cleanup_failed"
-        elif detail == "格式 worker 启动超时":
+        elif detail == "格式校验工作进程启动超时":
             failure_kind = "start_timeout"
         else:
             failure_kind = "worker_protocol_failed"
@@ -1064,7 +1086,7 @@ def _run_stat_stage(
                 problems.append(_issue_row(
                     entry,
                     "changed",
-                    "size／mtime 与快照记录不同",
+                    "size/mtime 与快照记录不同",
                     size_recorded=entry.size_bytes,
                     size_now=observed.size_bytes,
                     mtime_recorded=entry.modified_at_utc,
@@ -1107,7 +1129,7 @@ def _run_hash_stage(
         _emit(on_event, "stage_skipped", stage="hash", reason="未选择")
         return {
             "state": "NULL",
-            "reason": "本次未选择内容哈希",
+            "reason": "本次未选择哈希复检",
             "mode": "off",
             "problems": [],
         }, "running", {}
@@ -1197,7 +1219,7 @@ def _run_hash_stage(
             if not _matches_baseline(entry, before):
                 problems.append(_issue_row(
                     entry, "stat_changed",
-                    "开始哈希前 size／mtime 已变化"))
+                    "开始哈希前 size/mtime 已变化"))
                 processed += 1
                 break
             if options.show_current_file:
@@ -1249,7 +1271,7 @@ def _run_hash_stage(
                 )
                 return {
                     "state": "failed", "mode": options.hash_mode,
-                    "reason": "PowerShell 工具无法启动，哈希核验已熔断",
+                    "reason": "PowerShell 工具无法启动，哈希复检已停止",
                     "selected": len(selected), "processed": processed,
                     "checked": checked, "matched": matched,
                     "unverifiable": unverifiable,
@@ -1304,7 +1326,7 @@ def _run_hash_stage(
                 circuit.record_success("powershell")
                 problems.append(_issue_row(
                     entry, "unstable",
-                    "哈希读取前后 size／mtime 不稳定"))
+                    "哈希读取前后 size/mtime 不稳定"))
             elif getattr(outcome, "failure_kind", None):
                 failure = _runtime_failure(
                     tool="powershell",
@@ -1338,7 +1360,7 @@ def _run_hash_stage(
                     )
                     return {
                         "state": "failed", "mode": options.hash_mode,
-                        "reason": "PowerShell 连续工具故障，哈希核验已熔断",
+                        "reason": "PowerShell 连续工具故障，哈希复检已停止",
                         "selected": len(selected), "processed": processed,
                         "checked": checked, "matched": matched,
                         "unverifiable": unverifiable,
@@ -1556,7 +1578,7 @@ def _run_format_stage(
                 )
                 return {
                     "state": "failed", "mode": options.format_mode,
-                    "reason": "格式校验工具无法启动，阶段已熔断",
+                    "reason": "格式校验工具无法启动，阶段已停止",
                     "selected": len(selected), "processed": processed,
                     "valid": valid, "unsupported": unsupported,
                     "checked": processed - unsupported,
@@ -1600,7 +1622,7 @@ def _run_format_stage(
                 record_validator_success(spec, entry.media_kind)
                 problems.append(_issue_row(
                     entry, "unstable",
-                    "格式读取前后 size／mtime 不稳定"))
+                    "格式读取前后 size/mtime 不稳定"))
             elif getattr(outcome, "failure_kind", None):
                 tool = str(
                     getattr(outcome, "tool", None)
@@ -1637,7 +1659,7 @@ def _run_format_stage(
                     )
                     return {
                         "state": "failed", "mode": options.format_mode,
-                        "reason": f"{tool} 连续工具故障，格式校验已熔断",
+                        "reason": f"{tool} 连续工具故障，格式校验已停止",
                         "selected": len(selected), "processed": processed,
                         "valid": valid, "unsupported": unsupported,
                         "checked": processed - unsupported,
@@ -1815,7 +1837,7 @@ def _run_raw_stage(
             "decoded_bytes": decoded_bytes,
             "capability": dict(capability),
             "coverage_note": (
-                "RAW 范围继承本次格式校验选择；sample 不代表全部 RAW。"
+                "RAW 深度校验独立检查全部候选 RAW，不受格式校验范围限制。"
             ),
         }
         if stage_reason is not None:
@@ -1864,7 +1886,7 @@ def _run_raw_stage(
                     tool="rawpy/LibRaw",
                     operation="raw_decode",
                     failure_kind="worker_start_failed",
-                    detail=f"RAW worker 无法启动：{exc}",
+                    detail=f"RAW 工作进程无法启动：{exc}",
                     pid=None,
                     returncode=None,
                 )
@@ -1874,7 +1896,7 @@ def _run_raw_stage(
                 processed += 1
                 not_processed = max(0, len(selected) - processed)
                 group["not_processed"] = not_processed
-                stage_reason = "RAW worker 无法启动，深度校验已熔断"
+                stage_reason = "RAW 工作进程无法启动，深度校验已停止"
                 circuit_snapshot = opened.as_dict()
                 _emit(
                     on_event, "tool_circuit_open", stage="raw",
@@ -1913,7 +1935,7 @@ def _run_raw_stage(
                 problems.append(_issue_row(
                     entry,
                     "error",
-                    "RAW 解码前后 size／mtime 不稳定",
+                    "RAW 解码前后 size/mtime 不稳定",
                     code="raw_unstable",
                 ))
             elif getattr(outcome, "failure_kind", None):
@@ -1933,7 +1955,7 @@ def _run_raw_stage(
                     not_processed = max(0, len(selected) - processed)
                     group["not_processed"] = not_processed
                     stage_reason = (
-                        "rawpy／LibRaw 连续工具故障，深度校验已熔断")
+                        "rawpy/LibRaw 连续工具故障，深度校验已停止")
                     circuit_snapshot = opened.as_dict()
                     _emit(
                         on_event, "tool_circuit_open", stage="raw",
@@ -2050,7 +2072,7 @@ def run_unified_verification(
     _raw_capability_probe=None,
     _raw_runner=None,
 ) -> dict[str, object]:
-    """执行统一核验并返回报告模型；此函数本身不写报告文件。"""
+    """执行档案数据核验并返回报告模型；此函数本身不写报告文件。"""
     selected_options = options or VerificationOptions()
     raw_capability = None
     if selected_options.raw_deep_validation:
@@ -2076,7 +2098,7 @@ def run_unified_verification(
     stat, initial_stats, state = _run_stat_stage(
         entries, selected_options, owned_control, on_progress, on_event)
     hash_section: dict[str, object] = {
-        "state": "NULL", "reason": "任务在内容哈希前停止", "problems": []}
+        "state": "NULL", "reason": "任务在哈希复检前停止", "problems": []}
     format_section: dict[str, object] = {
         "state": "NULL", "reason": "任务在格式校验前停止",
         "coverage_note": FORMAT_COVERAGE_NOTE, "problems": []}
@@ -2137,7 +2159,7 @@ def run_unified_verification(
         raise core.PreflightError("核验期间输入快照发生变化，拒绝发布报告")
     report: dict[str, object] = {
         "contract": VERIFICATION_CONTRACT,
-        "report_metadata": core.report_metadata("DBS-30 统一核验"),
+        "report_metadata": core.report_metadata("档案数据核验"),
         "run_state": {
             "running": "complete",
             "stopped": "stopped",
@@ -2174,7 +2196,7 @@ def _module_state_text(section: Mapping[str, object]) -> str:
     if state == "stopped":
         return "未完成（任务已停止）"
     if state == "failed":
-        return "失败（工具故障熔断）"
+        return "失败（因工具故障停止）"
     return "NULL（本次未执行）"
 
 
@@ -2188,28 +2210,58 @@ def _problem_count(section: Mapping[str, object]) -> str:
         else len(section.get("problems") or []))
 
 
+def _section_count(section: Mapping[str, object], key: str) -> str:
+    """未执行板块不以 0 冒充已检查后的空结果。"""
+    if section.get("state") not in ("executed", "stopped", "failed"):
+        return "NULL"
+    return str(int(section.get(key) or 0))
+
+
+def _problem_status_text(value: object) -> str:
+    status = str(value or "error")
+    return {
+        "missing": "缺失",
+        "changed": "文件属性变化",
+        "stat_changed": "文件属性变化",
+        "unstable": "核验期间发生变化",
+        "timeout": "超时",
+        "tool_error": "工具故障",
+        "mismatched": "哈希不一致",
+        "invalid": "校验失败",
+        "error": "异常",
+    }.get(status, status)
+
+
 def _append_problem_rows(
     lines: list[str],
     rows: list[dict[str, object]],
+    section: Mapping[str, object],
 ) -> None:
     if not rows:
-        lines.extend(["", "- 未发现需要处理的问题。"])
+        state = str(section.get("state") or "")
+        if state == "executed":
+            message = "- 未发现需要处理的问题。"
+        elif state in ("stopped", "failed"):
+            message = "- 已处理范围内未记录逐文件问题；未处理范围不作结论。"
+        else:
+            message = "- 明细：NULL。"
+        lines.extend(["", message])
         return
     lines.extend(["", "### 需要处理", ""])
     for row in rows[:_ISSUE_ROW_LIMIT]:
         detail = str(row.get("detail") or "").strip()
         lines.append(
-            f"- [{row.get('status')}] `"
+            f"- [{_problem_status_text(row.get('status'))}] `"
             f"{core.markdown_cell(row.get('path'))}`"
             + (f"：{core.markdown_cell(detail)}" if detail else ""))
     if len(rows) > _ISSUE_ROW_LIMIT:
         lines.append(
-            f"- …仅展示前 {_ISSUE_ROW_LIMIT}／{len(rows)} 条；"
-            "完整证据见同名 JSON。")
+            f"- …仅展示前 {_ISSUE_ROW_LIMIT}/{len(rows)} 条；"
+            "全部问题明细见同名 JSON 报告。")
 
 
 def render_verification_markdown(report: Mapping[str, object]) -> str:
-    """渲染给人阅读的统一核验主报告；未知格式不展开路径。"""
+    """渲染便于阅读的档案数据核验报告；未知格式不展开路径。"""
     snapshot = report["snapshot"]
     database = snapshot["database"]
     sections = report["sections"]
@@ -2218,96 +2270,100 @@ def render_verification_markdown(report: Mapping[str, object]) -> str:
     formatted = sections["format"]
     raw = sections["raw"]
     conclusion_text = {
-        "passed": "在本次覆盖口径内未发现问题。",
+        "passed": "在本次核验范围内未发现问题。",
         "issues_found": "发现需要处理或复核的问题。",
         "incomplete": "未发现确定性问题，但部分内容没有可用哈希基准，不能宣称完整一致。",
         "stopped": "任务已停止；以下仅代表停止前已完成的范围。",
-        "failed": "外部工具连续故障，核验已熔断；未处理范围不作结论。",
+        "failed": "外部工具连续故障，核验已停止；未处理范围不作结论。",
     }.get(str(report.get("conclusion")), "结论不可用。")
     lines = [
-        "# DAISY 统一核验报告",
+        "# DAISY 档案数据核验报告",
         "",
-        *core.report_markdown_lines("DBS-30 统一核验"),
+        *core.report_markdown_lines("档案数据核验"),
         "",
         f"- 结论：**{conclusion_text}**",
         f"- 快照：`{core.markdown_cell(snapshot['filename'])}`",
-        f"- 快照 UUID：`{core.markdown_cell(snapshot['snapshot_uuid'])}`",
-        f"- 数据库：schema {database['schema_version']}；"
-        f"生成器 {database.get('source_version') or '未知'}；只读输入未变化",
-        f"- 核验时间：`{report['checked_at_utc']}`；用时 {report['elapsed_s']}s",
+        f"- 快照 UUID：`{core.markdown_cell(snapshot['snapshot_uuid'] or '未记录')}`",
+        f"- 数据库结构版本：{database['schema_version']}；"
+        f"数据库生成程序版本：{database.get('source_version') or '未记录'}；"
+        "输入数据库：未修改",
+        f"- 核验时间 (UTC)：`{report['checked_at_utc']}`；用时 {report['elapsed_s']} 秒",
         "",
         "## 板块状态",
         "",
-        "| 板块 | 执行状态 | 问题文件 | 覆盖 |",
+        "| 板块 | 执行状态 | 受影响文件 | 核验范围 |",
         "| --- | --- | ---: | --- |",
         f"| 文件状态 | {_module_state_text(stat)} | {_problem_count(stat)} | "
         f"{stat.get('checked', 0)}/{stat.get('total', 0)} |",
-        f"| 内容哈希 | {_module_state_text(hashed)} | {_problem_count(hashed)} | "
-        f"核对 {hashed.get('checked', 0)}；不可核验 {hashed.get('unverifiable', 0)} |",
+        f"| 哈希 | {_module_state_text(hashed)} | {_problem_count(hashed)} | "
+        f"已处理 {_section_count(hashed, 'processed')}；"
+        f"不可核验 {_section_count(hashed, 'unverifiable')} |",
         f"| 格式校验 | {_module_state_text(formatted)} | {_problem_count(formatted)} | "
-        f"核对 {formatted.get('checked', 0)}；不支持 {formatted.get('unsupported', 0)} |",
-        f"| RAW 深检 | {_module_state_text(raw)} | {_problem_count(raw)} | "
-        f"选中 {raw.get('selected', 0)}；不支持 {raw.get('unsupported', 0)} |",
+        f"已处理 {_section_count(formatted, 'processed')}；"
+        f"不支持 {_section_count(formatted, 'unsupported')} |",
+        f"| RAW 深度校验 | {_module_state_text(raw)} | {_problem_count(raw)} | "
+        f"已处理 {_section_count(raw, 'processed')}；"
+        f"不支持 {_section_count(raw, 'unsupported')} |",
         "",
-        "## 文件状态",
+        "## 文件状态问题",
         "",
         f"- 执行状态：{_module_state_text(stat)}",
-        f"- 问题文件：{_problem_count(stat)}",
+        f"- 受影响文件：{_problem_count(stat)}",
     ]
-    _append_problem_rows(lines, list(stat.get("problems") or []))
+    _append_problem_rows(lines, list(stat.get("problems") or []), stat)
     lines.extend([
         "",
         "## 哈希问题",
         "",
         f"- 执行状态：{_module_state_text(hashed)}",
-        f"- 问题文件：{_problem_count(hashed)}",
-        f"- 不可核验：{hashed.get('unverifiable', 'NULL')}",
+        f"- 受影响文件：{_problem_count(hashed)}",
+        f"- 不可核验：{_section_count(hashed, 'unverifiable')}",
     ])
     if hashed.get("reason"):
         lines.append(f"- 原因：{core.markdown_cell(hashed['reason'])}")
-    _append_problem_rows(lines, list(hashed.get("problems") or []))
+    _append_problem_rows(lines, list(hashed.get("problems") or []), hashed)
     lines.extend([
         "",
         "## 格式校验问题",
         "",
         f"- 执行状态：{_module_state_text(formatted)}",
-        f"- 问题文件：{_problem_count(formatted)}",
-        f"- 未识别／不支持格式：{formatted.get('unsupported', 'NULL')}"
+        f"- 受影响文件：{_problem_count(formatted)}",
+        f"- 未识别或不支持的格式：{_section_count(formatted, 'unsupported')}"
         "（只记录总数，不展开文件名）",
         f"- 覆盖边界：{FORMAT_COVERAGE_NOTE}",
     ])
     if formatted.get("reason"):
         lines.append(f"- 原因：{core.markdown_cell(formatted['reason'])}")
-    _append_problem_rows(lines, list(formatted.get("problems") or []))
+    _append_problem_rows(lines, list(formatted.get("problems") or []), formatted)
     lines.extend([
         "",
         "## RAW 深度校验问题",
         "",
         f"- 执行状态：{_module_state_text(raw)}",
-        f"- 问题文件：{_problem_count(raw)}",
-        f"- RAW 候选：{raw.get('raw_candidate_total', 'NULL')}；"
-        f"选中：{raw.get('selected', 'NULL')}；"
-        f"不可核验：{raw.get('unverifiable', 'NULL')}",
-        f"- 不支持 RAW：{raw.get('unsupported', 'NULL')}"
+        f"- 受影响文件：{_problem_count(raw)}",
+        f"- RAW 候选：{_section_count(raw, 'raw_candidate_total')}；"
+        f"纳入校验：{_section_count(raw, 'selected')}；"
+        f"不可核验：{_section_count(raw, 'unverifiable')}",
+        f"- 不支持的 RAW：{_section_count(raw, 'unsupported')}"
         "（只记录总数，不展开文件名）",
     ])
     if raw.get("capability"):
         lines.append(
-            "- 解码能力：rawpy "
-            f"{core.markdown_cell(raw['capability'].get('version'))}；"
-            "隔离子进程")
+            "- 解码能力：rawpy/LibRaw "
+            f"{core.markdown_cell(raw['capability'].get('version'))}"
+            "（在隔离子进程中运行）")
     if raw.get("coverage_note"):
         lines.append(
             f"- 覆盖边界：{core.markdown_cell(raw['coverage_note'])}")
     if raw.get("reason"):
         lines.append(f"- 原因：{core.markdown_cell(raw['reason'])}")
-    _append_problem_rows(lines, list(raw.get("problems") or []))
+    _append_problem_rows(lines, list(raw.get("problems") or []), raw)
     lines.extend([
         "",
-        "## 技术证据",
+        "## 详细证据",
         "",
-        "逐文件哈希值、完整问题字段、RAW worker 回收状态、工具版本和"
-        "读取性能摘要位于同名 JSON；Markdown 是证据提炼，不是新的事实来源。",
+        "逐项问题字段、哈希不一致证据、RAW 工作进程状态、工具版本和"
+        "读取性能摘要位于同名 JSON 报告；Markdown 仅汇总已有证据。",
         "",
     ])
     return "\n".join(lines)
@@ -2340,7 +2396,7 @@ def _publish_staged_pair(
                     f"报告发布冲突，既有文件未覆盖：{target}") from exc
             except OSError as exc:
                 raise core.PreflightError(
-                    f"报告无法以 no-clobber 原子链接发布：{target}：{exc}") \
+                    f"报告无法以不覆盖方式发布：{target}：{exc}") \
                     from exc
             created.append(target)
         for source in staged:
@@ -2358,7 +2414,7 @@ def publish_verification_report(
     report: Mapping[str, object],
     output_dir: str | None = None,
 ) -> VerificationPublication:
-    """在同一输出目录内 staging、验证并 no-clobber 发布 JSON＋Markdown。"""
+    """在同一输出目录内暂存、验证并以不覆盖方式发布 JSON＋Markdown。"""
     directory = os.path.abspath(output_dir or "Output/Reports")
     os.makedirs(directory, exist_ok=True)
     labels = list(report["snapshot"]["root_labels"])
@@ -2381,13 +2437,13 @@ def publish_verification_report(
         with open(staged_json, "r", encoding="utf-8") as handle:
             verified = json.load(handle)
         if verified.get("contract") != VERIFICATION_CONTRACT:
-            raise core.PreflightError("统一核验 JSON staging 契约验证失败")
+            raise core.PreflightError("档案数据核验暂存 JSON 契约验证失败")
         with open(staged_markdown, "r", encoding="utf-8", newline="") \
                 as handle:
             markdown = handle.read()
-        if not markdown.startswith("# DAISY 统一核验报告\n") \
+        if not markdown.startswith("# DAISY 档案数据核验报告\n") \
                 or "\r" in markdown:
-            raise core.PreflightError("统一核验 Markdown staging 验证失败")
+            raise core.PreflightError("档案数据核验暂存 Markdown 契约验证失败")
         _publish_staged_pair(
             (staged_json, staged_markdown),
             (final_json, final_markdown),

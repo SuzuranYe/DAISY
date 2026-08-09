@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 自包含 HTML 与流式 XLSX writer 测试。"""
+"""DAISY v1.6.0 自包含 HTML 与流式 XLSX 写入器测试。"""
 from __future__ import annotations
 
 import hashlib
@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 import xml.etree.ElementTree as ET
@@ -81,6 +82,92 @@ class TestParseHuman(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._td.cleanup()
+
+    def test_compatibility_mode_is_consistent_across_report_layers(self) \
+            -> None:
+        cases = (
+            (
+                SimpleNamespace(
+                    database_type="snapshot", schema_version=3, identity={}),
+                "v1.4.1-compatible",
+                "v1.4.1 兼容模式",
+            ),
+            (
+                SimpleNamespace(
+                    database_type="snapshot", schema_version=4, identity={}),
+                "v1.6.0-native",
+                "数据库结构版本 4 模式",
+            ),
+            (
+                SimpleNamespace(
+                    database_type="diff", schema_version=4,
+                    identity={"old_schema_version": 3,
+                              "new_schema_version": 3}),
+                "v1.4.1-compatible",
+                "v1.4.1 兼容模式",
+            ),
+            (
+                SimpleNamespace(
+                    database_type="diff", schema_version=4,
+                    identity={"old_schema_version": 4,
+                              "new_schema_version": 4}),
+                "v1.6.0-native",
+                "数据库结构版本 4 模式",
+            ),
+            (
+                SimpleNamespace(
+                    database_type="diff", schema_version=4,
+                    identity={"old_schema_version": 3,
+                              "new_schema_version": 4}),
+                "cross-version",
+                "跨版本对比模式",
+            ),
+        )
+        for descriptor, token, label in cases:
+            with self.subTest(
+                    database_type=descriptor.database_type,
+                    identity=descriptor.identity):
+                self.assertEqual(
+                    dbparse.compatibility_mode(descriptor), token)
+                self.assertEqual(
+                    parserun._compatibility_mode(descriptor), token)
+                self.assertEqual(human._compatibility_mode(descriptor), label)
+
+    def test_human_rows_translate_overview_codes_without_changing_machine_values(
+        self,
+    ) -> None:
+        cases = (
+            ({"key": "database_type", "value": "snapshot"}, "封存快照"),
+            ({"key": "lifecycle", "value": "sealed"}, "已封存"),
+            ({"key": "scan_kind", "value": "full"}, "完整扫描"),
+            ({"key": "metadata_storage", "value": "complete"}, "全量"),
+            ({"key": "format_validation", "value": "all"}, "全部"),
+            ({"key": "mode", "value": "v1.6.0-native"},
+             "数据库结构版本 4 模式"),
+            ({"key": "format_validation", "value": None}, "未记录"),
+        )
+        for row, expected in cases:
+            with self.subTest(row=row):
+                self.assertEqual(human._human_row_value(row, "value"), expected)
+        self.assertEqual(
+            human._human_row_value({"forced": False}, "forced"), "否")
+
+    def test_human_rows_translate_issue_and_run_codes(self) -> None:
+        cases = (
+            ({"section_id": "runtime"}, "section_id", "运行与证据问题"),
+            ({"stage": "verify_hash"}, "stage", "哈希复检"),
+            ({"event": "resume_started"}, "event", "已开始续传"),
+            ({"decision": "skip_and_record"}, "decision", "跳过并记录"),
+            ({"status": "failed_recoverable"}, "status", "失败但可续传"),
+        )
+        for row, field, expected in cases:
+            with self.subTest(row=row, field=field):
+                self.assertEqual(
+                    human._human_row_value(row, field), expected)
+        self.assertEqual(
+            human._human_reason("缺少原始元数据载荷"),
+            "缺少工具原始输出",
+        )
 
     def _snapshot(
         self,
@@ -221,8 +308,18 @@ class TestParseHuman(unittest.TestCase):
         self.assertIn("\\u0001", text)
         self.assertIn("@media print", text)
         self.assertIn("table-filter", text)
-        self.assertIn("预览 2／6 行", text)
-        self.assertIn("HTML 只嵌入有限预览", text)
+        self.assertIn("显示 2/6 行", text)
+        self.assertIn("当前显示内容截断单元格", text)
+        self.assertIn("筛选当前显示内容", text)
+        self.assertIn("HTML 仅嵌入有限预览", text)
+        self.assertIn("报告生成工具", text)
+        self.assertIn("报告生成程序版本", text)
+        self.assertIn("数据库 UUID", text)
+        self.assertNotIn("数据库类型／数据库结构版本", text)
+        self.assertIn("报告生成时间 (UTC)", text)
+        self.assertIn("完整数据请查看同次导出的 CSV/JSONL", text)
+        self.assertIn("相应格式未导出时以输入 SQLite 为准", text)
+        self.assertNotIn("<span>报告工具</span>", text)
         with open(result.manifest_path, encoding="utf-8") as handle:
             manifest = json.load(handle)
         files = next(
@@ -418,8 +515,8 @@ class TestParseHuman(unittest.TestCase):
             encoding="utf-8",
         ) as handle:
             text = handle.read()
-        self.assertIn("Diff 非 unchanged 记录", text)
-        self.assertIn("content_changed=2", text)
+        self.assertIn("文件变化记录", text)
+        self.assertIn("内容变化：2", text)
         self.assertNotIn("未选择问题摘要</h2>", text)
         for path, identity in identities.items():
             self.assertEqual(identity, _identity(path))

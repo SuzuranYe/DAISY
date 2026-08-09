@@ -21,7 +21,7 @@ PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
 PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
-SCANNER_VERSION = "1.6.1"      # 包版本
+SCANNER_VERSION = "1.6.2"      # 包版本
 SCHEMA_VERSION = 3
 READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 MIN_READER_VERSION = "1.4.1"
@@ -42,7 +42,7 @@ def configure_windows_worker_error_mode(
     _get_error_mode=None,
     _set_error_mode=None,
 ) -> dict[str, object]:
-    """请求 Windows 让任务 worker 后代以返回码报告 native 故障。
+    """请求 Windows 让任务工作进程的后代以返回码报告原生进程故障。
 
     该函数只应在非 Tk 的任务进程启动处调用。注入参数仅供不改变测试进程
     实际错误模式的单元测试使用。
@@ -111,8 +111,8 @@ def report_markdown_lines(tool_name: str) -> list[str]:
     """返回可直接插入 Markdown 报告标题后的工具署名。"""
     identity = report_metadata(tool_name)
     return [
-        f"- 工具：`{identity['tool_name']}`",
-        f"- 版本：`{identity['tool_version']}`",
+        f"- 报告生成工具：`{identity['tool_name']}`",
+        f"- 报告生成程序版本：`{identity['tool_version']}`",
         f"- 作者：`{identity['tool_author']}`",
     ]
 
@@ -185,7 +185,7 @@ def require_sealed_snapshot(
     require_readable_schema_version(schema_version, artifact)
     if scan_status != "complete":
         raise PreflightError(
-            f"{artifact} 扫描未完整结束（scan_status={scan_status}）")
+            f"{artifact} 扫描未完整结束 (scan_status={scan_status})")
     if database_integrity != "ok":
         raise PreflightError(
             f"{artifact} 未声明 database_integrity=ok"
@@ -226,7 +226,7 @@ def local_utc_offset_min() -> int:
 
 
 def id_hex(value: int) -> str | None:
-    """卷/文件标识 → 小写十六进制 TEXT（无前缀、不补零）；0 视为未采集。"""
+    """卷／文件标识 → 小写十六进制 TEXT（无前缀、不补零）；0 视为未采集。"""
     return format(value, "x") if value else None
 
 
@@ -275,11 +275,11 @@ def snapshot_profile_tokens(kind: str, hash_mode: str = "full",
 
 def snapshot_name(labels: list[str], kind: str,
                   profile_tokens: list[str] | tuple[str, ...] = ()) -> str:
-    """最终产物短基名：根标签_类型_[偏差标记_]日期_时-分-秒。
+    """最终产物短基名：根目录名_类型_[偏差标记_]日期_时-分-秒。
 
-    多 root 以 + 连接；文件名时间戳用本地时间，权威时间在库内 UTC。
+    多个根目录名以 + 连接；文件名时间戳用本地时间，权威时间在库内 UTC。
     最终发布时还会追加数据库 SHA-256 高 32 bit；问题状态只保存在库内，
-    并在必要时生成同目录 Issues.md，不进入数据库文件名。"""
+    并在必要时生成同目录的 _Issues.md 问题报告，不进入数据库文件名。"""
     safe = "+".join(labels)
     for ch in '<>:"/\\|?*':
         safe = safe.replace(ch, "_")
@@ -304,7 +304,7 @@ def resolve_snapshot_publish_stem(partial_path: str, snapshot_stem: str) -> str:
 
 
 def parse_root_spec(spec: str) -> tuple[str, str]:
-    """解析 --root 'label=路径' 或 '路径'；默认 label＝根文件夹名且与盘符无关。"""
+    """解析 --root 的「根目录名=路径」或直接路径。"""
     if "=" in spec and not re.match(r"^[A-Za-z]:[\\/]", spec):
         label, _, path = spec.partition("=")
         label = label.strip()
@@ -314,13 +314,15 @@ def parse_root_spec(spec: str) -> tuple[str, str]:
     if not label:
         label = os.path.basename(path)
     if not label:
-        raise PreflightError(f"root 无法取得默认 label（盘根？）：{spec!r}——请显式命名 label=路径")
+        raise PreflightError(
+            f"无法从档案根目录取得默认根目录名：{spec!r}。"
+            "磁盘根目录不能直接作为档案根目录；请使用「根目录名=路径」。")
     return label, path
 
 
 def resolve_current_root_specs(labels: list[str],
                                specs: list[str]) -> dict[str, str]:
-    """把当前根目录参数解析为快照 root label 到现路径的完整映射。"""
+    """把当前根目录参数解析为快照根目录名到现路径的完整映射。"""
     if not specs:
         raise PreflightError("必须用 --root 指定当前档案根目录")
 
@@ -338,22 +340,22 @@ def resolve_current_root_specs(labels: list[str],
         label = label.strip()
         path = path.strip()
         if not label or not path:
-            raise PreflightError(f"根目录映射应为 label=路径：{spec}")
+            raise PreflightError(f"根目录对应应为「根目录名=路径」：{spec}")
         if label in mapping:
-            raise PreflightError(f"根目录 label 重复：{label}")
+            raise PreflightError(f"根目录名重复：{label}")
         mapping[label] = path
 
     if direct_paths:
         if len(labels) != 1 or len(direct_paths) != 1 or mapping:
             raise PreflightError(
-                "不带 label 的 --root 只适用于单根快照；"
-                "多根快照请逐项使用 label=当前路径")
+                "未写根目录名的 --root 只适用于单根快照；"
+                "多根快照请逐项使用「根目录名=当前路径」")
         mapping[labels[0]] = direct_paths[0]
 
     unknown = sorted(set(mapping) - known_labels)
     if unknown:
         raise PreflightError(
-            "快照中不存在以下 root label：" + "、".join(unknown))
+            "封存快照中不存在以下根目录名：" + "、".join(unknown))
     missing = [label for label in labels if label not in mapping]
     if missing:
         raise PreflightError(
@@ -368,13 +370,14 @@ def resolve_current_root_specs(labels: list[str],
 
 
 def validate_root(path: str) -> None:
-    """root 必须是存在的档案根文件夹；拒绝直接扫描盘根。"""
+    """档案根目录必须是现有文件夹；拒绝直接扫描磁盘根目录。"""
     p = os.path.abspath(path)
     drive, tail = os.path.splitdrive(p)
     if tail in ("\\", "/", ""):
-        raise PreflightError(f"盘根不接受为 root（扫描单位是档案根文件夹）：{p}")
+        raise PreflightError(
+            f"不能直接扫描磁盘根目录；请选择具体的档案文件夹：{p}")
     if not os.path.isdir(to_extended_path(p)):
-        raise PreflightError(f"root 不存在或不是目录：{p}")
+        raise PreflightError(f"档案根目录不存在或不是文件夹：{p}")
 
 
 def parse_version_tuple(text: str) -> tuple[int, ...]:
@@ -779,7 +782,7 @@ WHERE d.enum_status NOT IN ('ok');
 """
 
 
-# === 文件属性位（Windows） ===
+# === 文件属性位 (Windows) ===
 ATTR_REPARSE_POINT = 0x400
 ATTR_PLACEHOLDER_MASK = 0x1000 | 0x40000 | 0x400000   # OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS
 
@@ -857,7 +860,7 @@ def _lock_path(partial_path: str) -> str:
 
 
 def acquire_scan_lock(partial_path: str, takeover: bool = False) -> None:
-    """独占获取 partial 的所有权锁。takeover=True（--resume）时允许接管
+    """独占获取 partial 的所有权锁。takeover=True (--resume) 时允许接管
     已死 owner 的锁；owner 仍存活则拒绝。"""
     lp = _lock_path(partial_path)
     payload = json.dumps({"run_uuid": uuid.uuid4().hex,
@@ -879,7 +882,7 @@ def acquire_scan_lock(partial_path: str, takeover: bool = False) -> None:
         owner_pid = -1                    # 锁文件损坏视为可疑残留
     if owner_pid > 0 and _pid_alive(owner_pid):
         raise PreflightError(
-            f"该 partial 正被进程 {owner_pid} 持有（ScanLock）：{lp}")
+            f"该 partial 正被进程 {owner_pid} 持有 (ScanLock)：{lp}")
     if not takeover:
         raise PreflightError(
             f"存在残留 ScanLock（owner 已失效）：{lp}\n"
@@ -907,7 +910,7 @@ def sha256_file(path: str, chunk: int = HASH_CHUNK_BYTES) -> str:
 
 
 def volume_info(path: str) -> tuple[str | None, str | None]:
-    """(卷序列号 hex＝st_dev 来源, 文件系统名)。fs 名经 GetVolumeInformationW，失败为 None。"""
+    """（卷序列号 hex＝st_dev 来源，文件系统名）。fs 名经 GetVolumeInformationW，失败为 None。"""
     serial = None
     try:
         serial = id_hex(os.stat(to_extended_path(path)).st_dev)
@@ -936,9 +939,9 @@ def create_partial_snapshot(partial_path: str,
     labels = [lb for lb, _ in roots]
     paths = [os.path.normcase(os.path.abspath(p)) for _, p in roots]
     if len(set(labels)) != len(labels):
-        raise PreflightError(f"root label 重复：{labels}")
+        raise PreflightError(f"根目录名重复：{labels}")
     if len(set(paths)) != len(paths):
-        raise PreflightError("root 路径重复")
+        raise PreflightError("根目录路径重复")
     for _, p in roots:
         validate_root(p)
     config = dict(config)
@@ -1075,7 +1078,7 @@ def enumerate_and_reconcile(con: sqlite3.Connection,
                                 os.path.join(root_path, rel)) in exdirs):
                             continue    # 本工具输出目录子树不入清点
                         subdirs += 1
-                        if attrs & ATTR_REPARSE_POINT:      # 不跟随联接点/符号链接
+                        if attrs & ATTR_REPARSE_POINT:      # 不跟随联接点／符号链接
                             d_buf.append((root_id, rel, make_path_key(rel), rel_dir,
                                           "skipped_reparse", None, None, None,
                                           attrs, now_utc_iso()))
@@ -1536,7 +1539,7 @@ def collect_snapshot_counts(con: sqlite3.Connection) -> dict:
 
 
 def snapshot_issue_report_required(counts: dict) -> bool:
-    """源文件／扫描证据有问题时生成报告；不代表 SQLite 损坏。"""
+    """存在需复核的文件或扫描状态时生成报告；不代表 SQLite 损坏。"""
     return bool(
         counts.get("has_file_issues")
         or counts.get("has_unstable_entries")
@@ -1554,7 +1557,7 @@ _NON_ISSUE_FORMAT_MESSAGES = frozenset((
 
 
 def issue_record_is_visible(error_code: object, message: object) -> bool:
-    """Issues.md 忽略单纯格式未识别；数据库原始证据保持不变。"""
+    """问题报告忽略单纯格式未识别；数据库原始证据保持不变。"""
     if str(error_code or "").strip().casefold() != "exiftool_reported_error":
         return True
     normalized = " ".join(str(message or "").strip().casefold().split())
@@ -1582,7 +1585,7 @@ def markdown_cell(value, max_chars: int = 500) -> str:
 
 
 def _write_text_exclusive(path: str, content: str) -> None:
-    """以 UTF-8、LF、no-clobber 方式创建文本文件。"""
+    """以 UTF-8、LF 和不覆盖方式创建文本文件。"""
     fd = None
     created = False
     try:
@@ -1604,7 +1607,7 @@ def _write_text_exclusive(path: str, content: str) -> None:
 
 def publish_sqlite_artifact(working_path: str, final_path: str,
                             issue_markdown: str | None = None) -> str | None:
-    """原子 no-replace 发布 SQLite，并可同时创建同目录 Issues.md。
+    """以不覆盖方式原子发布 SQLite，并可同时创建同目录问题报告。
 
     两个最终目标中的任一个已存在都会拒绝发布。报告先以 O_EXCL 创建；若
     SQLite 原子改名失败，只清理由本次调用新建的报告，工作数据库仍保留。
@@ -1653,6 +1656,41 @@ def _append_markdown_table(lines: list[str], headers: tuple[str, ...],
         lines.append("| " + " | ".join(markdown_cell(v) for v in row) + " |")
 
 
+_ISSUE_STATUS_LABELS = {
+    "pending": "等待处理",
+    "running": "运行中",
+    "complete": "已完成",
+    "interrupted": "已中断",
+    "ok": "正常",
+    "failed": "失败",
+    "done": "完成",
+    "error": "异常",
+    "timeout": "超时",
+    "unstable": "扫描期间不稳定",
+    "skipped": "已跳过",
+    "not_applicable": "不适用",
+    "computed": "本次计算",
+    "reused": "复用",
+    "access_denied": "访问被拒绝",
+    "io_error": "读取错误",
+    "not_enumerated": "未枚举",
+    "warning": "警告",
+    "validation": "字段规范化提示",
+}
+_ISSUE_STAGE_LABELS = {
+    "enumeration": "目录枚举",
+    "metadata": "元数据",
+    "hash": "哈希",
+    "format": "格式校验",
+    "raw": "RAW 深度校验",
+}
+
+
+def _issue_status_text(value: object) -> str:
+    text = str(value or "")
+    return _ISSUE_STATUS_LABELS.get(text, text or "未知")
+
+
 def render_snapshot_issue_report(
     snapshot_path: str,
     artifact_filename: str | None = None,
@@ -1660,7 +1698,7 @@ def render_snapshot_issue_report(
 ) -> str | None:
     """从封存前 SQLite 生成可读问题摘要，不修改数据库。"""
     path = os.path.abspath(snapshot_path)
-    # 局部导入避免 Core／Reader 的模块初始化环，同时让 Issues 与其它消费者
+    # 局部导入避免 Core/Reader 的模块初始化环，同时让问题报告与其他消费者
     # 共用同一类型、schema、封存状态和能力探测入口。
     import Script_DAISY_Lib_DBS_05_Reader as dbreader
     con, descriptor = dbreader.open_database(
@@ -1715,6 +1753,10 @@ def render_snapshot_issue_report(
             " LEFT JOIN roots dr ON dr.root_id=d.root_id"
             " WHERE daisy_issue_visible(x.error_code,x.message)=1"
             " ORDER BY x.error_pk LIMIT ?", (row_limit,))]
+        error_rows = [
+            (_ISSUE_STAGE_LABELS.get(str(row[0]), row[0]), *row[1:])
+            for row in error_rows
+        ]
         status_total, = con.execute(
             "SELECT COUNT(*) FROM entries e WHERE ("
             " e.meta_status IN ('error','timeout','unstable')"
@@ -1727,6 +1769,11 @@ def render_snapshot_issue_report(
             " OR e.hash_status IN ('error','unstable'))"
             f" AND NOT {only_unrecognized_format}"
             " ORDER BY r.root_label,e.path_key LIMIT ?", (row_limit,))]
+        status_rows = [
+            (row[0], row[1], _issue_status_text(row[2]),
+             _issue_status_text(row[3]))
+            for row in status_rows
+        ]
         reportable_meta_error, = con.execute(
             "SELECT COUNT(*) FROM entries e WHERE e.meta_status='error'"
             f" AND NOT {only_unrecognized_format}").fetchone()
@@ -1751,6 +1798,10 @@ def render_snapshot_issue_report(
                 " daisy_issue_visible(diagnostic_code,message)=1"
                 " GROUP BY severity,diagnostic_code,field_name"
                 " ORDER BY severity,diagnostic_code,field_name")]
+            diagnostic_group_rows = [
+                (_issue_status_text(row[0]), *row[1:])
+                for row in diagnostic_group_rows
+            ]
             evidence_gap_total, = con.execute(
                 "SELECT COUNT(*) FROM metadata_diagnostics WHERE"
                 " severity='validation' AND diagnostic_code LIKE"
@@ -1765,23 +1816,31 @@ def render_snapshot_issue_report(
                 " ORDER BY r.root_label,e.path_key,d.diagnostic_code LIMIT ?",
                 (row_limit,))]
         reportable_source_issues = bool(status_total)
+        root_rows = [
+            (row[0], _issue_status_text(row[1])) for row in root_rows
+        ]
+        dir_rows = [
+            (row[0], row[1], _issue_status_text(row[2]), row[3])
+            for row in dir_rows
+        ]
         summary_rows = [
-            ("数据库完整性", info["database_integrity"]),
-            ("扫描状态", info["scan_status"]),
-            ("本报告存在源文件问题", int(reportable_source_issues)),
-            ("存在 unstable 条目", info["has_unstable_entries"]),
-            ("存在枚举缺口", info["has_enumeration_gaps"]),
+            ("数据库完整性", _issue_status_text(info["database_integrity"])),
+            ("扫描状态", _issue_status_text(info["scan_status"])),
+            ("存在需复核的文件状态", "是" if reportable_source_issues else "否"),
+            ("存在扫描期间不稳定条目",
+             "是" if info["has_unstable_entries"] else "否"),
+            ("存在枚举缺口", "是" if info["has_enumeration_gaps"] else "否"),
             ("失败根目录", counts.get("roots_failed", 0)),
             ("目录枚举问题", counts.get("dir_errors", 0)),
-            ("元数据 error（需关注）", reportable_meta_error),
-            ("元数据 timeout", meta.get("timeout", 0)),
-            ("元数据 unstable", meta.get("unstable", 0)),
-            ("哈希 error", hashes.get("error", 0)),
-            ("哈希 unstable", hashes.get("unstable", 0)),
-            ("错误记录（需关注）", error_total),
-            ("未列为问题的格式未识别文件", ignored_format_total),
-            ("元数据 warning", diagnostics.get("warning", 0)),
-            ("元数据 validation", diagnostics.get("validation", 0)),
+            ("需复核的元数据状态", reportable_meta_error),
+            ("元数据超时", meta.get("timeout", 0)),
+            ("扫描期间元数据不稳定", meta.get("unstable", 0)),
+            ("哈希异常", hashes.get("error", 0)),
+            ("扫描期间哈希不稳定", hashes.get("unstable", 0)),
+            ("需复核异常记录", error_total),
+            ("未列为问题的未识别格式文件", ignored_format_total),
+            ("元数据警告", diagnostics.get("warning", 0)),
+            ("字段规范化提示", diagnostics.get("validation", 0)),
         ]
     except (json.JSONDecodeError, sqlite3.Error) as exc:
         raise PreflightError(f"无法生成问题报告：{exc}") from exc
@@ -1792,21 +1851,19 @@ def render_snapshot_issue_report(
         return None
 
     lines = [
-        "# DAISY 问题报告",
+        "# DAISY 快照问题报告",
         "",
-        *report_markdown_lines("DBS 快照问题报告"),
+        *report_markdown_lines("快照问题报告"),
         f"- 数据库：`{artifact_filename or os.path.basename(path)}`",
         f"- 快照 UUID：`{info['snapshot_uuid']}`",
-        f"- 原扫描器版本：`{info['scanner_version']}`",
-        f"- 报告生成器版本：`{SCANNER_VERSION}`",
-        f"- 报告生成时间：`{now_utc_iso()}`",
-        "- 结论：SQLite 数据库完整性正常且扫描已完整封存；本报告描述的是源文件或扫描证据问题，不表示数据库损坏。",
-        "- 命名：问题状态不写入数据库文件名。",
+        f"- 数据库生成程序版本：`{info['scanner_version']}`",
+        f"- 报告生成时间 (UTC)：`{now_utc_iso()}`",
+        "- 结论：输入为已封存快照；数据库完整性和扫描状态见汇总。本报告描述源文件或扫描证据问题，不表示数据库损坏。",
         "",
         "## 汇总",
         "",
     ]
-    _append_markdown_table(lines, ("项目", "数量"), summary_rows)
+    _append_markdown_table(lines, ("项目", "结果"), summary_rows)
     if diagnostic_group_rows:
         lines.extend(["", "## 元数据诊断分类", ""])
         _append_markdown_table(
@@ -1815,42 +1872,44 @@ def render_snapshot_issue_report(
     if evidence_gap_rows:
         lines.extend(["", "## 历史证据缺口", ""])
         _append_markdown_table(
-            lines, ("根标签", "相对路径", "诊断码", "信息"),
+            lines, ("根目录名", "相对路径", "诊断码", "信息"),
             evidence_gap_rows)
         if evidence_gap_total > len(evidence_gap_rows):
             lines.append(
-                f"\n仅列出前 {len(evidence_gap_rows)}／{evidence_gap_total} 条。")
+                f"\n仅列出前 {len(evidence_gap_rows)}/{evidence_gap_total} 条。")
     if root_rows:
         lines.extend(["", "## 失败根目录", ""])
-        _append_markdown_table(lines, ("根标签", "状态"), root_rows)
+        _append_markdown_table(lines, ("根目录名", "状态"), root_rows)
     if dir_rows:
         lines.extend(["", "## 目录枚举问题", ""])
         _append_markdown_table(
-            lines, ("根标签", "相对路径", "状态", "信息"), dir_rows)
+            lines, ("根目录名", "相对路径", "状态", "信息"), dir_rows)
         if dir_total > len(dir_rows):
-            lines.append(f"\n仅列出前 {len(dir_rows)}／{dir_total} 条。")
+            lines.append(f"\n仅列出前 {len(dir_rows)}/{dir_total} 条。")
     if status_rows:
-        lines.extend(["", "## 问题条目状态", ""])
+        lines.extend(["", "## 文件状态问题", ""])
         _append_markdown_table(
-            lines, ("根标签", "相对路径", "元数据状态", "哈希状态"),
+            lines, ("根目录名", "相对路径", "元数据状态", "哈希状态"),
             status_rows)
         if status_total > len(status_rows):
-            lines.append(f"\n仅列出前 {len(status_rows)}／{status_total} 条。")
+            lines.append(f"\n仅列出前 {len(status_rows)}/{status_total} 条。")
     if error_rows:
-        lines.extend(["", "## 错误明细", ""])
+        lines.extend(["", "## 需复核记录", ""])
         _append_markdown_table(
-            lines, ("阶段", "错误码", "根标签", "相对路径", "信息"),
+            lines, ("阶段", "错误码", "根目录名", "相对路径", "信息"),
             error_rows)
         if error_total > len(error_rows):
-            lines.append(f"\n仅列出前 {len(error_rows)}／{error_total} 条。")
+            lines.append(f"\n仅列出前 {len(error_rows)}/{error_total} 条。")
     lines.extend([
         "",
         "## 说明",
         "",
-        "单纯由 ExifTool 返回“格式未识别”的文件不列为问题；相关状态、诊断和"
-        "错误记录仍完整保留在 SQLite 中。",
-        "`warning` 与 `validation` 会在汇总中保留，但它们本身不会让扫描判为失败。",
-        "如需完整逐表结果，请从该 SQLite 使用 `export-report` 导出。",
+        "单纯由 ExifTool 返回「格式未识别」的文件不列为问题；相关状态、诊断和"
+        "异常记录仍完整保留在 SQLite 中。",
+        "旧数据库可能无法区分源文件问题与工具故障；元数据异常应结合运行日志复核。",
+        "`warning`（警告）与 `validation`（字段规范化提示）会在汇总中保留，"
+        "但它们本身不会让扫描判为失败。",
+        "如需按数据模块查看详细结果，请对该 SQLite 执行档案数据解析（`parse-db`）。",
         "",
     ])
     return "\n".join(lines)
@@ -2154,5 +2213,5 @@ class Progress:
             elapsed=elapsed,
         )
         if not self.quiet:
-            print(f"\r{self.prefix} 完成：{summary}（{elapsed:.1f}s）" + " " * 20,
+            print(f"\r{self.prefix} 完成：{summary}（{elapsed:.1f} 秒）" + " " * 20,
                   flush=True)

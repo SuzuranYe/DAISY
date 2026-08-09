@@ -556,9 +556,9 @@ class TestCrossVersionDiff(unittest.TestCase):
         stdout = completed.stdout.decode("utf-8", "replace")
         stderr = completed.stderr.decode("utf-8", "replace")
         self.assertEqual(completed.returncode, 0, stderr)
-        self.assertIn("快照 schema：旧=3 新=4", stdout)
+        self.assertIn("数据库结构版本：基准侧为 3；对比侧为 4", stdout)
         self.assertIn(reader.SNAPSHOT_DIFF_PROJECTION, stdout)
-        self.assertIn("证据能力：", stdout)
+        self.assertIn("证据可用性：", stdout)
         databases = [
             os.path.join(output_dir, name)
             for name in os.listdir(output_dir)

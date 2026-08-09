@@ -60,6 +60,8 @@ class TestScanCliConfig(unittest.TestCase):
         )
         self.assertIs(config["metadata_exiftool"], True)
         self.assertIs(config["metadata_ffprobe"], True)
+        self.assertEqual(config["metadata_exiftool_mode"], "complete")
+        self.assertEqual(config["metadata_ffprobe_mode"], "complete")
 
     def test_full_metadata_tool_flags_are_independent_and_limit_preflight(
         self,
@@ -71,6 +73,8 @@ class TestScanCliConfig(unittest.TestCase):
         config = scan_cli._new_config(args, "full")
         self.assertIs(config["metadata_exiftool"], False)
         self.assertIs(config["metadata_ffprobe"], True)
+        self.assertEqual(config["metadata_exiftool_mode"], "off")
+        self.assertEqual(config["metadata_ffprobe_mode"], "complete")
         with mock.patch.object(
             scan_cli.core,
             "run_preflight",
@@ -98,6 +102,33 @@ class TestScanCliConfig(unittest.TestCase):
             scan_cli._full_preflight(both_off, os.path.abspath("Output"))
         self.assertEqual(set(preflight.call_args.args[0]), {"sevenzip"})
 
+    def test_full_metadata_tool_ranges_are_independent_without_ddl_change(
+        self,
+    ) -> None:
+        args = self.parse(
+            "--root", "Archive",
+            "--metadata-exiftool-mode", "normalized",
+            "--metadata-ffprobe-mode", "complete",
+        )
+        config = scan_cli._new_config(args, "full")
+        self.assertEqual(config["metadata_exiftool_mode"], "normalized")
+        self.assertEqual(config["metadata_ffprobe_mode"], "complete")
+        self.assertIs(config["metadata_exiftool"], True)
+        self.assertIs(config["metadata_ffprobe"], True)
+        self.assertEqual(config["metadata_storage"], "complete")
+        self.assertEqual(
+            dbrun.metadata_tool_modes(config),
+            {"exiftool": "normalized", "ffprobe": "complete"},
+        )
+        self.assertEqual(
+            dbrun.metadata_tool_modes({
+                "metadata_storage": "normalized",
+                "metadata_exiftool": False,
+                "metadata_ffprobe": True,
+            }),
+            {"exiftool": "off", "ffprobe": "normalized"},
+        )
+
     def test_format_validation_still_preflights_required_decoders(self) \
             -> None:
         args = self.parse(
@@ -118,7 +149,7 @@ class TestScanCliConfig(unittest.TestCase):
             {"exiftool", "ffprobe", "sevenzip"},
         )
 
-    def test_full_format_sample_accepts_zero_and_uses_v3_name_token(
+    def test_full_format_sample_accepts_zero_and_filename_only_uses_mode(
         self,
     ) -> None:
         args = self.parse(
@@ -128,15 +159,22 @@ class TestScanCliConfig(unittest.TestCase):
         )
         config = scan_cli._new_config(args, "full")
         self.assertEqual(0.0, config["format_sample_percent"])
-        self.assertEqual(["Fmt-Sample"], scan_cli._format_tokens("sample"))
-        self.assertEqual(["Fmt-All"], scan_cli._format_tokens("all"))
+        with mock.patch.object(
+                scan_cli.core.time, "strftime",
+                return_value="2026-08-09_12-34-56"):
+            stem = scan_cli._scan_snapshot_stem(["Archive"], "full")
+        self.assertEqual("Archive_Full_2026-08-09_12-34-56", stem)
+        self.assertNotIn("Fmt", stem)
+        self.assertNotIn("Metadata", stem)
 
     def test_quick_rejects_content_and_format_features(self) -> None:
         for extra, message in (
-            (("--hash", "full"), "内容哈希"),
+            (("--hash", "full"), "哈希"),
             (("--metadata-storage", "complete"), "元数据"),
             (("--no-metadata-exiftool",), "元数据工具"),
             (("--no-metadata-ffprobe",), "元数据工具"),
+            (("--metadata-exiftool-mode", "complete"), "元数据工具"),
+            (("--metadata-ffprobe-mode", "normalized"), "元数据工具"),
             (("--format-validation", "all"), "格式校验"),
         ):
             with self.subTest(extra=extra):
@@ -159,7 +197,7 @@ class TestScanCliConfig(unittest.TestCase):
             call for call in emit.call_args_list
             if call.args and call.args[0] == "progress_finish"
         )
-        self.assertIn("错误 1", finish.kwargs["summary"])
+        self.assertIn("异常记录 1", finish.kwargs["summary"])
         self.assertIn("不适用 8", finish.kwargs["summary"])
         self.assertIn("跳过 2", finish.kwargs["summary"])
 
@@ -184,7 +222,7 @@ class TestScanCliConfig(unittest.TestCase):
             mock.patch.object(scan_cli.core, "validate_root") as validate,
             mock.patch.object(scan_cli, "_quick_preflight") as preflight,
         ):
-            with self.assertRaisesRegex(Exception, "有效 owner"):
+            with self.assertRaisesRegex(Exception, "有效任务"):
                 scan_cli._resume_preflight(args, preview)
         validate.assert_not_called()
         preflight.assert_not_called()
@@ -434,7 +472,7 @@ class TestScanCliProduction(unittest.TestCase):
         before = _sha256(partial)
         rejected = self.run_scan("--resume", partial, "--quiet")
         self.assertEqual(2, rejected.returncode)
-        self.assertIn("明确手动恢复", rejected.stderr)
+        self.assertIn("明确手动续传", rejected.stderr)
         self.assertEqual(before, _sha256(partial))
         completed = self.run_scan(
             "--resume", partial, "--manual-resume", "--quiet")

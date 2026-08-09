@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 schema 3／4 Issues 分板块与只读兼容测试。"""
+"""DAISY v1.6.0 schema 3/4 问题报告分板块与只读兼容测试。"""
 from __future__ import annotations
 
 import hashlib
@@ -406,6 +406,17 @@ class TestIssueSections(_IssuesFixture):
             for section in analysis["sections"]
         }
 
+    def test_compound_machine_statuses_are_replaced_as_complete_tokens(
+        self,
+    ) -> None:
+        rendered = dbissues._display_statuses(
+            "run_state=failed_recoverable；format_status=invalid")
+        self.assertEqual(
+            "run_state=失败但可续传；format_status=校验失败",
+            rendered,
+        )
+        self.assertNotIn("失败_recoverable", rendered)
+
     def test_schema3_unsupported_only_is_counted_but_not_reported(self) \
             -> None:
         snapshot = self.schema3_snapshot(real_issue=False)
@@ -426,7 +437,7 @@ class TestIssueSections(_IssuesFixture):
         clean = dbissues.render_snapshot_issues(
             analysis, include_clean=True)
         self.assertIn("## 格式校验问题", clean)
-        self.assertIn("问题文件：NULL", clean)
+        self.assertIn("受影响文件：NULL", clean)
         self.assertEqual(baseline, _identity(snapshot))
 
     def test_schema3_real_issue_normalizes_copy_family_and_hides_unknown_path(
@@ -455,7 +466,7 @@ class TestIssueSections(_IssuesFixture):
         self.assertIn("### 需要处理", report)
         self.assertIn("状态汇总", report)
         self.assertIn("建议操作", report)
-        self.assertIn("完整证据表", report)
+        self.assertIn("详细证据表", report)
         for _section_id, title in dbissues.ISSUE_SECTIONS:
             self.assertIn(f"## {title}", report)
         self.assertEqual(baseline, _identity(snapshot))
@@ -485,7 +496,7 @@ class TestIssueSections(_IssuesFixture):
         self.assertIsNone(dbissues.render_snapshot_issues(analysis))
         clean = dbissues.render_snapshot_issues(
             analysis, include_clean=True)
-        self.assertIn("### 信息性诊断", clean)
+        self.assertIn("### 补充统计", clean)
         self.assertNotIn("broken.jpg", clean)
         self.assertNotIn("unknown.bin", clean)
         self.assertEqual(baseline, _identity(snapshot))
@@ -537,8 +548,8 @@ class TestIssueSections(_IssuesFixture):
         ))
         self.assertEqual(1, len(metadata["details"]))
         report = dbissues.render_snapshot_issues(analysis)
-        self.assertIn("同一文件折叠的普通／[minor] warning", report)
-        self.assertIn("已展示 1／共 1", report)
+        self.assertIn("同一文件未展开的普通或次要警告", report)
+        self.assertIn("已展示 1，共 1", report)
         self.assertLess(len(report.splitlines()), 120)
 
     def test_schema4_format_and_high_performance_have_separate_sections(
@@ -569,7 +580,7 @@ class TestIssueSections(_IssuesFixture):
         self.assertIn("broken.pdf", report)
         self.assertNotIn("unknown.bin", report)
         self.assertIn("读取性能异常候选", report)
-        self.assertIn("unsupported 文件（仅统计）：1", report)
+        self.assertIn("不支持的文件（仅统计）：1", report)
         self.assertIn("平均吞吐", report)
         self.assertIn("不能据此认定物理坏区或设备故障", report)
         self.assertEqual(baseline, _identity(snapshot))
@@ -689,10 +700,10 @@ class TestIssueSections(_IssuesFixture):
             runtime["details"][0]["status"],
         )
         report = dbissues.render_snapshot_issues(analysis)
-        self.assertIn("## 运行／证据问题", report)
-        self.assertIn("exiftool 连续工具故障 3 次后熔断", report)
-        self.assertIn("未处理 204913", report)
-        self.assertIn("entry_id=6194～233079", report)
+        self.assertIn("## 运行与证据问题", report)
+        self.assertIn("exiftool 连续发生 3 次工具故障，阶段已停止", report)
+        self.assertIn("未处理条目：204913", report)
+        self.assertIn("条目 ID 范围：6194～233079", report)
         self.assertNotIn("204913 个文件错误", report)
         self.assertEqual(baseline, _identity(snapshot))
 
@@ -705,8 +716,9 @@ class TestIssueSections(_IssuesFixture):
         self.assertEqual(3, metadata["issue_files"])
         self.assertEqual(1, len(metadata["details"]))
         report = dbissues.render_snapshot_issues(analysis)
-        self.assertIn("已展示 1／共 3", report)
-        self.assertIn("`entries、errors、metadata_diagnostics`", report)
+        self.assertIn("已展示 1，共 3", report)
+        self.assertIn(
+            "`entries`、`errors`、`metadata_diagnostics`", report)
         for value in (0, -1, True, 1.5, "1"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 dbissues.analyze_snapshot_issues(

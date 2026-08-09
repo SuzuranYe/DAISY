@@ -268,7 +268,8 @@ def create_archive(
     try:
         directory.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise core.DaisySmartError(f"无法创建归档目录：{directory}：{exc}") from exc
+        raise core.DaisySmartError(
+            f"无法创建归档目录 {directory}：{exc}") from exc
     if not directory.is_dir():
         raise core.DaisySmartError(f"归档目标不是目录：{directory}")
 
@@ -387,7 +388,8 @@ def verify_archive(path: str | os.PathLike[str]) -> VerificationResult:
                 if extra:
                     detail.append("多余：" + "、".join(extra))
                 raise core.DaisySmartError(
-                    f"ZIP 文件清单不符合 schema {core.ARCHIVE_SCHEMA_VERSION}："
+                    "ZIP 文件清单不符合归档结构版本 "
+                    f"{core.ARCHIVE_SCHEMA_VERSION}："
                     + "；".join(detail)
                 )
             bad_member = archive.testzip()
@@ -412,7 +414,7 @@ def verify_archive(path: str | os.PathLike[str]) -> VerificationResult:
         raise core.DaisySmartError("Manifest.json 根节点不是对象。")
     if manifest.get("archive_schema_version") != core.ARCHIVE_SCHEMA_VERSION:
         raise core.DaisySmartError(
-            "不支持的归档 schema："
+            "不支持的归档结构版本："
             f"{manifest.get('archive_schema_version')!r}。"
         )
     if manifest.get("archive_role") != core.ARCHIVE_ROLE:

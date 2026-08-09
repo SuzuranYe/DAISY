@@ -197,7 +197,7 @@ class TestSuffixCollisions(_Tree):
         issue1 = core.artifact_issue_report_path(final1)
         self.assertTrue(os.path.isfile(issue1))
         with open(issue1, encoding="utf-8") as report:
-            self.assertIn("DAISY 问题报告", report.read())
+            self.assertIn("DAISY 快照问题报告", report.read())
         sha1 = core.sha256_file(final1)
         report_sha1 = core.sha256_file(issue1)
         partial2, con2 = self.make_partial("M")

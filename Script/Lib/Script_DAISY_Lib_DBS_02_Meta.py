@@ -48,7 +48,7 @@ class MetadataSourceError(RuntimeError):
 
 
 class MetadataToolCircuitOpen(core.PreflightError):
-    """元数据外部工具连续故障，阶段已在可恢复边界熔断。"""
+    """元数据外部工具连续故障，阶段已在可续传边界停止。"""
 
     def __init__(self, summary: dict[str, object]) -> None:
         self.summary = dict(summary)
@@ -56,8 +56,8 @@ class MetadataToolCircuitOpen(core.PreflightError):
         affected = int(summary.get("not_processed") or 0)
         consecutive = int(summary.get("consecutive_failures") or 0)
         super().__init__(
-            f"元数据工具 {tool} 已熔断：连续故障 {consecutive} 次，"
-            f"保留 {affected} 个条目等待恢复"
+            f"元数据工具 {tool} 连续故障 {consecutive} 次，阶段已停止；"
+            f"仍有 {affected} 个条目未处理，可在工具可用后续传"
         )
 
 
@@ -79,11 +79,11 @@ def exiftool_timeout_for_size(size_bytes: int | None,
         step_bytes = int(selected["size_step_bytes"])
         step_seconds = int(selected["seconds_per_step"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("ExifTool timeout policy 字段无效") from exc
+        raise ValueError("ExifTool 超时策略字段无效") from exc
     if minimum <= 0 or step_bytes <= 0 or step_seconds <= 0:
-        raise ValueError("ExifTool timeout policy 必须全部为正数")
+        raise ValueError("ExifTool 超时策略必须全部为正数")
     if selected.get("rounding") != "ceiling":
-        raise ValueError("ExifTool timeout policy 只支持 ceiling")
+        raise ValueError("ExifTool 超时策略只支持上限模式 (ceiling)")
     size = max(0, int(size_bytes or 0))
     steps = max(1, (size + step_bytes - 1) // step_bytes)
     return max(minimum, steps * step_seconds)
@@ -399,7 +399,7 @@ def make_payload(doc: dict) -> Payload:
 
 
 # === 压缩包后端（不解压、不递归） ===
-# zip 压缩方法与建档系统编号 → 可读名（PKWARE APPNOTE 4.4.2/4.4.5）
+# zip 压缩方法与建档系统编号 → 可读名 (PKWARE APPNOTE 4.4.2/4.4.5)
 _ZIP_METHOD = {0: "store", 8: "deflate", 9: "deflate64", 12: "bzip2",
                14: "lzma", 93: "zstd", 95: "xz", 98: "ppmd", 99: "aes"}
 _ZIP_HOST = {0: "msdos", 3: "unix", 6: "os2_hpfs", 7: "macintosh",
@@ -568,7 +568,7 @@ def diagnostic(provider: str, severity: str, code: str, message,
 
 
 def reported_diagnostics(doc: dict | None) -> list[dict]:
-    """提取 ExifTool JSON 中任意 family 的 Warning／Error 标签。"""
+    """提取 ExifTool JSON 中任意 family 的 Warning/Error 标签。"""
     rows = []
     for key, raw in (doc or {}).items():
         tag = str(key).split(":")[-1].casefold()
@@ -845,7 +845,7 @@ def video_row(idx: dict, ff: dict | None,
         "color_gamut": (lambda v: str(v) if v is not None else None)(
             tval(idx, "Canon:ColorSpace2")),
         "encoder": encoder,
-        # 作者/来源尽量获取。优先 ffprobe 容器 tags
+        # 作者／来源尽量获取。优先 ffprobe 容器 tags
         # （按格式正确处理编码——RIFF INFO 无标准编码，ExifTool 默认按
         # Latin-1 解、UTF-8 标签会乱码，实测确认），ExifTool 任意组兜底
         "title": scalar_or_json_text(ftags.get("title")
@@ -878,7 +878,7 @@ def audio_stream_rows_from_exif(idx: dict) -> list[dict]:
         "stream_index": 0,
         "codec_name": str(file_type or "aac").casefold(),
         # ExifTool 的 AAC ProfileType 与 ffprobe codec profile 在真实样本中
-        # 可能冲突（Main vs LC），没有 ffprobe 证据时不冒充同一语义。
+        # 可能冲突 (Main vs LC)，没有 ffprobe 证据时不视为同一语义。
         "profile": None,
         "sample_rate": sample_rate,
         "channels": channels,
@@ -994,7 +994,7 @@ class ExifToolWorker:
         self.session_count = 0
         self.health_timeout = float(health_timeout)
         if self.health_timeout <= 0:
-            raise ValueError("ExifTool 健康检查 timeout 必须大于 0")
+            raise ValueError("ExifTool 健康检查超时阈值必须大于 0")
         self._popen_factory = _popen_factory or subprocess.Popen
         self._lock = threading.RLock()
         self._proc = None
@@ -1647,6 +1647,8 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                            retain_original_metadata: bool = True,
                            metadata_exiftool: bool = True,
                            metadata_ffprobe: bool = True,
+                           retain_exiftool_payload: bool | None = None,
+                           retain_ffprobe_payload: bool | None = None,
                            timeout_policy: dict | None = None,
                            on_progress=None,
                            should_stop=None,
@@ -1657,6 +1659,13 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
     if not isinstance(metadata_exiftool, bool) \
             or not isinstance(metadata_ffprobe, bool):
         raise core.PreflightError("元数据工具开关必须是布尔值")
+    if retain_exiftool_payload is None:
+        retain_exiftool_payload = retain_original_metadata
+    if retain_ffprobe_payload is None:
+        retain_ffprobe_payload = retain_original_metadata
+    if not isinstance(retain_exiftool_payload, bool) \
+            or not isinstance(retain_ffprobe_payload, bool):
+        raise core.PreflightError("元数据原始输出开关必须是布尔值")
     exiftool_info = tools.get("exiftool") if metadata_exiftool else None
     ffprobe_info = tools.get("ffprobe") if metadata_ffprobe else None
     if metadata_exiftool and not isinstance(exiftool_info, dict):
@@ -1681,7 +1690,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
     if not sz_ver:
         raise core.PreflightError("7-Zip 元数据能力缺少版本")
     roots = dict(con.execute("SELECT root_id, root_path FROM roots").fetchall())
-    if not retain_original_metadata:
+    if not retain_exiftool_payload:
         # 基础元数据仍解析有规范化落点的格式；真正没有规范化表的 other
         # 才是不适用。
         con.execute("UPDATE entries SET meta_status='not_applicable'"
@@ -1809,7 +1818,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     if kind == "photo_working":
                         _insert_row(con, "working_metadata", eid,
                                     working_row(idx, ext), "exiftool", et_ver)
-                    if retain_original_metadata:
+                    if retain_exiftool_payload:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                     diagnostic_counts = _persist_diagnostics(
                         con, eid, diagnostics)
@@ -1832,7 +1841,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                             status = "timeout"
                             _record_error(
                                 con, eid, "exiftool_timeout",
-                                f"{path}（timeout={et_timeout}s；size_bytes={size0}）")
+                                f"{path}（超时阈值={et_timeout}s；文件大小={size0} 字节）")
                         except Exception as exc:
                             errors.append(("exiftool_error", exc))
                     if metadata_ffprobe:
@@ -1903,12 +1912,11 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                             con.execute(f"INSERT INTO audio_streams ({cols}) VALUES"
                                         f" ({', '.join('?' for _ in r2)})",
                                         tuple(r2.values()))
-                    if retain_original_metadata:
-                        if doc:
-                            _insert_payload(con, eid, "exiftool", doc, et_ver)
-                        if ff:
-                            _insert_payload(con, eid, "ffprobe", ff, ff_ver)
-                            stats["ffprobe_payloads"] += 1
+                    if retain_exiftool_payload and doc:
+                        _insert_payload(con, eid, "exiftool", doc, et_ver)
+                    if retain_ffprobe_payload and ff:
+                        _insert_payload(con, eid, "ffprobe", ff, ff_ver)
+                        stats["ffprobe_payloads"] += 1
                     for code, exc in errors:
                         status = "error" if status == "done" else status
                         _record_error(con, eid, code, exc)
@@ -1921,7 +1929,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                     _insert_row(con, "document_metadata", eid,
                                 document_row(idx, ext), "exiftool", et_ver)
                     produced_metadata = True
-                    if retain_original_metadata:
+                    if retain_exiftool_payload:
                         _insert_payload(con, eid, "exiftool", doc, et_ver)
                     diagnostic_counts = _persist_diagnostics(
                         con, eid, reported_diagnostics(doc))
@@ -1951,7 +1959,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                         " :extract_version, :header_offset, :modified_raw,"
                         " :attributes, :encrypted)",
                         [{**m, "eid": eid} for m in members])
-                    if retain_original_metadata and metadata_exiftool:
+                    if retain_exiftool_payload and metadata_exiftool:
                         assert worker is not None
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
@@ -1965,7 +1973,7 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 elif kind == "other":
                     # 没有规范化落点不等于 ExifTool 不可读取；全量元数据仍
                     # 为本地所有文件保存原文。
-                    if retain_original_metadata and metadata_exiftool:
+                    if retain_exiftool_payload and metadata_exiftool:
                         assert worker is not None
                         doc = worker.extract(
                             path, photo_profile=False, timeout=et_timeout)
@@ -1993,13 +2001,13 @@ def process_metadata_stage(con: sqlite3.Connection, tools: dict,
                 status = "timeout"
                 _record_error(
                     con, eid, "exiftool_timeout",
-                    f"{path}（timeout={et_timeout}s；size_bytes={size0}）")
+                        f"{path}（超时阈值={et_timeout}s；文件大小={size0} 字节）")
             except Exception as exc:
                 status = "error"
                 _record_error(con, eid, type(exc).__name__, exc)
             # GIF 的 ffprobe 是 Raw 增补探测，用于保留帧时序等动画证据；
             # 失败不覆盖 ExifTool 主解析状态。其他非音视频类型不调用 ffprobe。
-            if retain_original_metadata and metadata_ffprobe and ext == "gif":
+            if retain_ffprobe_payload and metadata_ffprobe and ext == "gif":
                 try:
                     ff_optional = ffprobe_full(
                         str(ffprobe_info["path"]), path)

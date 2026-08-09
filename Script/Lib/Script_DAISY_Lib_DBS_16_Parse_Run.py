@@ -1,8 +1,8 @@
-"""DAISY 数据库解析的流式技术导出与原子发布执行层。
+"""DAISY 档案数据解析的流式多格式导出与原子发布执行层。
 
 本模块只消费统一 Reader 和版本化投影。输入数据库始终以只读 URI 打开；一次任务
-持有一致读取事务，CSV／JSONL 共享同一次模块遍历。所有产物先写入输出目录内的唯一
-staging，关闭、摘要和 manifest 完成后才以 no-clobber 目录重命名发布。
+持有一致读取事务，CSV/JSONL 共享同一次模块遍历。所有产物先写入输出目录内的唯一
+暂存目录，关闭文件、计算摘要并写完运行清单后，才以不覆盖方式重命名发布。
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ _UTC_RE = re.compile(
 
 
 class ParseExportCancelled(Exception):
-    """数据库解析在安全批次边界被调用方取消。"""
+    """档案数据解析在安全批次边界被调用方取消。"""
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ ProgressCallback = Callable[[ParseProgress], None] | None
 
 def _check_cancel(cancel_check: CancelCheck) -> None:
     if cancel_check is not None and cancel_check():
-        raise ParseExportCancelled("数据库解析已取消")
+        raise ParseExportCancelled("档案数据解析已取消")
 
 
 def _notify(
@@ -165,7 +165,7 @@ def _input_identity(
 def _utc_name_token(value: str) -> str:
     match = _UTC_RE.fullmatch(str(value))
     if match is None:
-        raise ValueError(f"报告时间不是 UTC ISO 8601：{value!r}")
+        raise ValueError(f"生成时间不是 UTC ISO 8601：{value!r}")
     year, month, day, hour, minute, second, fraction = match.groups()
     fraction = (fraction or "0")[:6].ljust(6, "0")
     return (
@@ -186,9 +186,9 @@ def _ensure_immediate_child(path: str, parent: str, prefix: str) -> None:
     normalized_path = os.path.abspath(path)
     normalized_parent = os.path.abspath(parent)
     if os.path.dirname(normalized_path) != normalized_parent:
-        raise RuntimeError("解析 staging 不在预期输出目录的直接子级")
+        raise RuntimeError("解析暂存目录不在预期输出目录的直接子级")
     if not os.path.basename(normalized_path).startswith(prefix):
-        raise RuntimeError("解析 staging 名称不属于当前执行层")
+        raise RuntimeError("解析暂存目录名称不属于当前执行层")
 
 
 def _remove_owned_staging(staging: str, output_dir: str) -> None:
@@ -196,7 +196,7 @@ def _remove_owned_staging(staging: str, output_dir: str) -> None:
     if not os.path.lexists(staging):
         return
     if os.path.islink(staging):
-        raise RuntimeError("拒绝递归清理被替换为链接的解析 staging")
+        raise RuntimeError("拒绝递归清理被替换为链接的解析暂存目录")
     shutil.rmtree(staging)
 
 
@@ -228,16 +228,8 @@ def _database_identity(
 def _compatibility_mode(
     descriptor: dbreader.DatabaseDescriptor,
 ) -> str:
-    if descriptor.database_type == "snapshot":
-        return (
-            "v1.4.1-compatible"
-            if descriptor.schema_version == 3 else "v1.6.0-native"
-        )
-    schemas = (
-        int(descriptor.identity["old_schema_version"]),
-        int(descriptor.identity["new_schema_version"]),
-    )
-    return "v1.4.1-compatible" if schemas == (3, 3) else "cross-version"
+    """沿用模块规划层的统一兼容模式标识。"""
+    return dbparse.compatibility_mode(descriptor)
 
 
 def _validate_plan(
@@ -251,7 +243,7 @@ def _validate_plan(
     unsupported = sorted(set(plan.format_ids) - SUPPORTED_FORMATS)
     if unsupported:
         raise core.PreflightError(
-            "数据库解析执行层不支持格式：" + "、".join(unsupported))
+            "档案数据解析不支持以下格式：" + "、".join(unsupported))
     statuses = {
         status.spec.module_id: status
         for status in dbparse.parse_module_statuses(descriptor)
@@ -260,13 +252,16 @@ def _validate_plan(
         status = statuses.get(module_id)
         if status is None:
             raise core.PreflightError(
-                f"当前数据库没有解析模块：{module_id}")
+                f"当前数据库没有数据模块：{module_id}")
         if not status.selectable:
             detail = f"：{status.reason}" if status.reason else ""
+            state_label = dbparse.PARSE_MODULE_STATE_LABELS.get(
+                status.state, status.state)
             raise core.PreflightError(
-                f"解析模块 {module_id} 为 {status.state}，不可导出{detail}")
+                f"数据模块 {module_id} 的状态为「{state_label}」，"
+                f"不可导出{detail}")
     if not plan.module_ids:
-        raise core.PreflightError("解析计划未选择任何模块")
+        raise core.PreflightError("解析计划未选择任何数据模块")
     if not plan.format_ids:
         raise core.PreflightError("解析计划未选择任何格式")
     for format_id in plan.format_ids:
@@ -284,7 +279,7 @@ def _validate_plan(
             for format_id in plan.format_ids
         ):
             raise core.PreflightError(
-                f"解析模块 {module_id} 没有可执行的输出格式")
+                f"数据模块 {module_id} 没有可执行的输出格式")
     return statuses
 
 
@@ -379,7 +374,7 @@ def _write_manifest(
     manifest = {
         "contract": REPORT_CONTRACT,
         "generated_at_utc": generated_at_utc,
-        "tool": core.report_metadata("数据库解析"),
+        "tool": core.report_metadata("档案数据解析"),
         "input": {
             "filename": os.path.basename(descriptor.path),
             **_database_identity(descriptor),
@@ -421,15 +416,15 @@ def _write_manifest(
 def _publish_directory_no_clobber(staging: str, final_dir: str) -> None:
     if os.path.lexists(final_dir):
         raise core.PreflightError(
-            f"报告发布冲突：目标已存在且不会覆盖：{final_dir}")
+            f"导出结果发布冲突：目标已存在且不会覆盖：{final_dir}")
     try:
         os.rename(staging, final_dir)
     except FileExistsError as exc:
         raise core.PreflightError(
-            f"报告发布冲突：目标已存在且不会覆盖：{final_dir}") from exc
+            f"导出结果发布冲突：目标已存在且不会覆盖：{final_dir}") from exc
     except OSError as exc:
         raise core.PreflightError(
-            f"报告目录原子发布失败：{final_dir}：{exc}") from exc
+            f"导出目录原子发布失败：{final_dir}：{exc}") from exc
 
 
 def export_parse_report(
@@ -447,7 +442,7 @@ def export_parse_report(
     xlsx_max_rows: int = human.DEFAULT_XLSX_MAX_ROWS,
     xlsx_max_cell_chars: int = human.DEFAULT_XLSX_MAX_CELL_CHARS,
 ) -> ParseExportResult:
-    """流式导出所选格式，并在完整验证后原子发布报告目录。"""
+    """流式导出所选格式，并在完整验证后原子发布导出目录。"""
     if batch_rows <= 0:
         raise ValueError("batch_rows 必须大于 0")
     if progress_every_rows <= 0:
@@ -458,7 +453,7 @@ def export_parse_report(
     timestamp_token = _utc_name_token(generated_at_utc)
     os.makedirs(output_dir, exist_ok=True)
     if not os.path.isdir(output_dir):
-        raise core.PreflightError(f"报告目录不是文件夹：{output_dir}")
+        raise core.PreflightError(f"导出根目录不是文件夹：{output_dir}")
 
     _check_cancel(cancel_check)
     _notify(
@@ -518,7 +513,7 @@ def export_parse_report(
                 module_index=module_index,
                 module_total=module_total,
                 rows_done=0,
-                message=f"正在导出模块 {module_id}",
+                message=f"正在导出：{status.spec.title}",
             )
             technical_formats = tuple(
                 format_id for format_id in formats
@@ -544,7 +539,7 @@ def export_parse_report(
                         )
                     else:
                         raise RuntimeError(
-                            f"未注册的技术输出格式：{format_id}")
+                            f"未注册的输出格式：{format_id}")
                     sinks.append(sink)
                 sinks.extend(human_context.open_module_sinks(
                     module_id,
@@ -573,7 +568,7 @@ def export_parse_report(
                             module_index=module_index,
                             module_total=module_total,
                             rows_done=row_count,
-                            message=f"{module_id} 已处理 {row_count} 行",
+                            message=f"{status.spec.title}已处理 {row_count} 行",
                         )
             module_artifacts = []
             for format_id in technical_formats:
@@ -612,7 +607,7 @@ def export_parse_report(
                 module_index=module_index,
                 module_total=module_total,
                 rows_done=row_count,
-                message=f"模块 {module_id} 已完成，共 {row_count} 行",
+                message=f"{status.spec.title}已完成，共 {row_count} 行",
             )
 
         for item in human_context.finalize(module_records):
@@ -634,7 +629,7 @@ def export_parse_report(
             database, cancel_check=cancel_check)
         if input_after != input_before:
             raise core.PreflightError(
-                "输入数据库在解析前后发生变化，报告不会发布")
+                "输入数据库在解析前后发生变化，导出结果不会发布")
         _write_manifest(
             staging,
             generated_at_utc=generated_at_utc,
@@ -651,7 +646,7 @@ def export_parse_report(
             or stat_before_publish.st_mtime_ns != input_before.mtime_ns
         ):
             raise core.PreflightError(
-                "输入数据库在报告发布前发生变化，报告不会发布")
+                "输入数据库在导出结果发布前发生变化，导出结果不会发布")
         final_dir = os.path.join(
             output_dir,
             f"{_safe_database_stem(database)}_Report_{timestamp_token}",
@@ -663,7 +658,7 @@ def export_parse_report(
             module_index=len(plan.module_ids),
             module_total=len(plan.module_ids),
             rows_done=sum(int(item["rows"]) for item in module_records),
-            message="正在原子发布报告目录",
+            message="正在发布导出结果",
         )
         _publish_directory_no_clobber(staging, final_dir)
         staging = ""
@@ -679,8 +674,8 @@ def export_parse_report(
         raise ParseExportCancelled(str(exc)) from exc
     except sqlite3.OperationalError as exc:
         if cancel_check is not None and cancel_check():
-            raise ParseExportCancelled("数据库解析已取消") from exc
-        raise core.PreflightError(f"数据库解析查询失败：{exc}") from exc
+            raise ParseExportCancelled("档案数据解析已取消") from exc
+        raise core.PreflightError(f"档案数据解析查询失败：{exc}") from exc
     finally:
         try:
             con.set_progress_handler(None, 0)

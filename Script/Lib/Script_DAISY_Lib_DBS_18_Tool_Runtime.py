@@ -1,7 +1,7 @@
 """外部工具的统一运行故障、证据与连续失败熔断原语。
 
-本模块只监管调用方本次创建的精确进程／会话，不枚举、附加或终止其它进程。
-不同后端仍可保留长驻会话、一次性进程或 multiprocessing worker 的实现差异。
+本模块只监管调用方本次创建的精确进程／会话，不枚举、附加或终止其他进程。
+不同后端仍可保留长驻会话、一次性进程或多进程工作进程的实现差异。
 """
 from __future__ import annotations
 
@@ -325,7 +325,7 @@ def run_bounded_tool(
         raise ValueError("外部工具命令不能为空")
     timeout = float(timeout_seconds)
     if timeout <= 0:
-        raise ValueError("外部工具 timeout 必须大于 0")
+        raise ValueError("外部工具超时阈值必须大于 0")
     stdout_capture = _BoundedCapture(max_stdout_bytes, keep_tail=False)
     stderr_capture = _BoundedCapture(max_stderr_bytes, keep_tail=True)
     core.configure_windows_worker_error_mode()

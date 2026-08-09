@@ -1,8 +1,8 @@
-"""统一核验的外部格式工具直接句柄监督器。
+"""档案数据核验的外部格式工具直接句柄监督器。
 
-每次调用只启动调用方明确指定的 ExifTool、FFprobe 或 7-Zip 进程；不枚举、
-附加或终止任何其它进程，也不使用 native Job。stdout／stderr 由专属线程持续
-排空，主线程只通过本次 ``Popen`` 对象暂停、timeout、终止并回收精确子进程。
+每次调用只启动调用方明确指定的 ExifTool、ffprobe 或 7-Zip 进程；不枚举、
+附加或终止任何其他进程，也不使用 Windows Job 对象。stdout/stderr 由专属线程持续
+排空，主线程只通过本次 ``Popen`` 对象暂停、超时处置、终止并回收精确子进程。
 """
 from __future__ import annotations
 
@@ -160,15 +160,15 @@ def run_controlled_tool(
     if expected_size < 0:
         raise ValueError("expected_size 不能小于 0")
     if default_decision not in TIMEOUT_DECISIONS:
-        raise ValueError(f"未知 timeout 默认处置：{default_decision}")
+        raise ValueError(f"未知超时处置：{default_decision}")
     if poll_seconds <= 0:
-        raise ValueError("poll_seconds 必须大于 0")
+        raise ValueError("轮询间隔必须大于 0")
     threshold_seconds = (
         dbhash.hash_no_progress_timeout_for_size(expected_size)
         if timeout_seconds is None else float(timeout_seconds)
     )
     if not math.isfinite(threshold_seconds) or threshold_seconds <= 0:
-        raise ValueError("timeout_seconds 必须是大于 0 的有限数")
+        raise ValueError("超时阈值必须是大于 0 的有限数")
 
     core.configure_windows_worker_error_mode()
     factory = _popen_factory or subprocess.Popen
@@ -371,10 +371,10 @@ def run_controlled_tool(
 def _tool_path(tools: Mapping[str, object], name: str) -> str:
     value = tools.get(name)
     if not isinstance(value, Mapping):
-        raise core.PreflightError(f"格式核验缺少 {name} 工具身份")
+        raise core.PreflightError(f"格式校验缺少 {name} 工具身份")
     path = value.get("path")
     if not isinstance(path, str) or not path:
-        raise core.PreflightError(f"格式核验的 {name} 路径无效")
+        raise core.PreflightError(f"格式校验的 {name} 路径无效")
     return path
 
 
@@ -452,7 +452,7 @@ def _start_error_outcome(
     canonical = {
         "7-Zip": "sevenzip",
         "ExifTool": "exiftool",
-        "FFprobe": "ffprobe",
+        "ffprobe": "ffprobe",
     }.get(tool_name, tool_name.casefold())
     return _local_format_outcome(
         expected_size=expected_size,
@@ -478,7 +478,7 @@ def _process_crash_detail(
         return f"{tool_name} 工具进程没有退出码"
     unsigned = int(returncode) & 0xFFFFFFFF
     if int(returncode) < 0 or unsigned >= 0x80000000:
-        return f"{tool_name} 工具进程异常退出（0x{unsigned:08X}）"
+        return f"{tool_name} 工具进程异常退出 (0x{unsigned:08X})"
     return None
 
 
@@ -514,12 +514,12 @@ def _sevenzip_result(
         return "valid", None, None
     text = (result.stderr + result.stdout).decode("utf-8", "replace")
     if "Wrong password" in text or "Enter password" in text:
-        return "unsupported", "加密压缩包无法完整性测试", None
+        return "unsupported", "未提供密码，无法检查加密压缩包的完整性", None
     tool_error = _SEVENZIP_TOOL_ERRORS.get(int(result.returncode or 0))
     if tool_error is not None:
         return (
             "error",
-            f"7z t 工具错误：{tool_error}",
+            f"7z t 工具故障：{tool_error}",
             f"tool_exit_{int(result.returncode or 0)}",
         )
     tail = " | ".join(
@@ -542,7 +542,7 @@ def _ffprobe_findings(
 ) -> tuple[list[str], str | None]:
     if result.stdout_truncated:
         return (
-            ["ffprobe: JSON 输出超过证据上限，无法完成结构解析"],
+            ["ffprobe：JSON 输出超过证据上限，无法完成结构解析"],
             "output_limit",
         )
     document: Mapping[str, object] = {}
@@ -566,7 +566,7 @@ def _ffprobe_findings(
     if result.returncode != 0 or invalid_shape or not streams:
         error = result.stderr.decode("utf-8", "replace").strip()[-200:]
         bad.append(
-            f"ffprobe: rc={result.returncode}, streams={len(streams)}"
+            f"ffprobe：退出码 {result.returncode}，流数量 {len(streams)}"
             + ("，JSON 结构无效" if invalid_shape else "")
             + (f"，{error}" if error else ""))
     elif kind == "audio":
@@ -574,7 +574,7 @@ def _ffprobe_findings(
             size_bytes = os.path.getsize(path)
         except OSError as exc:
             reason = getattr(exc, "strerror", None) or type(exc).__name__
-            bad.append(f"ffprobe: 核验期间无法读取文件大小（{reason}）")
+            bad.append(f"ffprobe：核验期间无法读取文件大小（{reason}）")
             return bad, None
         if size_bytes > 44:
             return bad, None
@@ -596,7 +596,7 @@ def _ffprobe_findings(
             or not (format_duration and format_duration > 0)
             and not any(value and value > 0 for value in stream_durations)
         ):
-            bad.append("ffprobe: 音频容器只有头部且没有可确认的音频样本")
+            bad.append("ffprobe：音频容器只有头部且没有可确认的音频样本")
     if result.returncode == 0 and invalid_shape:
         return bad, "protocol_invalid"
     return bad, None
@@ -638,7 +638,7 @@ def _run_ffprobe_format_validator(
         )
     except OSError as exc:
         return _start_error_outcome(
-            "FFprobe", exc,
+            "ffprobe", exc,
             expected_size=expected_size,
             started=started,
         )
@@ -653,14 +653,14 @@ def _run_ffprobe_format_validator(
             result,
             expected_size=expected_size,
             status=status,
-            detail="FFprobe 无进展 timeout" if status == "timeout" else None,
+            detail="ffprobe 长时间无进展" if status == "timeout" else None,
             started=started,
             events=[],
             threshold_count=0,
             tool="ffprobe" if failure_kind else None,
             failure_kind=failure_kind,
         )
-    crash_detail = _process_crash_detail(result, "FFprobe")
+    crash_detail = _process_crash_detail(result, "ffprobe")
     if crash_detail is not None or result.stderr_truncated:
         return _format_outcome(
             result,
@@ -668,7 +668,7 @@ def _run_ffprobe_format_validator(
             status="error",
             detail=(
                 crash_detail
-                or "FFprobe 错误输出超过证据上限，无法可靠分类"),
+                or "ffprobe 错误输出超过证据上限，无法可靠分类"),
             started=started,
             events=[],
             threshold_count=0,
@@ -717,7 +717,7 @@ def run_external_format_validator(
     on_threshold: Callable[..., None] | None = None,
     _direct_runner=None,
 ) -> ExternalFormatOutcome:
-    """按所选判据监督 ExifTool／ffprobe／7-Zip 精确子进程。"""
+    """按所选判据监督 ExifTool/ffprobe/7-Zip 精确子进程。"""
     validator = spec.validator
     if validator not in (
             "ole", "7z", "gif", "media", "exiftool", "ffprobe"):
@@ -794,7 +794,7 @@ def run_external_format_validator(
                 expected_size=expected_size,
                 status=status,
                 detail=(
-                    "7-Zip 无进展 timeout"
+                    "7-Zip 长时间无进展"
                     if status == "timeout" else None),
                 started=started,
                 events=events,
@@ -863,7 +863,7 @@ def run_external_format_validator(
             exif,
             expected_size=expected_size,
             status=status,
-            detail=("ExifTool 无进展 timeout" if status == "timeout" else None),
+            detail=("ExifTool 长时间无进展" if status == "timeout" else None),
             started=started,
             events=events,
             threshold_count=threshold_count,
@@ -935,7 +935,7 @@ def run_external_format_validator(
             )
         except OSError as exc:
             return _start_error_outcome(
-                "FFprobe", exc,
+                "ffprobe", exc,
                 expected_size=expected_size,
                 started=started,
                 threshold_count=threshold_count,
@@ -953,14 +953,14 @@ def run_external_format_validator(
                 expected_size=expected_size,
                 status=status,
                 detail=(
-                    "FFprobe 无进展 timeout" if status == "timeout" else None),
+                    "ffprobe 长时间无进展" if status == "timeout" else None),
                 started=started,
                 events=events,
                 threshold_count=threshold_count,
                 tool="ffprobe" if failure_kind else None,
                 failure_kind=failure_kind,
             )
-        crash_detail = _process_crash_detail(last, "FFprobe")
+        crash_detail = _process_crash_detail(last, "ffprobe")
         if crash_detail is not None or last.stderr_truncated:
             return _format_outcome(
                 last,
@@ -968,7 +968,7 @@ def run_external_format_validator(
                 status="error",
                 detail=(
                     crash_detail
-                    or "FFprobe 错误输出超过证据上限，无法可靠分类"),
+                    or "ffprobe 错误输出超过证据上限，无法可靠分类"),
                 started=started,
                 events=events,
                 threshold_count=threshold_count,

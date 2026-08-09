@@ -157,7 +157,7 @@ class _ReaderFixture(unittest.TestCase):
                 scan_kind == "full" and metadata_storage == "complete")
             if include_raw:
                 if not raw_retained:
-                    raise ValueError("只有 Full／complete 金样可包含 raw payload")
+                    raise ValueError("只有 Full/complete 金样可包含 raw payload")
                 payload = b'{"SourceFile":"fixture.bin","Value":1}'
                 con.execute(
                     "INSERT INTO raw_payloads"
@@ -489,9 +489,9 @@ class TestDatabaseReader(_ReaderFixture):
         self.assertGreater(descriptor.capability("issues").row_count, 0)
         self.assertIsNotNone(report)
         self.assertIn("## 目录枚举问题", report)
-        self.assertIn("## 问题条目状态", report)
-        self.assertIn("## 错误明细", report)
-        self.assertIn("未列为问题的格式未识别文件 | 1", report)
+        self.assertIn("## 文件状态问题", report)
+        self.assertIn("## 需复核记录", report)
+        self.assertIn("未列为问题的未识别格式文件 | 1", report)
         self.assertIn("照片.bin", report)
         self.assertIn("副本.bin", report)
         self.assertNotIn("未知.bin", report)

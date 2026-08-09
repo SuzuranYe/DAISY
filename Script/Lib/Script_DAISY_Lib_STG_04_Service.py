@@ -1,4 +1,4 @@
-"""GUI 与 CLI 共用的扫描、目标确认和采集服务。"""
+"""GUI 与 CLI 共用的硬盘检测、目标确认和采集服务。"""
 from __future__ import annotations
 
 import os
@@ -83,12 +83,12 @@ def _critical_smart_lines(payload: dict[str, Any]) -> list[str]:
             and raw_number is not None
             and raw_number > 0
         ):
-            status = "注意（RAW 非零，未触发阈值）"
+            status = "注意（原始值非零，未触发阈值）"
         else:
             status = "未触发阈值"
         lines.append(
             f"  {item_id:02X} {item.get('name') or '未命名属性'}｜"
-            f"RAW {_display_optional(raw_value)}｜"
+            f"原始值 {_display_optional(raw_value)}｜"
             f"当前 {_display_optional(item.get('value'))}｜"
             f"最差 {_display_optional(item.get('worst'))}｜"
             f"阈值 {_display_optional(item.get('thresh'))}｜状态 {status}"
@@ -101,7 +101,7 @@ def _critical_smart_lines(payload: dict[str, Any]) -> list[str]:
         critical_warning = core.int_or_none(nvme.get("critical_warning"))
         fields = (
             (
-                "Critical Warning",
+                "关键警告",
                 f"0x{critical_warning:02X}" if critical_warning is not None else None,
                 "",
             ),
@@ -116,7 +116,7 @@ def _critical_smart_lines(payload: dict[str, Any]) -> list[str]:
             f"  {label}：{_display_optional(value, suffix=suffix)}"
             for label, value, suffix in fields
         ]
-    return ["  设备未提供预设关键 SMART 属性。"]
+    return ["  设备未提供常见关键 SMART 属性。"]
 
 
 def scan_targets(
@@ -148,10 +148,12 @@ def scan_targets(
         version = scan.version
         warnings.extend(scan.warnings)
     except core.DaisySmartError as exc:
-        warnings.append(f"smartctl 扫描不可用：{exc}")
+        warnings.append(f"smartctl 设备枚举不可用：{exc}")
 
     if not windows_records and not smart_devices:
-        raise core.DaisySmartError("没有取得任何物理盘清单。" + "；".join(warnings))
+        detail = "；".join(warnings)
+        raise core.DaisySmartError(
+            "未取得任何硬盘清单。" + (f"详情：{detail}" if detail else ""))
 
     windows_by_number = {record.disk_number: record for record in windows_records}
     smart_by_number: dict[int, list[core.SmartDevice]] = {}
@@ -168,7 +170,7 @@ def scan_targets(
         devices = smart_by_number.get(disk_number, [])
         if len(devices) > 1:
             warnings.append(
-                f"PhysicalDrive{disk_number} 对应多个 smartctl 扫描项；"
+                f"PhysicalDrive{disk_number} 对应多个 smartctl 设备枚举项；"
                 f"默认使用 {devices[0].name} -d {devices[0].device_type}。"
             )
         targets.append(
@@ -204,7 +206,7 @@ def target_by_disk_number(scan: core.ScanResult, disk_number: int) -> core.DiskT
     matches = [target for target in scan.targets if target.disk_number == disk_number]
     if len(matches) != 1:
         raise core.DaisySmartError(
-            f"PhysicalDrive{disk_number} 在当前清单中不是唯一目标，请重新扫描。"
+            f"PhysicalDrive{disk_number} 在当前清单中不是唯一目标，请重新检测硬盘。"
         )
     return matches[0]
 
@@ -212,12 +214,12 @@ def target_by_disk_number(scan: core.ScanResult, disk_number: int) -> core.DiskT
 def _health_summary(payload: dict[str, Any]) -> str:
     passed = payload.get("smart_status")
     if isinstance(passed, dict) and isinstance(passed.get("passed"), bool):
-        return "PASSED" if passed["passed"] else "FAILED"
+        return "通过" if passed["passed"] else "失败"
     nvme = payload.get("nvme_smart_health_information_log")
     if isinstance(nvme, dict):
         critical = core.int_or_none(nvme.get("critical_warning"))
         if critical is not None:
-            return "PASSED" if critical == 0 else f"警告位 0x{critical:02X}"
+            return "通过" if critical == 0 else f"警告位 0x{critical:02X}"
     return "smartctl 未提供统一健康结论"
 
 
@@ -245,26 +247,29 @@ def render_collection_report(
     smart_flags = core.decode_smartctl_exit_status(smart.exit_status)
     critical_smart_lines = _critical_smart_lines(smart.payload)
     lines = [
-        f"工具：{core.APP_NAME} STG-11 硬盘信息登记",
-        f"版本：{core.APP_VERSION}",
-        f"作者：{core.APP_AUTHOR}",
+        "DAISY 硬盘信息登记简化报告",
         "=" * 72,
-        f"采集开始（UTC）：{started_at_utc}",
-        f"采集完成（UTC）：{collected_at_utc}",
+        f"报告生成工具：{core.APP_NAME} 硬盘信息登记",
+        f"报告生成程序版本：{core.APP_VERSION}",
+        f"作者：{core.APP_AUTHOR}",
+        "",
+        f"采集开始 (UTC)：{started_at_utc}",
+        f"采集完成 (UTC)：{collected_at_utc}",
         f"采集完成（本地）：{collected_at_local}",
         f"目标：{target.physical_label}",
         f"资源管理器名称：{labels}",
         f"型号：{record.model or '未提供'}",
         f"序列号：{record.serial or '未提供'}",
         f"容量：{core.format_bytes(record.size)}",
-        f"总线／分区样式：{record.bus_type or '未提供'} / "
+        f"总线／分区样式：{record.bus_type or '未提供'}；"
         f"{record.partition_style or '未提供'}",
         f"Windows 健康状态：{disk.get('health_status') or '未提供'}",
         f"Windows 只读属性：{_display_bool(disk.get('is_read_only'))}",
         f"SMART 结论：{_health_summary(smart.payload)}",
         f"smartctl 退出状态：{smart.exit_status}",
-        "smartctl 状态说明：" + ("；".join(smart_flags) if smart_flags else "无"),
-        f"采集完整性：{status_label}（{collection_status}）",
+        "smartctl 状态说明：" + (
+            "；".join(smart_flags) if smart_flags else "无异常位"),
+        f"采集完整性：{status_label}",
         "",
         "关键 SMART 属性：",
         *critical_smart_lines,
@@ -304,9 +309,9 @@ def render_collection_report(
                 "  通电小时："
                 + _display_optional(reliability.get("power_on_hours")),
                 "  磨损：" + _wear_summary(record, reliability.get("wear_percent")),
-                "  未校正读／写错误："
+                "  未校正读／写错误：读 "
                 + _display_optional(reliability.get("read_errors_uncorrected"))
-                + " / "
+                + "｜写 "
                 + _display_optional(reliability.get("write_errors_uncorrected")),
             ]
         )
@@ -315,7 +320,7 @@ def render_collection_report(
     lines.extend(
         [
             "",
-            "采集边界：只使用 Windows 查询接口与 smartctl 扫描／-x 读取；"
+            "采集边界：只使用 Windows 查询接口、smartctl 设备枚举与 -x 读取；"
             "不启动自检、不修改 SMART 或磁盘设置。",
             "注意：读取可能唤醒休眠硬盘；SMART 不能保证未来不会故障。",
         ]
@@ -333,9 +338,10 @@ def collect_target(
     if target.disk_number is None:
         raise core.DaisySmartError("该 smartctl 项无法可靠关联 Windows 物理盘编号。")
     if target.windows is None:
-        raise core.DaisySmartError("该目标缺少 Windows 物理盘清单，不能建立完整归档。")
+        raise core.DaisySmartError(
+            "该目标缺少 Windows 物理盘清单，不能建立完整硬盘档案。")
     if target.smart_device is None:
-        raise core.DaisySmartError("该物理盘没有可用的 smartctl 扫描项。")
+        raise core.DaisySmartError("该硬盘没有可用的 smartctl 设备枚举项。")
 
     started_at_utc = core.utc_now_iso()
     inventory = windows.read_inventory(
@@ -357,7 +363,8 @@ def collect_target(
     collected_at_local = collected_local.isoformat(timespec="seconds")
     warnings = list(inventory.warnings)
     if target.smart_device.open_error:
-        warnings.append("smartctl 扫描提示：" + target.smart_device.open_error)
+        warnings.append(
+            "smartctl 设备枚举提示：" + target.smart_device.open_error)
     warnings.extend(
         f"smartctl：{message}"
         for message in smartctl.messages(smart.payload)

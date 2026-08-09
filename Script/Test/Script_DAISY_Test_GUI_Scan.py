@@ -1,4 +1,4 @@
-"""DAISY v1.6.1 统一扫描 GUI 控制链测试。
+"""DAISY v1.6.2 统一扫描 GUI 控制链测试。
 
 只使用工作区内合成路径、内存管道和本测试精确创建的 Tcl/Tk 窗口；不枚举、
 附加或终止其它进程。
@@ -588,12 +588,16 @@ class TestControlledScanSubprocess(unittest.TestCase):
 @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
 class TestRealTkScanControls(unittest.TestCase):
     def setUp(self) -> None:
+        gui._enable_dpi_awareness()
         preferences = gui.default_gui_preferences()
         self.preference_patch = patch.object(
             gui, "load_gui_preferences", return_value=preferences)
         self.preference_patch.start()
         self.root = gui.tk.Tk()
-        self.root.withdraw()
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            self.root.withdraw()
         self.app = gui.DaisyApp(self.root)
         self.root.update()
 
@@ -644,7 +648,7 @@ class TestRealTkScanControls(unittest.TestCase):
         heights = [size[1] for size in initial_sizes.values()]
         self.assertLessEqual(max(widths) - min(widths), 1)
         self.assertEqual(len(set(heights)), 1)
-        self.assertGreaterEqual(min(heights), 42)
+        self.assertGreaterEqual(min(heights), 40)
         for key in gui._TASK_TOOLBAR_KEYS:
             self.app._select_task_from_toolbar(key)
             self.root.update()
@@ -679,6 +683,12 @@ class TestRealTkScanControls(unittest.TestCase):
         tools = self.app.values["verify_builtin"]
         raw_control = tools.controls["raw_deep_validation"]
         self.assertTrue(raw_control.enabled)
+        self.assertTrue(raw_control.get())
+        self.assertIn("--raw-deep-validation", self.app.preview_var.get())
+        raw_control._toggle()
+        self.root.update_idletasks()
+        self.assertFalse(raw_control.get())
+        self.assertNotIn("--raw-deep-validation", self.app.preview_var.get())
         raw_control._toggle()
         self.root.update_idletasks()
         self.assertTrue(raw_control.get())
@@ -687,7 +697,10 @@ class TestRealTkScanControls(unittest.TestCase):
         self.app._select_task("env_check", save_current=False)
         self.root.update()
         raw_status = self.app.environment_status_buttons["rawpy"]
-        self.assertIn("可用", raw_status.cget("text"))
+        self.assertEqual(
+            raw_status.cget("text"),
+            "rawpy/LibRaw\n可用",
+        )
         self.assertEqual(raw_status.cget("background"), gui._GREEN_DARK)
         self.assertIn(
             "rawpy 0.synthetic",
@@ -706,7 +719,10 @@ class TestRealTkScanControls(unittest.TestCase):
         })
         self.root.update()
         raw_status = self.app.environment_status_buttons["rawpy"]
-        self.assertIn("缺失", raw_status.cget("text"))
+        self.assertEqual(
+            raw_status.cget("text"),
+            "rawpy/LibRaw\n不可用",
+        )
         self.assertEqual(raw_status.cget("background"), gui._DANGER_SOFT)
         self.assertIn(
             "合成能力失效",
@@ -721,7 +737,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertFalse(raw_control.get())
         self.assertIs(
             self.app.saved_values["verify"]["raw_deep_validation"],
-            False,
+            True,
         )
         self.assertNotIn("--raw-deep-validation", self.app.preview_var.get())
 
@@ -803,6 +819,13 @@ class TestRealTkScanControls(unittest.TestCase):
     def test_database_parse_detection_populates_modules_and_refits_1080p(
         self,
     ) -> None:
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            pass
+        self.root.geometry("1840x1020+0+0")
+        self.root.deiconify()
+        self.root.update()
         temporary = tempfile.TemporaryDirectory(
             prefix="parse_gui_", dir=_RUNTIME_ROOT)
         self.addCleanup(temporary.cleanup)
@@ -835,12 +858,16 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertTrue(self.app.settings_expanded)
         self.assertFalse(self.app.progress_expanded)
         self.assertFalse(self.app.log_expanded)
+        self.assertEqual(
+            self.app.progress_stage_label.cget("text"), "数据库已解析")
         pool = self.app.values["parse_modules"]
         self.assertIsInstance(pool, gui.ParseModulePool)
         self.assertFalse(pool.editable)
-        self.assertIn("--preset human-summary", self.app.preview_var.get())
+        self.assertIn("--preset full-audit", self.app.preview_var.get())
         self.assertIn("--format html", self.app.preview_var.get())
         self.assertIn("--format xlsx", self.app.preview_var.get())
+        self.assertIn("--format csv", self.app.preview_var.get())
+        self.assertIn("--format jsonl", self.app.preview_var.get())
         bounds = self.app.form_canvas.bbox("all")
         content_height = 0 if bounds is None else int(bounds[3] - bounds[1])
         self.assertLessEqual(
@@ -860,13 +887,9 @@ class TestRealTkScanControls(unittest.TestCase):
                 yield child
                 yield from descendants(child)
 
-        preset = next(
-            widget for widget in descendants(self.app.form_inner)
-            if (isinstance(widget, gui.ttk.Combobox)
-                and getattr(widget, "_daisy_field_key", None) == "preset")
-        )
-        preset.current(2)
-        preset.event_generate("<<ComboboxSelected>>")
+        preset = self.app.values["preset"]
+        self.assertIsInstance(preset, gui.ChoiceButtonGroup)
+        preset.buttons["custom"].invoke()
         self.root.update()
         pool = self.app.values["parse_modules"]
         self.assertTrue(pool.editable)
@@ -998,7 +1021,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertTrue(self.app.progress_expanded)
         self.assertTrue(self.app.log_expanded)
         self.assertEqual(
-            self.app.progress_stage_label.cget("text"), "数据库识别失败")
+            self.app.progress_stage_label.cget("text"), "解析数据库失败")
 
     def test_database_parse_detection_shows_progress_before_result(self) \
             -> None:
@@ -1036,6 +1059,10 @@ class TestRealTkScanControls(unittest.TestCase):
             self.assertFalse(self.app.settings_expanded)
             self.assertTrue(self.app.progress_expanded)
             self.assertTrue(self.app.log_expanded)
+            self.assertEqual(
+                self.app.progress_stage_label.cget("text"),
+                "解析数据库 · 正在分析",
+            )
             self.assertEqual(str(self.app.run_button.cget("state")), "disabled")
             release.set()
             deadline = time.monotonic() + 10
@@ -1120,6 +1147,13 @@ class TestRealTkScanControls(unittest.TestCase):
             tuple(button.cget("text") for button in mode.buttons.values()),
             ("完整扫描", "快速扫描"),
         )
+        mode_buttons = list(mode.buttons.values())
+        self.assertEqual(
+            mode_buttons[1].winfo_x()
+            - mode_buttons[0].winfo_x()
+            - mode_buttons[0].winfo_width(),
+            gui._STANDARD_BUTTON_GAP,
+        )
 
         mode.buttons["full"].invoke()
         self.root.update()
@@ -1138,13 +1172,16 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertIsInstance(start_mode, gui.ChoiceButtonGroup)
         start_mode.buttons["new"].invoke()
         self.root.update()
-        self.assertIn("metadata_exiftool", self.app.values)
+        self.assertNotIn("metadata_exiftool", self.app.values)
+        self.assertIsInstance(
+            self.app.values["metadata_storage"],
+            gui.MetadataToolButtonGroup,
+        )
         self.assertIn("hash_mode", self.app.values)
         self.assertIsInstance(
             self.app.values["root_batch_mode"], gui.ChoiceButtonGroup)
-        for key in ("metadata_storage", "hash_mode"):
-            self.assertIsInstance(
-                self.app.values[key], gui.ValueToggleButton, key)
+        self.assertIsInstance(
+            self.app.values["hash_mode"], gui.ValueToggleButton)
         self.assertIsInstance(
             self.app.values["collect_file_id"], gui.BooleanToggleButton)
         self.assertNotIn("format_validation", self.app.values)
@@ -1165,7 +1202,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertEqual(self.app._collect_values()["scan_mode"], "quick")
         self.assertIn("roots", self.app.values)
         self.assertIn("collect_file_id", self.app.values)
-        self.assertNotIn("metadata_exiftool", self.app.values)
+        self.assertNotIn("metadata_storage", self.app.values)
         self.assertNotIn("format_validation", self.app.values)
         self.assertNotIn("hash_mode", self.app.values)
         self.assertLessEqual(
@@ -1175,65 +1212,264 @@ class TestRealTkScanControls(unittest.TestCase):
         )
         self.assertFalse(self.app.form_scroll.winfo_manager())
 
-    def test_metadata_tool_buttons_are_independent_and_size_stable(
+    def test_scan_conditional_switch_replaces_populated_form_atomically(
         self,
     ) -> None:
+        self.app.saved_values.pop("scan", None)
+        self.app._select_task("scan", save_current=False)
+        self.root.update()
+
+        def invoke_and_check(source, value: str) -> None:
+            previous_inner = self.app.form_inner
+            original_itemconfigure = self.app.form_canvas.itemconfigure
+            observations = []
+
+            def recording_itemconfigure(item, *args, **kwargs):
+                next_inner = kwargs.get("window")
+                if next_inner is not None:
+                    observations.append({
+                        "current": self.app.form_canvas.itemcget(
+                            self.app.form_window, "window"),
+                        "previous": str(previous_inner),
+                        "previous_exists": previous_inner.winfo_exists(),
+                        "new_children": len(next_inner.winfo_children()),
+                    })
+                return original_itemconfigure(item, *args, **kwargs)
+
+            with patch.object(
+                    self.app.form_canvas, "itemconfigure",
+                    side_effect=recording_itemconfigure):
+                source.buttons[value].invoke()
+                self.root.update()
+
+            self.assertEqual(len(observations), 1)
+            observation = observations[0]
+            self.assertEqual(
+                observation["current"], observation["previous"])
+            self.assertEqual(observation["previous_exists"], 1)
+            self.assertGreater(observation["new_children"], 0)
+            self.assertEqual(previous_inner.winfo_exists(), 0)
+            self.assertNotEqual(self.app.form_inner, previous_inner)
+            self.assertEqual(
+                self.app.form_canvas.itemcget(
+                    self.app.form_window, "window"),
+                str(self.app.form_inner),
+            )
+
+        invoke_and_check(self.app.values["scan_mode"], "full")
+        invoke_and_check(self.app.values["start_mode"], "new")
+
+    def test_scan_nonconditional_task_setting_does_not_rebuild_form(
+        self,
+    ) -> None:
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            pass
+        self.root.geometry("1840x1020+0+0")
+        self.root.deiconify()
+        self.app.saved_values["scan"] = {
+            "scan_mode": "full", "start_mode": "new",
+        }
+        self.app._select_task("scan", save_current=False)
+        self.root.update()
+        previous_inner = self.app.form_inner
+        build_mode = self.app.values["root_batch_mode"]
+
+        with patch.object(self.app, "_build_form") as rebuilt:
+            build_mode.buttons[gui._ROOT_BATCH_COMBINED].invoke()
+            self.root.update()
+
+        rebuilt.assert_not_called()
+        self.assertIs(self.app.form_inner, previous_inner)
+        self.assertEqual(
+            self.app._collect_values()["root_batch_mode"],
+            gui._ROOT_BATCH_COMBINED,
+        )
+        combined_tooltip = build_mode.buttons[
+            gui._ROOT_BATCH_COMBINED]._daisy_tooltip
+        combined_tooltip._show()
+        self.root.update_idletasks()
+        self.assertIsNotNone(combined_tooltip._window)
+        separate_button = build_mode.buttons[gui._ROOT_BATCH_SEPARATE]
+        separate_button.event_generate("<ButtonPress-1>", x=5, y=5)
+        self.root.update_idletasks()
+        self.assertIsNone(combined_tooltip._window)
+        separate_button.event_generate("<ButtonRelease-1>", x=5, y=5)
+        separate_button.invoke()
+        self.root.update()
+        self.assertEqual(
+            self.app._collect_values()["root_batch_mode"],
+            gui._ROOT_BATCH_SEPARATE,
+        )
+
+    def test_metadata_tool_buttons_cycle_independently_and_keep_size(
+        self,
+    ) -> None:
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            pass
+        self.root.geometry("1840x1020+0+0")
+        self.root.deiconify()
         self.app.saved_values["scan"] = {
             "scan_mode": "full", "start_mode": "new"}
         self.app._select_task("scan", save_current=False)
         self.root.update()
-        tools = self.app.values["metadata_exiftool"]
+        tools = self.app.values["metadata_storage"]
         self.assertIsInstance(tools, gui.MetadataToolButtonGroup)
-        before = {
-            "exif": (
-                tools.exiftool_button.button.winfo_width(),
-                tools.exiftool_button.button.winfo_height(),
-            ),
-            "ffprobe": (
-                tools.ffprobe_button.button.winfo_width(),
-                tools.ffprobe_button.button.winfo_height(),
-            ),
-        }
+        buttons = [
+            tools.exiftool_button.button,
+            tools.ffprobe_button.button,
+        ]
+        self.assertEqual(
+            [button.cget("text") for button in buttons],
+            ["ExifTool 全量", "ffprobe 全量"],
+        )
+        self.assertEqual(
+            {int(button.cget("width")) for button in buttons},
+            {gui._STANDARD_BUTTON_WIDTH},
+        )
+        before = [
+            (button.winfo_width(), button.winfo_height())
+            for button in buttons
+        ]
         gap = (
-            tools.ffprobe_button.button.winfo_rootx()
-            - tools.exiftool_button.button.winfo_rootx()
-            - tools.exiftool_button.button.winfo_width()
+            buttons[1].winfo_rootx()
+            - buttons[0].winfo_rootx()
+            - buttons[0].winfo_width()
         )
-        self.assertEqual(gap, 8)
-        self.assertNotIn("--no-metadata-exiftool", self.app.preview_var.get())
-        self.assertNotIn("--no-metadata-ffprobe", self.app.preview_var.get())
-
-        tools.exiftool_button._toggle()
-        self.root.update_idletasks()
-        self.assertFalse(tools.exiftool_button.get())
-        self.assertTrue(tools.ffprobe_button.get())
-        self.assertIn("--no-metadata-exiftool", self.app.preview_var.get())
-        self.assertNotIn("--no-metadata-ffprobe", self.app.preview_var.get())
+        self.assertEqual(gap, gui._STANDARD_BUTTON_GAP)
+        range_tooltip = buttons[0]._daisy_tooltip
         self.assertEqual(
-            before["exif"],
-            (tools.exiftool_button.button.winfo_width(),
-             tools.exiftool_button.button.winfo_height()),
+            range_tooltip.text,
+            "点击 ExifTool 或 ffprobe 按钮可依次切换全量、基础和关闭。"
+            "全量另存工具原始输出；基础只保留规范化字段。",
         )
+        range_tooltip._show()
+        self.root.update_idletasks()
+        range_label = range_tooltip._window.winfo_children()[0]
+        self.assertEqual(
+            range_label.cget("text"), range_tooltip._display_text)
+        range_tooltip._hide()
+        self.assertIn(
+            "--metadata-exiftool-mode complete",
+            self.app.preview_var.get())
+        self.assertIn(
+            "--metadata-ffprobe-mode complete",
+            self.app.preview_var.get())
+        self.assertNotIn("--metadata-storage", self.app.preview_var.get())
 
-        self.app._apply_runtime_capabilities({
-            "capabilities": {
-                gui.envcap.RAW_CAPABILITY_ID:
-                TestRawCapabilityPresentation.available_payload(),
-            },
-        })
+        tools.exiftool_button.button.invoke()
+        self.root.update_idletasks()
+        self.assertEqual(tools.exiftool_button.get(), "normalized")
+        self.assertEqual(tools.ffprobe_button.get(), "complete")
+        self.assertEqual(
+            tools.exiftool_button.button.cget("text"), "ExifTool 基础")
+        self.assertIn(
+            "--metadata-exiftool-mode normalized",
+            self.app.preview_var.get())
+
+        tools.ffprobe_button.button.invoke()
+        tools.ffprobe_button.button.invoke()
+        self.root.update_idletasks()
+        self.assertEqual(tools.ffprobe_button.get(), "off")
+        self.assertEqual(
+            tools.ffprobe_button.button.cget("text"), "ffprobe 关闭")
+        self.assertIn(
+            "--metadata-ffprobe-mode off",
+            self.app.preview_var.get())
+        self.assertEqual(
+            before,
+            [(button.winfo_width(), button.winfo_height())
+             for button in buttons],
+        )
+        tools.exiftool_button.button.invoke()
+        tools.exiftool_button.button.invoke()
+        self.root.update_idletasks()
+        self.assertEqual(tools.exiftool_button.get(), "complete")
+        self.assertEqual(
+            tools.exiftool_button.button.cget("text"), "ExifTool 全量")
+
+    def test_tooltip_text_wraps_semantically_across_all_six_pages(
+        self,
+    ) -> None:
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            pass
+        self.root.geometry("1840x1020+0+0")
+        self.root.deiconify()
+        self.app.saved_values["scan"] = {
+            "scan_mode": "full", "start_mode": "new"}
+        tooltip_texts = set()
+
+        def descendants(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from descendants(child)
+
+        for task_key in gui._TASK_TOOLBAR_KEYS:
+            self.app._select_task(task_key, save_current=False)
+            self.root.update()
+            for widget in descendants(self.root):
+                tooltip = getattr(widget, "_daisy_tooltip", None)
+                if isinstance(tooltip, gui.ToolTip) and tooltip.text:
+                    tooltip_texts.add(tooltip.text)
+
+        self.assertGreaterEqual(len(tooltip_texts), 30)
+        max_width = gui._TOOLTIP_MAX_TEXT_WIDTH
+        for size_delta in (0, 1, 2):
+            font = gui.tkfont.Font(
+                root=self.root,
+                font=(self.app.ui_font_family,
+                      gui._UI_BODY_FONT_SIZE + size_delta),
+            )
+            punctuation_allowance = font.measure("。")
+            for source_text in tooltip_texts:
+                display_text = gui._tooltip_display_text(
+                    source_text, font, max_width)
+                self.assertTrue(display_text, source_text)
+                for line in display_text.split("\n"):
+                    if not line:
+                        continue
+                    self.assertLessEqual(
+                        font.measure(line),
+                        max_width + punctuation_allowance,
+                        (size_delta, source_text, display_text),
+                    )
+                    self.assertNotIn(
+                        line[0], gui._TOOLTIP_NO_LINE_START,
+                        (size_delta, source_text, display_text),
+                    )
+                    self.assertNotIn(
+                        line[-1], gui._TOOLTIP_NO_LINE_END,
+                        (size_delta, source_text, display_text),
+                    )
+
+        probe = gui.tk.Button(self.root, text="Tooltip probe")
+        probe.pack()
         self.root.update()
-        tools = self.app.values["metadata_exiftool"]
-        self.assertFalse(tools.exiftool_button.get())
-        self.assertTrue(tools.ffprobe_button.get())
-
-        tools.ffprobe_button._toggle()
+        source_text = max(tooltip_texts, key=len)
+        tooltip = gui.attach_tooltip(probe, source_text)
+        tooltip._show()
         self.root.update_idletasks()
-        self.assertIn("--no-metadata-ffprobe", self.app.preview_var.get())
-        self.assertEqual(
-            before["ffprobe"],
-            (tools.ffprobe_button.button.winfo_width(),
-             tools.ffprobe_button.button.winfo_height()),
+        self.assertIsNotNone(tooltip._window)
+        label = tooltip._window.winfo_children()[0]
+        self.assertEqual(label.cget("text"), tooltip._display_text)
+        work_area = gui._monitor_work_area_for_window(probe)
+        self.assertGreaterEqual(tooltip._window.winfo_x(), work_area.left)
+        self.assertGreaterEqual(tooltip._window.winfo_y(), work_area.top)
+        self.assertLessEqual(
+            tooltip._window.winfo_x() + tooltip._window.winfo_width(),
+            work_area.right,
         )
+        self.assertLessEqual(
+            tooltip._window.winfo_y() + tooltip._window.winfo_height(),
+            work_area.bottom,
+        )
+        tooltip._hide()
+        probe.destroy()
 
     def test_scan_two_state_values_use_fixed_buttons_without_sampling(
         self,
@@ -1242,10 +1478,7 @@ class TestRealTkScanControls(unittest.TestCase):
             "scan_mode": "full", "start_mode": "new"}
         self.app._select_task("scan", save_current=False)
         self.root.update()
-        expected = {
-            "metadata_storage": "complete",
-            "hash_mode": "full",
-        }
+        expected = {"hash_mode": "full"}
         for key, value in expected.items():
             control = self.app.values[key]
             self.assertIsInstance(control, gui.ValueToggleButton, key)
@@ -1258,26 +1491,23 @@ class TestRealTkScanControls(unittest.TestCase):
             self.assertEqual(
                 control.button.cget("background"), expected_colour, key)
 
-        metadata_control = self.app.values["metadata_storage"]
-        metadata_size = (
-            metadata_control.button.winfo_width(),
-            metadata_control.button.winfo_height(),
-        )
-        metadata_control._toggle()
-        self.root.update_idletasks()
-        self.assertEqual(metadata_control.get(), "normalized")
+        metadata_group = self.app.values["metadata_storage"]
+        self.assertIsInstance(metadata_group, gui.MetadataToolButtonGroup)
         self.assertEqual(
-            metadata_size,
-            (metadata_control.button.winfo_width(),
-             metadata_control.button.winfo_height()),
+            metadata_group.get_values()["metadata_exiftool_mode"],
+            "complete",
         )
-        self.assertIn(
-            "--metadata-storage normalized", self.app.preview_var.get())
+        self.assertEqual(
+            metadata_group.get_values()["metadata_ffprobe_mode"],
+            "complete",
+        )
 
         hash_control = self.app.values["hash_mode"]
+        self.assertEqual(hash_control.button.cget("text"), "SHA-256")
         hash_control._toggle()
         self.root.update_idletasks()
         self.assertEqual(hash_control.get(), "none")
+        self.assertEqual(hash_control.button.cget("text"), "SHA-256")
         self.assertIn("--hash none", self.app.preview_var.get())
 
         self.app.values["roots"].add_value(r"C:\ArchiveA")
@@ -1297,7 +1527,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertNotIn("--format-validation", self.app.preview_var.get())
         self.assertNotIn("--format-sample-percent", self.app.preview_var.get())
 
-    def test_verify_tools_are_independent_same_row_and_default_off(
+    def test_verify_tools_are_independent_same_row_and_available_defaults_on(
         self,
     ) -> None:
         self.app._select_task("verify", save_current=False)
@@ -1308,8 +1538,14 @@ class TestRealTkScanControls(unittest.TestCase):
             "verify_builtin", "verify_exiftool", "verify_ffprobe",
             "verify_sevenzip", "raw_deep_validation",
         ))
-        self.assertTrue(all(not control.get()
-                            for control in tools.controls.values()))
+        self.assertTrue(all(
+            tools.controls[key].get()
+            for key in (
+                "verify_builtin", "verify_exiftool",
+                "verify_ffprobe", "verify_sevenzip",
+            )
+        ))
+        self.assertFalse(tools.controls["raw_deep_validation"].get())
         buttons = [control.button for control in tools.controls.values()]
         self.assertEqual({button.winfo_height() for button in buttons},
                          {buttons[0].winfo_height()})
@@ -1317,8 +1553,17 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertLessEqual(max(button_widths) - min(button_widths), 1)
         self.assertEqual({button.winfo_y() for button in buttons},
                          {buttons[0].winfo_y()})
+        self.assertEqual(
+            [
+                int(tools.grid_columnconfigure(column)["minsize"])
+                for column in (1, 3, 5, 7)
+            ],
+            [gui._STANDARD_BUTTON_GAP] * 4,
+        )
         self.assertIn("--hash off", self.app.preview_var.get())
-        self.assertIn("--format off", self.app.preview_var.get())
+        self.assertIn("--format all", self.app.preview_var.get())
+        for tool_id in ("builtin", "exiftool", "ffprobe", "sevenzip"):
+            self.assertIn(f"--format-tool {tool_id}", self.app.preview_var.get())
 
         self.app._apply_runtime_capabilities({
             "capabilities": {
@@ -1328,17 +1573,17 @@ class TestRealTkScanControls(unittest.TestCase):
         })
         self.root.update()
         tools = self.app.values["verify_builtin"]
-        tools.controls["verify_exiftool"]._toggle()
-        tools.controls["raw_deep_validation"]._toggle()
+        self.assertTrue(tools.controls["raw_deep_validation"].get())
         self.root.update_idletasks()
         preview = self.app.preview_var.get()
         self.assertIn("--format all", preview)
-        self.assertIn("--format-tool exiftool", preview)
-        self.assertNotIn("--format-tool ffprobe", preview)
-        self.assertNotIn("--format-tool sevenzip", preview)
         self.assertIn("--raw-deep-validation", preview)
 
-        tools.controls["verify_exiftool"]._toggle()
+        for key in (
+            "verify_builtin", "verify_exiftool",
+            "verify_ffprobe", "verify_sevenzip",
+        ):
+            tools.controls[key]._toggle()
         self.root.update_idletasks()
         preview = self.app.preview_var.get()
         self.assertIn("--format off", preview)
@@ -1353,6 +1598,9 @@ class TestRealTkScanControls(unittest.TestCase):
         self.root.update()
         toggle = self.app.values["collect_file_id"]
         self.assertIsInstance(toggle, gui.BooleanToggleButton)
+        self.assertEqual(toggle.true_label, "采集")
+        self.assertEqual(toggle.false_label, "不采集")
+        self.assertNotIn("No-FID", toggle.false_label)
         original_size = (
             toggle.button.winfo_width(), toggle.button.winfo_height())
         toggle._toggle()
@@ -1388,6 +1636,26 @@ class TestRealTkScanControls(unittest.TestCase):
         self.root.update()
         tools = self.app.values["verify_builtin"]
         self.assertIsInstance(tools, gui.VerificationToolButtonGroup)
+        full_labels = {
+            "verify_builtin": "内置格式校验",
+            "verify_exiftool": "ExifTool",
+            "verify_ffprobe": "ffprobe",
+            "verify_sevenzip": "7-Zip",
+            "raw_deep_validation": "rawpy/LibRaw",
+        }
+        for key, label in full_labels.items():
+            self.assertEqual(
+                tools.controls[key].false_label,
+                label,
+            )
+            self.assertEqual(
+                tools.controls[key].true_label,
+                label,
+            )
+            self.assertEqual(
+                tools.controls[key].button.cget("anchor"), "center")
+            self.assertEqual(
+                tools.controls[key].button.cget("justify"), "center")
         self.assertFalse(tools.controls["raw_deep_validation"].enabled)
         self.assertFalse(any(
             isinstance(widget, gui.ttk.Combobox)
@@ -1409,6 +1677,13 @@ class TestRealTkScanControls(unittest.TestCase):
 
     def test_button_ui_page_font_size_geometry_and_scaling_matrix(self) \
             -> None:
+        try:
+            self.root.attributes("-alpha", 0.0)
+        except gui.tk.TclError:
+            pass
+        self.root.geometry("1840x1020+0+0")
+        self.root.deiconify()
+        self.root.update()
         self.app._apply_runtime_capabilities({
             "capabilities": {
                 gui.envcap.RAW_CAPABILITY_ID:
@@ -1450,6 +1725,100 @@ class TestRealTkScanControls(unittest.TestCase):
                                     f"size={size_delta} geometry={width}x{height} "
                                     f"task={task_key}"
                                 )
+                                if task_key == "env_check":
+                                    self.assertEqual(
+                                        set(self.app.environment_install_buttons),
+                                        set(gui._ENVIRONMENT_STATUS_ORDER),
+                                        context,
+                                    )
+                                    for dependency_name in (
+                                            gui._ENVIRONMENT_STATUS_ORDER):
+                                        status_button = (
+                                            self.app
+                                            .environment_status_buttons[
+                                                dependency_name])
+                                        install_button = (
+                                            self.app
+                                            .environment_install_buttons[
+                                                dependency_name])
+                                        full_name = (
+                                            gui._ENVIRONMENT_BUTTON_LABELS[
+                                                dependency_name])
+                                        self.assertEqual(
+                                            status_button.cget("text")
+                                            .splitlines()[0],
+                                            full_name,
+                                            context,
+                                        )
+                                        self.assertEqual(
+                                            install_button.cget("text")
+                                            .splitlines()[0],
+                                            full_name,
+                                            context,
+                                        )
+                                        self.assertEqual(
+                                            status_button.cget("justify"),
+                                            "center",
+                                            context,
+                                        )
+                                        self.assertEqual(
+                                            install_button.cget("justify"),
+                                            "center",
+                                            context,
+                                        )
+                                        self.assertLessEqual(
+                                            abs(status_button.winfo_rootx()
+                                                - install_button.winfo_rootx()),
+                                            1,
+                                            context,
+                                        )
+                                        self.assertLessEqual(
+                                            abs(status_button.winfo_width()
+                                                - install_button.winfo_width()),
+                                            1,
+                                            context,
+                                        )
+                                        self.assertGreaterEqual(
+                                            status_button.winfo_width() + 1,
+                                            status_button.winfo_reqwidth(),
+                                            context,
+                                        )
+                                        self.assertGreaterEqual(
+                                            install_button.winfo_width() + 1,
+                                            install_button.winfo_reqwidth(),
+                                            context,
+                                        )
+                                if task_key == "scan":
+                                    metadata = self.app.values[
+                                        "metadata_storage"]
+                                    self.assertIsInstance(
+                                        metadata,
+                                        gui.MetadataToolButtonGroup,
+                                        context,
+                                    )
+                                    metadata_buttons = [
+                                        metadata.exiftool_button.button,
+                                        metadata.ffprobe_button.button,
+                                    ]
+                                    self.assertEqual(
+                                        len({button.winfo_height()
+                                             for button in metadata_buttons}),
+                                        1,
+                                        context,
+                                    )
+                                    for button in metadata_buttons:
+                                        self.assertGreaterEqual(
+                                            button.winfo_width() + 1,
+                                            button.winfo_reqwidth(),
+                                            context,
+                                        )
+                                    self.assertLessEqual(
+                                        metadata_buttons[-1].winfo_rootx()
+                                        + metadata_buttons[-1].winfo_width(),
+                                        metadata.winfo_rootx()
+                                        + metadata.winfo_width() + 1,
+                                        context,
+                                    )
                                 for spec in self.app.task.fields:
                                     if (spec.kind == "choice_flag"
                                             and set(value for _label, value
@@ -1468,6 +1837,14 @@ class TestRealTkScanControls(unittest.TestCase):
                                         group,
                                         gui.VerificationToolButtonGroup,
                                         context)
+                                    for tool_control in (
+                                            group.controls.values()):
+                                        self.assertGreaterEqual(
+                                            (tool_control.button.winfo_width()
+                                             + 1),
+                                            tool_control.button.winfo_reqwidth(),
+                                            context,
+                                        )
                                     control = group.controls[
                                         "verify_builtin"].button
                                 elif field_key is not None:

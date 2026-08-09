@@ -135,7 +135,7 @@ class TestCore(unittest.TestCase):
     def test_integrated_version_matches_daisy_release(self):
         import Script_DAISY_Lib_DBS_01_Core as daisy_core
 
-        self.assertEqual(core.APP_VERSION, "1.6.1")
+        self.assertEqual(core.APP_VERSION, "1.6.2")
         self.assertEqual(core.APP_VERSION, daisy_core.SCANNER_VERSION)
 
     def test_disk_labels_and_archive_identity(self):
@@ -335,16 +335,17 @@ class TestServiceMapping(unittest.TestCase):
             collected_at_local=collection.collected_at_local,
             warnings=collection.warnings,
         )
+        self.assertTrue(report.startswith("DAISY 硬盘信息登记简化报告\n"))
         self.assertIn("Windows 只读属性：否", report)
-        self.assertIn("工具：DAISY STG-11 硬盘信息登记", report)
+        self.assertIn("报告生成工具：DAISY 硬盘信息登记", report)
         self.assertIn("作者：Suzuran Ye", report)
-        self.assertIn("05 Reallocated_Sector_Ct｜RAW 0", report)
-        self.assertIn("C5 Current_Pending_Sector｜RAW 1", report)
-        self.assertIn("状态 注意（RAW 非零，未触发阈值）", report)
+        self.assertIn("05 Reallocated_Sector_Ct｜原始值 0", report)
+        self.assertIn("C5 Current_Pending_Sector｜原始值 1", report)
+        self.assertIn("状态 注意（原始值非零，未触发阈值）", report)
         self.assertNotIn("Temperature_Celsius", report)
         self.assertNotIn("温度：", report)
         self.assertIn("磨损：0%（Windows 返回；HDD 不一定适用）", report)
-        self.assertIn("未校正读／写错误：0 / 未提供", report)
+        self.assertIn("未校正读／写错误：读 0｜写 未提供", report)
 
 
 class TestArchive(unittest.TestCase):
@@ -373,7 +374,7 @@ class TestArchive(unittest.TestCase):
             verified = archive.verify_archive(result.path)
             self.assertEqual(verified.zip_sha256, result.zip_sha256)
             self.assertEqual(
-                verified.manifest["application"]["version"], "1.6.1")
+                verified.manifest["application"]["version"], "1.6.2")
             self.assertEqual(
                 verified.manifest["application"]["author"], "Suzuran Ye")
             self.assertEqual(
@@ -575,7 +576,7 @@ class TestEntry(unittest.TestCase):
             status = collect_module.main(["--disk-number", "3", "--json"])
         self.assertEqual(status, 1)
         self.assertFalse(json.loads(stdout.getvalue())["complete"])
-        self.assertIn("不能视为完整硬盘登记", stderr.getvalue())
+        self.assertIn("不能视为完整的硬盘信息登记结果", stderr.getvalue())
 
     def test_fused_stg_module_dispatches_internal_list_mode(self):
         collection = fixture_collection()

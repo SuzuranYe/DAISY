@@ -1,4 +1,4 @@
-"""DBS-31／32 核验输入、业务服务和兼容入口的行为保持测试。"""
+"""DBS-31/32 核验输入、业务服务和兼容入口的行为保持测试。"""
 from __future__ import annotations
 
 import hashlib
@@ -300,7 +300,7 @@ class TestVerificationInputModel(unittest.TestCase):
                 root_map={"夹具": self.current_root},
                 force=True,
             )
-        self.assertIn("高32bit指纹不符", str(caught.exception))
+        self.assertIn("文件名指纹不符", str(caught.exception))
 
 
 class TestVerifyHashPatrol(unittest.TestCase):
@@ -381,7 +381,7 @@ class TestVerifyHashPatrol(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(
             payload["report_metadata"],
-            core.report_metadata("DBS-31 内容哈希核验"),
+            core.report_metadata("DBS-31 哈希核验"),
         )
 
     def test_cli_problem_adds_clean_named_markdown_report(self):
@@ -726,7 +726,7 @@ class TestValidateSnapshot(_FormatFixture):
         self.assertFalse(rep["ok"])
         self.assertEqual(
             rep["report_metadata"],
-            core.report_metadata("DBS-32 文件结构核验"),
+            core.report_metadata("DBS-32 格式校验"),
         )
         self.assertTrue(any(
             path.endswith("_Info.csv") for path in rep["files"]))

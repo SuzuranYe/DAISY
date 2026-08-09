@@ -1,11 +1,12 @@
-r"""Script_DAISY_Module_DBS_31_Check_Hash：DBS-31 内容哈希核验兼容入口。
+r"""Script_DAISY_Module_DBS_31_Check_Hash：DBS-31 哈希核验兼容入口。
 
-stat／哈希巡检和报告写出位于 Script_DAISY_Lib_DBS_06_Verify；本文件只保留
+文件状态／哈希核验和报告写出位于 Script_DAISY_Lib_DBS_06_Verify；本文件只保留
 既有 CLI、退出码和供旧调用方使用的 patrol 函数名。
 
 用法：
-  python .\Script\Script_DAISY_MAIN.py check-hash --snapshot .\Output\Snapshots\Scan_x.sqlite ^
-      --root "Archive2024=E:\Archive2024" [--sample-percent 1] [--full]
+  python .\Script\Script_DAISY_MAIN.py check-hash `
+    --snapshot .\Output\Snapshots\Scan_x.sqlite `
+    --root "Archive2024=E:\Archive2024" [--sample-percent 1] [--full]
 """
 from __future__ import annotations
 
@@ -28,24 +29,26 @@ patrol = dbverify.patrol_hash
 def main() -> int:
     core.force_utf8_io()
     parser = argparse.ArgumentParser(
-        description="DBS-31 内容哈希核验：快照 vs 当前磁盘（只读）")
+        description="兼容哈希核验入口：只读比较封存快照与当前档案")
     parser.add_argument(
-        "--snapshot", required=True, help="封存快照 .sqlite 路径")
+        "--snapshot", required=True, help="封存快照路径 (.sqlite)")
     parser.add_argument(
         "--root", action="append", required=True,
-        help="当前根目录；单根可直接给路径，多根须逐项 label=当前路径")
-    parser.add_argument("--sample-percent", type=float, default=1.0)
-    parser.add_argument("--full", action="store_true", help="全量哈希核对")
-    parser.add_argument("--powershell-path")
+        help="当前档案根目录；单根可直接给路径，多根逐项使用「根目录名=路径」")
+    parser.add_argument(
+        "--sample-percent", type=float, default=1.0,
+        help="哈希核验抽样比例；默认 1%%")
+    parser.add_argument("--full", action="store_true", help="全量核验 SHA-256")
+    parser.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
     parser.add_argument(
         "--force", action="store_true",
-        help="文件名高32bit指纹缺失时仍继续（不符仍拒绝）")
+        help="允许缺少文件名指纹；指纹不一致仍拒绝")
     parser.add_argument(
         "--report", help="报告 JSON 输出路径（默认 Output/Reports）")
     args = parser.parse_args()
 
     try:
-        progress = core.Progress(1, 1, "内容哈希核验")
+        progress = core.Progress(1, 1, "哈希核验")
         report = patrol(
             args.snapshot,
             sample_percent=args.sample_percent,
@@ -57,33 +60,38 @@ def main() -> int:
                 index, total=total),
         )
     except core.PreflightError as exc:
-        print(f"巡检失败：{exc}", file=sys.stderr)
+        print(f"核验失败：{exc}", file=sys.stderr)
         return 2
 
     progress.finish(
-        f"stat {report['stat_checked']:,} 条 / "
-        f"哈希 {report['hash_checked']:,} 条")
+        f"文件状态 {report['stat_checked']:,} 项／"
+        f"哈希 {report['hash_checked']:,} 项")
     report_path, issue_report = dbverify.write_hash_report(
         report, args.report)
 
-    print(f"快照：{report['snapshot']}（coverage={report['hash_coverage']}）")
+    coverage = {
+        "full": "完整", "partial": "部分", "none": "无",
+    }.get(str(report["hash_coverage"]), str(report["hash_coverage"]))
+    mode = "全量" if report["mode"] == "full" else "抽样"
+    print(f"快照：{report['snapshot']}（哈希覆盖：{coverage}）")
     print(
-        f"stat 核对：{report['stat_checked']:,} 条 | "
-        f"缺失 {len(report['stat_missing'])} | "
+        f"文件状态：{report['stat_checked']:,} 项｜"
+        f"缺失 {len(report['stat_missing'])}｜"
         f"变化 {len(report['stat_changed'])}")
     print(
-        f"哈希核对（{report['mode']}）：{report['hash_checked']:,}/"
-        f"{report['hash_eligible']:,} 条 | "
-        f"不一致 {len(report['hash_mismatched'])} | "
-        f"工具错误 {len(report['hash_tool_error'])}")
+        f"哈希核对（{mode}）：{report['hash_checked']:,}／"
+        f"{report['hash_eligible']:,} 项｜"
+        f"不一致 {len(report['hash_mismatched'])}｜"
+        f"工具故障 {len(report['hash_tool_error'])}")
     print(f"报告：{report_path}")
     if issue_report:
         print(f"问题报告：{issue_report}")
     if report["ok"]:
-        print("结论：当前磁盘与基准快照一致（在本次核对口径内）")
+        print("结论：在本次核对口径内未发现差异。")
         return 0
     print(
-        "结论：发现差异——建议尽快做完整性复核（--hash full 全量重扫＋Diff）",
+        "结论：发现差异。请查看问题报告；如需重新建库，可建立新的完整快照，"
+        "再与基准快照进行对比。",
         file=sys.stderr,
     )
     return 1

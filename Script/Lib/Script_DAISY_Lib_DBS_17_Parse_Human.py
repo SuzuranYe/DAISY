@@ -1,4 +1,4 @@
-"""DAISY 数据库解析的自包含 HTML 与流式 XLSX 人读 writer。"""
+"""DAISY 档案数据解析的自包含 HTML 与流式 XLSX 阅读写入器。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,28 +35,193 @@ _HEADER_NAMES = {
     "parent_rel_path": "父目录相对路径",
     "record_type": "记录类型",
     "record_key": "记录键",
+    "session_id": "扫描会话 ID",
     "entry_path": "文件逻辑路径",
+    "event": "事件",
+    "occurred_at_utc": "发生时间 (UTC)",
+    "updated_at_utc": "更新时间 (UTC)",
+    "ended_at_utc": "结束时间 (UTC)",
+    "tool_name": "工具",
+    "bytes_read": "已读取字节数",
+    "elapsed_seconds": "用时（秒）",
+    "decision": "处置方式",
     "execution": "执行状态",
     "issue_files": "受影响文件数",
     "issue_records": "问题记录数",
-    "unsupported_files": "不支持文件数",
+    "unsupported_files": "不支持的文件数",
     "low_confidence_records": "低置信度记录数",
     "information_json": "统计信息 JSON",
     "details_json": "问题明细 JSON",
-    "payload": "原始载荷",
-    "provider": "提供器",
-    "provider_version": "提供器版本",
-    "profile_version": "配置版本",
-    "payload_sha256": "载荷 SHA-256",
+    "payload": "工具原始输出",
+    "provider": "来源工具",
+    "provider_version": "来源工具版本",
+    "profile_version": "元数据配置版本",
+    "payload_sha256": "工具原始输出 SHA-256",
     "data_json": "运行数据 JSON",
     "topic": "主题",
     "state": "能力状态",
     "path_key": "路径键",
-    "old_path": "旧逻辑路径",
-    "new_path": "新逻辑路径",
+    "old_path": "基准逻辑路径",
+    "new_path": "对比逻辑路径",
     "group_hash": "内容组 SHA-256",
     "metadata_changed": "元数据是否变化",
 }
+
+_ENUM_FIELDS = frozenset((
+    "media_kind", "meta_status", "hash_status", "status", "evidence",
+    "origin", "old_hash_origin", "new_hash_origin",
+))
+_FIELD_VALUE_NAMES = {
+    "section": {
+        "identity": "数据库身份",
+        "counts": "数量统计",
+        "media_kind": "文件类型",
+        "root": "根目录",
+        "declared": "封存声明",
+        "file_status": "文件状态",
+        "compatibility": "兼容性",
+    },
+    "execution": {
+        "executed": "已执行",
+        "applicable": "适用",
+        "null": "NULL",
+        "NULL": "NULL",
+    },
+    "section_id": {
+        "enumeration": "目录枚举问题",
+        "hash": "哈希问题",
+        "metadata": "元数据问题",
+        "format": "格式校验问题",
+        "raw": "RAW 深度校验问题",
+        "performance": "读取性能异常候选",
+        "runtime": "运行与证据问题",
+    },
+    "state": {
+        "available": "可导出",
+        "empty": "0 条记录",
+        "unavailable": "无可用记录",
+        "incompatible": "版本不兼容",
+        "invalid": "结构异常",
+    },
+    "side": {"old": "基准", "new": "对比"},
+    "database_type": {"snapshot": "封存快照", "diff": "Diff 数据库"},
+    "lifecycle": {
+        "sealed": "已封存",
+        "sealed_unpublished": "已封存，尚未发布",
+        "partial": "未完成快照",
+        "invalid": "无效",
+    },
+    "scan_kind": {"full": "完整扫描", "quick": "快速扫描"},
+    "metadata_storage": {
+        "complete": "全量",
+        "normalized": "基础",
+        "off": "关闭",
+    },
+    "format_validation": {
+        "off": "关闭",
+        "sample": "抽样",
+        "all": "全部",
+    },
+    "sqlite_integrity": {"ok": "正常"},
+    "hash_coverage": {"full": "完整", "partial": "部分", "none": "无"},
+    "old_hash_coverage": {"full": "完整", "partial": "部分", "none": "无"},
+    "new_hash_coverage": {"full": "完整", "partial": "部分", "none": "无"},
+    "compatibility_mode": dict(dbparse.COMPATIBILITY_MODE_LABELS),
+    "topic": {
+        "input": "输入证据",
+        "capability": "对比能力",
+        "summary": "证据摘要",
+    },
+    "record_type": {
+        "manifest": "运行清单",
+        "run_event": "运行事件",
+        "session": "扫描会话",
+        "entry_attempt": "处理尝试",
+        "read_performance": "读取性能",
+        "format_check": "格式校验",
+        "state_event": "状态事件",
+        "stage_checkpoint": "阶段检查点",
+        "runtime": "快照运行状态",
+    },
+    "stage": {
+        "enumerate": "目录枚举",
+        "hash": "哈希计算",
+        "metadata": "元数据提取",
+        "format": "格式校验",
+        "rescan": "文件状态复查",
+        "verify_hash": "哈希复检",
+        "verify_format": "格式复检",
+        "seal": "快照封存",
+        "publish": "结果发布",
+    },
+    "event": {
+        "pause_requested": "已请求暂停",
+        "paused": "已暂停",
+        "progress_saved": "进度已保存",
+        "paused_saved_for_exit": "暂停进度已保存，可退出",
+        "continued": "已继续运行",
+        "stopped": "已停止",
+        "sealing_started": "已开始封存",
+        "sealed_unpublished": "已封存，尚未发布",
+        "published": "已发布",
+        "run_failed": "运行失败",
+        "publication_retry_started": "已开始重试发布",
+        "publication_retry_failed": "重试发布失败",
+        "stage_started": "阶段已开始",
+        "stage_restarted": "阶段已重新开始",
+        "stage_finished": "阶段已完成",
+        "format_primary_finished": "常规格式校验已完成",
+        "run_paused": "任务已暂停",
+        "run_resumed": "任务已继续运行",
+        "run_saved": "任务进度已保存",
+        "run_stopped": "任务已停止",
+        "run_initialized": "运行已初始化",
+        "resume_started": "已开始续传",
+        "interrupted_recovered": "异常中断状态已修复",
+    },
+    "decision": {
+        "none": "无",
+        "continue_waiting": "继续等待",
+        "skip_and_record": "跳过并记录",
+        "stop_and_resume": "停止并保留续传",
+    },
+}
+
+_OVERVIEW_VALUE_KEYS = frozenset((
+    "database_type", "lifecycle", "scan_kind", "metadata_storage",
+    "format_validation", "sqlite_integrity", "hash_coverage",
+    "old_hash_coverage", "new_hash_coverage",
+))
+
+
+def _human_field_value(field: str, value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if field in _ENUM_FIELDS:
+        return getattr(dbparse, "_EXCEL_VALUE_NAMES", {}).get(value, value)
+    return _FIELD_VALUE_NAMES.get(field, {}).get(value, value)
+
+
+def _human_row_value(
+    row: dict[str, object], field: str,
+) -> object:
+    """只转换阅读格式；CSV/JSONL 继续保留稳定机器值。"""
+    value = row.get(field)
+    if field == "value":
+        key = str(row.get("key") or "")
+        if key == "mode":
+            key = "compatibility_mode"
+        if key in _OVERVIEW_VALUE_KEYS or key == "compatibility_mode":
+            if value is None:
+                return "未记录"
+            return _FIELD_VALUE_NAMES.get(key, {}).get(value, value)
+        if key.endswith(".enum_status"):
+            return getattr(dbparse, "_EXCEL_VALUE_NAMES", {}).get(
+                value, value)
+    result = _human_field_value(field, value)
+    if isinstance(result, bool):
+        return "是" if result else "否"
+    return result
 
 
 @dataclass(frozen=True)
@@ -112,7 +277,7 @@ def _display_text(
 
 
 def _header_label(field: str) -> str:
-    return str(_HEADER_NAMES.get(field, "字段"))
+    return str(_HEADER_NAMES.get(field, field))
 
 
 def _excel_header(field: str) -> str:
@@ -266,7 +431,7 @@ class _XlsxModuleSink:
         values = []
         for field in self.fields:
             value, truncated = _display_text(
-                row.get(field),
+                _human_row_value(row, field),
                 max_chars=self.builder.max_cell_chars,
             )
             self.builder.truncated_cells += int(truncated)
@@ -377,7 +542,7 @@ class _XlsxBuilder:
     def cleanup(self) -> None:
         if os.path.isdir(self.parts_dir):
             if os.path.islink(self.parts_dir):
-                raise RuntimeError("拒绝清理被替换为链接的 XLSX parts")
+                raise RuntimeError("拒绝清理被替换为链接的 XLSX 工作表分片")
             shutil.rmtree(self.parts_dir)
 
 
@@ -390,16 +555,40 @@ def _descriptor_uuid(descriptor: dbreader.DatabaseDescriptor) -> object:
 def _compatibility_mode(
     descriptor: dbreader.DatabaseDescriptor,
 ) -> str:
-    if descriptor.database_type == "snapshot":
-        return (
-            "v1.4.1-compatible"
-            if descriptor.schema_version == 3 else "v1.6.0-native"
-        )
-    schemas = (
-        int(descriptor.identity["old_schema_version"]),
-        int(descriptor.identity["new_schema_version"]),
+    """把统一兼容模式标识转换为阅读文字。"""
+    return dbparse.compatibility_mode_label(
+        dbparse.compatibility_mode(descriptor))
+
+
+def _database_type_label(descriptor: dbreader.DatabaseDescriptor) -> str:
+    return (
+        "封存快照"
+        if descriptor.database_type == "snapshot" else "Diff 数据库"
     )
-    return "v1.4.1-compatible" if schemas == (3, 3) else "cross-version"
+
+
+def _lifecycle_label(value: str) -> str:
+    return {
+        "sealed": "已封存",
+        "sealed_unpublished": "已封存，尚未发布",
+        "partial": "未完成快照",
+        "invalid": "无效",
+    }.get(value, value)
+
+
+def _integrity_label(value: object) -> str:
+    if value in (None, "", "None"):
+        return "未复核"
+    return "正常" if value == "ok" else str(value)
+
+
+def _human_reason(value: object) -> str:
+    """只在阅读报告中统一冻结读取器的历史术语。"""
+    return (
+        str(value or "")
+        .replace("原始元数据载荷", "工具原始输出")
+        .replace("原始载荷", "工具原始输出")
+    )
 
 
 def _overview_rows(
@@ -410,30 +599,30 @@ def _overview_rows(
     truncated_cells: int,
 ) -> list[tuple[str, object]]:
     return [
-        ("报告用途", "供人工阅读、筛选和追溯 DAISY 数据库结果"),
-        ("工具", core.report_metadata("数据库解析")["tool_name"]),
-        ("工具版本", core.SCANNER_VERSION),
-        ("报告时间（UTC）", generated_at_utc),
+        ("报告用途", "阅读、筛选和追溯数据库内容"),
+        ("报告生成工具", core.report_metadata("档案数据解析")["tool_name"]),
+        ("报告生成程序版本", core.SCANNER_VERSION),
+        ("报告生成时间 (UTC)", generated_at_utc),
         ("输入数据库", os.path.basename(descriptor.path)),
-        ("数据库类型", descriptor.database_type),
-        ("schema", descriptor.schema_version),
-        ("数据库 UUID", _descriptor_uuid(descriptor)),
-        ("生成器版本", descriptor.source_version),
-        ("封存状态", descriptor.lifecycle),
+        ("数据库类型", _database_type_label(descriptor)),
+        ("数据库结构版本", descriptor.schema_version),
+        ("数据库 UUID", _descriptor_uuid(descriptor) or "未记录"),
+        ("数据库生成程序版本", descriptor.source_version or "未记录"),
+        ("封存状态", _lifecycle_label(descriptor.lifecycle)),
         ("兼容模式", _compatibility_mode(descriptor)),
-        ("SQLite 完整性", descriptor.sqlite_integrity),
-        ("所选模块", "、".join(
+        ("SQLite 完整性", _integrity_label(descriptor.sqlite_integrity)),
+        ("所选数据模块", "、".join(
             str(record["title"]) for record in module_records)),
-        ("模块数量", len(module_records)),
+        ("数据模块数量", len(module_records)),
         ("XLSX 单元格截断数", truncated_cells),
         (
-            "完整值说明",
-            "XLSX／HTML 是人读投影；被截断或未嵌入的完整值请使用所选 CSV／JSONL，"
-            "未选择技术格式时以 SQLite 数据库为准。",
+            "完整值位置",
+            "HTML/XLSX 用于阅读和筛选；被截断或未嵌入的完整值以同次导出的 "
+            "CSV/JSONL 为准，相应格式未导出时以输入 SQLite 数据库为准。",
         ),
         (
-            "公式安全",
-            "所有数据库文本均以字符串单元格写入，不包含公式元素。",
+            "XLSX 公式安全",
+            "数据库文本按字符串写入，不创建公式单元格。",
         ),
     ]
 
@@ -448,8 +637,13 @@ def _html_header_cell(field: str) -> str:
     )
 
 
-def _html_cell(value: object, max_chars: int) -> tuple[str, bool]:
-    text, truncated = _display_text(value, max_chars=max_chars)
+def _html_cell(
+    row: dict[str, object],
+    field: str,
+    max_chars: int,
+) -> tuple[str, bool]:
+    text, truncated = _display_text(
+        _human_row_value(row, field), max_chars=max_chars)
     return html.escape(text), truncated
 
 
@@ -466,21 +660,22 @@ def _report_summary(
         }
         if not counts:
             return (
-                "已导出 Diff 身份，当前预览未含变化计数",
-                "完整变化请查看所选文件变化模块或技术导出。",
+                "已识别 Diff 数据库；本报告未包含变化计数",
+                "请查看「文件变化」数据模块，或重新导出并选择该模块。",
             )
         changed = sum(
             count for status, count in counts.items()
             if status != "unchanged"
         )
         details = "、".join(
-            f"{status}={count}" for status, count in sorted(counts.items()))
-        return f"Diff 非 unchanged 记录 {changed} 项", details
+            f"{_human_field_value('status', status)}：{count}"
+            for status, count in sorted(counts.items()))
+        return f"文件变化记录：{changed} 条", details
     issue_preview = previews.get("issues")
     if issue_preview is None:
         return (
-            "未选择问题摘要",
-            "本报告不能据此断言数据库没有问题；可重新解析并勾选“问题摘要”。",
+            "报告未包含问题摘要",
+            "不能据此断言数据库没有问题；可重新解析并选择「问题摘要」数据模块。",
         )
     issue_records = sum(
         int(row.get("issue_records") or 0)
@@ -494,15 +689,18 @@ def _report_summary(
     )
     if issue_records:
         return (
-            f"问题板块累计记录 {issue_records}",
+            f"发现 {issue_records} 条问题记录",
             "同一文件可能出现在多个证据板块；请以各板块受影响文件数和明细为准。",
         )
     if null_sections:
         return (
-            "已执行板块未记录问题，但存在 NULL 板块",
-            "NULL 表示未执行、旧库未记录或不适用，不等于检查通过。",
+            "已执行板块未记录问题；部分板块为 NULL",
+            "NULL 表示未执行、旧库未记录或能力无法解释，不等于检查通过。",
         )
-    return "已执行问题板块记录为 0", "没有把未执行能力伪装为 0。"
+    return (
+        "已执行板块的问题记录为 0",
+        "结果只涵盖数据库已有证据；未执行能力会显示为 NULL。",
+    )
 
 
 def _write_html(
@@ -538,18 +736,26 @@ def _write_html(
             cells = []
             for field in fields:
                 cell, truncated = _html_cell(
-                    row.get(field), max_cell_chars)
+                    row, field, max_cell_chars)
                 truncated_cells += int(truncated)
                 cells.append(f"<td>{cell}</td>")
             body_rows.append("<tr>" + "".join(cells) + "</tr>")
         compatibility = record.get("compatibility_notes") or []
+        state_labels = {
+            "available": "可导出",
+            "empty": "0 条记录",
+            "unavailable": "无可用记录",
+            "incompatible": "版本不兼容",
+            "invalid": "结构异常",
+        }
         compatibility_text = (
             "；".join(
-                f"{item.get('title') or item.get('id')}="
-                f"{item.get('state')}（{item.get('reason') or '未记录原因'}）"
+                f"{item.get('title') or item.get('id')}："
+                f"{state_labels.get(str(item.get('state')), item.get('state'))}"
+                f"（{item.get('reason') or '原因未记录'}）"
                 for item in compatibility
             )
-            if compatibility else "无额外能力降级"
+            if compatibility else "没有额外兼容性限制"
         )
         open_attribute = " open" if module_id in ("overview", "issues") \
             else ""
@@ -557,10 +763,10 @@ def _write_html(
             f'<section id="{html.escape(module_id)}">'
             f'<details{open_attribute}><summary><span>{html.escape(title)}</span>'
             f'<strong>{total_rows} 行</strong></summary>'
-            f'<p class="module-note">预览 {len(preview)}／{total_rows} 行；'
-            f'人读截断单元格 {truncated_cells}。'
+            f'<p class="module-note">显示 {len(preview)}/{total_rows} 行；'
+            f'当前显示内容截断单元格 {truncated_cells} 个。'
             f'{html.escape(compatibility_text)}</p>'
-            f'<label class="filter-label">筛选当前预览 '
+            f'<label class="filter-label">筛选当前显示内容 '
             f'<input class="table-filter" data-target="{table_id}" '
             f'type="search" placeholder="输入文本"></label>'
             f'<div class="table-wrap"><table id="{table_id}">'
@@ -568,15 +774,17 @@ def _write_html(
             + "".join(body_rows)
             + "</tbody></table></div></details></section>"
         )
-    tool = core.report_metadata("数据库解析")
-    warnings = "；".join(descriptor.warnings) or "无 Reader 警告"
+    tool = core.report_metadata("档案数据解析")
+    warnings = "；".join(
+        _human_reason(item) for item in descriptor.warnings
+    ) or "无"
     document = f'''<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-{_CSP_NONCE}'; script-src 'nonce-{_CSP_NONCE}'; img-src data:; base-uri 'none'; form-action 'none'; object-src 'none'">
-<title>DAISY 数据库解析报告</title>
+<title>DAISY 档案数据解析报告</title>
 <style nonce="{_CSP_NONCE}">
 :root{{--bg:#f5f7f6;--card:#fff;--ink:#17211e;--muted:#5e6d67;--line:#d9e1de;--accent:#347a68;--warn:#9a5a18}}
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 "Microsoft YaHei UI","Noto Sans SC",sans-serif}}
@@ -592,20 +800,22 @@ details>summary{{display:flex;justify-content:space-between;gap:12px;cursor:poin
 </style>
 </head>
 <body>
-<header><h1>DAISY 数据库解析报告</h1><p>{html.escape(os.path.basename(descriptor.path))}</p></header>
+<header><h1>DAISY 档案数据解析报告</h1><p>{html.escape(os.path.basename(descriptor.path))}</p></header>
 <div class="layout">
-<nav><strong>报告目录</strong><a href="#summary">结论</a><a href="#identity">身份</a>{''.join(navigation)}</nav>
+<nav><strong>内容导航</strong><a href="#summary">结论</a><a href="#identity">数据库身份</a>{''.join(navigation)}</nav>
 <main>
 <section class="hero" id="summary"><h2>{html.escape(conclusion)}</h2><p>{html.escape(conclusion_detail)}</p></section>
 <section class="identity" id="identity"><h2>数据库身份</h2><div class="facts">
-<div class="fact"><span>类型／schema</span><strong>{html.escape(descriptor.database_type)}／{descriptor.schema_version}</strong></div>
-<div class="fact"><span>UUID</span><strong>{html.escape(str(_descriptor_uuid(descriptor)))}</strong></div>
-<div class="fact"><span>生成器</span><strong>{html.escape(str(descriptor.source_version))}</strong></div>
+<div class="fact"><span>数据库类型</span><strong>{html.escape(_database_type_label(descriptor))}</strong></div>
+<div class="fact"><span>数据库结构版本</span><strong>{descriptor.schema_version}</strong></div>
+<div class="fact"><span>数据库 UUID</span><strong>{html.escape(str(_descriptor_uuid(descriptor) or '未记录'))}</strong></div>
+<div class="fact"><span>数据库生成程序版本</span><strong>{html.escape(str(descriptor.source_version or '未记录'))}</strong></div>
 <div class="fact"><span>兼容模式</span><strong>{html.escape(_compatibility_mode(descriptor))}</strong></div>
-<div class="fact"><span>SQLite 完整性</span><strong>{html.escape(str(descriptor.sqlite_integrity))}</strong></div>
-<div class="fact"><span>报告时间（UTC）</span><strong>{html.escape(generated_at_utc)}</strong></div>
-<div class="fact"><span>报告工具</span><strong>{html.escape(tool['tool_name'])} {html.escape(tool['tool_version'])}</strong></div>
-</div><p class="notice">Reader 提示：{html.escape(warnings)}</p><p>路径仅作为可复制文本显示，不生成 file 链接；本报告不会访问数据库中记录的源文件。HTML 只嵌入有限预览，完整事实以 SQLite 和所选技术导出为准。</p></section>
+<div class="fact"><span>SQLite 完整性</span><strong>{html.escape(_integrity_label(str(descriptor.sqlite_integrity)))}</strong></div>
+<div class="fact"><span>报告生成时间 (UTC)</span><strong>{html.escape(generated_at_utc)}</strong></div>
+<div class="fact"><span>报告生成工具</span><strong>{html.escape(tool['tool_name'])}</strong></div>
+<div class="fact"><span>报告生成程序版本</span><strong>{html.escape(tool['tool_version'])}</strong></div>
+</div><p class="notice">兼容性说明：{html.escape(warnings)}</p><p>路径仅显示为可复制文本，不生成本地文件链接，也不会访问数据库记录的源文件。HTML 仅嵌入有限预览；完整数据请查看同次导出的 CSV/JSONL，相应格式未导出时以输入 SQLite 为准。</p></section>
 {''.join(sections)}
 </main></div>
 <footer>DAISY · {html.escape(tool['tool_author'])}</footer>
@@ -628,7 +838,7 @@ document.querySelectorAll('.table-filter').forEach(function(input){{
 
 
 class HumanReportContext:
-    """在模块单次流式遍历中收集 HTML 预览并写 XLSX sheet parts。"""
+    """在模块单次流式遍历中收集 HTML 预览并写入 XLSX 工作表分片。"""
 
     def __init__(
         self,
@@ -682,7 +892,7 @@ class HumanReportContext:
             sinks.append(preview)
         if "xlsx" in formats:
             if self.xlsx is None:
-                raise RuntimeError("XLSX context 未初始化")
+                raise RuntimeError("XLSX 写入上下文未初始化")
             display_limit = (
                 module_preview_limit
                 if module_id == "raw_payloads" else None

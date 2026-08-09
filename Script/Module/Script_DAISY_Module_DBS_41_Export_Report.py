@@ -1,7 +1,7 @@
-r"""Script_DAISY_Module_DBS_41_Export_Report：DBS-41 数据库解析入口。
+r"""Script_DAISY_Module_DBS_41_Export_Report：DBS-41 档案数据解析入口。
 
-``parse-db --database`` 使用 v1.6.0 的只读识别、选择计划和四格式流式 writer；
-``export-report --snapshot／--diff`` 继续调用 v1.5.1 冻结 writer。两个入口共用本编排
+``parse-db --database`` 使用 v1.6.0 的只读识别、选择计划和四格式流式写入器；
+``export-report --snapshot/--diff`` 继续调用 v1.5.1 冻结写入器。两个入口共用本编排
 模块，但旧 CLI、退出码、文件顺序和供调用方使用的函数名不切换。
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import Script_DAISY_Lib_DBS_16_Parse_Run as parserun
 export_snapshot = dbparse.export_snapshot
 export_diff = dbparse.export_diff
 
-# v1.5.1 测试和第三方调用可能引用这两个既有内部符号；行为保持阶段继续导出。
+# v1.5.1 测试和第三方调用可能引用这两个既有内部符号；继续保留原有行为。
 _XLSX_MAX_CELL_CHARS = dbparse._XLSX_MAX_CELL_CHARS
 _excel_row = dbparse._excel_row
 
@@ -38,7 +38,7 @@ class _ParseCliProgress:
             "progress_start",
             stage_idx=1,
             stage_total=1,
-            name="数据库解析",
+            name="档案数据解析",
         )
 
     def __call__(self, item: parserun.ParseProgress) -> None:
@@ -89,45 +89,48 @@ class _ParseCliProgress:
             "progress_finish",
             stage_idx=1,
             stage_total=1,
-            name="数据库解析",
-            summary="报告已安全发布",
+            name="档案数据解析",
+            summary="导出完成并发布",
         )
 
 
 def build_parser(*, database_mode: bool = False) -> argparse.ArgumentParser:
     if not database_mode:
         parser = argparse.ArgumentParser(
-            description="DBS-41 结果报告导出（只读输入）",
+            description="旧版报告导出兼容入口（只读输入）",
             epilog=(
-                "迁移提示：如需自动识别数据库、选择模块或导出 HTML／JSONL，"
+                "迁移提示：如需自动识别数据库、选择数据模块或导出 HTML/JSONL，"
                 "请使用 parse-db --database；本入口继续生成冻结报告。"
             ),
         )
         group = parser.add_mutually_exclusive_group(required=True)
-        group.add_argument("--snapshot", help="封存快照 .sqlite")
-        group.add_argument("--diff", help="Diff 数据库 .sqlite")
-        parser.add_argument("--output-dir", default="Output/Reports")
+        group.add_argument("--snapshot", help="封存快照 (.sqlite)")
+        group.add_argument("--diff", help="Diff 数据库 (.sqlite)")
+        parser.add_argument(
+            "--output-dir", default="Output/Reports",
+            help="报告输出目录；默认 Output/Reports")
         return parser
 
     parser = argparse.ArgumentParser(
-        description="DBS-41 数据库解析（输入数据库只读）")
+        description="档案数据解析：只读识别数据库，并按所选数据模块和格式导出")
     parser.add_argument(
         "--database",
         required=True,
-        help="自动识别的封存快照或 Diff 数据库 .sqlite",
+        help="由 DAISY 自动识别的封存快照或 Diff 数据库 (.sqlite)",
     )
     parser.add_argument(
         "--preset",
         choices=tuple(sorted(dbparse.PARSE_PRESETS)),
         default=None,
-        help="解析内容预设；--database 默认 human-summary",
+        help="导出范围；命令行省略时使用 human-summary（摘要内容）",
     )
     parser.add_argument(
         "--include",
         action="append",
         default=None,
         metavar="MODULE[,MODULE...]",
-        help="追加模块 ID；可重复或以逗号分隔",
+        help=("数据模块 ID；使用摘要内容或全部内容范围时追加，使用自定义"
+              "范围时作为完整选择；可重复或用逗号分隔"),
     )
     parser.add_argument(
         "--format",
@@ -135,9 +138,11 @@ def build_parser(*, database_mode: bool = False) -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="FORMAT[,FORMAT...]",
-        help="html／xlsx／csv／jsonl；可重复，--database 默认 html",
+        help="输出格式：html/xlsx/csv/jsonl；可重复或以逗号分隔，命令行默认 html",
     )
-    parser.add_argument("--output-dir", default="Output/Reports")
+    parser.add_argument(
+        "--output-dir", default="Output/Reports",
+        help="导出目录；默认 Output/Reports")
     return parser
 
 
@@ -150,7 +155,7 @@ def _run_legacy(args: argparse.Namespace) -> int:
     except core.PreflightError as exc:
         print(f"导出失败：{exc}", file=sys.stderr)
         return 2
-    print(f"导出目录:{result['folder']}")
+    print(f"导出目录：{result['folder']}")
     for filename in result["files"]:
         print(f"  {filename}")
     return 0
@@ -171,19 +176,30 @@ def _run_parse(args: argparse.Namespace) -> int:
     )
     counts = inspection.module_state_counts
     print(
-        f"已识别：{type_label} · schema {descriptor.schema_version} · "
-        f"{inspection.compatibility_mode}"
+        f"数据库已解析：{type_label} · 数据库结构版本 {descriptor.schema_version} · "
+        f"{dbparse.compatibility_mode_label(inspection.compatibility_mode)}"
     )
     print(
-        "模块状态："
-        f"可选 {counts.get('available', 0)} · "
-        f"空 {counts.get('empty', 0)} · "
-        f"不可用 {counts.get('unavailable', 0)} · "
-        f"不兼容 {counts.get('incompatible', 0)} · "
-        f"无效 {counts.get('invalid', 0)}"
+        "数据模块状态："
+        f"可导出 {counts.get('available', 0)} · "
+        f"0 条记录 {counts.get('empty', 0)} · "
+        f"无可用记录 {counts.get('unavailable', 0)} · "
+        f"版本不兼容 {counts.get('incompatible', 0)} · "
+        f"结构异常 {counts.get('invalid', 0)}"
     )
-    print("本次模块：" + "、".join(plan.module_ids))
-    print("输出格式：" + "、".join(plan.format_ids))
+    module_titles = {
+        module.spec.module_id: module.spec.title for module in inspection.modules
+    }
+    format_titles = {
+        "html": "HTML 阅读报告",
+        "xlsx": "Excel 工作簿",
+        "csv": "CSV 数据表",
+        "jsonl": "JSONL 数据流",
+    }
+    print("数据模块：" + "、".join(
+        module_titles.get(module_id, module_id) for module_id in plan.module_ids))
+    print("输出格式：" + "、".join(
+        format_titles.get(format_id, format_id) for format_id in plan.format_ids))
     for notice in plan.privacy_notices:
         print(f"隐私提示：{notice}")
 
@@ -195,8 +211,8 @@ def _run_parse(args: argparse.Namespace) -> int:
         progress_callback=progress,
     )
     progress.finish()
-    print(f"报告目录:{result.report_directory}")
-    print(f"报告清单:{result.manifest_path}")
+    print(f"导出目录：{result.report_directory}")
+    print(f"运行清单：{result.manifest_path}")
     preferred = None
     for format_id, filename in (
         ("html", "Report.html"),
@@ -206,7 +222,7 @@ def _run_parse(args: argparse.Namespace) -> int:
             preferred = os.path.join(result.report_directory, filename)
             break
     if preferred is not None:
-        print(f"建议打开:{preferred}")
+        print(f"建议打开：{preferred}")
     print("已生成：")
     for artifact in result.artifacts:
         print(f"  {artifact.relative_path}")
@@ -224,13 +240,13 @@ def main() -> int:
     try:
         return _run_parse(args)
     except parserun.ParseExportCancelled:
-        print("解析已取消；未完成报告不会发布。", file=sys.stderr)
+        print("档案数据解析已取消；未完成结果不会发布。", file=sys.stderr)
         return 130
     except KeyboardInterrupt:
-        print("解析已由用户中断；未完成报告不会发布。", file=sys.stderr)
+        print("档案数据解析已由用户中断；未完成结果不会发布。", file=sys.stderr)
         return 130
     except (core.PreflightError, OSError, ValueError) as exc:
-        print(f"解析失败：{exc}", file=sys.stderr)
+        print(f"档案数据解析失败：{exc}", file=sys.stderr)
         return 2
 
 

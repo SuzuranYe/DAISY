@@ -1,4 +1,4 @@
-"""v1.6.0 RAW 工作 JSONL、伴随 JSON 与 Issues 投影专项测试。"""
+"""v1.6.0 RAW 工作 JSONL、伴随 JSON 与问题报告投影专项测试。"""
 from __future__ import annotations
 
 import json
@@ -280,13 +280,17 @@ class TestRawEvidenceReport(_EvidenceFixture):
         self.assertNotIn("private_valid.dng", serialized)
         markdown = rawevidence.render_raw_issue_section(report)
         self.assertIn("## RAW 深度校验问题", markdown)
-        self.assertIn("仅计数，不列路径", markdown)
+        self.assertIn("执行状态：已执行", markdown)
+        self.assertIn("校验范围：抽样", markdown)
+        self.assertIn("仅统计，不列路径", markdown)
+        self.assertIn("| 解码失败 |", markdown)
+        self.assertNotIn("- unsupported：", markdown)
         self.assertIn("private_invalid.dng", markdown)
         self.assertNotIn("private_unsupported.dng", markdown)
         self.assertEqual(
             rawevidence.render_raw_issue_section(None),
             "## RAW 深度校验问题\n\n"
-            "NULL（本次未执行、旧库未记录或不适用）\n",
+            "NULL（本次未执行或旧库未记录）\n",
         )
 
     def test_incomplete_report_cannot_claim_zero_problems(self) -> None:

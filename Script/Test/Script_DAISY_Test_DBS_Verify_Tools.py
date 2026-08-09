@@ -1,4 +1,4 @@
-"""v1.6.0 统一核验外部工具句柄监督与格式分类专项测试。"""
+"""档案数据核验外部工具句柄监督与格式分类专项测试。"""
 from __future__ import annotations
 
 import json
@@ -353,7 +353,7 @@ class TestControlledExternalTool(_Fixture):
             return process
 
         try:
-            with self.assertRaisesRegex(RuntimeError, "另一个 worker"):
+            with self.assertRaisesRegex(RuntimeError, "另一个工作进程"):
                 verifytools.run_controlled_tool(
                     _python_command("import time; time.sleep(30)"),
                     expected_size=1,

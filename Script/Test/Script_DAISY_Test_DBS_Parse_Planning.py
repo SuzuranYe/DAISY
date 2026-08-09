@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 数据库解析识别、模块状态与格式计划测试。
+"""DAISY 档案数据解析识别、模块状态与格式计划测试。
 
 全部夹具和产物只位于工作区 ``.test_runtime``；测试不访问快照记录的源路径，
 不枚举、附加或停止其它进程。
@@ -131,7 +131,8 @@ class TestParsePlanning(unittest.TestCase):
         self.assertEqual(modules["overview"].state, "available")
         self.assertEqual(modules["issues"].state, "empty")
         self.assertFalse(modules["issues"].selectable)
-        self.assertIn("已执行但没有记录", modules["issues"].reason)
+        self.assertIn("0 条记录", modules["issues"].reason)
+        self.assertIn("已执行，未生成记录", modules["issues"].reason)
         self.assertNotIn("未记录原因", modules["issues"].reason)
         self.assertEqual(modules["raw_payloads"].state, "available")
         self.assertEqual(modules["run_history"].state, "available")
@@ -178,7 +179,7 @@ class TestParsePlanning(unittest.TestCase):
                 include=("hashes",),
                 formats=("csv",),
             )
-        self.assertIn("unavailable", str(unavailable.exception))
+        self.assertIn("本次快照未执行哈希阶段", str(unavailable.exception))
         with self.assertRaises(core.PreflightError) as empty:
             dbparse.plan_parse_export(
                 inspection,
@@ -186,7 +187,7 @@ class TestParsePlanning(unittest.TestCase):
                 include=("raw_payloads",),
                 formats=("jsonl",),
             )
-        self.assertIn("empty", str(empty.exception))
+        self.assertIn("0 条记录", str(empty.exception))
 
     def test_full_audit_selects_only_available_modules(self) -> None:
         snapshot = self._snapshot("FullAudit", raw_payload=True)

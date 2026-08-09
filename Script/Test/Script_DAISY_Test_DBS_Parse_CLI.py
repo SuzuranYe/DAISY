@@ -1,4 +1,4 @@
-"""DAISY v1.6.0 数据库解析 CLI 与旧导出隔离测试。"""
+"""DAISY 档案数据解析 CLI 与旧导出隔离测试。"""
 from __future__ import annotations
 
 import csv
@@ -183,10 +183,15 @@ class TestParseCli(unittest.TestCase):
             "--output-dir", self.reports,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("已识别：封存快照 · schema 3", completed.stdout)
-        self.assertIn("v1.4.1-compatible", completed.stdout)
+        self.assertIn(
+            "数据库已解析：封存快照 · 数据库结构版本 3",
+            completed.stdout,
+        )
+        self.assertIn("v1.4.1 兼容模式", completed.stdout)
+        self.assertIn("0 条记录", completed.stdout)
+        self.assertNotIn("空模块", completed.stdout)
         self.assertIn("隐私提示：", completed.stdout)
-        self.assertIn("建议打开:", completed.stdout)
+        self.assertIn("建议打开：", completed.stdout)
         self.assertEqual(before, _identity(snapshot))
 
         report_dirs = self.report_directories()
@@ -248,8 +253,8 @@ class TestParseCli(unittest.TestCase):
             "--output-dir", self.reports,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("已识别：Diff 数据库", completed.stdout)
-        self.assertIn("本次模块：overview、evidence_notes", completed.stdout)
+        self.assertIn("数据库已解析：Diff 数据库", completed.stdout)
+        self.assertIn("数据模块：对比概览、证据说明", completed.stdout)
         self.assertEqual(diff_identity, _identity(diff_path))
         for path, identity in snapshot_identities.items():
             self.assertEqual(identity, _identity(path))
@@ -342,8 +347,8 @@ class TestParseCli(unittest.TestCase):
             "--output-dir", self.reports,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertIn("导出目录:", completed.stdout)
-        self.assertNotIn("已识别：", completed.stdout)
+        self.assertIn("导出目录：", completed.stdout)
+        self.assertNotIn("数据库已解析：", completed.stdout)
         self.assertEqual(before, _identity(snapshot))
         report_dirs = self.report_directories()
         self.assertEqual(1, len(report_dirs), report_dirs)

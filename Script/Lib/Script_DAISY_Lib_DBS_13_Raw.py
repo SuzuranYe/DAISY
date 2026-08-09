@@ -1,8 +1,8 @@
-"""RAW 深度校验候选识别与每文件隔离解码 worker。
+"""RAW 深度校验候选识别与逐文件隔离解码工作进程。
 
 父进程不导入 rawpy。每个候选文件由本次调用创建的独立 ``spawn`` 子进程执行
 ``rawpy.imread(...).postprocess()``；像素数组只存在于子进程，验证非空后立即丢弃。
-本模块不连接或修改 SQLite，扫描恢复／伴随报告由上层编排。
+本模块不连接或修改 SQLite，扫描续传／伴随报告由上层编排。
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def is_raw_candidate(extension_or_path: str) -> bool:
 
 
 def raw_timeout_policy() -> dict[str, object]:
-    """沿用 ExifTool 的 90s／9 GiB 阶梯，避免出现第二套模糊阈值。"""
+    """沿用 ExifTool 的 90s/9 GiB 阶梯，避免出现第二套模糊阈值。"""
     return dict(dbmeta.exiftool_timeout_policy())
 
 
@@ -146,7 +146,7 @@ def _raw_decode_worker_child(connection) -> None:
         connection.send({"kind": "ready"})
         request = connection.recv()
         if not isinstance(request, dict) or not request.get("path"):
-            raise ValueError("RAW worker 请求缺少路径")
+            raise ValueError("RAW 工作进程请求缺少路径")
         try:
             import rawpy  # type: ignore[import-not-found]
         except (ImportError, OSError) as exc:
@@ -155,7 +155,7 @@ def _raw_decode_worker_child(connection) -> None:
                 "status": "error",
                 "code": "rawpy_unavailable",
                 "detail": (
-                    f"rawpy／LibRaw 无法加载：{type(exc).__name__}: {exc}"
+                    f"rawpy/LibRaw 无法加载：{type(exc).__name__}: {exc}"
                 )[:2048],
             })
             return
@@ -225,18 +225,18 @@ def run_raw_decode_worker(
     worker_start_timeout_seconds: float = 30.0,
     _worker_target: Callable[[object], None] | None = None,
 ) -> RawDecodeOutcome:
-    """监督一个 RAW 深度解码 worker；只终止和等待本次精确子进程。"""
+    """监督一个 RAW 深度解码工作进程；只终止和等待本次精确子进程。"""
     if expected_size < 0:
         raise ValueError("expected_size 不能小于 0")
     if default_decision not in dbhash.HASH_TIMEOUT_DECISIONS:
-        raise ValueError(f"未知 timeout 默认处置：{default_decision}")
+        raise ValueError(f"未知超时处置：{default_decision}")
     if poll_seconds <= 0 or worker_start_timeout_seconds <= 0:
-        raise ValueError("poll 与启动 timeout 必须大于 0")
+        raise ValueError("轮询间隔与启动超时阈值必须大于 0")
     threshold_seconds = float(
         raw_timeout_for_size(expected_size)
         if timeout_seconds is None else timeout_seconds)
     if threshold_seconds <= 0:
-        raise ValueError("timeout_seconds 必须大于 0")
+        raise ValueError("超时阈值必须大于 0")
 
     normalized = os.path.abspath(path)
     label = str(display_name or os.path.basename(normalized))
@@ -319,7 +319,7 @@ def run_raw_decode_worker(
                 has_message = receive.poll(poll_seconds)
             except (BrokenPipeError, EOFError, OSError):
                 code = "worker_crashed"
-                detail = "RAW worker 在握手期间断开控制管道"
+                detail = "RAW 工作进程在通信就绪期间断开控制管道"
                 break
             if has_message:
                 try:
@@ -330,11 +330,11 @@ def run_raw_decode_worker(
                     ready = True
                     break
             if not process.is_alive():
-                detail = "RAW worker 在握手前退出"
+                detail = "RAW 工作进程在通信就绪前退出"
                 code = "worker_crashed"
                 break
             if time.monotonic() - started >= worker_start_timeout_seconds:
-                detail = "RAW worker 启动超时"
+                detail = "RAW 工作进程启动超时"
                 code = "worker_start_timeout"
                 terminate = True
                 break
@@ -365,7 +365,7 @@ def run_raw_decode_worker(
                 has_message = receive.poll(poll_seconds)
             except (BrokenPipeError, EOFError, OSError):
                 code = "worker_crashed"
-                detail = "RAW worker 未返回结果即断开控制管道"
+                detail = "RAW 工作进程未返回结果即断开控制管道"
                 break
             if has_message:
                 try:
@@ -394,7 +394,7 @@ def run_raw_decode_worker(
                         except (KeyError, TypeError, ValueError):
                             status = "error"
                             code = "invalid_worker_result"
-                            detail = "RAW worker 成功结果缺少有效像素尺寸"
+                            detail = "RAW 工作进程的成功结果缺少有效像素尺寸"
                         if min(
                             width or 0,
                             height or 0,
@@ -404,12 +404,12 @@ def run_raw_decode_worker(
                         ) <= 0:
                             status = "error"
                             code = "empty_decode"
-                            detail = "RAW worker 返回空像素缓冲"
+                            detail = "RAW 工作进程返回空像素缓冲"
                     if status not in (
                             "valid", "unsupported", "invalid", "error"):
                         status = "error"
                         code = "unknown_worker_status"
-                        detail = "RAW worker 返回未知状态"
+                        detail = "RAW 工作进程返回未知状态"
                     outcome = "completed"
                     emit("worker_completed", file=label, status=status)
                     break
@@ -422,7 +422,7 @@ def run_raw_decode_worker(
                     break
             if not process.is_alive():
                 code = code or "worker_crashed"
-                detail = detail or "RAW worker 未返回结果"
+                detail = detail or "RAW 工作进程未返回结果"
                 break
 
             now = time.monotonic()
@@ -509,7 +509,7 @@ def run_raw_decode_worker(
         outcome = "crashed"
         status = "error"
         code = "worker_not_reaped"
-        detail = "RAW worker 未干净退出并回收"
+        detail = "RAW 工作进程未正常退出并回收"
     elif outcome == "timeout":
         status = "timeout"
     elif outcome == "crashed":

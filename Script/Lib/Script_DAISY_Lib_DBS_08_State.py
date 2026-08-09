@@ -1,4 +1,4 @@
-"""DAISY schema 4 运行状态、session、attempt、lease 与恢复事务。
+"""DAISY schema 4 运行状态、session、attempt、lease 与续传事务。
 
 本模块实现 Spec_DAISY_V1_6_0_Data_Contract.md。schema 4 是冻结 schema 3
 业务表的超集；这里不迁移或写入任何 schema 3 封存库或旧 partial。
@@ -537,7 +537,7 @@ def initialize_v4_connection(
 ) -> RuntimeSnapshot:
     """在新连接中创建 schema 4；调用方负责路径独占与 root 预检。"""
     if not roots:
-        raise core.PreflightError("schema 4 至少需要一个 root")
+        raise core.PreflightError("数据库结构版本 4 至少需要一个根目录")
     now = _now_text(now_utc)
     snapshot_id = _require_compact_uuid(
         snapshot_uuid or _new_id(), "snapshot_uuid")
@@ -550,12 +550,12 @@ def initialize_v4_connection(
     output, partial, publish, event_log = _validate_output_identity(
         output_dir, partial_path, publish_stem_path, event_path)
     if len({label for label, _path in roots}) != len(roots):
-        raise core.PreflightError("schema 4 root label 重复")
+        raise core.PreflightError("数据库结构版本 4 的根目录名重复")
     normalized_roots = [
         (str(label), _normalized(path)) for label, path in roots]
     if len({os.path.normcase(path) for _label, path in normalized_roots}) \
             != len(normalized_roots):
-        raise core.PreflightError("schema 4 root 路径重复")
+        raise core.PreflightError("数据库结构版本 4 的根目录路径重复")
 
     effective_config = dict(config)
     effective_config.update({
@@ -889,7 +889,7 @@ def transition_run_state(
         ).rowcount
         if changed != 1:
             raise core.PreflightError(
-                "运行状态已被其它控制动作修改，当前转换未提交")
+                "运行状态已被其他控制动作修改，当前转换未提交")
         con.execute(
             "UPDATE snapshot_info SET scan_status=?,database_integrity=?,"
             " finished_at_utc=? WHERE id=1",
@@ -984,11 +984,11 @@ def save_paused_for_exit(
     *,
     now_utc: str | None = None,
 ) -> RuntimeSnapshot:
-    """把同会话 paused 安全结束为可建议恢复的保存点。"""
+    """把同会话 paused 安全结束为可建议续传的保存点。"""
     runtime = load_runtime(con)
     if runtime.run_state != "paused":
         raise core.PreflightError(
-            f"状态 {runtime.run_state} 不能保存退出")
+            f"状态 {runtime.run_state} 不能保存并退出")
     session = con.execute(
         "SELECT session_status,ended_at_utc FROM run_sessions"
         " WHERE session_id=?",
@@ -996,7 +996,7 @@ def save_paused_for_exit(
     ).fetchone()
     if session is None or session[0] != "paused" or session[1] is not None:
         raise core.PreflightError(
-            "只有尚未结束的 paused session 可以保存退出")
+            "只有尚未结束的 paused session 可以保存并退出")
     now = _now_text(now_utc)
     next_revision = runtime.state_revision + 1
     with con:
@@ -1015,7 +1015,7 @@ def save_paused_for_exit(
         ).rowcount
         if changed != 1:
             raise core.PreflightError(
-                "paused 保存退出时状态已变化，未提交")
+                "paused 保存并退出时状态已变化，未提交")
         session_changed = con.execute(
             "UPDATE run_sessions SET session_status='saved',"
             " updated_at_utc=?,ended_at_utc=?,end_reason='save_exit'"
@@ -1025,7 +1025,7 @@ def save_paused_for_exit(
         ).rowcount
         if session_changed != 1:
             raise core.PreflightError(
-                "paused 保存退出时 session 已变化，未提交")
+                "paused 保存并退出时 session 已变化，未提交")
         _append_state_event(
             con,
             runtime.active_session_id,
@@ -1152,7 +1152,7 @@ def start_resume_session(
     process_start_token: str | None = None,
     now_utc: str | None = None,
 ) -> RuntimeSnapshot:
-    """为 paused／stopped／failed_recoverable 创建新的恢复 session。"""
+    """为 paused/stopped/failed_recoverable 创建新的续传 session。"""
     runtime = load_runtime(con)
     if runtime.run_state not in (
         "paused", "stopped", "failed_recoverable",
@@ -1160,7 +1160,7 @@ def start_resume_session(
         raise core.PreflightError(
             f"当前状态 {runtime.run_state} 不能创建 resume session")
     if runtime.run_state == "stopped" and not manual:
-        raise core.PreflightError("stopped partial 只允许用户明确手动恢复")
+        raise core.PreflightError("stopped partial 只允许用户明确手动续传")
     old_session = con.execute(
         "SELECT ended_at_utc FROM run_sessions WHERE session_id=?",
         (runtime.active_session_id,),
@@ -1237,7 +1237,7 @@ def start_resume_session(
         ).rowcount
         if changed != 1:
             raise core.PreflightError(
-                "恢复时状态已变化，新 session 未提交")
+                "续传时状态已变化，新 session 未提交")
         con.execute(
             "UPDATE snapshot_info SET scan_status='running',"
             " database_integrity='pending',finished_at_utc=NULL WHERE id=1"
@@ -1358,7 +1358,7 @@ def start_publication_retry_session(
         ).rowcount
         if changed != 1:
             raise core.PreflightError(
-                "发布恢复时状态已变化，新 session 未提交")
+                "发布重试时状态已变化，新 session 未提交")
         con.execute(
             "UPDATE stage_checkpoints SET state='running',session_id=?,"
             " updated_at_utc=?,finished_at_utc=NULL,current_entry_id=NULL,"
@@ -1598,7 +1598,7 @@ def recover_interrupted(
         "running", "pause_requested", "paused", "sealing",
     ):
         raise core.PreflightError(
-            f"状态 {runtime.run_state} 不需要异常终止恢复")
+            f"状态 {runtime.run_state} 不需要异常中断修复")
     now = _now_text(now_utc)
     next_revision = runtime.state_revision + 1
     with con:
@@ -1650,7 +1650,7 @@ def recover_interrupted(
         ).rowcount
         if changed != 1:
             raise core.PreflightError(
-                "恢复事务检测到状态竞态，未提交任何重置")
+                "异常中断修复事务检测到状态竞态，未提交任何重置")
         con.execute(
             "UPDATE snapshot_info SET scan_status='interrupted',"
             " database_integrity='pending',finished_at_utc=NULL WHERE id=1"
@@ -1714,7 +1714,7 @@ def validate_resume_identity(
         RESUME_CONTRACT, FILENAME_LAYOUT_VERSION, DATA_CONTRACT,
     ):
         raise core.PreflightError(
-            "partial 的 data／resume／filename layout 契约不兼容")
+            "partial 的 data/resume/filename layout 契约不兼容")
     return runtime
 
 
@@ -2067,7 +2067,7 @@ def _insert_performance(
     if confidence != "none" and (
             reason is None or "读取性能异常候选" not in reason):
         raise ValueError(
-            "性能候选原因必须明确使用“读取性能异常候选”措辞")
+            "性能候选原因必须明确使用「读取性能异常候选」措辞")
     con.execute(
         "INSERT INTO read_performance"
         " (attempt_id,entry_id,session_id,stage,origin,size_bytes,bytes_read,"
@@ -2349,7 +2349,7 @@ def _replace_lease(
         with open(normalized, "rb") as handle:
             if handle.read() != expected_bytes:
                 raise core.PreflightError(
-                    "lease 在替换前已被其它 owner 修改")
+                    "占用锁在替换前已被其他持有者修改")
         descriptor = os.open(
             temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(descriptor, "wb") as handle:
@@ -2422,7 +2422,7 @@ def acquire_lease_file(
     if not takeover:
         raise core.PreflightError(
             f"存在失效或损坏 lease（{classification}）；"
-            "必须使用明确恢复入口接管")
+            "必须通过明确的续传操作接管")
     _replace_lease(normalized, record, existing_bytes)
     return record
 
@@ -2555,7 +2555,7 @@ def _publish_with_artifacts_no_clobber(
     issue_markdown: str | None,
     additional_artifacts: Mapping[str, bytes],
 ) -> tuple[str | None, tuple[str, ...]]:
-    """协调发布数据库、Issues 与额外伴随文件；失败回收本次精确目标。"""
+    """协调发布数据库、问题报告与额外伴随文件；失败回收本次精确目标。"""
     final = _normalized(final_path)
     working = _normalized(working_path)
     directory = os.path.dirname(final)
@@ -2611,7 +2611,7 @@ def _publish_with_artifacts_no_clobber(
             expected_digest = hashlib.sha256(payload).hexdigest()
             if core.sha256_file(staging) != expected_digest:
                 raise core.PreflightError(
-                    f"额外伴随产物 staging 摘要校验失败：{path}")
+                    f"额外伴随产物的暂存文件摘要校验失败：{path}")
             _publish_no_clobber(staging, path)
             staging_paths.remove(staging)
             created.append(path)
@@ -2671,7 +2671,7 @@ def publish_sealed_snapshot(
         [sqlite3.Connection, str, str], Mapping[str, bytes]
     ] | None = None,
 ) -> PublicationResult:
-    """复制并发布 sealed partial，可在发布前联动创建只读 Issues。"""
+    """复制并发布已封存的未完成快照；发布前可联动创建只读问题报告。"""
     if (lease_path is None) != (lease_id is None):
         raise ValueError("lease_path 与 lease_id 必须同时提供或同时省略")
     partial = _normalized(partial_path)
@@ -2679,10 +2679,10 @@ def publish_sealed_snapshot(
     if not os.path.isfile(partial):
         raise core.PreflightError(f"sealed partial 不存在：{partial}")
     if os.path.normcase(partial) == os.path.normcase(staging):
-        raise core.PreflightError("发布 staging 不能覆盖 sealed partial")
+        raise core.PreflightError("发布暂存文件不能覆盖已封存的未完成快照")
     if os.path.normcase(os.path.dirname(partial)) != os.path.normcase(
             os.path.dirname(staging)):
-        raise core.PreflightError("发布 staging 必须与 sealed partial 位于同一目录")
+        raise core.PreflightError("发布暂存文件必须与已封存的未完成快照位于同一目录")
 
     source = None
     destination = None
@@ -2767,7 +2767,7 @@ def publish_sealed_snapshot(
             digest_after_report = core.sha256_file(staging)
             if digest_after_report != digest:
                 raise core.PreflightError(
-                    "Issues 只读分析改变了发布副本，已拒绝发布")
+                    "问题报告只读分析改变了发布副本，已拒绝发布")
         issue_report_path, artifact_paths = \
             _publish_with_artifacts_no_clobber(
                 staging,

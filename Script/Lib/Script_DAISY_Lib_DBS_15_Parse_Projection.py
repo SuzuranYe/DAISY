@@ -1,7 +1,7 @@
-"""DAISY 数据库解析的版本化、流式模块投影。
+"""DAISY 档案数据解析的版本化、流式模块投影。
 
 本模块只消费统一 Reader 已准入的只读连接。大表使用 ``fetchmany``，不创建
-临时表／索引，不读取快照记录的源文件路径。raw payload 按行解压并验证长度、
+临时表／索引，不读取快照记录的源文件路径。工具原始输出按行解压并验证长度、
 SHA-256 和 UTF-8 JSON；SQLite 内部 entry_id 不作为导出身份。
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ CancelCheck = Callable[[], bool] | None
 
 def _check_cancel(cancel_check: CancelCheck) -> None:
     if cancel_check is not None and cancel_check():
-        raise ParseProjectionCancelled("数据库解析已取消")
+        raise ParseProjectionCancelled("档案数据解析已取消")
 
 
 def _logical_path_sql(root: str = "r", entry: str = "e") -> str:
@@ -337,15 +337,15 @@ def _iter_snapshot_overview(
     del batch_rows
     for key, label, value in (
         ("database_type", "数据库类型", descriptor.database_type),
-        ("schema_version", "schema", descriptor.schema_version),
-        ("source_version", "生成器版本", descriptor.source_version),
+        ("schema_version", "数据库结构版本", descriptor.schema_version),
+        ("source_version", "数据库生成程序版本", descriptor.source_version),
         ("lifecycle", "封存状态", descriptor.lifecycle),
         ("sqlite_integrity", "SQLite 完整性", descriptor.sqlite_integrity),
         ("snapshot_uuid", "快照 UUID", descriptor.identity.get(
             "snapshot_uuid")),
         ("hash_coverage", "哈希覆盖", descriptor.identity.get(
             "hash_coverage")),
-        ("scan_kind", "扫描类型", descriptor.identity.get("scan_kind")),
+        ("scan_kind", "扫描模式", descriptor.identity.get("scan_kind")),
         ("metadata_storage", "元数据范围", descriptor.identity.get(
             "metadata_storage")),
         ("format_validation", "格式校验", descriptor.identity.get(
@@ -376,9 +376,9 @@ def _iter_snapshot_overview(
             "SELECT root_label,root_path,enum_status FROM roots"
             " ORDER BY root_label COLLATE BINARY"):
         yield _overview_row(
-            "root", f"{root_label}.path", f"root {root_label}", root_path)
+            "root", f"{root_label}.path", f"根目录 {root_label}", root_path)
         yield _overview_row(
-            "root", f"{root_label}.enum_status", f"root {root_label} 状态",
+            "root", f"{root_label}.enum_status", f"根目录 {root_label} 状态",
             enum_status)
     row = con.execute(
         "SELECT counts_json FROM snapshot_info WHERE id=1").fetchone()
@@ -634,20 +634,20 @@ def _iter_raw_payloads(
                 raw = zlib.decompress(bytes(payload_zlib))
             except (TypeError, ValueError, zlib.error) as exc:
                 raise core.PreflightError(
-                    f"原始载荷无法解压：{label}：{exc}") from exc
+                    f"工具原始输出无法解压（{label}）：{exc}") from exc
             if len(raw) != int(uncompressed_bytes):
                 raise core.PreflightError(
-                    f"原始载荷长度不符：{label}："
+                    f"工具原始输出长度不符（{label}）："
                     f"声明={uncompressed_bytes}，实际={len(raw)}")
             actual_sha = hashlib.sha256(raw).hexdigest()
             if actual_sha.casefold() != str(payload_sha256).casefold():
                 raise core.PreflightError(
-                    f"原始载荷 SHA-256 不符：{label}")
+                    f"工具原始输出 SHA-256 不符（{label}）")
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except (UnicodeError, ValueError) as exc:
                 raise core.PreflightError(
-                    f"原始载荷不是有效 UTF-8 JSON：{label}：{exc}") from exc
+                    f"工具原始输出不是有效 UTF-8 JSON（{label}）：{exc}") from exc
             yield dict(zip(_RAW_FIELDS, (
                 root_label, rel_path, logical_path, provider,
                 provider_version, profile_version, payload_sha256,
@@ -934,6 +934,23 @@ def _iter_diff_overview(
     if row is None:
         raise core.PreflightError("Diff 概览缺少 diff_info id=1")
     info = dict(zip(columns, tuple(row)))
+    labels = {
+        "diff_uuid": "Diff UUID",
+        "schema_version": "数据库结构版本",
+        "old_schema_version": "基准结构版本",
+        "new_schema_version": "对比结构版本",
+        "old_snapshot_uuid": "基准快照 UUID",
+        "new_snapshot_uuid": "对比快照 UUID",
+        "old_snapshot_file": "基准快照文件",
+        "new_snapshot_file": "对比快照文件",
+        "old_hash_coverage": "基准哈希覆盖",
+        "new_hash_coverage": "对比哈希覆盖",
+        "forced": "是否允许文件名指纹缺失",
+        "tool_version": "Diff 数据库生成程序版本",
+        "created_at_utc": "Diff 数据库生成时间 (UTC)",
+        "root_mapping_json": "根目录名对应关系",
+        "counts_json": "封存声明计数",
+    }
     for key in (
         "diff_uuid", "schema_version", "old_schema_version",
         "new_schema_version", "old_snapshot_uuid", "new_snapshot_uuid",
@@ -941,7 +958,8 @@ def _iter_diff_overview(
         "new_hash_coverage", "forced", "tool_version", "created_at_utc",
     ):
         _check_cancel(cancel_check)
-        yield _overview_row("identity", key, key, info.get(key))
+        yield _overview_row(
+            "identity", key, labels.get(key, key), info.get(key))
     for key in ("root_mapping_json", "counts_json"):
         value = info.get(key)
         if value:
@@ -950,18 +968,18 @@ def _iter_diff_overview(
             except (TypeError, ValueError) as exc:
                 raise core.PreflightError(
                     f"diff_info.{key} 无法解析：{exc}") from exc
-        yield _overview_row("declared", key, key, value)
+        yield _overview_row(
+            "declared", key, labels.get(key, key), value)
     for status, count in con.execute(
             "SELECT status,COUNT(*) FROM diff_entries"
             " GROUP BY status ORDER BY status"):
         yield _overview_row(
-            "file_status", str(status), str(status), int(count))
+            "file_status", str(status),
+            dbparse._EXCEL_VALUE_NAMES.get(str(status), str(status)),
+            int(count))
     yield _overview_row(
         "compatibility", "mode", "兼容模式",
-        "v1.4.1-compatible" if (
-            int(descriptor.identity["old_schema_version"]),
-            int(descriptor.identity["new_schema_version"]),
-        ) == (3, 3) else "cross-version",
+        dbparse.compatibility_mode(descriptor),
     )
 
 
@@ -1192,8 +1210,11 @@ def iter_module_rows(
             f"当前数据库类型没有解析模块：{module_id}")
     if not status.selectable:
         detail = f"：{status.reason}" if status.reason else ""
+        state_label = dbparse.PARSE_MODULE_STATE_LABELS.get(
+            status.state, status.state)
         raise core.PreflightError(
-            f"解析模块 {module_id} 为 {status.state}，不可读取{detail}")
+            f"解析模块 {module_id} 的状态为「{state_label}」，"
+            f"不可读取{detail}")
     try:
         iterator = _ITERATORS[(descriptor.database_type, module_id)]
     except KeyError as exc:

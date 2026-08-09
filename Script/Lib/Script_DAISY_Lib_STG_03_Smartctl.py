@@ -196,7 +196,7 @@ def build_read_command(
     device: core.SmartDevice,
 ) -> list[str]:
     if not device.name or not device.device_type:
-        raise core.DaisySmartError("smartctl 扫描结果缺少设备名称或设备类型。")
+        raise core.DaisySmartError("smartctl 设备枚举结果缺少设备名称或设备类型。")
     if not re.fullmatch(r"[A-Za-z0-9_,.+-]+", device.device_type):
         raise core.DaisySmartError(f"smartctl 设备类型包含异常字符：{device.device_type!r}")
     if any(character in device.name for character in ("\x00", "\r", "\n")):
@@ -256,7 +256,7 @@ def scan(
     found_version = require_supported_version(version(executable))
     command = build_scan_command(executable)
     process = _run(command, timeout=timeout)
-    payload = _parse_json(process.stdout, process.stderr, "smartctl 扫描")
+    payload = _parse_json(process.stdout, process.stderr, "smartctl 设备枚举")
     devices: list[core.SmartDevice] = []
     for item in core.as_list(payload.get("devices")):
         if not isinstance(item, dict):
@@ -289,7 +289,7 @@ def scan(
     if stderr:
         warnings.append(stderr)
     if process.returncode and not warnings:
-        warnings.append(f"smartctl 扫描退出码：{process.returncode}")
+        warnings.append(f"smartctl 设备枚举退出码：{process.returncode}")
     if not devices and not warnings:
         warnings.append("smartctl 没有发现设备。")
     return SmartctlScan(
