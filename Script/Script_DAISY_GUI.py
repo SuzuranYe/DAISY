@@ -2191,8 +2191,18 @@ _TASK_MENU_SECTION_BY_KEY = {
     for section_label, task_keys in _TASK_MENU_SECTIONS
     for task_key in task_keys
 }
-_TASK_TOOLBAR_KEYS = _TASK_MENU_ORDER
+_TASK_TOOLBAR_KEYS = (
+    "scan", "diff", "verify", "parse_db", "storage_collect", "env_check",
+)
 _TASK_TOOLBAR_LABELS = {
+    "scan": "扫描建库",
+    "diff": "快照对比",
+    "verify": "数据核验",
+    "parse_db": "数据解析",
+    "storage_collect": "硬盘登记",
+    "env_check": "环境检测",
+}
+_TASK_DISPLAY_TITLES = {
     "env_check": "运行环境检测",
     "scan": "档案扫描建库",
     "diff": "档案快照对比",
@@ -2203,8 +2213,8 @@ _TASK_TOOLBAR_LABELS = {
 
 
 def task_display_title(task_key: str) -> str:
-    """返回设置卡与功能模块共用的六字标题。"""
-    return _TASK_TOOLBAR_LABELS.get(task_key, TASK_BY_KEY[task_key].title)
+    """返回设置卡、进度和报告使用的完整功能标题。"""
+    return _TASK_DISPLAY_TITLES.get(task_key, TASK_BY_KEY[task_key].title)
 
 
 _STANDARD_BUTTON_WIDTH = 14
@@ -3494,6 +3504,7 @@ class StorageDiskPool(tk.Frame):
         selected = set(_lines(initial))
         self._variables: dict[int, tk.BooleanVar] = {}
         self.checkboxes: list[tk.Checkbutton] = []
+        self.slot_frames: list[tk.Frame] = []
         self._checkbox_images: dict[str, tk.PhotoImage] = {}
         self.grid_columnconfigure(0, weight=1)
 
@@ -3553,9 +3564,19 @@ class StorageDiskPool(tk.Frame):
         }
 
         for row_index, option in enumerate(options):
-            row = tk.Frame(rows, bg=_SURFACE)
-            row.grid(row=row_index, column=0, sticky="ew", pady=(0, 3))
+            rows.grid_rowconfigure(
+                row_index, minsize=44, uniform="storage_disk_slot")
+            row = tk.Frame(
+                rows, bg=_FIELD,
+                highlightbackground=_BORDER, highlightthickness=1,
+            )
+            row.grid(
+                row=row_index, column=0, sticky="nsew",
+                pady=(0, _SPACING_COMPACT),
+            )
             row.grid_columnconfigure(0, weight=1)
+            row.grid_rowconfigure(0, weight=1)
+            self.slot_frames.append(row)
             variable = tk.BooleanVar(
                 value=option.selectable and option.value in selected)
             self._variables[option.disk_number] = variable
@@ -3568,21 +3589,21 @@ class StorageDiskPool(tk.Frame):
                 image=base_image,
                 selectimage=self._checkbox_images["on"],
                 indicatoron=False, compound="left",
-                bg=_SURFACE, activebackground=_SURFACE,
+                bg=_FIELD, activebackground=_FIELD,
                 fg=_TEXT, activeforeground=_TEXT,
                 disabledforeground=_MUTED, selectcolor=_FIELD,
                 font=("Microsoft YaHei UI", 9), anchor="w",
                 justify="left", wraplength=650,
                 highlightthickness=0, bd=0, relief="flat",
-                offrelief="flat", overrelief="flat", padx=4, pady=4,
+                offrelief="flat", overrelief="flat", padx=8, pady=6,
             )
-            checkbox.grid(row=0, column=0, sticky="ew")
+            checkbox.grid(row=0, column=0, sticky="nsew")
             self.checkboxes.append(checkbox)
             status_colour = _GREEN_DEEP if option.selectable else _MUTED
             tk.Label(
-                row, text=option.reason, bg=_SURFACE, fg=status_colour,
+                row, text=option.reason, bg=_FIELD, fg=status_colour,
                 font=("Microsoft YaHei UI", 8), anchor="e",
-            ).grid(row=0, column=1, sticky="e", padx=(10, 4))
+            ).grid(row=0, column=1, sticky="e", padx=(10, 8))
             row.bind(
                 "<Configure>",
                 lambda event, widget=checkbox: widget.configure(
@@ -4880,6 +4901,7 @@ class DaisyApp:
             "Daisy.TCombobox": (10, "normal"),
             "Browse.TButton": (10, "normal"),
             "FormAction.TButton": (10, "normal"),
+            "DiscoveryAction.TButton": (10, "normal"),
             "FilePicker.TButton": (10, "normal"),
             "Remove.TButton": (10, "normal"),
             "Primary.TButton": (10, "normal"),
@@ -5376,6 +5398,18 @@ class DaisyApp:
             background=[("active", _CONTROL_HOVER)],
         )
         style.configure(
+            "DiscoveryAction.TButton",
+            background=_GREEN_SOFT, foreground=_GREEN_DEEP,
+            bordercolor=_GREEN, lightcolor=_GREEN, darkcolor=_GREEN,
+            padding=_STANDARD_BUTTON_PADDING,
+            font=("Microsoft YaHei UI", 10),
+        )
+        style.map(
+            "DiscoveryAction.TButton",
+            background=[("active", _GREEN)],
+            foreground=[("disabled", _MUTED)],
+        )
+        style.configure(
             "FilePicker.TButton", background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
             padding=_FILE_PICKER_BUTTON_PADDING,
@@ -5820,7 +5854,7 @@ class DaisyApp:
         self.root.configure(menu=menu)
 
     def _build_task_toolbar(self) -> None:
-        """建立固定单排、等宽的六个主功能入口。"""
+        """按工作流建立固定单排、等宽的六个简短功能入口。"""
         panel = tk.Frame(
             self.root, bg=_SURFACE,
             highlightbackground=_BORDER, highlightthickness=1,
@@ -6450,7 +6484,7 @@ class DaisyApp:
     def _layout_task_toolbar(
         self, _event: tk.Event | None = None,
     ) -> None:
-        """六个六字功能入口始终保持同一行、同一宽度和同一高度。"""
+        """六个功能入口始终保持同一行、同一宽度和同一高度。"""
         if getattr(self, "_task_toolbar_layout_ready", False):
             return
         for button in self.task_toolbar_buttons.values():
@@ -6470,7 +6504,7 @@ class DaisyApp:
     def _fit_task_toolbar_buttons(
         self, _event: tk.Event | None = None,
     ) -> None:
-        """在保持六按钮单排和完整标题的前提下压缩横向内部留白。"""
+        """在保持六按钮单排和短标题的前提下压缩横向内部留白。"""
         buttons = list(self.task_toolbar_buttons.values())
         if not buttons:
             return
@@ -7548,7 +7582,8 @@ class DaisyApp:
         self.storage_detect_button = ttk.Button(
             panel,
             text="重新检测硬盘" if found_count else "检测硬盘",
-            style="FormAction.TButton", width=_FORM_ACTION_BUTTON_WIDTH,
+            style="DiscoveryAction.TButton",
+            width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._run_storage_inventory,
         )
         self.storage_detect_button.grid(
@@ -7604,7 +7639,7 @@ class DaisyApp:
                 f"可导出数据模块 {available} 项。数据库变化后请重新解析。"
             )
         self.parse_detect_button = ttk.Button(
-            panel, text="解析数据库", style="FormAction.TButton",
+            panel, text="解析数据库", style="DiscoveryAction.TButton",
             width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._detect_parse_database,
         )
@@ -7911,7 +7946,7 @@ class DaisyApp:
                 widget.bind("<Button-4>", self._scroll_form)
                 widget.bind("<Button-5>", self._scroll_form)
                 self.values[spec.key] = var
-            elif spec.kind == "multidir":
+            elif spec.kind in ("multidir", "multimapdir"):
                 widget = DirectoryListEditor(
                     cell, initial=current, title=spec.label,
                     on_change=self._update_preview,
@@ -7924,7 +7959,7 @@ class DaisyApp:
                     cell, initial=current, on_change=self._update_preview)
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
-            elif spec.kind in ("multimapdir", "multiline"):
+            elif spec.kind == "multiline":
                 widget = tk.Text(
                     cell, height=3, wrap="none", bg=_FIELD, fg=_TEXT,
                     insertbackground=_TEXT, relief="solid", bd=1,
@@ -7932,29 +7967,11 @@ class DaisyApp:
                     font=("Microsoft YaHei UI", 9),
                     padx=7, pady=6,
                 )
-                if spec.kind == "multimapdir":
-                    cell.grid_columnconfigure(0, weight=1)
-                    widget.grid(
-                        row=1, column=0, sticky="ew", pady=(4, 0))
-                else:
-                    widget.grid(row=0, column=0, sticky="ew")
+                widget.grid(row=0, column=0, sticky="ew")
                 widget.insert("1.0", str(current or ""))
                 widget.edit_modified(False)
                 widget.bind("<<Modified>>", self._text_changed)
                 self.values[spec.key] = widget
-                if spec.kind == "multimapdir":
-                    add_directory_button = ttk.Button(
-                        cell, text="添加目录", style="FilePicker.TButton",
-                        width=_FILE_PICKER_BUTTON_WIDTH,
-                        command=lambda s=spec, w=widget:
-                        self._append_directory(s, w),
-                    )
-                    add_directory_button.grid(
-                        row=0, column=0, sticky="w")
-                    attach_tooltip(
-                        add_directory_button,
-                        f"选择一个目录并追加到「{spec.label}」列表。",
-                    )
             else:
                 var = tk.StringVar(value=str(current or ""))
                 var.trace_add("write", lambda *_args: self._update_preview())
@@ -8334,18 +8351,6 @@ class DaisyApp:
             if (self.task.key == "parse_db"
                     and spec.kind == "parse_database"):
                 self.root.after_idle(self._detect_parse_database)
-
-    def _append_directory(self, spec: FieldSpec, widget: tk.Text) -> None:
-        chosen = filedialog.askdirectory(
-            parent=self.root, initialdir=_BASE, title=f"添加{spec.label}",
-        )
-        if not chosen:
-            return
-        value = os.path.normpath(chosen)
-        existing = widget.get("1.0", "end-1c")
-        widget.insert("end", ("\n" if existing and not existing.endswith("\n")
-                              else "") + value)
-        widget.edit_modified(True)
 
     def _collect_values(self) -> dict[str, object]:
         result = _task_values(

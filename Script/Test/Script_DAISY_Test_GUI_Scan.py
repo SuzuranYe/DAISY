@@ -1,4 +1,4 @@
-"""DAISY v1.6.2 统一扫描 GUI 控制链测试。
+"""DAISY v1.6.3 统一扫描 GUI 控制链测试。
 
 只使用工作区内合成路径、内存管道和本测试精确创建的 Tcl/Tk 窗口；不枚举、
 附加或终止其它进程。
@@ -633,7 +633,7 @@ class TestRealTkScanControls(unittest.TestCase):
         buttons = self.app.task_toolbar_buttons
         self.assertEqual(tuple(buttons), gui._TASK_TOOLBAR_KEYS)
         self.assertTrue(all(
-            len(button.cget("text")) == gui._FORM_FIELD_TITLE_MAX_CHARS
+            len(button.cget("text")) == 4
             for button in buttons.values()
         ))
         self.assertEqual(

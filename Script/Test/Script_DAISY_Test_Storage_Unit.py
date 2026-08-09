@@ -135,7 +135,7 @@ class TestCore(unittest.TestCase):
     def test_integrated_version_matches_daisy_release(self):
         import Script_DAISY_Lib_DBS_01_Core as daisy_core
 
-        self.assertEqual(core.APP_VERSION, "1.6.2")
+        self.assertEqual(core.APP_VERSION, "1.6.3")
         self.assertEqual(core.APP_VERSION, daisy_core.SCANNER_VERSION)
 
     def test_disk_labels_and_archive_identity(self):
@@ -374,7 +374,7 @@ class TestArchive(unittest.TestCase):
             verified = archive.verify_archive(result.path)
             self.assertEqual(verified.zip_sha256, result.zip_sha256)
             self.assertEqual(
-                verified.manifest["application"]["version"], "1.6.2")
+                verified.manifest["application"]["version"], "1.6.3")
             self.assertEqual(
                 verified.manifest["application"]["author"], "Suzuran Ye")
             self.assertEqual(

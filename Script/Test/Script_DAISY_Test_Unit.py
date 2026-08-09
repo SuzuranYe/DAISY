@@ -185,7 +185,7 @@ class TestGuiArguments(unittest.TestCase):
                 )
                 self.assertNotIn("*", spec.label)
         self.assertTrue(all(
-            len(label) == gui._FORM_FIELD_TITLE_MAX_CHARS
+            len(label) == 4
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
         expected = {
@@ -1682,6 +1682,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.0", evolution)
         self.assertIn("DAISY v1.6.1", evolution)
         self.assertIn("DAISY v1.6.2", evolution)
+        self.assertIn("DAISY v1.6.3", evolution)
         self.assertIn("STG-11 硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
@@ -2582,16 +2583,31 @@ class TestGuiArguments(unittest.TestCase):
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.task_toolbar_body = BodyProbe()
-        all_keys = gui._TASK_MENU_ORDER
+        all_keys = gui._TASK_TOOLBAR_KEYS
         app.task_toolbar_buttons = {
             key: WidgetProbe() for key in all_keys
         }
         app.task_toolbar_section_labels = {}
         app._task_toolbar_layout_ready = False
-        self.assertEqual(gui._TASK_TOOLBAR_KEYS, all_keys)
+        self.assertEqual(
+            all_keys,
+            ("scan", "diff", "verify", "parse_db",
+             "storage_collect", "env_check"),
+        )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_LABELS,
+            {
+                "scan": "扫描建库",
+                "diff": "快照对比",
+                "verify": "数据核验",
+                "parse_db": "数据解析",
+                "storage_collect": "硬盘登记",
+                "env_check": "环境检测",
+            },
+        )
         self.assertEqual(set(gui._TASK_TOOLBAR_LABELS), set(all_keys))
         self.assertTrue(all(
-            len(label) == gui._FORM_FIELD_TITLE_MAX_CHARS
+            len(label) == 4
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
         self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 0)
@@ -2864,7 +2880,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.manual_tool_paths, preferences["manual_tool_paths"])
         self.assertEqual(app.values["snapshot"].get(), "")
-        self.assertEqual(app.values["root_map"].get("1.0", "end-1c"), "")
+        self.assertEqual(app.values["root_map"].get(), "")
         verification = app.values["verify_builtin"].get_values()
         self.assertTrue(verification["verify_builtin"])
         self.assertTrue(verification["verify_ffprobe"])
@@ -3137,7 +3153,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(gui._UI_BODY_FONT_SIZE, 10)
         for style_name in (
                 "TLabel", "TEntry", "Daisy.TCombobox",
-                "FormAction.TButton"):
+                "FormAction.TButton", "DiscoveryAction.TButton"):
             actual_font = gui.tkfont.Font(
                 root=root, font=app.style.lookup(style_name, "font"))
             self.assertEqual(
@@ -3307,7 +3323,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLess(pool.clear_selection_button.winfo_reqwidth(), 220)
         self.assertEqual(
             app.storage_detect_button.cget("style"),
-            "FormAction.TButton",
+            "DiscoveryAction.TButton",
         )
 
         app.process_task_key = "storage_list"
@@ -3435,7 +3451,16 @@ class TestGuiArguments(unittest.TestCase):
         )
         parse_button = app.parse_detect_button
         self.assertEqual(parse_button.cget("text"), "解析数据库")
-        self.assertEqual(parse_button.cget("style"), "FormAction.TButton")
+        self.assertEqual(
+            parse_button.cget("style"), "DiscoveryAction.TButton")
+        self.assertEqual(
+            app.style.lookup(parse_button.cget("style"), "background"),
+            gui._GREEN_SOFT,
+        )
+        self.assertEqual(
+            app.style.lookup(parse_button.cget("style"), "foreground"),
+            gui._GREEN_DEEP,
+        )
         self.assertIs(parse_button.master.master, app.form_inner)
         self.assertIsNot(parse_button.master, input_cell)
         parse_panel_info = parse_button.master.grid_info()
@@ -3455,10 +3480,51 @@ class TestGuiArguments(unittest.TestCase):
         app._select_task("storage_collect", save_current=False)
         root.update()
         self.assertEqual(app.storage_detect_button.cget("text"), "检测硬盘")
+        self.assertEqual(
+            app.storage_detect_button.cget("style"),
+            "DiscoveryAction.TButton",
+        )
         self.assertLessEqual(
             abs(app.storage_detect_button.winfo_rootx() - parse_button_x), 1)
         self.assertEqual(
             app.storage_detect_button.winfo_width(), parse_button_width)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_storage_disk_slots_share_one_card_layout(self):
+        root, app = self._real_tk_app()
+        root.geometry("1100x900")
+        app.storage_disk_options = (
+            gui.StorageDiskOption(
+                0, "PhysicalDrive0 · C: · 短型号 · 1 TB",
+                True, True, "联机 · 可登记"),
+            gui.StorageDiskOption(
+                1,
+                "PhysicalDrive1 · D: 档案／E: 备份 · "
+                + "较长的硬盘型号与说明文字" * 8 + " · 16 TB",
+                True, True, "联机 · 可登记"),
+            gui.StorageDiskOption(
+                2, "PhysicalDrive2 · 无盘符或无卷标 · 型号未提供",
+                False, False, "已脱机"),
+        )
+        app._select_task("storage_collect", save_current=False)
+        root.update()
+
+        pool = app.values["disk_number"]
+        self.assertIsInstance(pool, gui.StorageDiskPool)
+        self.assertEqual(len(pool.slot_frames), 3)
+        self.assertEqual(
+            len({frame.winfo_width() for frame in pool.slot_frames}), 1)
+        self.assertEqual(
+            len({frame.winfo_height() for frame in pool.slot_frames}), 1)
+        self.assertTrue(all(
+            frame.cget("background") == gui._FIELD
+            and int(frame.cget("highlightthickness")) == 1
+            for frame in pool.slot_frames
+        ))
+        self.assertTrue(all(
+            checkbox.cget("background") == gui._FIELD
+            for checkbox in pool.checkboxes
+        ))
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_progress_palette_matches_log_palette(self):
@@ -3538,17 +3604,20 @@ class TestGuiArguments(unittest.TestCase):
         list_add = app.values["roots"].add_button
         self.assertEqual(int(list_add.grid_info()["column"]), 0)
         self.assertEqual(str(list_add.grid_info()["sticky"]), "w")
+        list_add_style = list_add.cget("style")
+        list_add_width = list_add.cget("width")
 
         app._select_task("check_hash", save_current=False)
         root.update()
         mapping = app.values["root_map"]
-        mapped_add = next(
-            child for child in mapping.master.winfo_children()
-            if isinstance(child, gui.ttk.Button)
-            and child.cget("text") == "添加目录"
-        )
+        self.assertIsInstance(mapping, gui.DirectoryListEditor)
+        mapped_add = mapping.add_button
         self.assertEqual(int(mapped_add.grid_info()["column"]), 0)
         self.assertEqual(str(mapped_add.grid_info()["sticky"]), "w")
+        self.assertEqual(mapped_add.cget("style"), list_add_style)
+        self.assertEqual(mapped_add.cget("width"), list_add_width)
+        self.assertTrue(mapping.add_value(r"archive=C:\Archive"))
+        self.assertEqual(mapping.get(), r"archive=C:\Archive")
 
         app._select_task("scan", save_current=False)
         app.values["scan_mode"].buttons["full"].invoke()
@@ -3969,6 +4038,7 @@ class TestGuiArguments(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_top_toolbar_matches_form_button_shape_and_ratio(self):
         root, app = self._real_tk_app()
+        root.geometry("1100x900")
         app._select_task("scan", save_current=False)
         root.update()
         mode_button = next(iter(app.values["scan_mode"].buttons.values()))
@@ -4541,12 +4611,13 @@ class TestGuiArguments(unittest.TestCase):
         for task_key in gui._TASK_MENU_ORDER:
             self.assertEqual(
                 gui.task_display_title(task_key),
-                gui._TASK_TOOLBAR_LABELS[task_key],
+                gui._TASK_DISPLAY_TITLES[task_key],
             )
             self.assertEqual(
                 len(gui.task_display_title(task_key)),
                 gui._FORM_FIELD_TITLE_MAX_CHARS,
             )
+            self.assertEqual(len(gui._TASK_TOOLBAR_LABELS[task_key]), 4)
         self.assertEqual(
             gui.task_display_title(gui._PROJECT_SELF_TEST_KEY),
             "DAISY 功能自检",
@@ -4687,7 +4758,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.2")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.3")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
