@@ -4160,6 +4160,31 @@ class MultiChoicePool(tk.Frame):
         )
 
 
+_PARSE_MODULE_UI_TITLES = {
+    ("snapshot", "overview"): "快照概览",
+    ("snapshot", "issues"): "问题与诊断",
+    ("snapshot", "files"): "文件清单",
+    ("snapshot", "directories"): "目录清单",
+    ("snapshot", "hashes"): "文件哈希",
+    ("snapshot", "photo_metadata"): "照片元数据",
+    ("snapshot", "video_metadata"): "视频元数据",
+    ("snapshot", "video_gps"): "视频定位点",
+    ("snapshot", "media_streams"): "音视频轨道",
+    ("snapshot", "working_metadata"): "工作图像信息",
+    ("snapshot", "document_metadata"): "文档元数据",
+    ("snapshot", "archives"): "压缩包与成员",
+    ("snapshot", "raw_payloads"): "工具原始输出",
+    ("snapshot", "diagnostics"): "元数据诊断",
+    ("snapshot", "run_history"): "扫描运行记录",
+}
+
+
+def _parse_module_ui_title(spec: dbparse.ParseModuleSpec) -> str:
+    """返回简明界面名称；稳定模块标题和导出名称保持不变。"""
+    return _PARSE_MODULE_UI_TITLES.get(
+        (spec.database_type, spec.module_id), spec.title)
+
+
 class ParseModulePool(tk.Frame):
     """按 Reader 能力状态展示解析模块；不可用项保持禁用。"""
 
@@ -4185,6 +4210,7 @@ class ParseModulePool(tk.Frame):
         self.variables: dict[str, tk.BooleanVar] = {}
         self.buttons: dict[str, tk.Button] = {}
         self.cards: list[tk.Button] = []
+        self._layout_signature: tuple[int, int] | None = None
         if inspection is None:
             tk.Label(
                 self, text="请先选择并解析输入数据库。",
@@ -4202,29 +4228,33 @@ class ParseModulePool(tk.Frame):
 
         self.actions = tk.Frame(self, bg=_SURFACE)
         all_button = ttk.Button(
-            self.actions, text="全选", style="FormAction.TButton",
-            width=_FORM_ACTION_BUTTON_WIDTH, command=self.select_all,
+            self.actions, text="全选", style="FilePicker.TButton",
+            width=_FILE_PICKER_BUTTON_WIDTH, command=self.select_all,
         )
         all_button.pack(
             side="left", padx=(0, _STANDARD_BUTTON_GAP))
         clear_button = ttk.Button(
-            self.actions, text="取消选择", style="FormAction.TButton",
-            width=_FORM_ACTION_BUTTON_WIDTH, command=self.clear_selection,
+            self.actions, text="取消选择", style="FilePicker.TButton",
+            width=_FILE_PICKER_BUTTON_WIDTH, command=self.clear_selection,
         )
         clear_button.pack(side="left")
         if self.editable:
-            self.actions.pack(fill="x", padx=7, pady=(4, 2))
+            self.actions.pack(
+                fill="x", padx=_SPACING_INLINE,
+                pady=(_SPACING_INLINE, 0),
+            )
 
         self.card_host = tk.Frame(self, bg=_SURFACE)
         self.card_host.pack(
-            fill="x", padx=_SPACING_INLINE, pady=(0, 6))
+            fill="x", padx=_SPACING_INLINE, pady=_SPACING_INLINE)
+        self.card_host.grid_anchor("center")
         for module in inspection.modules:
             module_id = module.spec.module_id
             selected = module.selectable and module_id in requested
             variable = tk.BooleanVar(value=selected)
             self.variables[module_id] = variable
             button = tk.Button(
-                self.card_host, text=module.spec.title,
+                self.card_host, text=_parse_module_ui_title(module.spec),
                 width=_STANDARD_BUTTON_WIDTH,
                 relief="flat", bd=0, highlightthickness=1,
                 font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
@@ -4263,6 +4293,7 @@ class ParseModulePool(tk.Frame):
         self.variables.clear()
         self.buttons.clear()
         self.cards.clear()
+        self._layout_signature = None
         tk.Label(
             self.card_host, text="请点击「解析数据库」识别当前输入。",
             bg=_SURFACE, fg=_MUTED, anchor="w",
@@ -4292,7 +4323,8 @@ class ParseModulePool(tk.Frame):
         if self.editable:
             if not self.actions.winfo_manager():
                 self.actions.pack(
-                    fill="x", padx=7, pady=(4, 2),
+                    fill="x", padx=_SPACING_INLINE,
+                    pady=(_SPACING_INLINE, 0),
                     before=self.card_host,
                 )
         else:
@@ -4336,21 +4368,38 @@ class ParseModulePool(tk.Frame):
         )
 
     def _layout_cards(self, event: tk.Event | None = None) -> None:
-        width = int(event.width) if event is not None else self.card_host.winfo_width()
+        width = (
+            int(event.width)
+            if event is not None else self.card_host.winfo_width()
+        )
         required = max(
             (card.winfo_reqwidth() for card in self.cards), default=160)
-        columns = max(1, min(8, max(1, width) // max(1, required + 4)))
+        gap = _STANDARD_BUTTON_GAP
+        columns = max(1, min(
+            8,
+            (max(1, width) + gap) // max(1, required + gap),
+        ))
+        signature = (columns, required)
+        if signature == self._layout_signature:
+            return
+        self._layout_signature = signature
         for column in range(8):
             self.card_host.grid_columnconfigure(
-                column, weight=1 if column < columns else 0,
-                uniform="parse_module" if column < columns else "",
+                column, weight=0, minsize=(required if column < columns else 0),
+                uniform="",
             )
+        rows = (len(self.cards) + columns - 1) // columns
         for index, card in enumerate(self.cards):
             card.grid_forget()
+            row, column = divmod(index, columns)
+            has_next_in_row = (
+                index + 1 < len(self.cards)
+                and (index + 1) // columns == row
+            )
             card.grid(
-                row=index // columns, column=index % columns, sticky="nsew",
-                padx=(0, 4 if index % columns < columns - 1 else 0),
-                pady=(0, 4),
+                row=row, column=column,
+                padx=(0, gap if has_next_in_row else 0),
+                pady=(0, gap if row < rows - 1 else 0),
             )
 
     def _notify(self) -> None:

@@ -3818,6 +3818,19 @@ class TestGuiArguments(unittest.TestCase):
             "快照版本 未知",
         )
 
+    def test_snapshot_parse_module_ui_titles_are_clear_and_bounded(self):
+        specs = gui.dbparse.parse_modules("snapshot")
+        titles = tuple(gui._parse_module_ui_title(spec) for spec in specs)
+        self.assertEqual(titles, (
+            "快照概览", "问题与诊断", "文件清单", "目录清单", "文件哈希",
+            "照片元数据", "视频元数据", "视频定位点", "音视频轨道",
+            "工作图像信息", "文档元数据", "压缩包与成员", "工具原始输出",
+            "元数据诊断", "扫描运行记录",
+        ))
+        self.assertEqual(len(set(titles)), 15)
+        self.assertTrue(all(len(title) <= 6 for title in titles))
+        self.assertEqual(specs[0].title, "数据概览")
+
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_parsed_snapshot_summary_shows_source_version(self):
         root, app = self._real_tk_app()
@@ -3848,25 +3861,27 @@ class TestGuiArguments(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_parse_modules_use_green_amber_and_gray_buttons(self):
         root, _app = self._real_tk_app()
-        specs = gui.dbparse.parse_modules("snapshot")[:3]
-        modules = (
+        specs = gui.dbparse.parse_modules("snapshot")
+        modules = tuple(
             gui.dbparse.ParseModuleStatus(
-                specs[0], "available", 7, None, True, (), ()),
-            gui.dbparse.ParseModuleStatus(
-                specs[1], "available", 5, None, True, (), ()),
-            gui.dbparse.ParseModuleStatus(
-                specs[2], "empty", 0, "没有记录", True, (), ()),
+                spec,
+                "available" if index < 2 else "empty",
+                7 - index if index < 2 else 0,
+                None if index < 2 else "没有记录",
+                True, (), (),
+            )
+            for index, spec in enumerate(specs)
         )
         inspection = types.SimpleNamespace(
             modules=modules,
-            module_state_counts={"available": 2, "empty": 1},
+            module_state_counts={"available": 2, "empty": 13},
         )
         changed = Mock()
         pool = gui.ParseModulePool(
             root, inspection=inspection, preset="custom",
             initial=specs[0].module_id, on_change=changed,
         )
-        pool.pack()
+        pool.pack(fill="x")
         root.update()
 
         self.assertTrue(all(
@@ -3878,6 +3893,27 @@ class TestGuiArguments(unittest.TestCase):
             "可导出" in button.cget("text")
             for button in pool.buttons.values()
         ))
+        self.assertEqual(
+            [pool.buttons[spec.module_id].cget("text") for spec in specs],
+            [gui._parse_module_ui_title(spec) for spec in specs],
+        )
+        action_buttons = [
+            child for child in pool.actions.winfo_children()
+            if isinstance(child, gui.ttk.Button)
+        ]
+        self.assertEqual(
+            [button.cget("text") for button in action_buttons],
+            ["全选", "取消选择"],
+        )
+        self.assertTrue(all(
+            button.cget("style") == "FilePicker.TButton"
+            and int(button.cget("width")) == gui._FILE_PICKER_BUTTON_WIDTH
+            for button in action_buttons
+        ))
+        self.assertEqual(
+            int(pool.card_host.pack_info()["padx"]), gui._SPACING_INLINE)
+        self.assertEqual(
+            int(pool.card_host.pack_info()["pady"]), gui._SPACING_INLINE)
         first = pool.buttons[specs[0].module_id]
         second = pool.buttons[specs[1].module_id]
         unavailable = pool.buttons[specs[2].module_id]
@@ -3885,6 +3921,25 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(second.cget("background"), gui._AMBER)
         self.assertEqual(unavailable.cget("background"), gui._CONTROL)
         self.assertEqual(unavailable.cget("state"), "disabled")
+
+        pool._layout_cards(types.SimpleNamespace(width=1400))
+        root.update_idletasks()
+        wide_sizes = {
+            (button.winfo_width(), button.winfo_height())
+            for button in pool.buttons.values()
+        }
+        pool._layout_cards(types.SimpleNamespace(width=420))
+        root.update_idletasks()
+        narrow_sizes = {
+            (button.winfo_width(), button.winfo_height())
+            for button in pool.buttons.values()
+        }
+        self.assertEqual(len(wide_sizes), 1)
+        self.assertEqual(narrow_sizes, wide_sizes)
+        self.assertTrue(all(
+            not button.grid_info().get("sticky")
+            for button in pool.buttons.values()
+        ))
 
         second.invoke()
         root.update_idletasks()
