@@ -450,10 +450,14 @@ _GREEN = "#87c1af"
 _GREEN_DARK = "#347a68"
 _GREEN_DEEP = "#245a4e"
 _GREEN_SOFT = "#dce9e1"
+_ACTION_GREEN = "#b7d5c9"
 _AMBER = "#eca93b"
 _AMBER_DARK = "#9a6519"
 _AMBER_DEEP = "#70470f"
 _AMBER_SOFT = "#f1ddb2"
+_OLIVE = "#aebd70"
+_OLIVE_DEEP = "#45552a"
+_OLIVE_SOFT = "#dce3bd"
 _RED = "#9a2d28"
 _RED_DARK = "#7b2925"
 _RED_DEEP = "#5b1f1c"
@@ -1982,11 +1986,11 @@ def _unified_scan_fields() -> tuple[FieldSpec, ...]:
                 spec,
                 label="哈希", kind="value_toggle",
                 choices=(
-                    ("SHA-256", "none"),
+                    ("不采集", "none"),
                     ("SHA-256", "full"),
                 ),
                 help=(
-                    "开启时为每个文件计算 SHA-256；关闭时不计算哈希。"
+                    "选择 SHA-256 时为每个文件计算哈希；选择不采集时不计算哈希。"
                 ),
             )
         if spec.key in _UNIFIED_SCAN_FULL_ONLY:
@@ -2137,13 +2141,13 @@ TASKS = (*TASKS,
                 choices=(("摘要内容", "human-summary"),
                          ("全部内容", "full-audit"),
                          ("自定义", "custom")),
-                help="摘要内容仅选择概览和关键证据；全部内容选择所有可导出的数据模块；"
+                help="摘要内容仅选择概览和关键证据；全部内容选择所有可用的数据模块；"
                      "自定义可逐项调整。",
                 section="导出内容",
             ),
             FieldSpec(
                 "parse_modules", "数据模块", "--include", "parse_modules",
-                help="列出当前数据库的数据模块；不可导出的数据模块会说明原因。",
+                help="列出当前数据库的数据模块；不可用的数据模块会说明原因。",
                 section="导出内容",
             ),
             FieldSpec(
@@ -2233,7 +2237,7 @@ _BLOCK_SELECTION_HOVER = _GREEN
 _BLOCK_SELECTION_FOREGROUND = _GREEN_DEEP
 _UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
 _UNIFIED_ACTION_FOREGROUND = "white"
-_RUN_BUTTON_TEXT = "开始任务"
+_RUN_BUTTON_TEXT = "开始"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 # 全局布局只使用五档可见间距；控件内部的光学微调不属于布局间距。
 _SPACING_COMPACT = 4
@@ -3938,11 +3942,11 @@ class MetadataToolModeButton(tk.Frame):
             background, foreground = _GREEN_DARK, "white"
             active_background = _GREEN_DEEP
         elif mode == "normalized":
+            background, foreground = _OLIVE, _OLIVE_DEEP
+            active_background = _OLIVE_SOFT
+        else:
             background, foreground = _AMBER, _AMBER_DEEP
             active_background = _AMBER_SOFT
-        else:
-            background, foreground = _CONTROL, _MUTED
-            active_background = _CONTROL_HOVER
         self.button.configure(
             text=f"{self.tool_label} {self._MODE_LABELS[mode]}",
             bg=background, fg=foreground,
@@ -4179,14 +4183,8 @@ class ParseModulePool(tk.Frame):
         self.editable = self.preset == "custom"
         self.on_change = on_change
         self.variables: dict[str, tk.BooleanVar] = {}
-        self.checkboxes: dict[str, tk.Checkbutton] = {}
-        self.cards: list[tk.Frame] = []
-        self._images = {
-            "off": StorageDiskPool._checkbox_image(self, selected=False),
-            "on": StorageDiskPool._checkbox_image(self, selected=True),
-            "disabled": StorageDiskPool._checkbox_image(
-                self, selected=False, disabled=True),
-        }
+        self.buttons: dict[str, tk.Button] = {}
+        self.cards: list[tk.Button] = []
         if inspection is None:
             tk.Label(
                 self, text="请先选择并解析输入数据库。",
@@ -4203,15 +4201,6 @@ class ParseModulePool(tk.Frame):
             }
 
         self.actions = tk.Frame(self, bg=_SURFACE)
-        counts = inspection.module_state_counts
-        tk.Label(
-            self.actions,
-            text=(f"可导出 {counts.get('available', 0)} · "
-                  f"0 条记录 {counts.get('empty', 0)} · "
-                  f"不可导出 {sum(counts.get(key, 0) for key in ('unavailable', 'incompatible', 'invalid'))}"),
-            bg=_SURFACE, fg=_MUTED, font=("Microsoft YaHei UI", 8),
-            anchor="e",
-        ).pack(side="right")
         all_button = ttk.Button(
             self.actions, text="全选", style="FormAction.TButton",
             width=_FORM_ACTION_BUTTON_WIDTH, command=self.select_all,
@@ -4234,43 +4223,51 @@ class ParseModulePool(tk.Frame):
             selected = module.selectable and module_id in requested
             variable = tk.BooleanVar(value=selected)
             self.variables[module_id] = variable
-            card = tk.Frame(
-                self.card_host, bg=_SURFACE,
-                highlightbackground=_BORDER, highlightthickness=1,
+            button = tk.Button(
+                self.card_host, text=module.spec.title,
+                width=_STANDARD_BUTTON_WIDTH,
+                relief="flat", bd=0, highlightthickness=1,
+                font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
+                anchor="center", justify="center",
+                padx=_STANDARD_BUTTON_PADDING[0],
+                pady=_STANDARD_BUTTON_PADDING[1],
+                takefocus=True,
+                command=lambda item=module: self._toggle_module(item),
             )
-            card._daisy_module = module  # type: ignore[attr-defined]
-            selectable = module.selectable and self.editable
-            state_text = self._STATE_LABELS.get(module.state, module.state)
-            checkbox = tk.Checkbutton(
-                card,
-                text=f"{module.spec.title} · {state_text}",
-                variable=variable, command=self._notify,
-                state="normal" if selectable else "disabled",
-                image=self._images["off"] if module.selectable
-                else self._images["disabled"],
-                selectimage=self._images["on"],
-                indicatoron=False, compound="left",
-                bg=_SURFACE, activebackground=_GREEN_SOFT,
-                fg=_TEXT, activeforeground=_GREEN_DEEP,
-                disabledforeground=_TEXT if module.selectable else _MUTED,
-                selectcolor=_FIELD, font=("Microsoft YaHei UI", 8),
-                anchor="w", justify="left",
-                highlightthickness=0, bd=0, relief="flat",
-                offrelief="flat", overrelief="flat", padx=4, pady=4,
-            )
-            checkbox.pack(fill="x")
-            self.checkboxes[module_id] = checkbox
+            button._daisy_module = module  # type: ignore[attr-defined]
+            self.buttons[module_id] = button
+            self.cards.append(button)
+            self._refresh_module_button(module)
             detail_parts = [module.spec.description.rstrip("。")]
             if module.row_count is not None:
                 detail_parts.append(f"共 {module.row_count:,} 条记录")
+            if not module.selectable:
+                detail_parts.append(
+                    self._STATE_LABELS.get(module.state, module.state))
             if module.reason:
                 detail_parts.append(str(module.reason).rstrip("。"))
             detail = "；".join(part for part in detail_parts if part) + "。"
-            attach_tooltip(card, detail)
-            attach_tooltip(checkbox, detail)
-            self.cards.append(card)
+            attach_tooltip(button, detail)
         self.card_host.bind("<Configure>", self._layout_cards)
         self.after_idle(self._layout_cards)
+
+    def invalidate(self) -> None:
+        """输入路径变化后原位清除旧识别结果，不读取新数据库。"""
+        if self.inspection is None:
+            return
+        self.inspection = None
+        self.editable = False
+        self.actions.pack_forget()
+        for child in self.card_host.winfo_children():
+            child.destroy()
+        self.variables.clear()
+        self.buttons.clear()
+        self.cards.clear()
+        tk.Label(
+            self.card_host, text="请点击「解析数据库」识别当前输入。",
+            bg=_SURFACE, fg=_MUTED, anchor="w",
+            font=("Microsoft YaHei UI", 9),
+        ).pack(fill="x", padx=2, pady=7)
 
     def set_preset(
         self, preset: str, *, initial: object | None = None,
@@ -4289,16 +4286,9 @@ class ParseModulePool(tk.Frame):
             }
         for module in self.inspection.modules:
             module_id = module.spec.module_id
-            selectable = module.selectable and self.editable
             self.variables[module_id].set(
                 module.selectable and module_id in requested)
-            self.checkboxes[module_id].configure(
-                state="normal" if selectable else "disabled",
-                image=(
-                    self._images["off"]
-                    if module.selectable else self._images["disabled"]
-                ),
-            )
+            self._refresh_module_button(module)
         if self.editable:
             if not self.actions.winfo_manager():
                 self.actions.pack(
@@ -4308,6 +4298,42 @@ class ParseModulePool(tk.Frame):
         else:
             self.actions.pack_forget()
         self.after_idle(self._layout_cards)
+
+    def _toggle_module(self, module: dbparse.ParseModuleStatus) -> None:
+        if not self.editable or not module.selectable:
+            return
+        variable = self.variables[module.spec.module_id]
+        variable.set(not variable.get())
+        self._refresh_module_button(module)
+        self._notify()
+
+    def _refresh_module_button(
+        self, module: dbparse.ParseModuleStatus,
+    ) -> None:
+        module_id = module.spec.module_id
+        button = self.buttons[module_id]
+        selected = bool(self.variables[module_id].get())
+        if not module.selectable:
+            background, foreground = _CONTROL, _MUTED
+            active_background, border = _CONTROL_HOVER, _BORDER
+            state = "disabled"
+        elif selected:
+            background, foreground = _GREEN_DARK, "white"
+            active_background, border = _GREEN_DEEP, _GREEN_DARK
+            state = "normal" if self.editable else "disabled"
+        else:
+            background, foreground = _AMBER, _AMBER_DEEP
+            active_background, border = _AMBER_SOFT, _AMBER
+            state = "normal" if self.editable else "disabled"
+        button.configure(
+            state=state,
+            bg=background, fg=foreground,
+            activebackground=active_background,
+            activeforeground=foreground,
+            disabledforeground=foreground,
+            highlightbackground=border,
+            highlightcolor=border,
+        )
 
     def _layout_cards(self, event: tk.Event | None = None) -> None:
         width = int(event.width) if event is not None else self.card_host.winfo_width()
@@ -4336,13 +4362,16 @@ class ParseModulePool(tk.Frame):
             return
         for module in self.inspection.modules:
             self.variables[module.spec.module_id].set(module.selectable)
+            self._refresh_module_button(module)
         self._notify()
 
     def clear_selection(self) -> None:
         if not self.editable:
             return
-        for variable in self.variables.values():
-            variable.set(False)
+        assert self.inspection is not None
+        for module in self.inspection.modules:
+            self.variables[module.spec.module_id].set(False)
+            self._refresh_module_button(module)
         self._notify()
 
     def get(self) -> str:
@@ -4734,6 +4763,7 @@ class DaisyApp:
         self.parse_detection_generation = 0
         self.parse_detection_active = False
         self.parse_detect_button: ttk.Button | None = None
+        self.parse_detection_detail_label: tk.Label | None = None
         self._work_progress_indeterminate = False
         self.current_stage_index = 0
         self.current_stage_total = 0
@@ -6055,11 +6085,13 @@ class DaisyApp:
         palettes = {
             "primary": (
                 _GREEN_DARK, "white", _GREEN_DEEP, "white", _GREEN_DARK),
-            "warning": (
-                _AMBER_SOFT, _AMBER_DEEP, _AMBER, _AMBER_DEEP,
-                _AMBER_SOFT),
-            "result": (
+            "control": (
+                _ACTION_GREEN, _GREEN_DEEP, _GREEN, _GREEN_DEEP, _GREEN),
+            "stop": (
                 _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
+            "result": (
+                _TASK_TOOLBAR_BACKGROUND, _AMBER_DEEP,
+                _TASK_TOOLBAR_HOVER, _AMBER_DEEP, _TASK_TOOLBAR_HOVER),
             "secondary": (
                 _CONTROL, _TEXT, _CONTROL_HOVER, _TEXT, _BORDER),
         }
@@ -6572,13 +6604,13 @@ class DaisyApp:
         execution_action_area.pack(fill="x")
         execution_action_area.grid_columnconfigure(0, weight=1)
         self.stop_button = self._create_task_action_button(
-            execution_action_area, text="停止", tone="warning",
+            execution_action_area, text="停止", tone="control",
             command=self._stop, state="disabled")
         self.save_scan_button = self._create_task_action_button(
-            execution_action_area, text="保存并退出", tone="secondary",
+            execution_action_area, text="保存并退出", tone="control",
             command=self._save_scan_progress, state="disabled")
         self.pause_scan_button = self._create_task_action_button(
-            execution_action_area, text="暂停", tone="secondary",
+            execution_action_area, text="暂停", tone="control",
             command=self._pause_or_continue_scan, state="disabled")
         self.run_button = self._create_task_action_button(
             execution_action_area, text=_RUN_BUTTON_TEXT, tone="primary",
@@ -6730,28 +6762,18 @@ class DaisyApp:
     def _layout_action_buttons(
         self, event: tk.Event | None = None,
     ) -> None:
-        """任务操作保持一行、同尺寸，并把结果目录紧邻停止按钮。"""
+        """右侧固定为开始／停止、结果目录、暂停；暂停后再显示保存。"""
         for button in self.execution_buttons:
             button.grid_forget()
         controls = [
-            self.run_button, self.stop_button, self.open_output_button,
+            self.pause_scan_button, self.open_output_button, self.run_button,
         ]
-        task = getattr(self, "task", None)
-        control_key = (
-            getattr(self, "process_task_key", None)
-            or getattr(task, "key", None)
-        )
-        if control_key in _CONTROL_TASK_KEYS:
-            controls = [
-                self.run_button, self.pause_scan_button,
-                self.stop_button, self.open_output_button,
-            ]
-        if control_key in _SCAN_TASK_KEYS:
-            controls = [
-                self.run_button, self.pause_scan_button,
-                self.save_scan_button, self.stop_button,
-                self.open_output_button,
-            ]
+        task_key = getattr(self, "process_task_key", None)
+        state = getattr(self, "scan_control_state", "idle")
+        if (task_key in _SCAN_TASK_KEYS
+                and state in (
+                    "pause_requested", "paused", "resume_requested")):
+            controls.insert(0, self.save_scan_button)
         for column, button in enumerate(controls, start=1):
             button.grid(
                 row=0, column=column, sticky="e",
@@ -6876,6 +6898,39 @@ class DaisyApp:
     def _set_stop_state(self, state: str) -> None:
         self.stop_button.configure(state=state)
         self.mini_stop_button.configure(state=state)
+        if getattr(self, "process_task_key", None) is not None:
+            self._set_run_action_mode(True, state=state)
+
+    def _set_run_action_mode(
+        self, running: bool, *, state: str = "normal",
+    ) -> None:
+        """让同一按钮在空闲和运行状态间切换，不改变右侧锚点。"""
+        palettes = {
+            "primary": (
+                _GREEN_DARK, "white", _GREEN_DEEP, "white", _GREEN_DARK),
+            "stop": (
+                _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
+        }
+        tone = "stop" if running else "primary"
+        background, foreground, active_background, active_foreground, border = (
+            palettes[tone])
+        self.run_button.configure(
+            text="停止" if running else _RUN_BUTTON_TEXT,
+            command=self._stop if running else self._run,
+            state=state,
+            bg=background, fg=foreground,
+            activebackground=active_background,
+            activeforeground=active_foreground,
+            disabledforeground=foreground,
+            highlightbackground=border,
+            highlightcolor=border,
+        )
+        tooltip = getattr(self.run_button, "_daisy_tooltip", None)
+        if tooltip is not None:
+            tooltip.text = (
+                "停止当前任务，并取消队列中尚未开始的任务项。"
+                if running else "检查当前设置并开始任务。"
+            )
 
     def _refresh_scan_controls(self) -> None:
         """按统一可控任务状态同步主窗口与小窗控制按钮。"""
@@ -6888,13 +6943,18 @@ class DaisyApp:
         )
         scan_active = control_active and task_key in _SCAN_TASK_KEYS
         state = self.scan_control_state
-        pause_text = "继续" if state == "paused" else "暂停"
+        pause_text = (
+            "继续"
+            if state in ("pause_requested", "paused", "resume_requested")
+            else "暂停"
+        )
         pause_state = (
             "normal" if control_active and state in ("running", "paused")
             else "disabled"
         )
         save_state = (
-            "normal" if scan_active and state in ("running", "paused")
+            "normal"
+            if scan_active and state in ("pause_requested", "paused")
             else "disabled"
         )
         stop_state = (
@@ -6907,8 +6967,11 @@ class DaisyApp:
             button.configure(state=save_state)
         if task_key in _CONTROL_TASK_KEYS:
             self._set_stop_state(stop_state)
+        self._layout_action_buttons()
         if getattr(self, "mini_mode", False):
-            if task_key in _SCAN_TASK_KEYS:
+            if (task_key in _SCAN_TASK_KEYS
+                    and state in (
+                        "pause_requested", "paused", "resume_requested")):
                 if not self.mini_save_button.winfo_manager():
                     self.mini_save_button.pack(
                         side="right", padx=(0, _STANDARD_BUTTON_GAP),
@@ -7325,8 +7388,8 @@ class DaisyApp:
             project_self_test_missing_files()
             if task_key == _PROJECT_SELF_TEST_KEY else ()
         )
-        self.run_button.configure(
-            text=_RUN_BUTTON_TEXT,
+        self._set_run_action_mode(
+            False,
             state="disabled" if missing_tests or active else "normal",
         )
         self._layout_action_buttons()
@@ -7734,7 +7797,7 @@ class DaisyApp:
         inspection = self._matching_parse_inspection(database)
         if inspection is None:
             detail_text = (
-                "选择数据库，再点击「解析数据库」查看可导出的数据模块。"
+                "选择数据库，再点击「解析数据库」查看可用的数据模块。"
             )
         else:
             descriptor = inspection.descriptor
@@ -7744,8 +7807,10 @@ class DaisyApp:
             )
             available = inspection.module_state_counts.get("available", 0)
             detail_text = (
-                f"已解析{type_label}；数据库结构版本 {descriptor.schema_version}；"
-                f"可导出数据模块 {available} 项。数据库变化后请重新解析。"
+                f"已解析{type_label}；"
+                f"{self._parse_database_version_text(descriptor)}；"
+                f"数据库结构版本 {descriptor.schema_version}；"
+                f"可用数据模块 {available} 项。数据库变化后请重新解析。"
             )
         self.parse_detect_button = ttk.Button(
             panel, text="解析数据库", style="DiscoveryAction.TButton",
@@ -7763,9 +7828,10 @@ class DaisyApp:
         detail.grid(
             row=0, column=1, sticky="ew",
             padx=(0, _SPACING_STANDARD), pady=3)
+        self.parse_detection_detail_label = detail
         attach_tooltip(
             self.parse_detect_button,
-            "只读识别数据库类型、结构版本和可导出数据模块。",
+            "只读识别数据库类型、结构版本和可用数据模块。",
         )
         panel.bind(
             "<Configure>",
@@ -7820,6 +7886,7 @@ class DaisyApp:
         self.admin_mode_button = None
         self.storage_detect_button = None
         self.parse_detect_button = None
+        self.parse_detection_detail_label = None
         form_pad = (
             _SPACING_SECTION
             if self.compact_layout else _SPACING_OUTER)
@@ -8278,19 +8345,48 @@ class DaisyApp:
             os.path.abspath(inspection.descriptor.path)
         ) == os.path.normcase(_absolute(raw)) else None
 
-    def _parse_database_focus_out(self, _event: tk.Event) -> None:
+    @staticmethod
+    def _parse_database_version_text(descriptor) -> str:
+        """返回明确的快照／Diff 来源版本，不从文件名猜测。"""
+        raw = str(getattr(descriptor, "source_version", None) or "").strip()
+        if not raw or raw.casefold() in {"unknown", "none", "null", "未知"}:
+            display = "未知"
+        else:
+            display = raw if raw.casefold().startswith("v") else f"v{raw}"
+        label = (
+            "快照版本"
+            if getattr(descriptor, "database_type", None) == "snapshot"
+            else "Diff 版本"
+        )
+        return f"{label} {display}"
+
+    def _invalidate_parse_database_selection(self) -> None:
+        """路径变化时清除旧识别结果；只有解析按钮可以读取数据库。"""
         if self.task.key != "parse_db" or self.parse_detection_active:
             return
         source = self.values.get("database")
-        if source is None:
-            return
-        raw = str(source.get() or "").strip()
-        if not raw:
-            return
+        raw = str(source.get() or "").strip() if source is not None else ""
         if self._matching_parse_inspection(raw) is not None:
             return
-        if os.path.isfile(_absolute(raw)):
-            self.root.after_idle(self._detect_parse_database)
+        values = self._collect_values()
+        values.pop("parse_modules", None)
+        self.saved_values["parse_db"] = values
+        self.parse_inspection = None
+        self.parse_inspection_path = ""
+        module_pool = self.values.get("parse_modules")
+        if isinstance(module_pool, ParseModulePool):
+            module_pool.invalidate()
+        detail = getattr(self, "parse_detection_detail_label", None)
+        if detail is not None:
+            detail.configure(text=(
+                "已选择数据库；点击「解析数据库」后识别版本和数据模块。"
+                if raw else
+                "选择数据库，再点击「解析数据库」查看数据模块。"
+            ))
+        self._update_preview()
+
+    def _parse_database_focus_out(self, _event: tk.Event) -> None:
+        self._invalidate_parse_database_selection()
 
     def _detect_parse_database(self) -> None:
         """在后台只读识别数据库，绝不在 Tk 主线程执行 SQLite 探测。"""
@@ -8334,7 +8430,7 @@ class DaisyApp:
         self.progress_stage_label.configure(
             text="解析数据库 · 正在分析", fg=_GREEN_DARK)
         self.progress_detail_label.configure(
-            text="正在读取数据库类型、结构版本和可导出数据模块…", fg=_MUTED)
+            text="正在读取数据库类型、结构版本和可用数据模块…", fg=_MUTED)
         self._set_work_indeterminate()
         self._set_status("正在解析数据库…")
         self._append_log(
@@ -8408,8 +8504,9 @@ class DaisyApp:
         )
         counts = inspection.module_state_counts
         summary = (
-            f"{type_label}；数据库结构版本 {descriptor.schema_version}；"
-            f"可导出数据模块 {counts.get('available', 0)} 项"
+            f"{type_label}；{self._parse_database_version_text(descriptor)}；"
+            f"数据库结构版本 {descriptor.schema_version}；"
+            f"可用数据模块 {counts.get('available', 0)} 项"
         )
         self._set_work_fraction(100, style="Success")
         self.progress_stage_bar.configure(
@@ -8456,7 +8553,7 @@ class DaisyApp:
             variable.set(os.path.normpath(chosen))
             if (self.task.key == "parse_db"
                     and spec.kind == "parse_database"):
-                self.root.after_idle(self._detect_parse_database)
+                self._invalidate_parse_database_selection()
 
     def _collect_values(self) -> dict[str, object]:
         result = _task_values(
@@ -8723,14 +8820,17 @@ class DaisyApp:
     def _set_open_result_button_highlighted(
         self, highlighted: bool,
     ) -> bool:
-        """在色带绿色提示态与琥珀色常态之间切换结果按钮。"""
+        """在色带绿色提示态与米黄色常态之间切换结果按钮。"""
         button = getattr(self, "open_output_button", None)
         if button is None:
             return False
         palette = (
             (_GREEN, _GREEN_DEEP, _GREEN_DARK, "white", _GREEN_DARK)
             if highlighted else
-            (_AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK)
+            (
+                _TASK_TOOLBAR_BACKGROUND, _AMBER_DEEP,
+                _TASK_TOOLBAR_HOVER, _AMBER_DEEP, _TASK_TOOLBAR_HOVER,
+            )
         )
         background, foreground, active_background, active_foreground, border = (
             palette)
@@ -8747,7 +8847,7 @@ class DaisyApp:
         return True
 
     def _advance_open_result_flash(self, step: int) -> None:
-        """执行两次绿色脉冲；每次回到琥珀色后才算一次完整闪烁。"""
+        """执行两次绿色脉冲；每次回到米黄色后才算一次完整闪烁。"""
         self.open_result_flash_after_id = None
         sequence = (True, False, True, False)
         if step >= len(sequence):
@@ -10811,16 +10911,14 @@ class DaisyApp:
             self._finish_install_version_report(
                 recheck_returncode=returncode)
 
-        self.run_button.configure(
-            state=(
-                "disabled"
-                if (self.task.key == _PROJECT_SELF_TEST_KEY
-                    and project_self_test_missing_files())
-                else "normal"
-            ))
+        idle_run_state = (
+            "disabled"
+            if (self.task.key == _PROJECT_SELF_TEST_KEY
+                and project_self_test_missing_files())
+            else "normal"
+        )
         self._set_stop_state("disabled")
         self.scan_control_state = "idle"
-        self._refresh_scan_controls()
         self._set_task_navigation_state("normal")
         self.process_task_key = None
         self.stop_requested = False
@@ -10835,6 +10933,8 @@ class DaisyApp:
         self.scan_run_result = None
         self.scan_control_sequence = 0
         self.scan_control_previous_state = "idle"
+        self._set_run_action_mode(False, state=idle_run_state)
+        self._refresh_scan_controls()
         self._hide_current_file()
         self._close_timeout_dialog()
         restore_settings = (

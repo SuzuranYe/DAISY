@@ -1065,6 +1065,16 @@ class TestGuiArguments(unittest.TestCase):
         metadata = app.values["metadata_storage"]
         file_id = app.values["collect_file_id"]
         content_hash = app.values["hash_mode"]
+        self.assertEqual(content_hash.get(), "full")
+        self.assertEqual(content_hash.button.cget("text"), "SHA-256")
+        content_hash.button.invoke()
+        root.update_idletasks()
+        self.assertEqual(content_hash.get(), "none")
+        self.assertEqual(content_hash.button.cget("text"), "不采集")
+        content_hash.button.invoke()
+        root.update_idletasks()
+        self.assertEqual(content_hash.get(), "full")
+        self.assertEqual(content_hash.button.cget("text"), "SHA-256")
 
         def visible_gap(upper, lower):
             return (
@@ -1085,6 +1095,23 @@ class TestGuiArguments(unittest.TestCase):
             metadata.exiftool_button.button,
             metadata.ffprobe_button.button,
         )
+        exiftool_button = metadata.exiftool_button
+        self.assertEqual(exiftool_button.get(), "complete")
+        self.assertEqual(
+            exiftool_button.button.cget("background"), gui._GREEN_DARK)
+        exiftool_button.button.invoke()
+        root.update_idletasks()
+        self.assertEqual(exiftool_button.get(), "normalized")
+        self.assertEqual(
+            exiftool_button.button.cget("background"), gui._OLIVE)
+        exiftool_button.button.invoke()
+        root.update_idletasks()
+        self.assertEqual(exiftool_button.get(), "off")
+        self.assertEqual(
+            exiftool_button.button.cget("background"), gui._AMBER)
+        exiftool_button.button.invoke()
+        root.update_idletasks()
+        self.assertEqual(exiftool_button.get(), "complete")
         standard_buttons = (
             *scan_buttons, *generation_mode.buttons.values(),
             *metadata_buttons, file_id.button, content_hash.button,
@@ -1119,8 +1146,51 @@ class TestGuiArguments(unittest.TestCase):
             )
         self.assertEqual(
             [button.cget("text") for button in visible],
-            ["开始任务", "暂停", "保存并退出", "停止", "打开结果目录"],
+            ["暂停", "打开结果目录", "开始"],
         )
+        self.assertEqual(app.pause_scan_button.cget("state"), "disabled")
+        self.assertFalse(app.stop_button.winfo_ismapped())
+        self.assertEqual(
+            app.pause_scan_button.cget("background"), gui._ACTION_GREEN)
+        self.assertEqual(
+            app.open_output_button.cget("background"),
+            gui._TASK_TOOLBAR_BACKGROUND,
+        )
+
+        app.process_task_key = "scan"
+        app.process = object()
+        app.scan_control_state = "running"
+        app._refresh_scan_controls()
+        root.update_idletasks()
+        running_visible = sorted(
+            (button for button in app.execution_buttons
+             if button.winfo_ismapped()),
+            key=lambda button: button.winfo_rootx(),
+        )
+        self.assertEqual(
+            [button.cget("text") for button in running_visible],
+            ["暂停", "打开结果目录", "停止"],
+        )
+        self.assertEqual(app.run_button.cget("background"), gui._AMBER)
+
+        app.scan_control_state = "pause_requested"
+        app._refresh_scan_controls()
+        root.update_idletasks()
+        paused_visible = sorted(
+            (button for button in app.execution_buttons
+             if button.winfo_ismapped()),
+            key=lambda button: button.winfo_rootx(),
+        )
+        self.assertEqual(
+            [button.cget("text") for button in paused_visible],
+            ["保存并退出", "继续", "打开结果目录", "停止"],
+        )
+        self.assertEqual(app.save_scan_button.cget("state"), "normal")
+        app.process = None
+        app.process_task_key = None
+        app.scan_control_state = "idle"
+        app._set_run_action_mode(False)
+        app._refresh_scan_controls()
         self.assertEqual(
             {(button.winfo_width(), button.winfo_height())
              for button in visible},
@@ -1494,7 +1564,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.normal_min_size, (1100, 680))
         self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
 
-    def test_action_row_keeps_start_stop_and_result_order(self):
+    def test_action_row_keeps_fixed_right_order_and_expands_after_pause(self):
         class ButtonProbe:
             def __init__(self):
                 self.grid_calls = []
@@ -1522,21 +1592,54 @@ class TestGuiArguments(unittest.TestCase):
         app.run_button = run
         app.task = gui.TASK_BY_KEY["env_check"]
         app.process_task_key = None
+        app.scan_control_state = "idle"
 
         app._layout_action_buttons()
 
         self.assertTrue(output.grid_calls)
-        self.assertTrue(stop.grid_calls)
+        self.assertTrue(pause.grid_calls)
         self.assertTrue(run.grid_calls)
-        self.assertEqual(pause.grid_calls, [])
         self.assertEqual(save.grid_calls, [])
+        self.assertEqual(stop.grid_calls, [])
         self.assertEqual(
-            [run.grid_calls[0]["column"], stop.grid_calls[0]["column"],
-             output.grid_calls[0]["column"]],
+            [pause.grid_calls[0]["column"], output.grid_calls[0]["column"],
+             run.grid_calls[0]["column"]],
             [1, 2, 3],
         )
+
+        app.process_task_key = "scan"
+        app.scan_control_state = "pause_requested"
+        app._layout_action_buttons()
+        self.assertEqual(
+            [save.grid_calls[-1]["column"], pause.grid_calls[-1]["column"],
+             output.grid_calls[-1]["column"], run.grid_calls[-1]["column"]],
+            [1, 2, 3, 4],
+        )
+        self.assertEqual(stop.grid_calls, [])
         self.assertEqual(clear_log.grid_calls, [])
         self.assertEqual(clear_log.forgotten, 0)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_primary_action_switches_between_start_and_stop(self):
+        root, app = self._real_tk_app()
+        with patch.object(app, "_stop") as stop:
+            app.process_task_key = "scan"
+            app._set_run_action_mode(True)
+            root.update_idletasks()
+            self.assertEqual(app.run_button.cget("text"), "停止")
+            self.assertEqual(app.run_button.cget("background"), gui._AMBER)
+            app.run_button.invoke()
+            stop.assert_called_once_with()
+
+        with patch.object(app, "_run") as run:
+            app.process_task_key = None
+            app._set_run_action_mode(False)
+            root.update_idletasks()
+            self.assertEqual(app.run_button.cget("text"), "开始")
+            self.assertEqual(
+                app.run_button.cget("background"), gui._GREEN_DARK)
+            app.run_button.invoke()
+            run.assert_called_once_with()
 
     def test_full_hash_independent_sample_is_explained_and_top_menu(self):
         fields = {
@@ -1745,7 +1848,7 @@ class TestGuiArguments(unittest.TestCase):
         )
 
     def test_run_button_label_is_unified(self):
-        self.assertEqual(gui._RUN_BUTTON_TEXT, "开始任务")
+        self.assertEqual(gui._RUN_BUTTON_TEXT, "开始")
 
     def test_top_task_palette_is_light_beige_with_distinct_selection(self):
         self.assertEqual(gui._TASK_TOOLBAR_BACKGROUND, "#edd7ad")
@@ -3657,6 +3760,162 @@ class TestGuiArguments(unittest.TestCase):
             app.storage_detect_button.winfo_width(), parse_button_width)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_database_selection_waits_for_parse_button(self):
+        root, app = self._real_tk_app()
+        with patch.object(app, "_detect_parse_database") as detect:
+            app._select_task("parse_db", save_current=False)
+            root.update()
+            input_label = next(
+                child for child in app.form_inner.winfo_children()
+                if isinstance(child, gui.tk.Label)
+                and child.cget("text") == "输入数据库"
+            )
+            input_row = int(input_label.grid_info()["row"])
+            input_cell = next(
+                child for child in app.form_inner.winfo_children()
+                if isinstance(child, gui.tk.Frame)
+                and int(child.grid_info().get("row", -1)) == input_row
+                and int(child.grid_info().get("column", -1)) == 1
+            )
+            select_button = next(
+                child for child in input_cell.winfo_children()
+                if isinstance(child, gui.ttk.Button)
+            )
+            database = os.path.join(
+                tempfile.gettempdir(), "DAISY_manual_parse.sqlite")
+            with patch.object(
+                    gui.filedialog, "askopenfilename",
+                    return_value=database):
+                select_button.invoke()
+                root.update_idletasks()
+
+            detect.assert_not_called()
+            self.assertEqual(
+                app.values["database"].get(), os.path.normpath(database))
+            self.assertIn(
+                "点击「解析数据库」",
+                app.parse_detection_detail_label.cget("text"),
+            )
+            app._parse_database_focus_out(types.SimpleNamespace())
+            detect.assert_not_called()
+            app.parse_detect_button.invoke()
+            detect.assert_called_once_with()
+
+    def test_parse_database_version_text_uses_descriptor_metadata(self):
+        self.assertEqual(
+            gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
+                database_type="snapshot", source_version="1.4.1")),
+            "快照版本 v1.4.1",
+        )
+        self.assertEqual(
+            gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
+                database_type="diff", source_version="v1.6.3")),
+            "Diff 版本 v1.6.3",
+        )
+        self.assertEqual(
+            gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
+                database_type="snapshot", source_version=None)),
+            "快照版本 未知",
+        )
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_parsed_snapshot_summary_shows_source_version(self):
+        root, app = self._real_tk_app()
+        app._select_task("parse_db", save_current=False)
+        database = os.path.normpath(os.path.join(
+            tempfile.gettempdir(), "DAISY_v141_snapshot.sqlite"))
+        app.values["database"].set(database)
+        app._save_current_values()
+        descriptor = types.SimpleNamespace(
+            path=database,
+            database_type="snapshot",
+            source_version="1.4.1",
+            schema_version=3,
+        )
+        app.parse_inspection = types.SimpleNamespace(
+            descriptor=descriptor,
+            modules=(),
+            module_state_counts={"available": 0},
+        )
+        app.parse_inspection_path = database
+        app._build_form()
+        root.update()
+        summary = app.parse_detection_detail_label.cget("text")
+        self.assertIn("已解析封存快照", summary)
+        self.assertIn("快照版本 v1.4.1", summary)
+        self.assertIn("数据库结构版本 3", summary)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_parse_modules_use_green_amber_and_gray_buttons(self):
+        root, _app = self._real_tk_app()
+        specs = gui.dbparse.parse_modules("snapshot")[:3]
+        modules = (
+            gui.dbparse.ParseModuleStatus(
+                specs[0], "available", 7, None, True, (), ()),
+            gui.dbparse.ParseModuleStatus(
+                specs[1], "available", 5, None, True, (), ()),
+            gui.dbparse.ParseModuleStatus(
+                specs[2], "empty", 0, "没有记录", True, (), ()),
+        )
+        inspection = types.SimpleNamespace(
+            modules=modules,
+            module_state_counts={"available": 2, "empty": 1},
+        )
+        changed = Mock()
+        pool = gui.ParseModulePool(
+            root, inspection=inspection, preset="custom",
+            initial=specs[0].module_id, on_change=changed,
+        )
+        pool.pack()
+        root.update()
+
+        self.assertTrue(all(
+            isinstance(button, gui.tk.Button)
+            and not isinstance(button, gui.tk.Checkbutton)
+            for button in pool.buttons.values()
+        ))
+        self.assertFalse(any(
+            "可导出" in button.cget("text")
+            for button in pool.buttons.values()
+        ))
+        first = pool.buttons[specs[0].module_id]
+        second = pool.buttons[specs[1].module_id]
+        unavailable = pool.buttons[specs[2].module_id]
+        self.assertEqual(first.cget("background"), gui._GREEN_DARK)
+        self.assertEqual(second.cget("background"), gui._AMBER)
+        self.assertEqual(unavailable.cget("background"), gui._CONTROL)
+        self.assertEqual(unavailable.cget("state"), "disabled")
+
+        second.invoke()
+        root.update_idletasks()
+        self.assertEqual(second.cget("background"), gui._GREEN_DARK)
+        first.invoke()
+        root.update_idletasks()
+        self.assertEqual(first.cget("background"), gui._AMBER)
+        self.assertEqual(
+            set(filter(None, pool.get().splitlines())),
+            {specs[1].module_id},
+        )
+        self.assertEqual(changed.call_count, 2)
+
+        pool.set_preset("full-audit")
+        root.update_idletasks()
+        self.assertTrue(all(
+            pool.buttons[spec.module_id].cget("state") == "disabled"
+            for spec in specs
+        ))
+        self.assertEqual(first.cget("background"), gui._GREEN_DARK)
+        self.assertEqual(second.cget("background"), gui._GREEN_DARK)
+        self.assertEqual(unavailable.cget("background"), gui._CONTROL)
+
+        pool.set_preset("custom", initial=specs[0].module_id)
+        root.update_idletasks()
+        self.assertEqual(first.cget("state"), "normal")
+        self.assertEqual(second.cget("state"), "normal")
+        self.assertEqual(first.cget("background"), gui._GREEN_DARK)
+        self.assertEqual(second.cget("background"), gui._AMBER)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_storage_disk_slots_share_one_card_layout(self):
         root, app = self._real_tk_app()
         root.geometry("1100x900")
@@ -4693,7 +4952,11 @@ class TestGuiArguments(unittest.TestCase):
 
         self.assertEqual(
             app.open_output_button.backgrounds,
-            [gui._AMBER, gui._GREEN, gui._AMBER, gui._GREEN, gui._AMBER],
+            [
+                gui._TASK_TOOLBAR_BACKGROUND, gui._GREEN,
+                gui._TASK_TOOLBAR_BACKGROUND, gui._GREEN,
+                gui._TASK_TOOLBAR_BACKGROUND,
+            ],
         )
         self.assertEqual(app.root.delays, [230, 230, 230])
         self.assertIsNone(app.open_result_flash_after_id)
@@ -4721,6 +4984,9 @@ class TestGuiArguments(unittest.TestCase):
                 app._finalize_run(0.2)
                 root.update()
             offer.assert_not_called()
+            self.assertEqual(app.run_button.cget("text"), "开始")
+            self.assertEqual(
+                app.run_button.cget("background"), gui._GREEN_DARK)
             self.assertEqual(
                 app.open_output_button.cget("background"),
                 gui._GREEN,
@@ -4728,7 +4994,7 @@ class TestGuiArguments(unittest.TestCase):
             app._cancel_open_result_flash()
             self.assertEqual(
                 app.open_output_button.cget("background"),
-                gui._AMBER,
+                gui._TASK_TOOLBAR_BACKGROUND,
             )
 
             app.result_directory_prompt_enabled = True
