@@ -1146,7 +1146,7 @@ class TestGuiArguments(unittest.TestCase):
             )
         self.assertEqual(
             [button.cget("text") for button in visible],
-            ["暂停", "打开结果目录", "开始"],
+            ["打开结果目录", "暂停", "开始"],
         )
         self.assertEqual(app.pause_scan_button.cget("state"), "disabled")
         self.assertFalse(app.stop_button.winfo_ismapped())
@@ -1169,7 +1169,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             [button.cget("text") for button in running_visible],
-            ["暂停", "打开结果目录", "停止"],
+            ["打开结果目录", "暂停", "停止"],
         )
         self.assertEqual(app.run_button.cget("background"), gui._AMBER)
 
@@ -1183,7 +1183,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             [button.cget("text") for button in paused_visible],
-            ["保存并退出", "继续", "打开结果目录", "停止"],
+            ["保存并退出", "打开结果目录", "继续", "停止"],
         )
         self.assertEqual(app.save_scan_button.cget("state"), "normal")
         app.process = None
@@ -1602,7 +1602,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(save.grid_calls, [])
         self.assertEqual(stop.grid_calls, [])
         self.assertEqual(
-            [pause.grid_calls[0]["column"], output.grid_calls[0]["column"],
+            [output.grid_calls[0]["column"], pause.grid_calls[0]["column"],
              run.grid_calls[0]["column"]],
             [1, 2, 3],
         )
@@ -1611,8 +1611,8 @@ class TestGuiArguments(unittest.TestCase):
         app.scan_control_state = "pause_requested"
         app._layout_action_buttons()
         self.assertEqual(
-            [save.grid_calls[-1]["column"], pause.grid_calls[-1]["column"],
-             output.grid_calls[-1]["column"], run.grid_calls[-1]["column"]],
+            [save.grid_calls[-1]["column"], output.grid_calls[-1]["column"],
+             pause.grid_calls[-1]["column"], run.grid_calls[-1]["column"]],
             [1, 2, 3, 4],
         )
         self.assertEqual(stop.grid_calls, [])

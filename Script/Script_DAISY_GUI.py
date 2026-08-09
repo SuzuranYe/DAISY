@@ -6762,11 +6762,11 @@ class DaisyApp:
     def _layout_action_buttons(
         self, event: tk.Event | None = None,
     ) -> None:
-        """右侧固定为开始／停止、结果目录、暂停；暂停后再显示保存。"""
+        """右侧固定为开始／停止、暂停、结果目录；暂停后再显示保存。"""
         for button in self.execution_buttons:
             button.grid_forget()
         controls = [
-            self.pause_scan_button, self.open_output_button, self.run_button,
+            self.open_output_button, self.pause_scan_button, self.run_button,
         ]
         task_key = getattr(self, "process_task_key", None)
         state = getattr(self, "scan_control_state", "idle")
