@@ -38,6 +38,7 @@ class TestGuiArguments(unittest.TestCase):
             "font_family": "Segoe UI",
             "font_size_delta": 1,
             "completion_sound_enabled": True,
+            "result_directory_prompt_enabled": True,
             "last_task_key": "verify",
             "manual_tool_paths": {
                 "exiftool": r"C:\Tools\exiftool.exe",
@@ -69,6 +70,7 @@ class TestGuiArguments(unittest.TestCase):
                     "font_size_delta": 99,
                     "binary_control_style": "dropdowns",
                     "completion_sound_enabled": "yes",
+                    "result_directory_prompt_enabled": "yes",
                     "confirm_close_when_idle": "no",
                     "last_task_key": "storage_list",
                     "manual_tool_paths": {
@@ -110,6 +112,7 @@ class TestGuiArguments(unittest.TestCase):
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
         app.completion_sound_enabled = True
+        app.result_directory_prompt_enabled = True
         app.task = gui.TASK_BY_KEY["verify"]
         app.manual_tool_paths = {
             "ffprobe": r"C:\Tools\ffprobe.exe",
@@ -139,6 +142,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(payload["last_task_key"], "verify")
         self.assertNotIn("binary_control_style", payload)
         self.assertTrue(payload["completion_sound_enabled"])
+        self.assertTrue(payload["result_directory_prompt_enabled"])
         self.assertNotIn("saved_values", payload)
         self.assertEqual(payload["manual_tool_paths"], {
             "ffprobe": r"C:\Tools\ffprobe.exe",
@@ -264,8 +268,8 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             metadata_storage.choices,
             (
-                ("全量元数据：基础字段＋工具原始输出", "complete"),
-                ("基础元数据：仅保留规范化常用字段", "normalized"),
+                ("全量元数据", "complete"),
+                ("基础元数据", "normalized"),
             ),
         )
         self.assertIn("音视频记录容器与流", metadata_storage.help)
@@ -578,8 +582,12 @@ class TestGuiArguments(unittest.TestCase):
         source_type = next(
             spec for spec in gui.TASK_BY_KEY["export_report"].fields
             if spec.key == "source_type")
-        self.assertIn("清单与诊断 CSV", source_type.choices[0][0])
-        self.assertIn("摘要 Markdown 与变更 CSV", source_type.choices[1][0])
+        self.assertEqual(
+            source_type.choices,
+            (("封存快照", "snapshot"), ("Diff 数据库", "diff")),
+        )
+        self.assertIn("清单与诊断 CSV", source_type.help)
+        self.assertIn("Diff 导出", source_type.help)
         for filename in (
                 "Tree", "Summary", "Diff_summary.md",
                 "Diff_details.csv", "Diff_subtrees.csv"):
@@ -1098,17 +1106,28 @@ class TestGuiArguments(unittest.TestCase):
             )
             self.assertEqual(internal_gap, gui._STANDARD_BUTTON_GAP)
 
-        for controls in (app.utility_buttons, app.execution_buttons):
-            visible = sorted(
-                (button for button in controls if button.winfo_ismapped()),
-                key=lambda button: button.winfo_rootx(),
+        visible = sorted(
+            (button for button in app.execution_buttons
+             if button.winfo_ismapped()),
+            key=lambda button: button.winfo_rootx(),
+        )
+        for left, right in zip(visible, visible[1:]):
+            self.assertEqual(
+                right.winfo_rootx() - left.winfo_rootx()
+                - left.winfo_width(),
+                gui._STANDARD_BUTTON_GAP,
             )
-            for left, right in zip(visible, visible[1:]):
-                self.assertEqual(
-                    right.winfo_rootx() - left.winfo_rootx()
-                    - left.winfo_width(),
-                    gui._STANDARD_BUTTON_GAP,
-                )
+        self.assertEqual(
+            [button.cget("text") for button in visible],
+            ["开始任务", "暂停", "保存并退出", "停止", "打开结果目录"],
+        )
+        self.assertEqual(
+            {(button.winfo_width(), button.winfo_height())
+             for button in visible},
+            {standard_size},
+        )
+        self.assertIs(app.clear_cache_button.master,
+                      app.task_toolbar_toggle_button.master)
 
         labels = {
             widget.cget("text"): widget
@@ -1475,28 +1494,11 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.normal_min_size, (1100, 680))
         self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
 
-    def test_utility_buttons_wrap_without_reordering(self):
-        widths = (118, 118, 118, 181)
-        rows = gui.action_button_row_indexes(widths, 380)
-        self.assertEqual(
-            tuple(index for row in rows for index in row),
-            tuple(range(len(widths))),
-        )
-        for row in rows:
-            occupied = sum(widths[index] for index in row)
-            occupied += gui._STANDARD_BUTTON_GAP * max(0, len(row) - 1)
-            self.assertLessEqual(occupied, 380)
-        self.assertGreater(len(gui.action_button_row_indexes(widths, 300)), 1)
-
-    def test_log_header_button_is_not_reparented_into_utility_grid(self):
+    def test_action_row_keeps_start_stop_and_result_order(self):
         class ButtonProbe:
-            def __init__(self, width=110):
-                self.width = width
+            def __init__(self):
                 self.grid_calls = []
                 self.forgotten = 0
-
-            def winfo_reqwidth(self):
-                return self.width
 
             def grid_forget(self):
                 self.forgotten += 1
@@ -1504,33 +1506,35 @@ class TestGuiArguments(unittest.TestCase):
             def grid(self, **options):
                 self.grid_calls.append(options)
 
-        class AreaProbe:
-            @staticmethod
-            def winfo_width():
-                return 360
-
         app = object.__new__(gui.DaisyApp)
         output = ButtonProbe()
-        cache = ButtonProbe()
+        pause = ButtonProbe()
+        save = ButtonProbe()
         stop = ButtonProbe()
         run = ButtonProbe()
         clear_log = ButtonProbe()
-        app.utility_buttons = (output, cache)
-        app.execution_buttons = (stop, run)
+        app.execution_buttons = (pause, save, run, stop, output)
         app.open_output_button = output
-        app.clear_cache_button = cache
         app.clear_log_button = clear_log
+        app.pause_scan_button = pause
+        app.save_scan_button = save
         app.stop_button = stop
         app.run_button = run
-        app.utility_action_area = AreaProbe()
-        app.content = AreaProbe()
+        app.task = gui.TASK_BY_KEY["env_check"]
+        app.process_task_key = None
 
         app._layout_action_buttons()
 
         self.assertTrue(output.grid_calls)
-        self.assertTrue(cache.grid_calls)
         self.assertTrue(stop.grid_calls)
         self.assertTrue(run.grid_calls)
+        self.assertEqual(pause.grid_calls, [])
+        self.assertEqual(save.grid_calls, [])
+        self.assertEqual(
+            [run.grid_calls[0]["column"], stop.grid_calls[0]["column"],
+             output.grid_calls[0]["column"]],
+            [1, 2, 3],
+        )
         self.assertEqual(clear_log.grid_calls, [])
         self.assertEqual(clear_log.forgotten, 0)
 
@@ -1733,10 +1737,10 @@ class TestGuiArguments(unittest.TestCase):
         env = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
         database = (gui._GREEN_DARK, gui._GREEN_DEEP, gui._GREEN)
         self.assertEqual(gui.task_accent_colours("env_check"), env)
-        for task_key in gui._TASK_MENU_SECTIONS[1][1]:
+        for task_key in gui._TASK_MENU_SECTIONS[0][1]:
             self.assertEqual(gui.task_accent_colours(task_key), database)
         self.assertEqual(
-            gui._TASK_MENU_SECTION_COLOURS["硬盘"][1:],
+            gui._TASK_MENU_SECTION_COLOURS["设备"][1:],
             (gui._RED, gui._RED_DEEP, gui._RED_SOFT),
         )
 
@@ -1824,21 +1828,18 @@ class TestGuiArguments(unittest.TestCase):
     def test_top_task_menus_use_theme_grouping(self):
         self.assertEqual(
             [section[0] for section in gui._TASK_MENU_SECTIONS],
-            ["环境", "数据", "硬盘"],
+            ["档案", "设备", "维护"],
+        )
+        self.assertEqual(
+            gui._TASK_MENU_SECTIONS[0][1],
+            ("scan", "diff", "verify", "parse_db"),
         )
         self.assertNotIn("full_scan", gui._TASK_MENU_SECTIONS[0][1])
         self.assertNotIn("quick_scan", gui._TASK_MENU_SECTIONS[0][1])
-        self.assertEqual(gui._TASK_MENU_SECTIONS[0][1], ("env_check",))
-        self.assertEqual(
-            gui._TASK_MENU_SECTIONS[1][1],
-            ("scan", "diff", "verify", "parse_db"),
-        )
         self.assertNotIn(
             gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
-        self.assertEqual(
-            gui._TASK_MENU_SECTIONS[-1][1],
-            ("storage_collect",),
-        )
+        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1], ("storage_collect",))
+        self.assertEqual(gui._TASK_MENU_SECTIONS[2][1], ("env_check",))
         self.assertNotIn("storage_list", gui._TASK_MENU_ORDER)
         self.assertNotIn("storage_" + "verify", gui.TASK_BY_KEY)
         self.assertEqual(
@@ -1911,6 +1912,7 @@ class TestGuiArguments(unittest.TestCase):
         app.ui_font_family = "Microsoft YaHei UI"
         app.ui_font_size_delta = 0
         app.completion_sound_enabled = False
+        app.result_directory_prompt_enabled = False
         app._available_ui_font_families = lambda: (
             "Microsoft YaHei UI", "Segoe UI")
         with (
@@ -1927,24 +1929,24 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             top_labels,
             [
-                "文件", "功能", "高级", "设置", "视图", "帮助",
+                "文件", "功能", "视图", "设置", "高级", "帮助",
             ],
         )
         file_menu = app.app_menu.entries[0]["menu"]
         self.assertEqual(
             [entry["label"] for entry in file_menu.entries
              if entry["kind"] == "command"],
-            ["打开项目目录", "打开结果目录", "退出 DAISY"],
+            ["项目目录", "结果目录", "退出"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.panel_menu.entries
              if entry["kind"] == "cascade"],
-            ["环境", "数据", "硬盘"],
+            ["档案", "设备", "维护"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "cascade"],
-            ["工具路径", "扫描行为", "核验行为", "对比行为"],
+            ["扫描选项", "核验选项", "对比选项"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
@@ -1954,11 +1956,16 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "command"],
-            ["显示命令预览", "DAISY 功能自检"],
+            ["显示预览", "功能自检"],
         )
-        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 3, 7])
+        self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 6])
+        self.assertEqual(app.settings_locked_menu_entries, [2])
         self.assertEqual(
             app.app_menu.options["background"], gui._MENU_BACKGROUND)
+        self.assertEqual(
+            app.app_menu.options["font"],
+            ("Microsoft YaHei UI", gui._UI_BODY_FONT_SIZE),
+        )
         self.assertEqual(len("工具路径"), 4)
         self.assertEqual(
             [
@@ -1967,9 +1974,9 @@ class TestGuiArguments(unittest.TestCase):
                 if entry["kind"] == "command"
             ],
             [
-                f"{gui._TOOL_DISPLAY_NAMES[name]}：尚未检测"
+                f"{gui._TOOL_DISPLAY_NAMES[name]} · 未检测"
                 for name in gui._TOOL_PATH_MENU_ORDER
-            ] + ["清除全部手动路径"],
+            ] + ["清除手动路径"],
         )
         app.detected_tools = {
             "exiftool": {
@@ -1979,30 +1986,30 @@ class TestGuiArguments(unittest.TestCase):
         }
         self.assertEqual(
             app._tool_path_menu_label("exiftool"),
-            r"ExifTool：已检测：C:\Tools\ExifTool\exiftool.exe",
+            "ExifTool · 已检测",
         )
         app.manual_tool_paths = {
             "exiftool": r"D:\Manual\exiftool.exe",
         }
         self.assertEqual(
             app._tool_path_menu_label("exiftool"),
-            r"ExifTool：手动：D:\Manual\exiftool.exe",
+            "ExifTool · 手动指定",
         )
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "cascade"],
-            ["默认窗口大小", "界面字体"],
+            ["窗口大小", "界面字体", "工具路径"],
         )
         self.assertFalse(hasattr(app, "binary_control_style_menu"))
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "checkbutton"],
-            ["任务完成提示音"],
+            ["完成提示音", "结果目录提示"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "command"],
-            ["重置软件设置…"],
+            ["恢复设置…"],
         )
         self.assertEqual(
             [
@@ -2011,8 +2018,8 @@ class TestGuiArguments(unittest.TestCase):
                 if entry["kind"] == "command"
             ],
             [
-                "收起功能模块", "收起任务设置",
-                "展开运行进度", "展开运行日志", "进入小窗模式",
+                "隐藏功能栏", "隐藏设置区",
+                "显示进度区", "显示日志区", "小窗模式",
             ],
         )
         self.assertEqual(
@@ -2027,12 +2034,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in help_menu.entries
              if entry["kind"] == "command"],
-            ["联系作者", "关于 DAISY", "打开 GitHub 主页"],
+            ["关于", "联系作者", "GitHub 主页"],
         )
         self.assertEqual(
             [
                 entry["label"]
-                for entry in app.task_menus["环境"].entries
+                for entry in app.task_menus["档案"].entries
                 if entry["kind"] == "radiobutton"
             ],
             [gui._TASK_TOOLBAR_LABELS[key]
@@ -2040,17 +2047,17 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             sum(entry["kind"] == "separator"
-                for entry in app.task_menus["数据"].entries),
-            3,
+                for entry in app.task_menus["档案"].entries),
+            0,
         )
         self.assertEqual(
-            app.task_menus["数据"].options["activebackground"],
+            app.task_menus["档案"].options["activebackground"],
             gui._UNIFIED_ACTION_BACKGROUND,
         )
         self.assertEqual(
             [
                 entry["label"]
-                for entry in app.task_menus["硬盘"].entries
+                for entry in app.task_menus["维护"].entries
                 if entry["kind"] == "radiobutton"
             ],
             [gui._TASK_TOOLBAR_LABELS[key]
@@ -2058,11 +2065,11 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             sum(entry["kind"] == "separator"
-                for entry in app.task_menus["硬盘"].entries),
+                for entry in app.task_menus["维护"].entries),
             0,
         )
 
-    def test_view_menu_uses_expand_collapse_actions_except_preview(self):
+    def test_view_menu_uses_concise_visibility_actions(self):
         class MenuProbe:
             def __init__(self):
                 self.labels = {}
@@ -2088,16 +2095,16 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.view_menu.labels,
             {
-                0: "收起功能模块",
-                2: "展开任务设置",
-                3: "收起运行进度",
-                4: "展开运行日志",
-                6: "进入小窗模式",
+                0: "隐藏功能栏",
+                2: "显示设置区",
+                3: "隐藏进度区",
+                4: "显示日志区",
+                6: "小窗模式",
             },
         )
         app.mini_mode = True
         app._refresh_view_menu_labels()
-        self.assertEqual(app.view_menu.labels[6], "返回完整界面")
+        self.assertEqual(app.view_menu.labels[6], "完整界面")
 
     def test_idle_close_never_requires_confirmation(self):
         class RootProbe:
@@ -2898,7 +2905,7 @@ class TestGuiArguments(unittest.TestCase):
             for index in range(int(app.settings_menu.index("end")) + 1)
             if app.settings_menu.type(index) != "separator"
             and app.settings_menu.entrycget(index, "label")
-            == "任务完成提示音"
+            == "完成提示音"
         )
         self.assertFalse(app.completion_sound_enabled)
         self.assertFalse(app.completion_sound_enabled_var.get())
@@ -2917,6 +2924,53 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(2, save.call_count)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_result_directory_prompt_is_optional_and_persistent(self):
+        root, app = self._real_tk_app()
+        prompt_index = next(
+            index
+            for index in range(int(app.settings_menu.index("end")) + 1)
+            if app.settings_menu.type(index) != "separator"
+            and app.settings_menu.entrycget(index, "label")
+            == "结果目录提示"
+        )
+        self.assertFalse(app.result_directory_prompt_enabled)
+        self.assertFalse(app.result_directory_prompt_enabled_var.get())
+
+        with patch.object(app, "_save_gui_preferences") as save:
+            app.settings_menu.invoke(prompt_index)
+            root.update_idletasks()
+            self.assertTrue(app.result_directory_prompt_enabled)
+            self.assertTrue(app.result_directory_prompt_enabled_var.get())
+            save.assert_called_once_with()
+
+            app.settings_menu.invoke(prompt_index)
+            root.update_idletasks()
+            self.assertFalse(app.result_directory_prompt_enabled)
+            self.assertFalse(app.result_directory_prompt_enabled_var.get())
+            self.assertEqual(2, save.call_count)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_menu_font_matches_body_and_user_size(self):
+        root, app = self._real_tk_app()
+
+        def menu_size(menu):
+            actual = gui.tkfont.Font(root=root, font=menu.cget("font"))
+            return abs(int(actual.actual("size")))
+
+        self.assertEqual(menu_size(app.app_menu), gui._UI_BODY_FONT_SIZE)
+        self.assertTrue(all(
+            menu_size(task_menu) == gui._UI_BODY_FONT_SIZE
+            for task_menu in app.task_menus.values()
+        ))
+        app._set_ui_font(size_delta=1, persist=False)
+        root.update_idletasks()
+        self.assertEqual(menu_size(app.app_menu), gui._UI_BODY_FONT_SIZE + 1)
+        self.assertTrue(all(
+            menu_size(task_menu) == gui._UI_BODY_FONT_SIZE + 1
+            for task_menu in app.task_menus.values()
+        ))
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_reset_software_settings_keeps_business_files_out_of_scope(
         self,
     ):
@@ -2931,6 +2985,7 @@ class TestGuiArguments(unittest.TestCase):
             },
         }
         app.completion_sound_enabled = True
+        app.result_directory_prompt_enabled = True
 
         with patch.object(
                 gui.messagebox, "askyesno", return_value=True), \
@@ -2949,6 +3004,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.completion_sound_enabled,
             defaults["completion_sound_enabled"],
+        )
+        self.assertEqual(
+            app.result_directory_prompt_enabled,
+            defaults["result_directory_prompt_enabled"],
         )
         saved.assert_called_once()
         payload = saved.call_args.args[0]
@@ -3062,6 +3121,8 @@ class TestGuiArguments(unittest.TestCase):
             "各页面副标题应保持统一单行高度",
         )
         self.assertGreaterEqual(button_checks, 90)
+        app._select_task("storage_collect", save_current=False)
+        root.update()
         admin_button = app.admin_mode_button.button
         self.assertIsInstance(app.admin_mode_button, gui.AdminModeButton)
         self.assertIsInstance(admin_button, gui.tk.Button)
@@ -3172,6 +3233,9 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIsInstance(button, gui.tk.Button)
             self.assertEqual(button.cget("anchor"), "center")
             self.assertEqual(button.cget("justify"), "center")
+            self.assertEqual(
+                int(button.cget("width")), gui._ENVIRONMENT_BUTTON_WIDTH)
+            self.assertEqual(str(button.grid_info()["sticky"]), "w")
             self.assertLess(button.winfo_reqwidth(), 220)
             self.assertGreaterEqual(
                 button.winfo_width(), button.winfo_reqwidth())
@@ -3207,6 +3271,16 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(status_button.cget("justify"), "center")
             self.assertEqual(install_button.cget("anchor"), "center")
             self.assertEqual(install_button.cget("justify"), "center")
+            self.assertEqual(
+                int(status_button.cget("width")),
+                gui._ENVIRONMENT_BUTTON_WIDTH,
+            )
+            self.assertEqual(
+                int(install_button.cget("width")),
+                gui._ENVIRONMENT_BUTTON_WIDTH,
+            )
+            self.assertEqual(str(status_button.grid_info()["sticky"]), "w")
+            self.assertEqual(str(install_button.grid_info()["sticky"]), "w")
             self.assertLessEqual(
                 abs(status_button.winfo_rootx()
                     - install_button.winfo_rootx()),
@@ -3222,6 +3296,19 @@ class TestGuiArguments(unittest.TestCase):
                     - install_button.winfo_height()),
                 1,
             )
+        self.assertLess(
+            gui._ENVIRONMENT_BUTTON_WIDTH,
+            gui._STANDARD_BUTTON_WIDTH,
+        )
+        first_status = app.environment_status_buttons[
+            gui._ENVIRONMENT_STATUS_ORDER[0]]
+        last_status = app.environment_status_buttons[
+            gui._ENVIRONMENT_STATUS_ORDER[-1]]
+        occupied_width = (
+            last_status.winfo_rootx() + last_status.winfo_width()
+            - first_status.winfo_rootx()
+        )
+        self.assertLess(occupied_width, first_status.master.winfo_width())
         self.assertIn("rawpy", app.install_tool_buttons)
         self.assertEqual(
             app.install_tool_buttons["rawpy"].cget("text"),
@@ -3263,6 +3350,7 @@ class TestGuiArguments(unittest.TestCase):
         roots = app.values["roots"]
         self.assertEqual(
             roots.add_button.cget("style"), "FilePicker.TButton")
+        self.assertEqual(roots.add_button.cget("text"), "添加")
         self.assertGreaterEqual(roots.add_button.winfo_reqwidth(), 100)
         self.assertLess(gui._FILE_PICKER_BUTTON_WIDTH,
                         gui._FORM_ACTION_BUTTON_WIDTH)
@@ -3292,23 +3380,13 @@ class TestGuiArguments(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(form_tooltip_targets), 2)
 
-        combobox = next(
-            child
-            for cell in app.form_inner.winfo_children()
-            for child in cell.winfo_children()
-            if isinstance(child, gui.ttk.Combobox)
-        )
-        arrow_element = combobox.identify(
-            combobox.winfo_width() - 11, combobox.winfo_height() // 2)
-        self.assertEqual(combobox.cget("style"), "Daisy.TCombobox")
-        arrow_layout = repr(app.style.layout("Daisy.TCombobox"))
-        self.assertIn("Daisy.Combobox.chevron", arrow_layout)
-        self.assertNotIn("Combobox.downarrow", arrow_layout)
-        self.assertIn("Daisy.Combobox.chevron", arrow_element)
-        normal_arrow = app.combobox_arrow_images[0]
-        self.assertEqual((normal_arrow.width(), normal_arrow.height()), (22, 16))
-        self.assertTrue(normal_arrow.transparency_get(0, 0))
-        self.assertFalse(normal_arrow.transparency_get(10, 9))
+        self.assertFalse(any(
+            isinstance(child, gui.ttk.Combobox)
+            for child in self._tk_descendants(app.form_inner)
+        ))
+        self.assertIsInstance(app.values["start_mode"], gui.ChoiceButtonGroup)
+        self.assertEqual(
+            list(app.values["start_mode"].buttons), ["new", "resume"])
 
         app._select_task("storage_collect", save_current=False)
         root.update()
@@ -3449,6 +3527,11 @@ class TestGuiArguments(unittest.TestCase):
             and int(child.grid_info().get("row", -1)) == input_row
             and int(child.grid_info().get("column", -1)) == 1
         )
+        select_button = next(
+            child for child in input_cell.winfo_children()
+            if isinstance(child, gui.ttk.Button)
+        )
+        self.assertEqual(select_button.cget("text"), "选择")
         parse_button = app.parse_detect_button
         self.assertEqual(parse_button.cget("text"), "解析数据库")
         self.assertEqual(
@@ -3470,12 +3553,31 @@ class TestGuiArguments(unittest.TestCase):
         parse_button_x = parse_button.winfo_rootx()
         parse_button_width = parse_button.winfo_width()
 
+        original_form = app.form_inner
+        original_preset = app.values["preset"]
+        original_modules = app.values["parse_modules"]
+        original_formats = app.values["formats"]
         app.values["preset"].buttons["human-summary"].invoke()
         root.update()
+        self.assertIs(app.form_inner, original_form)
+        self.assertIs(app.values["preset"], original_preset)
+        self.assertIs(app.values["parse_modules"], original_modules)
+        self.assertIs(app.values["formats"], original_formats)
         self.assertEqual(app.values["preset"].get(), "human-summary")
         self.assertEqual(app.values["parse_modules"].preset, "human-summary")
         self.assertEqual(
             app.values["formats"].get(), "html\nxlsx\njsonl")
+        for preset_value, editable in (
+                ("full-audit", False), ("custom", True),
+                ("human-summary", False)):
+            original_preset.buttons[preset_value].invoke()
+            root.update()
+            self.assertIs(app.form_inner, original_form)
+            self.assertIs(app.values["preset"], original_preset)
+            self.assertIs(app.values["parse_modules"], original_modules)
+            self.assertIs(app.values["formats"], original_formats)
+            self.assertEqual(original_modules.preset, preset_value)
+            self.assertEqual(original_modules.editable, editable)
 
         app._select_task("storage_collect", save_current=False)
         root.update()
@@ -3959,60 +4061,31 @@ class TestGuiArguments(unittest.TestCase):
         self.assertNotIn("--no-file-id", app.preview_var.get())
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_reselecting_same_choice_keeps_visible_text(self):
+    def test_real_tk_reselecting_same_choice_button_keeps_widget_and_text(self):
         root, app = self._real_tk_app()
         app._select_task("full_scan", save_current=False)
         root.update()
 
-        def comboboxes(widget):
-            found = []
-            for child in widget.winfo_children():
-                if isinstance(child, gui.ttk.Combobox):
-                    found.append(child)
-                found.extend(comboboxes(child))
-            return found
-
-        original = next(
-            widget for widget in comboboxes(app.form_inner)
-            if getattr(widget, "_daisy_field_key", None) == "start_mode"
-        )
-        initial_text = original.get()
-        original.focus_set()
-        original.selection_range(0, gui.tk.END)
-        original.current(original.current())
-        original.event_generate("<<ComboboxSelected>>")
+        original = app.values["start_mode"]
+        self.assertIsInstance(original, gui.ChoiceButtonGroup)
+        initial_value = original.get()
+        initial_text = original.buttons[initial_value].cget("text")
+        original.buttons[initial_value].invoke()
         root.update()
         self.assertTrue(original.winfo_exists())
-        self.assertEqual(original.get(), initial_text)
-        self.assertFalse(original.selection_present())
-        for states in (
-                ("readonly",), ("readonly", "focus"),
-                ("readonly", "pressed")):
-            self.assertEqual(
-                app.style.lookup(
-                    "Daisy.TCombobox", "foreground", states),
-                gui._TEXT,
-            )
-            self.assertEqual(
-                app.style.lookup(
-                    "Daisy.TCombobox", "selectforeground", states),
-                gui._TEXT,
-            )
-            self.assertEqual(
-                app.style.lookup(
-                    "Daisy.TCombobox", "selectbackground", states),
-                gui._FIELD,
-            )
+        self.assertIs(app.values["start_mode"], original)
+        self.assertEqual(original.get(), initial_value)
+        self.assertEqual(
+            original.buttons[initial_value].cget("text"), initial_text)
+        self.assertNotEqual(
+            original.buttons[initial_value].cget("foreground"), "white")
 
-        original.current(1)
-        original.event_generate("<<ComboboxSelected>>")
+        original.buttons["resume"].invoke()
         root.update()
-        changed = next(
-            widget for widget in comboboxes(app.form_inner)
-            if getattr(widget, "_daisy_field_key", None) == "start_mode"
-        )
+        changed = app.values["start_mode"]
         self.assertFalse(original.winfo_exists())
-        self.assertTrue(changed.get())
+        self.assertEqual(changed.get(), "resume")
+        self.assertEqual(changed.buttons["resume"].cget("text"), "使用续传")
         self.assertEqual(
             app.saved_values["full_scan"]["start_mode"], "resume")
 
@@ -4311,7 +4384,7 @@ class TestGuiArguments(unittest.TestCase):
         )
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_every_combobox_arrow_and_selection_path(self):
+    def test_real_tk_every_form_choice_uses_buttons_without_dropdowns(self):
         root, app = self._real_tk_app()
         choice_kinds = {"choice", "choice_flag", "disk_choice"}
         expected_specs = [
@@ -4334,59 +4407,49 @@ class TestGuiArguments(unittest.TestCase):
             app.saved_values[task.key] = saved
             app._select_task(task.key, save_current=False)
             root.update()
-            combobox = next(
+            control = next(
                 widget
                 for widget in self._tk_descendants(app.form_inner)
-                if (isinstance(widget, gui.ttk.Combobox)
+                if (isinstance(widget, gui.ChoiceButtonGroup)
                     and getattr(widget, "_daisy_field_key", None)
                     == spec.key)
             )
             context = f"{task.key}.{spec.key}"
-            arrow_hits = [
-                x for x in range(
-                    max(0, combobox.winfo_width() - 24),
-                    combobox.winfo_width())
-                if "Daisy.Combobox.chevron" in combobox.identify(
-                    x, combobox.winfo_height() // 2)
-            ]
-            self.assertGreaterEqual(len(arrow_hits), 20, context)
-            click_x = arrow_hits[len(arrow_hits) // 2]
-            initial_text = combobox.get()
-            combobox.event_generate(
-                "<ButtonPress-1>", x=click_x,
-                y=combobox.winfo_height() // 2)
-            combobox.event_generate(
-                "<ButtonRelease-1>", x=click_x,
-                y=combobox.winfo_height() // 2)
+            self.assertFalse(any(
+                isinstance(widget, gui.ttk.Combobox)
+                for widget in self._tk_descendants(app.form_inner)
+            ), context)
+            initial_value = control.get()
+            self.assertIn(initial_value, control.buttons, context)
+            initial_button = control.buttons[initial_value]
+            initial_text = initial_button.cget("text")
+            initial_button.invoke()
             root.update()
-            try:
-                root.tk.call("ttk::combobox::Unpost", str(combobox))
-            except gui.tk.TclError:
-                pass
-            self.assertEqual(combobox.get(), initial_text, context)
+            self.assertTrue(control.winfo_exists(), context)
+            self.assertIs(app.values[spec.key], control, context)
+            self.assertEqual(control.get(), initial_value, context)
+            self.assertEqual(initial_button.cget("text"), initial_text, context)
 
-            current_index = combobox.current()
-            combobox.current(current_index)
-            combobox.event_generate("<<ComboboxSelected>>")
-            root.update()
-            self.assertTrue(combobox.winfo_exists(), context)
-            self.assertEqual(combobox.get(), initial_text, context)
-
-            values = tuple(combobox.cget("values"))
+            values = tuple(control.buttons)
             if len(values) > 1:
-                alternate_index = (current_index + 1) % len(values)
-                combobox.current(alternate_index)
-                combobox.event_generate("<<ComboboxSelected>>")
+                alternate_value = next(
+                    value for value in values if value != initial_value)
+                control.buttons[alternate_value].invoke()
                 root.update()
                 rebuilt = next(
                     widget
                     for widget in self._tk_descendants(app.form_inner)
-                    if (isinstance(widget, gui.ttk.Combobox)
+                    if (isinstance(widget, gui.ChoiceButtonGroup)
                         and getattr(widget, "_daisy_field_key", None)
                         == spec.key)
                 )
-                self.assertTrue(rebuilt.get(), context)
-                self.assertEqual(rebuilt.current(), alternate_index, context)
+                self.assertEqual(rebuilt.get(), alternate_value, context)
+                self.assertEqual(
+                    rebuilt.buttons[alternate_value].cget("text"),
+                    next(label for label, value in app._field_choices(spec)
+                         if str(value) == alternate_value),
+                    context,
+                )
             checked += 1
         self.assertEqual(checked, len(expected_specs))
 
@@ -4533,6 +4596,47 @@ class TestGuiArguments(unittest.TestCase):
             self.assertFalse(gui.should_offer_result_directory(
                 returncodes, stopped=stopped, maintenance=maintenance))
 
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_completed_task_flashes_result_without_default_prompt(self):
+        root, app = self._real_tk_app()
+        app._select_task("diff", save_current=False)
+        with tempfile.TemporaryDirectory() as result_directory:
+            app._output_path = lambda: result_directory
+
+            def prepare_run():
+                app.process_task_key = "diff"
+                app.run_jobs = [gui.RunJob("快照对比", {})]
+                app.run_job_index = 0
+                app.run_results = [0]
+                app.run_outcomes = [None]
+                app.stop_requested = False
+                app.save_exit_requested = False
+                app.worker_starting = False
+                app.close_after_stop = False
+
+            prepare_run()
+            with patch.object(app, "_offer_open_result_directory") as offer:
+                app._finalize_run(0.2)
+                root.update()
+            offer.assert_not_called()
+            self.assertEqual(
+                app.open_output_button.cget("background"),
+                gui._GREEN_SOFT,
+            )
+            app._cancel_open_result_flash()
+            self.assertEqual(
+                app.open_output_button.cget("background"),
+                gui._CONTROL,
+            )
+
+            app.result_directory_prompt_enabled = True
+            prepare_run()
+            with patch.object(app, "_offer_open_result_directory") as offer:
+                app._finalize_run(0.2)
+                root.update()
+            offer.assert_called_once_with(result_directory)
+            app._cancel_open_result_flash()
+
     def test_completion_sound_requires_completed_business_task(self):
         self.assertTrue(gui.should_play_completion_sound(
             [0], [None], task_key="scan", stopped=False, saved=False))
@@ -4627,12 +4731,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
-                "ENV-01  运行环境检测",
                 "DBS-10  档案扫描建库",
                 "DBS-21  档案快照对比",
                 "DBS-30  档案数据核验",
                 "DBS-41  档案数据解析",
                 "STG-11  硬盘信息登记",
+                "ENV-01  运行环境检测",
             ],
         )
         expected = (
@@ -4711,7 +4815,7 @@ class TestGuiArguments(unittest.TestCase):
             gui._STG_ADMIN_TASKS,
             {"storage_list", "storage_collect"},
         )
-        self.assertEqual(gui._TASK_MENU_SECTIONS[-1][1], ("storage_collect",))
+        self.assertEqual(gui._TASK_MENU_SECTIONS[1][1], ("storage_collect",))
         for task_key in gui._STG_ADMIN_TASKS:
             app = object.__new__(gui.DaisyApp)
             app.root = object()
