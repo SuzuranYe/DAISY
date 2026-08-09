@@ -2172,12 +2172,12 @@ _RESTORABLE_TASK_KEYS = frozenset(
 _TASK_MENU_SECTIONS = (
     ("档案", ("scan", "diff", "verify", "parse_db")),
     ("设备", ("storage_collect",)),
-    ("维护", ("env_check",)),
+    ("环境", ("env_check",)),
 )
 _TASK_MENU_SECTION_COLOURS = {
     "档案": ("Archive", _AMBER, _AMBER_DEEP, _AMBER_SOFT),
     "设备": ("Device", _RED, _RED_DEEP, _RED_SOFT),
-    "维护": ("Maintenance", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
+    "环境": ("Environment", _GREEN, _GREEN_DEEP, _GREEN_SOFT),
 }
 _TASK_MENU_SEPARATOR_AFTER: frozenset[str] = frozenset()
 _TASK_MENU_ORDER = tuple(
@@ -2218,8 +2218,9 @@ def task_display_title(task_key: str) -> str:
 
 _STANDARD_BUTTON_WIDTH = 14
 _STANDARD_BUTTON_PADDING = (12, 6)
-_TASK_TOOLBAR_BUTTON_WIDTH = 0
-_TASK_TOOLBAR_BUTTON_PADDING = (34, 7)
+_SIX_COLUMN_BUTTON_WIDTH = 12
+_TASK_TOOLBAR_BUTTON_WIDTH = _SIX_COLUMN_BUTTON_WIDTH
+_TASK_TOOLBAR_BUTTON_PADDING = (4, 5)
 _TASK_TOOLBAR_MINIMUM_WIDTH = 1100
 _TASK_TOOLBAR_LABEL_COLOUR = _TEXT
 _TASK_TOOLBAR_BACKGROUND = "#edd7ad"
@@ -2252,7 +2253,7 @@ _FORM_SECTION_PADY = (_SPACING_COMPACT, 0)
 _FORM_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _FILE_PICKER_BUTTON_WIDTH = 12
 _FILE_PICKER_BUTTON_PADDING = (10, 5)
-_ENVIRONMENT_BUTTON_WIDTH = 12
+_ENVIRONMENT_BUTTON_WIDTH = _SIX_COLUMN_BUTTON_WIDTH
 _ENVIRONMENT_BUTTON_PADDING = (4, 4)
 _FORM_FIELD_TITLE_MAX_CHARS = 6
 _FORM_FIELD_ASCII_TITLE_MAX_CHARS = 12
@@ -3976,23 +3977,23 @@ class VerificationToolButtonGroup(tk.Frame):
         definitions = (
             (
                 "verify_builtin", "内置格式校验", True,
-                "检查 ZIP/OOXML 的 CRC，以及 PDF 的基本结构。",
+                "使用 DAISY 内置校验器检查 ZIP/OOXML 的 CRC，以及 PDF 的基本结构。",
             ),
             (
                 "verify_exiftool", "ExifTool", True,
-                "用 ExifTool 检查适用图片、RAW 和媒体文件的格式与元数据结构。",
+                "使用 ExifTool 检查适用图片、RAW 和媒体文件的格式与元数据结构。",
             ),
             (
                 "verify_ffprobe", "ffprobe", True,
-                "用 ffprobe 检查 GIF、视频和音频的容器与媒体流。",
+                "使用 ffprobe 检查 GIF、视频和音频的容器与媒体流。",
             ),
             (
                 "verify_sevenzip", "7-Zip", True,
-                "用 7-Zip 检查压缩包和旧 Office OLE 容器。",
+                "使用 7-Zip 检查压缩包和旧 Office OLE 容器。",
             ),
             (
                 "raw_deep_validation", "rawpy/LibRaw", raw_enabled,
-                "用独立 rawpy/LibRaw 子进程解码 RAW 文件。"
+                "使用独立的 rawpy/LibRaw 子进程检查 RAW 文件能否实际解码。"
                 + ("" if raw_enabled else f" 当前不可用：{raw_reason}"),
             ),
         )
@@ -5789,7 +5790,7 @@ class DaisyApp:
                 int(diff_behavior_index))
         advanced_menu.add_separator()
         advanced_menu.add_command(
-            label="显示预览",
+            label="命令预览",
             command=lambda: self._set_command_preview_expanded(
                 not self.command_preview_expanded),
         )
@@ -5967,8 +5968,10 @@ class DaisyApp:
         panel.pack(fill="x", side="top")
 
         header = tk.Frame(panel, bg=_SURFACE)
+        form_pad = (
+            _SPACING_SECTION if self.compact_layout else _SPACING_OUTER)
         self.task_toolbar_horizontal_pad = (
-            self.content_pad + _PANEL_HEADER_PADX)
+            self.content_pad + form_pad + _SPACING_STANDARD + 1)
         header.pack(
             fill="x", padx=self.task_toolbar_horizontal_pad,
             pady=(_SPACING_COMPACT, _SPACING_COMPACT),
@@ -6008,8 +6011,7 @@ class DaisyApp:
         )
         self.task_toolbar_section_labels: dict[str, tk.Label] = {}
         for column in range(len(_TASK_TOOLBAR_KEYS)):
-            body.grid_columnconfigure(
-                column, weight=0, uniform="task_toolbar")
+            body.grid_columnconfigure(column, weight=0)
         body.grid_anchor("w")
         for task_key in _TASK_TOOLBAR_KEYS:
             task = TASK_BY_KEY[task_key]
@@ -6056,6 +6058,8 @@ class DaisyApp:
             "warning": (
                 _AMBER_SOFT, _AMBER_DEEP, _AMBER, _AMBER_DEEP,
                 _AMBER_SOFT),
+            "result": (
+                _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
             "secondary": (
                 _CONTROL, _TEXT, _CONTROL_HOVER, _TEXT, _BORDER),
         }
@@ -6580,7 +6584,7 @@ class DaisyApp:
             execution_action_area, text=_RUN_BUTTON_TEXT, tone="primary",
             command=self._run)
         self.open_output_button = self._create_task_action_button(
-            execution_action_area, text="打开结果目录", tone="secondary",
+            execution_action_area, text="打开结果目录", tone="result",
             command=self._open_output)
         self.execution_buttons = (
             self.pause_scan_button, self.save_scan_button,
@@ -6843,7 +6847,7 @@ class DaisyApp:
                 self, "command_preview_menu_index"):
             self.advanced_menu.entryconfigure(
                 self.command_preview_menu_index,
-                label="隐藏预览" if expanded else "显示预览",
+                label="命令预览",
             )
         if not self.mini_mode:
             self.root.minsize(*self._normal_minimum_size())
@@ -8714,32 +8718,54 @@ class DaisyApp:
                 self.root.after_cancel(after_id)
             except tk.TclError:
                 pass
+        self._set_open_result_button_highlighted(False)
+
+    def _set_open_result_button_highlighted(
+        self, highlighted: bool,
+    ) -> bool:
+        """在色带绿色提示态与琥珀色常态之间切换结果按钮。"""
         button = getattr(self, "open_output_button", None)
-        if button is not None:
-            try:
-                button.configure(
-                    bg=_CONTROL, fg=_TEXT,
-                    activebackground=_CONTROL_HOVER,
-                    activeforeground=_TEXT,
-                    highlightbackground=_BORDER,
-                    highlightcolor=_BORDER,
-                )
-            except tk.TclError:
-                pass
+        if button is None:
+            return False
+        palette = (
+            (_GREEN, _GREEN_DEEP, _GREEN_DARK, "white", _GREEN_DARK)
+            if highlighted else
+            (_AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK)
+        )
+        background, foreground, active_background, active_foreground, border = (
+            palette)
+        try:
+            button.configure(
+                bg=background, fg=foreground,
+                activebackground=active_background,
+                activeforeground=active_foreground,
+                highlightbackground=border,
+                highlightcolor=border,
+            )
+        except tk.TclError:
+            return False
+        return True
+
+    def _advance_open_result_flash(self, step: int) -> None:
+        """执行两次绿色脉冲；每次回到琥珀色后才算一次完整闪烁。"""
+        self.open_result_flash_after_id = None
+        sequence = (True, False, True, False)
+        if step >= len(sequence):
+            return
+        if not self._set_open_result_button_highlighted(sequence[step]):
+            return
+        if step + 1 < len(sequence):
+            self.open_result_flash_after_id = self.root.after(
+                230,
+                lambda next_step=step + 1:
+                self._advance_open_result_flash(next_step),
+            )
 
     def _flash_open_result_button(self) -> None:
-        """任务产出结果后短暂突出目录按钮，不抢焦点、不弹窗。"""
+        """任务产出结果后让目录按钮闪烁两次，不抢焦点、不弹窗。"""
         self._cancel_open_result_flash()
         try:
-            self.open_output_button.configure(
-                bg=_GREEN_SOFT, fg=_GREEN_DEEP,
-                activebackground=_GREEN,
-                activeforeground=_GREEN_DEEP,
-                highlightbackground=_GREEN,
-                highlightcolor=_GREEN,
-            )
-            self.open_result_flash_after_id = self.root.after(
-                650, self._cancel_open_result_flash)
+            self._advance_open_result_flash(0)
         except tk.TclError:
             self.open_result_flash_after_id = None
 

@@ -1828,7 +1828,7 @@ class TestGuiArguments(unittest.TestCase):
     def test_top_task_menus_use_theme_grouping(self):
         self.assertEqual(
             [section[0] for section in gui._TASK_MENU_SECTIONS],
-            ["档案", "设备", "维护"],
+            ["档案", "设备", "环境"],
         )
         self.assertEqual(
             gui._TASK_MENU_SECTIONS[0][1],
@@ -1941,7 +1941,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.panel_menu.entries
              if entry["kind"] == "cascade"],
-            ["档案", "设备", "维护"],
+            ["档案", "设备", "环境"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
@@ -1956,7 +1956,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.advanced_menu.entries
              if entry["kind"] == "command"],
-            ["显示预览", "功能自检"],
+            ["命令预览", "功能自检"],
         )
         self.assertEqual(app.advanced_locked_menu_entries, [0, 1, 2, 6])
         self.assertEqual(app.settings_locked_menu_entries, [2])
@@ -2057,7 +2057,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [
                 entry["label"]
-                for entry in app.task_menus["维护"].entries
+                for entry in app.task_menus["环境"].entries
                 if entry["kind"] == "radiobutton"
             ],
             [gui._TASK_TOOLBAR_LABELS[key]
@@ -2065,7 +2065,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             sum(entry["kind"] == "separator"
-                for entry in app.task_menus["维护"].entries),
+                for entry in app.task_menus["环境"].entries),
             0,
         )
 
@@ -2617,13 +2617,19 @@ class TestGuiArguments(unittest.TestCase):
             len(label) == 4
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
-        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_WIDTH, 0)
-        self.assertEqual(gui._TASK_TOOLBAR_BUTTON_PADDING, (34, 7))
-        self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1100)
         self.assertEqual(
-            gui._TASK_TOOLBAR_BUTTON_PADDING[1] * 6,
-            gui._STANDARD_BUTTON_PADDING[1] * 7,
+            gui._TASK_TOOLBAR_BUTTON_WIDTH,
+            gui._ENVIRONMENT_BUTTON_WIDTH,
         )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_BUTTON_PADDING[0],
+            gui._ENVIRONMENT_BUTTON_PADDING[0],
+        )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_BUTTON_PADDING[1],
+            gui._STANDARD_BUTTON_PADDING[1] - 1,
+        )
+        self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1100)
         self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._TEXT)
         self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
         with patch.object(
@@ -2922,6 +2928,23 @@ class TestGuiArguments(unittest.TestCase):
             self.assertFalse(app.completion_sound_enabled)
             self.assertFalse(app.completion_sound_enabled_var.get())
             self.assertEqual(2, save.call_count)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_verification_descriptions_use_consistent_wording(self):
+        _root, app = self._real_tk_app()
+        app._select_task("verify", save_current=False)
+        verification = app.values["verify_builtin"]
+        expected = {
+            "verify_builtin": "使用 DAISY 内置校验器检查",
+            "verify_exiftool": "使用 ExifTool 检查",
+            "verify_ffprobe": "使用 ffprobe 检查",
+            "verify_sevenzip": "使用 7-Zip 检查",
+            "raw_deep_validation": "使用独立的 rawpy/LibRaw 子进程检查",
+        }
+        for key, prefix in expected.items():
+            tooltip = verification.controls[key].button._daisy_tooltip
+            self.assertTrue(tooltip.text.startswith(prefix), tooltip.text)
+            self.assertFalse(tooltip.text.startswith("用 "), tooltip.text)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_result_directory_prompt_is_optional_and_persistent(self):
@@ -3448,6 +3471,28 @@ class TestGuiArguments(unittest.TestCase):
                     (install_button.winfo_width(),
                      install_button.winfo_height()),
                 )
+            toolbar_buttons = [
+                app.task_toolbar_buttons[key]
+                for key in gui._TASK_TOOLBAR_KEYS
+            ]
+            status_buttons = [
+                app.environment_status_buttons[key]
+                for key in gui._ENVIRONMENT_STATUS_ORDER
+            ]
+            install_buttons = [
+                app.environment_install_buttons[key]
+                for key in gui._ENVIRONMENT_STATUS_ORDER
+            ]
+            self.assertEqual(
+                [(button.winfo_rootx(), button.winfo_width())
+                 for button in toolbar_buttons],
+                [(button.winfo_rootx(), button.winfo_width())
+                 for button in status_buttons],
+            )
+            self.assertEqual(
+                [button.winfo_rootx() for button in toolbar_buttons],
+                [button.winfo_rootx() for button in install_buttons],
+            )
             app.environment_status_buttons["exiftool"].invoke()
             detect.assert_called_once_with()
 
@@ -3475,6 +3520,26 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIsInstance(summary, gui.BooleanToggleButton)
         self.assertTrue(summary.get())
         self.assertEqual(summary.button.cget("text"), "生成")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_compact_toolbar_columns_align_environment(self):
+        preferences = gui.default_gui_preferences()
+        preferences["window_size"] = [1000, 680]
+        root, app = self._real_tk_app(preferences)
+        app._select_task("env_check", save_current=False)
+        root.update()
+        self.assertTrue(app.compact_layout)
+        toolbar_geometry = [
+            (app.task_toolbar_buttons[key].winfo_rootx(),
+             app.task_toolbar_buttons[key].winfo_width())
+            for key in gui._TASK_TOOLBAR_KEYS
+        ]
+        environment_geometry = [
+            (app.environment_status_buttons[key].winfo_rootx(),
+             app.environment_status_buttons[key].winfo_width())
+            for key in gui._ENVIRONMENT_STATUS_ORDER
+        ]
+        self.assertEqual(toolbar_geometry, environment_geometry)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_parse_formats_are_toggle_buttons(self):
@@ -4596,6 +4661,43 @@ class TestGuiArguments(unittest.TestCase):
             self.assertFalse(gui.should_offer_result_directory(
                 returncodes, stopped=stopped, maintenance=maintenance))
 
+    def test_result_directory_button_runs_two_colour_strip_flashes(self):
+        class ButtonProbe:
+            def __init__(self):
+                self.backgrounds = []
+
+            def configure(self, **options):
+                self.backgrounds.append(options["bg"])
+
+        class RootProbe:
+            def __init__(self):
+                self.callbacks = []
+                self.delays = []
+
+            def after(self, delay, callback):
+                self.delays.append(delay)
+                self.callbacks.append(callback)
+                return f"after-{len(self.callbacks)}"
+
+            def after_cancel(self, _after_id):
+                return None
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.open_output_button = ButtonProbe()
+        app.open_result_flash_after_id = None
+
+        app._flash_open_result_button()
+        while app.root.callbacks:
+            app.root.callbacks.pop(0)()
+
+        self.assertEqual(
+            app.open_output_button.backgrounds,
+            [gui._AMBER, gui._GREEN, gui._AMBER, gui._GREEN, gui._AMBER],
+        )
+        self.assertEqual(app.root.delays, [230, 230, 230])
+        self.assertIsNone(app.open_result_flash_after_id)
+
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_completed_task_flashes_result_without_default_prompt(self):
         root, app = self._real_tk_app()
@@ -4621,12 +4723,12 @@ class TestGuiArguments(unittest.TestCase):
             offer.assert_not_called()
             self.assertEqual(
                 app.open_output_button.cget("background"),
-                gui._GREEN_SOFT,
+                gui._GREEN,
             )
             app._cancel_open_result_flash()
             self.assertEqual(
                 app.open_output_button.cget("background"),
-                gui._CONTROL,
+                gui._AMBER,
             )
 
             app.result_directory_prompt_enabled = True
