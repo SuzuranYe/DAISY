@@ -3102,10 +3102,20 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.values["root_map"].get(), "")
         verification = app.values["verify_builtin"].get_values()
         self.assertTrue(verification["verify_builtin"])
-        self.assertTrue(verification["verify_ffprobe"])
-        self.assertTrue(verification["verify_exiftool"])
-        self.assertTrue(verification["verify_sevenzip"])
+        self.assertFalse(verification["verify_ffprobe"])
+        self.assertFalse(verification["verify_exiftool"])
+        self.assertFalse(verification["verify_sevenzip"])
         self.assertFalse(verification["raw_deep_validation"])
+        persisted = app.values["verify_builtin"].get_persisted_values()
+        self.assertTrue(persisted["verify_builtin"])
+        self.assertTrue(persisted["verify_ffprobe"])
+        self.assertTrue(persisted["verify_exiftool"])
+        self.assertTrue(persisted["verify_sevenzip"])
+        self.assertTrue(persisted["raw_deep_validation"])
+        self.assertEqual(
+            app.values["verify_builtin"].status_text,
+            "需要先运行环境检测",
+        )
         self.assertEqual(
             app.gui_preferences["last_task_key"], "verify")
 
@@ -3215,6 +3225,7 @@ class TestGuiArguments(unittest.TestCase):
         }
         app.completion_sound_enabled = True
         app.result_directory_prompt_enabled = True
+        app.environment_inventory_received = True
         cleanup = gui.ProjectCacheCleanup((), (), ())
 
         with patch.object(
@@ -3233,6 +3244,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.task.key, "env_check")
         self.assertEqual(app.manual_tool_paths, {})
         self.assertEqual(app.saved_values, {})
+        self.assertFalse(app.environment_inventory_received)
         self.assertNotIn("binary_control_style", defaults)
         self.assertNotIn(
             "binary_control_style", saved.call_args.args[0])

@@ -225,6 +225,52 @@ class TestRawCapabilityPresentation(unittest.TestCase):
         app._build_form.assert_called_once_with()
         app._update_preview.assert_not_called()
 
+    def test_verification_external_tools_require_completed_inventory(
+        self,
+    ) -> None:
+        pending = gui.verification_tool_availability(
+            inventory_received=False,
+            detected_tools={
+                "exiftool": {
+                    "path": r"C:\Stale\exiftool.exe",
+                    "verified": True,
+                },
+            },
+            runtime_capabilities={
+                gui.envcap.RAW_CAPABILITY_ID: self.available_payload(),
+            },
+        )
+        self.assertTrue(all(
+            not available and reason == "需要先运行环境检测"
+            for available, reason in pending.values()
+        ))
+
+        completed = gui.verification_tool_availability(
+            inventory_received=True,
+            detected_tools={
+                "exiftool": {
+                    "path": r"C:\Tools\exiftool.exe",
+                    "version": "13.59",
+                    "verified": True,
+                },
+                "ffprobe": {
+                    "path": r"C:\Stale\ffprobe.exe",
+                    "version": "8.0",
+                    "verified": True,
+                },
+            },
+            missing_names=("ffprobe", "sevenzip"),
+            missing_reasons={"ffprobe": "合成缺失"},
+            runtime_capabilities={
+                gui.envcap.RAW_CAPABILITY_ID: self.available_payload(),
+            },
+        )
+        self.assertTrue(completed["verify_exiftool"][0])
+        self.assertFalse(completed["verify_ffprobe"][0])
+        self.assertEqual(completed["verify_ffprobe"][1], "合成缺失")
+        self.assertFalse(completed["verify_sevenzip"][0])
+        self.assertTrue(completed["raw_deep_validation"][0])
+
 
 class TestScanControlProtocol(unittest.TestCase):
     def _control_app(self) -> tuple[gui.DaisyApp, _ProcessProbe]:
@@ -621,6 +667,33 @@ class TestRealTkScanControls(unittest.TestCase):
         self.app._refresh_monitor_layout()
         self.root.update()
 
+    def _apply_available_verification_environment(self) -> None:
+        self.app._apply_environment_inventory({
+            "tools": {
+                "exiftool": {
+                    "path": r"C:\Synthetic\exiftool.exe",
+                    "version": "13.synthetic",
+                    "verified": True,
+                },
+                "ffprobe": {
+                    "path": r"C:\Synthetic\ffprobe.exe",
+                    "version": "8.synthetic",
+                    "verified": True,
+                },
+                "sevenzip": {
+                    "path": r"C:\Synthetic\7z.exe",
+                    "version": "25.synthetic",
+                    "verified": True,
+                },
+            },
+            "capabilities": {
+                gui.envcap.RAW_CAPABILITY_ID:
+                TestRawCapabilityPresentation.available_payload(),
+            },
+            "missing": [],
+        })
+        self.root.update()
+
     def test_current_file_uses_middle_ellipsis_and_full_tooltip(self) -> None:
         value = "前" * 90 + "\\中间\\" + "后" * 90 + ".dng"
         self.app._set_current_file(value)
@@ -689,12 +762,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertFalse(raw_control.get())
 
         available = TestRawCapabilityPresentation.available_payload()
-        self.app._apply_runtime_capabilities({
-            "capabilities": {
-                gui.envcap.RAW_CAPABILITY_ID: available,
-            },
-        })
-        self.root.update()
+        self._apply_available_verification_environment()
         tools = self.app.values["verify_builtin"]
         raw_control = tools.controls["raw_deep_validation"]
         self.assertTrue(raw_control.enabled)
@@ -1145,9 +1213,14 @@ class TestRealTkScanControls(unittest.TestCase):
             for control in verify_tools.controls.values()
         ))
         for control in verify_tools.controls.values():
+            expected = (
+                gui._CONTROL
+                if not control.enabled else
+                gui._GREEN_DARK if control.get() else gui._AMBER
+            )
             self.assertEqual(
                 control.button.cget("background"),
-                gui._GREEN_DARK if control.get() else gui._AMBER,
+                expected,
             )
 
         self.app._select_task("storage_collect", save_current=False)
@@ -1560,7 +1633,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertNotIn("--format-validation", self.app.preview_var.get())
         self.assertNotIn("--format-sample-percent", self.app.preview_var.get())
 
-    def test_verify_tools_are_independent_same_row_and_available_defaults_on(
+    def test_verify_tools_wait_for_inventory_then_available_defaults_on(
         self,
     ) -> None:
         self.app._select_task("verify", save_current=False)
@@ -1571,14 +1644,42 @@ class TestRealTkScanControls(unittest.TestCase):
             "verify_builtin", "verify_exiftool", "verify_ffprobe",
             "verify_sevenzip", "raw_deep_validation",
         ))
+        self.assertEqual(tools.status_text, "需要先运行环境检测")
+        self.assertEqual(tools.status_label.cget("text"), "需要先运行环境检测")
+        self.assertTrue(tools.controls["verify_builtin"].enabled)
+        self.assertTrue(tools.controls["verify_builtin"].get())
+        for key in (
+                "verify_exiftool", "verify_ffprobe", "verify_sevenzip",
+                "raw_deep_validation"):
+            self.assertFalse(tools.controls[key].enabled)
+            self.assertFalse(tools.controls[key].get())
+            self.assertEqual(
+                tools.controls[key].button.cget("background"), gui._CONTROL)
+        persisted = tools.get_persisted_values()
+        self.assertTrue(all(persisted[key] for key in persisted))
+        self.assertIn("--hash off", self.app.preview_var.get())
+        self.assertIn("--format all", self.app.preview_var.get())
+        self.assertIn("--format-tool builtin", self.app.preview_var.get())
+        for tool_id in ("exiftool", "ffprobe", "sevenzip"):
+            self.assertNotIn(
+                f"--format-tool {tool_id}", self.app.preview_var.get())
+        with (
+            patch.object(gui, "validate_values", return_value=[]),
+            patch.object(gui.messagebox, "showerror") as shown,
+            patch.object(self.app, "_begin_run_jobs") as started,
+        ):
+            self.app._run()
+        shown.assert_called_once()
+        self.assertIn("请先运行「运行环境检测」", shown.call_args.args[1])
+        started.assert_not_called()
+
+        self._apply_available_verification_environment()
+        tools = self.app.values["verify_builtin"]
+        self.assertEqual(tools.status_text, "")
         self.assertTrue(all(
-            tools.controls[key].get()
-            for key in (
-                "verify_builtin", "verify_exiftool",
-                "verify_ffprobe", "verify_sevenzip",
-            )
+            control.enabled and control.get()
+            for control in tools.controls.values()
         ))
-        self.assertFalse(tools.controls["raw_deep_validation"].get())
         buttons = [control.button for control in tools.controls.values()]
         self.assertEqual({button.winfo_height() for button in buttons},
                          {buttons[0].winfo_height()})
@@ -1597,16 +1698,6 @@ class TestRealTkScanControls(unittest.TestCase):
         self.assertIn("--format all", self.app.preview_var.get())
         for tool_id in ("builtin", "exiftool", "ffprobe", "sevenzip"):
             self.assertIn(f"--format-tool {tool_id}", self.app.preview_var.get())
-
-        self.app._apply_runtime_capabilities({
-            "capabilities": {
-                gui.envcap.RAW_CAPABILITY_ID:
-                TestRawCapabilityPresentation.available_payload(),
-            },
-        })
-        self.root.update()
-        tools = self.app.values["verify_builtin"]
-        self.assertTrue(tools.controls["raw_deep_validation"].get())
         self.root.update_idletasks()
         preview = self.app.preview_var.get()
         self.assertIn("--format all", preview)
@@ -1621,6 +1712,33 @@ class TestRealTkScanControls(unittest.TestCase):
         preview = self.app.preview_var.get()
         self.assertIn("--format off", preview)
         self.assertIn("--raw-deep-validation", preview)
+
+    def test_verification_gate_preserves_saved_off_choice(self) -> None:
+        self.app.saved_values["verify"] = {
+            "verify_exiftool": False,
+            "verify_ffprobe": True,
+        }
+        self.app._select_task("verify", save_current=False)
+        self.root.update()
+        pending = self.app.values["verify_builtin"]
+        self.assertFalse(
+            pending.get_persisted_values()["verify_exiftool"])
+        self.assertTrue(
+            pending.get_persisted_values()["verify_ffprobe"])
+
+        self._apply_available_verification_environment()
+        tools = self.app.values["verify_builtin"]
+        self.assertTrue(tools.controls["verify_exiftool"].enabled)
+        self.assertFalse(tools.controls["verify_exiftool"].get())
+        self.assertEqual(
+            tools.controls["verify_exiftool"].button.cget("background"),
+            gui._AMBER,
+        )
+        self.assertTrue(tools.controls["verify_ffprobe"].get())
+        self.assertEqual(
+            tools.controls["verify_ffprobe"].button.cget("background"),
+            gui._GREEN_DARK,
+        )
 
     def test_binary_button_preserves_size_value_and_preview_without_switch(
         self,
@@ -1689,7 +1807,12 @@ class TestRealTkScanControls(unittest.TestCase):
                 tools.controls[key].button.cget("anchor"), "center")
             self.assertEqual(
                 tools.controls[key].button.cget("justify"), "center")
-        self.assertFalse(tools.controls["raw_deep_validation"].enabled)
+        self.assertEqual(tools.status_text, "需要先运行环境检测")
+        self.assertTrue(tools.controls["verify_builtin"].enabled)
+        for key in (
+                "verify_exiftool", "verify_ffprobe", "verify_sevenzip",
+                "raw_deep_validation"):
+            self.assertFalse(tools.controls[key].enabled)
         self.assertFalse(any(
             isinstance(widget, gui.ttk.Combobox)
             and getattr(widget, "_daisy_field_key", None)
@@ -1697,16 +1820,12 @@ class TestRealTkScanControls(unittest.TestCase):
             for widget in self._descendants(self.app.form_inner)
         ))
 
-        self.app._apply_runtime_capabilities({
-            "capabilities": {
-                gui.envcap.RAW_CAPABILITY_ID:
-                TestRawCapabilityPresentation.available_payload(),
-            },
-        })
-        self.root.update()
+        self._apply_available_verification_environment()
         tools = self.app.values["verify_builtin"]
         self.assertIsInstance(tools, gui.VerificationToolButtonGroup)
-        self.assertTrue(tools.controls["raw_deep_validation"].enabled)
+        self.assertEqual(tools.status_text, "")
+        self.assertTrue(all(
+            control.enabled for control in tools.controls.values()))
 
     def test_button_ui_page_font_size_geometry_and_scaling_matrix(self) \
             -> None:

@@ -279,6 +279,15 @@ _TASK_TOOL_NAMES = {
     "storage_list": ("smartctl", "powershell"),
     "storage_collect": ("smartctl", "powershell"),
 }
+_VERIFICATION_EXTERNAL_TOOLS = (
+    ("verify_exiftool", "exiftool"),
+    ("verify_ffprobe", "ffprobe"),
+    ("verify_sevenzip", "sevenzip"),
+)
+_VERIFICATION_CONTROL_KEYS = (
+    "verify_builtin", "verify_exiftool", "verify_ffprobe",
+    "verify_sevenzip", "raw_deep_validation",
+)
 _RESULT_DIRECTORY_TASKS = frozenset((
     "env_check", "full_scan", "quick_scan", "diff", "check_hash",
     "check_format", "export_report", "scan", "verify", "parse_db",
@@ -327,6 +336,51 @@ def raw_runtime_capability_status(
         "timeout": "探测超时",
     }.get(state, "状态未知")
     return False, f"{state_label}：{reason}"
+
+
+def verification_tool_availability(
+    *,
+    inventory_received: bool,
+    detected_tools: dict[str, dict[str, object]] | None,
+    missing_names: tuple[str, ...] = (),
+    missing_reasons: dict[str, str] | None = None,
+    runtime_capabilities: dict[str, dict[str, object]] | None = None,
+) -> dict[str, tuple[bool, str]]:
+    """返回核验页外部工具的当前会话探测状态。"""
+    pending = "需要先运行环境检测"
+    if not inventory_received:
+        return {
+            key: (False, pending)
+            for key, _tool_name in _VERIFICATION_EXTERNAL_TOOLS
+        } | {"raw_deep_validation": (False, pending)}
+
+    detected = detected_tools if isinstance(detected_tools, dict) else {}
+    missing = set(missing_names)
+    reasons = missing_reasons if isinstance(missing_reasons, dict) else {}
+    result: dict[str, tuple[bool, str]] = {}
+    for key, tool_name in _VERIFICATION_EXTERNAL_TOOLS:
+        display_name = _TOOL_DISPLAY_NAMES[tool_name]
+        info = detected.get(tool_name)
+        available = (
+            tool_name not in missing
+            and isinstance(info, dict)
+            and info.get("verified") is True
+            and bool(str(info.get("path") or "").strip())
+        )
+        if available:
+            version = str(info.get("version") or "版本未知").strip()
+            result[key] = (True, f"{display_name} {version} 可用")
+        else:
+            reason = str(
+                reasons.get(tool_name)
+                or f"环境检测未确认 {display_name} 可用"
+            ).strip()
+            result[key] = (False, reason)
+
+    raw_available, raw_reason = raw_runtime_capability_status(
+        runtime_capabilities)
+    result["raw_deep_validation"] = (raw_available, raw_reason)
+    return result
 
 
 def default_gui_preferences() -> dict[str, object]:
@@ -2044,7 +2098,8 @@ TASKS = (*TASKS,
                 "verification_tools", True,
                 choices=(("关闭", False), ("开启", True)),
                 help=(
-                    "可用项目默认开启；每项只检查适用文件，"
+                    "外部项目需先运行环境检测；检测确认可用的项目默认开启。"
+                    "每项只检查适用文件，"
                     "不支持的文件类型只计入汇总，不列为问题。"
                 ),
                 section="数据核验",
@@ -3975,8 +4030,8 @@ class VerificationToolButtonGroup(tk.Frame):
         master: tk.Misc,
         *,
         initial: dict[str, object],
-        raw_enabled: bool,
-        raw_reason: str,
+        availability: dict[str, tuple[bool, str]],
+        environment_checked: bool,
         on_change=None,
     ) -> None:
         super().__init__(master, bg=_SURFACE)
@@ -3984,41 +4039,56 @@ class VerificationToolButtonGroup(tk.Frame):
         self.controls: dict[str, BooleanToggleButton] = {}
         self._ordered_controls: list[BooleanToggleButton] = []
         self._layout_columns = 0
-        self._requested_raw = bool(initial.get("raw_deep_validation", True))
+        self._requested_values = {
+            key: bool(initial.get(key, True))
+            for key in _VERIFICATION_CONTROL_KEYS
+        }
+        self.status_text = (
+            "" if environment_checked else "需要先运行环境检测")
+        self.status_label = tk.Label(
+            self,
+            text=self.status_text,
+            bg=_SURFACE,
+            fg=_WARNING,
+            anchor="w",
+            justify="left",
+            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
+        )
         definitions = (
             (
-                "verify_builtin", "基本校验", True,
+                "verify_builtin", "基本校验",
                 "使用 DAISY 内置校验器检查 ZIP/OOXML 的 CRC，以及 PDF 的基本结构。",
             ),
             (
-                "verify_exiftool", "ExifTool", True,
+                "verify_exiftool", "ExifTool",
                 "使用 ExifTool 检查适用图片、RAW 和媒体文件的格式与元数据结构。",
             ),
             (
-                "verify_ffprobe", "ffprobe", True,
+                "verify_ffprobe", "ffprobe",
                 "使用 ffprobe 检查 GIF、视频和音频的容器与媒体流。",
             ),
             (
-                "verify_sevenzip", "7-Zip", True,
+                "verify_sevenzip", "7-Zip",
                 "使用 7-Zip 检查压缩包和旧 Office OLE 容器。",
             ),
             (
-                "raw_deep_validation", "rawpy/LibRaw", raw_enabled,
-                "使用独立的 rawpy/LibRaw 子进程检查 RAW 文件能否实际解码。"
-                + ("" if raw_enabled else f" 当前不可用：{raw_reason}"),
+                "raw_deep_validation", "rawpy/LibRaw",
+                "使用独立的 rawpy/LibRaw 子进程检查 RAW 文件能否实际解码。",
             ),
         )
-        for key, label, enabled, help_text in definitions:
+        for key, label, help_text in definitions:
+            if key == "verify_builtin":
+                enabled, reason = True, ""
+            else:
+                enabled, reason = availability.get(
+                    key, (False, "需要先运行环境检测"))
+            reason = str(reason).rstrip("。；; ")
+            if not enabled and reason:
+                help_text += f" 当前不可用：{reason}。"
             control = BooleanToggleButton(
                 self,
                 choices=((label, False), (label, True)),
-                initial=(
-                    self._requested_raw
-                    if key == "raw_deep_validation" and enabled else
-                    False
-                    if key == "raw_deep_validation" else
-                    bool(initial.get(key, True))
-                ),
+                initial=self._requested_values[key] if enabled else False,
                 on_change=self._notify,
                 enabled=enabled,
             )
@@ -4048,10 +4118,18 @@ class VerificationToolButtonGroup(tk.Frame):
         rows = (
             len(self._ordered_controls) + columns - 1
         ) // columns
+        row_offset = 1 if self.status_text else 0
+        if self.status_text:
+            self.status_label.grid(
+                row=0, column=0, columnspan=max(1, columns * 2 - 1),
+                sticky="w", pady=(0, _STANDARD_BUTTON_GAP),
+            )
+        else:
+            self.status_label.grid_forget()
         for index, control in enumerate(self._ordered_controls):
             row, column = divmod(index, columns)
             control.grid(
-                row=row, column=column * 2, sticky="w",
+                row=row + row_offset, column=column * 2, sticky="w",
                 pady=(0, _STANDARD_BUTTON_GAP if row < rows - 1 else 0),
             )
         for column in range(columns - 1):
@@ -4078,9 +4156,9 @@ class VerificationToolButtonGroup(tk.Frame):
         self._place_controls(columns)
 
     def _notify(self) -> None:
-        raw_control = self.controls.get("raw_deep_validation")
-        if raw_control is not None and raw_control.enabled:
-            self._requested_raw = raw_control.get()
+        for key, control in self.controls.items():
+            if control.enabled:
+                self._requested_values[key] = control.get()
         if callable(self.on_change):
             self.on_change()
 
@@ -4091,9 +4169,7 @@ class VerificationToolButtonGroup(tk.Frame):
         }
 
     def get_persisted_values(self) -> dict[str, bool]:
-        values = self.get_values()
-        values["raw_deep_validation"] = self._requested_raw
-        return values
+        return dict(self._requested_values)
 
 
 class MultiChoicePool(tk.Frame):
@@ -4815,6 +4891,7 @@ class DaisyApp:
         self.runtime_capabilities: dict[
             str, dict[str, object]
         ] = {}
+        self.environment_inventory_received = False
         self.manual_tool_paths = dict(
             self.gui_preferences.get("manual_tool_paths") or {})
         self.install_tool_buttons: dict[str, tk.Button] = {}
@@ -5400,6 +5477,7 @@ class DaisyApp:
         self.environment_missing_reasons = {}
         self.missing_installable_tools = ()
         self.runtime_capabilities.clear()
+        self.environment_inventory_received = False
         self.parse_inspection = None
         self.parse_inspection_path = ""
         raw_size = defaults["window_size"]
@@ -8140,20 +8218,23 @@ class DaisyApp:
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
             elif spec.kind == "verification_tools":
-                raw_available, raw_reason = raw_runtime_capability_status(
-                    self.runtime_capabilities)
+                environment_checked = bool(getattr(
+                    self, "environment_inventory_received", False))
+                availability = verification_tool_availability(
+                    inventory_received=environment_checked,
+                    detected_tools=self.detected_tools,
+                    missing_names=self.environment_missing_names,
+                    missing_reasons=self.environment_missing_reasons,
+                    runtime_capabilities=self.runtime_capabilities,
+                )
                 widget = VerificationToolButtonGroup(
                     cell,
                     initial={
                             key: saved.get(key, True)
-                        for key in (
-                            "verify_builtin", "verify_exiftool",
-                            "verify_ffprobe", "verify_sevenzip",
-                            "raw_deep_validation",
-                        )
+                        for key in _VERIFICATION_CONTROL_KEYS
                     },
-                    raw_enabled=raw_available,
-                    raw_reason=raw_reason,
+                    availability=availability,
+                    environment_checked=environment_checked,
                     on_change=self._update_preview,
                 )
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
@@ -9218,6 +9299,7 @@ class DaisyApp:
     def _apply_environment_inventory(
         self, payload: dict[str, object],
     ) -> None:
+        self.environment_inventory_received = True
         tools = payload.get("tools")
         if isinstance(tools, dict):
             self._cache_detected_tools({"tools": tools})
@@ -9225,7 +9307,7 @@ class DaisyApp:
         if isinstance(capabilities, dict):
             self._apply_runtime_capabilities({
                 "capabilities": capabilities,
-            })
+            }, rebuild_verify=False)
         raw_missing = payload.get("missing")
         missing_names: list[str] = []
         missing_reasons: dict[str, str] = {}
@@ -9257,9 +9339,10 @@ class DaisyApp:
                     version_report.tool_name, payload))
             version_report.inventory_received = True
         self._refresh_tool_cache_labels()
+        self._rebuild_verify_form_for_capability_change()
 
     def _apply_runtime_capabilities(
-        self, payload: dict[str, object],
+        self, payload: dict[str, object], *, rebuild_verify: bool = True,
     ) -> None:
         capabilities = payload.get("capabilities")
         if not isinstance(capabilities, dict):
@@ -9277,19 +9360,25 @@ class DaisyApp:
         if not hasattr(self, "saved_values"):
             self.saved_values = {}
         self.runtime_capabilities[envcap.RAW_CAPABILITY_ID] = normalized
+        self._refresh_environment_status_buttons()
+        if (rebuild_verify
+                and not self._rebuild_verify_form_for_capability_change()):
+            self._update_preview()
+
+    def _rebuild_verify_form_for_capability_change(self) -> bool:
+        """保留请求状态并刷新当前核验页的能力门控。"""
         current_task_key = getattr(getattr(self, "task", None), "key", None)
         rebuild_form = (
             hasattr(self, "form_inner")
             and current_task_key == "verify"
         )
-        if rebuild_form and getattr(self, "values", None):
+        if not rebuild_form:
+            return False
+        if getattr(self, "values", None):
             self.saved_values[str(current_task_key)] = (
                 self._collect_persistable_values())
-        self._refresh_environment_status_buttons()
-        if rebuild_form:
-            self._build_form()
-        else:
-            self._update_preview()
+        self._build_form()
+        return True
 
     def _apply_storage_inventory(
         self, payload: dict[str, object],
@@ -10553,6 +10642,11 @@ class DaisyApp:
                 if self.task.key == "parse_db" else None
             ),
         )
+        if (self.task.key == "verify"
+                and not bool(getattr(
+                    self, "environment_inventory_received", False))):
+            issues.append(
+                "请先运行「运行环境检测」，再开始档案数据核验。")
         if (self.task.key == "verify"
                 and bool(effective.get("raw_deep_validation"))):
             raw_available, raw_reason = raw_runtime_capability_status(
