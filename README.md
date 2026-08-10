@@ -14,7 +14,7 @@ README 只说明现行能力和使用方式。版本变化见
 
 ## 功能入口
 
-GUI 只显示 6 个用户入口。内部 DBS 编号和旧 CLI 仍保留，避免破坏既有脚本。
+GUI 只显示 6 个用户入口。兼容 CLI 命令仍保留，但脚本文件不再使用旧域缩写和功能编号。
 
 | 功能入口 | 用途 | 主要产物 |
 |---|---|---|
@@ -25,8 +25,8 @@ GUI 只显示 6 个用户入口。内部 DBS 编号和旧 CLI 仍保留，避免
 | 硬盘信息登记 | 采集硬盘、分区、卷与 SMART 信息 | 每盘独立 PROFILE ZIP；GUI 默认生成简化报告 TXT |
 | 运行环境检测 | 检测各功能所需工具和可选能力 | 环境报告 JSON |
 
-`DBS-91 DAISY 功能自检` 位于顶部「高级」菜单，是项目测试入口，不是业务模块。硬盘页的
-「检测硬盘」是选择设备前的准备步骤，不另占功能编号。
+`DAISY 功能自检` 位于顶部「高级」菜单，是项目测试入口，不是业务模块。硬盘页的
+「检测硬盘」是选择设备前的准备步骤，不另列为功能入口。
 
 ## 扫描、暂停与续传
 
@@ -133,7 +133,7 @@ RAW 深度校验问题、读取性能异常候选和运行与证据问题。规�
 3. 检测期间显示进度与日志；成功后弹窗并自动返回展开的硬盘选择区。
 4. 选择一个或多个联机设备并开始；设置再次收起，进度与日志展开。
 
-STG 只使用 Windows 查询接口和固定 smartctl 只读命令，不启动 SMART 自检，不修改 SMART
+硬盘信息登记只使用 Windows 查询接口和固定 smartctl 只读命令，不启动 SMART 自检，不修改 SMART
 设置、磁盘、分区、卷、文件系统或 BitLocker。每个 ZIP 固定包含三类 JSON：
 
 - `*_Manifest.json`：归档身份、采集溯源、命令、状态、采集提示和成员声明；
@@ -162,7 +162,7 @@ Start_DAISY_GUI.pyw
 或在 PowerShell 中运行：
 
 ```powershell
-python .\Script\Script_DAISY_MAIN.py gui
+python .\Script\Script_DAISY_CLI.py gui
 ```
 
 默认窗口目标为 `1600×900`，会在较小工作区内收缩；设置中的 3 个预设按分辨率升序排列为
@@ -218,14 +218,14 @@ DAISY 恢复最后使用的功能页面、白名单内非路径选项和已确�
 ### 命令行
 
 ```powershell
-python .\Script\Script_DAISY_MAIN.py --help
-python .\Script\Script_DAISY_MAIN.py scan --mode full --root "Archive=E:\Archive"
-python .\Script\Script_DAISY_MAIN.py scan --resume .\Output\Snapshots\任务.partial.sqlite
-python .\Script\Script_DAISY_MAIN.py diff --old .\old.sqlite --new .\new.sqlite
-python .\Script\Script_DAISY_MAIN.py verify --snapshot .\baseline.sqlite --root "Archive=E:\Archive"
-python .\Script\Script_DAISY_MAIN.py parse-db --database .\baseline.sqlite --format html --format xlsx
-python .\Script\Script_DAISY_MAIN.py storage-list
-python .\Script\Script_DAISY_MAIN.py storage-collect --disk-number 3
+python .\Script\Script_DAISY_CLI.py --help
+python .\Script\Script_DAISY_CLI.py scan --mode full --root "Archive=E:\Archive"
+python .\Script\Script_DAISY_CLI.py scan --resume .\Output\Snapshots\任务.partial.sqlite
+python .\Script\Script_DAISY_CLI.py diff --old .\old.sqlite --new .\new.sqlite
+python .\Script\Script_DAISY_CLI.py verify --snapshot .\baseline.sqlite --root "Archive=E:\Archive"
+python .\Script\Script_DAISY_CLI.py parse-db --database .\baseline.sqlite --format html --format xlsx
+python .\Script\Script_DAISY_CLI.py storage-list
+python .\Script\Script_DAISY_CLI.py storage-collect --disk-number 3
 ```
 
 `full-scan` 和 `quick-scan` 继续作为冻结的 v1.4.1 兼容入口；`check-hash`、`check-format`
@@ -301,10 +301,10 @@ BitLocker 状态；公开分享前必须人工检查。
 DAISY/
 ├─ Start_DAISY_GUI.pyw
 ├─ Script/
-│  ├─ Script_DAISY_MAIN.py
+│  ├─ Script_DAISY_CLI.py
 │  ├─ Script_DAISY_GUI.py
 │  ├─ Module/                 # 统一入口与冻结兼容入口
-│  ├─ Lib/                    # Reader、状态机、扫描、核验、解析、STG
+│  ├─ Lib/                    # Reader、状态机、扫描、核验、解析、硬盘信息
 │  └─ Test/
 ├─ Spec/
 └─ Output/                    # 首次生成产物时创建；不进入 Git

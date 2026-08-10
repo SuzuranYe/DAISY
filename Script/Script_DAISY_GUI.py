@@ -1,7 +1,7 @@
 r"""Script_DAISY_GUI：DAISY 的零依赖 Windows 图形界面。
 
 GUI 只负责收集参数、预览命令和管理子进程；扫描、核验、对比与导出仍由
-Script\Script_DAISY_MAIN.py 的既有子命令完成，避免形成第二套业务逻辑。
+Script\Script_DAISY_CLI.py 的既有子命令完成，避免形成第二套业务逻辑。
 """
 from __future__ import annotations
 
@@ -108,16 +108,16 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _BASE = os.path.dirname(_SCRIPT_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 _TEST_DIR = os.path.join(_SCRIPT_DIR, "Test")
-_MAIN = os.path.join(_SCRIPT_DIR, "Script_DAISY_MAIN.py")
+_CLI = os.path.join(_SCRIPT_DIR, "Script_DAISY_CLI.py")
 sys.path.insert(0, _LIB_DIR)
 
-import Script_DAISY_Lib_DBS_01_Core as core
-import Script_DAISY_Lib_DBS_02_Meta as metadata
-import Script_DAISY_Lib_DBS_07_Parse as dbparse
-import Script_DAISY_Lib_DBS_08_State as dbstate
-import Script_DAISY_Lib_DBS_09_Run as dbrun
-import Script_DAISY_Lib_ENV_01_Capabilities as envcap
-import Script_DAISY_Lib_STG_01_Core as storage_core
+import Script_DAISY_Lib_Snapshot_Core as core
+import Script_DAISY_Lib_Metadata as metadata
+import Script_DAISY_Lib_Database_Parse as dbparse
+import Script_DAISY_Lib_Scan_State as dbstate
+import Script_DAISY_Lib_Scan_Runtime as dbrun
+import Script_DAISY_Lib_Environment_Capabilities as envcap
+import Script_DAISY_Lib_Storage_Core as storage_core
 
 
 _DEFAULT_OUTPUT_ROOT = os.path.join(_BASE, "Output")
@@ -138,27 +138,27 @@ _PROJECT_TEST_FILES = (
     "Script_DAISY_Test_Tree.py",
     "Script_DAISY_Test_Storage_Unit.py",
     "Script_DAISY_Test_Storage_Read_Only.py",
-    "Script_DAISY_Test_DBS_Reader.py",
-    "Script_DAISY_Test_DBS_Verify.py",
-    "Script_DAISY_Test_DBS_Verify_Unified.py",
-    "Script_DAISY_Test_DBS_Verify_Tools.py",
-    "Script_DAISY_Test_DBS_Verify_CLI.py",
-    "Script_DAISY_Test_DBS_Verify_Compatibility.py",
-    "Script_DAISY_Test_DBS_Diff_Compatibility.py",
-    "Script_DAISY_Test_DBS_Verify_Raw.py",
-    "Script_DAISY_Test_DBS_Raw.py",
-    "Script_DAISY_Test_DBS_Raw_Evidence.py",
-    "Script_DAISY_Test_DBS_Scan_Raw.py",
-    "Script_DAISY_Test_DBS_Parse.py",
-    "Script_DAISY_Test_DBS_Parse_Planning.py",
-    "Script_DAISY_Test_DBS_Parse_Projection.py",
-    "Script_DAISY_Test_DBS_Parse_Run.py",
-    "Script_DAISY_Test_DBS_Parse_Human.py",
-    "Script_DAISY_Test_DBS_Parse_CLI.py",
-    "Script_DAISY_Test_DBS_State.py",
-    "Script_DAISY_Test_DBS_Hash_Worker.py",
-    "Script_DAISY_Test_DBS_Run.py",
-    "Script_DAISY_Test_DBS_Tool_Recovery.py",
+    "Script_DAISY_Test_Database_Reader.py",
+    "Script_DAISY_Test_Verify.py",
+    "Script_DAISY_Test_Verify_Unified.py",
+    "Script_DAISY_Test_Verify_Tools.py",
+    "Script_DAISY_Test_Verify_CLI.py",
+    "Script_DAISY_Test_Verify_Compatibility.py",
+    "Script_DAISY_Test_Snapshot_Diff_Compatibility.py",
+    "Script_DAISY_Test_Verify_Raw.py",
+    "Script_DAISY_Test_Raw_Verify.py",
+    "Script_DAISY_Test_Raw_Evidence.py",
+    "Script_DAISY_Test_Scan_Raw.py",
+    "Script_DAISY_Test_Parse.py",
+    "Script_DAISY_Test_Parse_Planning.py",
+    "Script_DAISY_Test_Parse_Projection.py",
+    "Script_DAISY_Test_Parse_Runtime.py",
+    "Script_DAISY_Test_Parse_Human.py",
+    "Script_DAISY_Test_Parse_CLI.py",
+    "Script_DAISY_Test_Scan_State.py",
+    "Script_DAISY_Test_Hash_Worker.py",
+    "Script_DAISY_Test_Scan_Runtime.py",
+    "Script_DAISY_Test_Tool_Recovery.py",
     "Script_DAISY_Test_GUI_Scan.py",
 )
 _PROJECT_GITHUB_URL = "https://github.com/SuzuranYe/DAISY"
@@ -293,7 +293,7 @@ _RESULT_DIRECTORY_TASKS = frozenset((
     "check_format", "export_report", "scan", "verify", "parse_db",
     "storage_collect",
 ))
-_STG_ADMIN_TASKS = frozenset(("storage_list", "storage_collect"))
+_STORAGE_ADMIN_TASKS = frozenset(("storage_list", "storage_collect"))
 _PROJECT_CACHE_DIR_NAMES = frozenset((
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -695,7 +695,7 @@ class StorageDiskOption:
 
 
 def storage_disk_options(raw_targets: object) -> tuple[StorageDiskOption, ...]:
-    """把 STG-11 事件转换为包含可用与不可用设备的稳定硬盘清单。"""
+    """把硬盘信息登记事件转换为包含可用与不可用设备的稳定硬盘清单。"""
     if not isinstance(raw_targets, list):
         return ()
     options: list[StorageDiskOption] = []
@@ -1354,7 +1354,7 @@ TASKS = (
     TaskSpec(
         "env_check",
         "env-check",
-        "ENV-01  运行环境检测",
+        "运行环境检测",
         "运行环境检测",
         "检测各功能所需工具和可选能力。",
         "工具状态 · 版本信息 · 安装与更新",
@@ -1396,7 +1396,7 @@ TASKS = (
     TaskSpec(
         _PROJECT_SELF_TEST_KEY,
         "",
-        "DBS-91  DAISY 功能自检",
+        "DAISY 功能自检",
         "DAISY 功能自检",
         "运行项目自动化测试并汇总结果。",
         "项目测试 · 临时夹具 · 结果汇总",
@@ -1405,7 +1405,7 @@ TASKS = (
     TaskSpec(
         "full_scan",
         "scan",
-        "DBS-11  完整档案扫描",
+        "完整档案扫描",
         "完整档案扫描",
         "登记目录、元数据与 SHA-256，生成可续传的封存快照。",
         "档案只读 · 长时任务 · 生成快照",
@@ -1608,7 +1608,7 @@ TASKS = (
     TaskSpec(
         "quick_scan",
         "scan",
-        "DBS-12  快速档案扫描",
+        "快速档案扫描",
         "快速档案扫描",
         "快速登记目录与文件属性，生成轻量封存快照。",
         "档案只读 · 快速 · 生成快照",
@@ -1669,7 +1669,7 @@ TASKS = (
     TaskSpec(
         "check_format",
         "check-format",
-        "DBS-32  格式校验",
+        "格式校验",
         "格式校验",
         "按封存快照定位文件，检查常见文件格式能否正常读取。",
         "档案只读 · 生成 CSV/Markdown 报告",
@@ -1736,7 +1736,7 @@ TASKS = (
     TaskSpec(
         "check_hash",
         "check-hash",
-        "DBS-31  哈希核验",
+        "哈希核验",
         "哈希核验",
         "按封存快照抽样或全量重算 SHA-256，核对文件内容。",
         "档案只读 · 生成 JSON 报告",
@@ -1795,7 +1795,7 @@ TASKS = (
     TaskSpec(
         "diff",
         "diff",
-        "DBS-21  档案快照对比",
+        "档案快照对比",
         "档案快照对比",
         "比较两份快照，记录文件增删、变化、移动与复制。",
         "快照对比 · 变化分类 · Diff 数据库",
@@ -1838,7 +1838,7 @@ TASKS = (
     TaskSpec(
         "export_report",
         "export-report",
-        "DBS-41  旧版报告导出",
+        "旧版报告导出",
         "旧版报告导出",
         "从快照或 Diff 数据库导出冻结格式报告。",
         "兼容入口 · 冻结格式 · 只读输入",
@@ -1893,7 +1893,7 @@ TASKS = (
     TaskSpec(
         "storage_collect",
         "storage-collect",
-        "STG-11  硬盘信息登记",
+        "硬盘信息登记",
         "硬盘信息登记",
         "采集硬盘、分区、卷与 SMART 信息，生成硬盘档案。",
         "只读采集 · 分区与卷 · SMART 信息",
@@ -2071,13 +2071,13 @@ _VERIFY_SEVENZIP_ENABLED = (("verify_sevenzip", (True,)),)
 
 TASKS = (*TASKS,
     TaskSpec(
-        "scan", "scan", "DBS-10  档案扫描建库", "档案扫描建库",
+        "scan", "scan", "档案扫描建库", "档案扫描建库",
         "扫描档案目录，生成可对比、可续传的快照。",
         "完整／快速 · 文件清单 · 快照数据库",
         _unified_scan_fields(),
     ),
     TaskSpec(
-        "verify", "verify", "DBS-30  档案数据核验", "档案数据核验",
+        "verify", "verify", "档案数据核验", "档案数据核验",
         "按快照核对现有文件，检查格式、容器与 RAW 解码。",
         "文件状态 · 格式与容器 · 问题报告",
         (
@@ -2182,7 +2182,7 @@ TASKS = (*TASKS,
         ),
     ),
     TaskSpec(
-        "parse_db", "parse-db", "DBS-41  档案数据解析", "档案数据解析",
+        "parse_db", "parse-db", "档案数据解析", "档案数据解析",
         "解析快照或 Diff，按所选数据模块和格式导出。",
         "数据模块 · 四种格式 · 独立导出",
         (
@@ -2541,7 +2541,7 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
             args.append("--control-stdin")
             return args
     if task_key == "verify":
-        # 档案数据核验页不再提供独立哈希核验；显式覆盖 DBS-30 的历史默认值。
+        # 档案数据核验页不再提供独立哈希核验；显式覆盖统一核验的历史默认值。
         args += ["--hash", "off"]
         selected_format_tools = tuple(
             tool_id
@@ -2636,7 +2636,7 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
             if (task_key == "check_hash" and spec.key == "report"
                     and os.path.normcase(_absolute(text)) == os.path.normcase(
                         _DEFAULT_HASH_REPORT_LOCATION)):
-                # GUI 显示实际默认目录；保持不改写现有 CLI 协议，由 DBS-31
+                # GUI 显示实际默认目录；保持不改写现有 CLI 协议，由哈希核验
                 # 按原规则在该目录中自动生成报告文件名。
                 continue
             if text:
@@ -2651,7 +2651,7 @@ def preview_commands(task_key: str,
     """返回将实际执行的队列命令，供预览、复制和日志共用。"""
     previews = []
     for job in build_run_jobs(task_key, values):
-        parts = ["python", "-u", r".\Script\Script_DAISY_MAIN.py"]
+        parts = ["python", "-u", r".\Script\Script_DAISY_CLI.py"]
         parts += build_tool_args(task_key, job.values)
         previews.append((job.label, subprocess.list2cmdline(parts)))
     return previews
@@ -4805,12 +4805,12 @@ def about_message() -> str:
         "数据库与归档格式\n"
         f"统一扫描数据库结构版本：{dbstate.SCHEMA_VERSION}\n"
         f"旧版兼容快照结构版本：{core.SCHEMA_VERSION}\n"
-        f"DBS 元数据配置版本：{metadata.PROFILE_VERSION}\n"
-        f"DBS 文件名布局：{core.FILENAME_LAYOUT_VERSION}\n"
-        f"STG 归档结构版本：{storage_core.ARCHIVE_SCHEMA_VERSION}\n"
-        f"STG 文件名布局：{storage_core.FILENAME_LAYOUT_VERSION}\n\n"
+        f"元数据配置版本：{metadata.PROFILE_VERSION}\n"
+        f"快照文件名布局：{core.FILENAME_LAYOUT_VERSION}\n"
+        f"硬盘归档结构版本：{storage_core.ARCHIVE_SCHEMA_VERSION}\n"
+        f"硬盘归档文件名布局：{storage_core.FILENAME_LAYOUT_VERSION}\n\n"
         "兼容性\n"
-        f"DBS 封存快照只读兼容基线：v{core.MIN_READER_VERSION}\n"
+        f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}\n"
         "统一扫描续传：按数据库结构版本 4 的续传规则检查\n"
         "旧版兼容入口：仅续传数据库生成程序版本相同的结构版本 3 未完成快照\n\n"
         "快照数据库与硬盘档案彼此独立。业务数据留在本机；源档案和硬盘"
@@ -6284,7 +6284,7 @@ class DaisyApp:
             )
             self.task_toolbar_buttons[task_key] = button
             tooltip = task.description
-            if task_key in _STG_ADMIN_TASKS:
+            if task_key in _STORAGE_ADMIN_TASKS:
                 tooltip += " 建议使用管理员模式，以获取更完整的硬盘信息。"
             attach_tooltip(
                 button, tooltip)
@@ -7682,7 +7682,7 @@ class DaisyApp:
         if self.process is None:
             self._reset_progress(task_display_title(self.task.key))
             if not self.run_jobs:
-                if (task_key in _STG_ADMIN_TASKS
+                if (task_key in _STORAGE_ADMIN_TASKS
                         and not self.is_administrator):
                     self._set_status(
                         "建议使用管理员模式，以获取更完整的硬盘信息。",
@@ -7704,7 +7704,7 @@ class DaisyApp:
     def _build_environment_installation(
         self, row: int, form_pad: int,
     ) -> int:
-        """在 ENV-01 设置页建立独立的软件安装区。"""
+        """在运行环境检测设置页建立独立的软件安装区。"""
         panel = tk.Frame(
             self.form_inner, bg=_SURFACE,
             highlightbackground=_BORDER, highlightthickness=1,
@@ -8210,7 +8210,7 @@ class DaisyApp:
             )
             row = 1
 
-        if self.task.key in _STG_ADMIN_TASKS:
+        if self.task.key in _STORAGE_ADMIN_TASKS:
             row = self._build_admin_requirement_notice(row, form_pad)
         if self.task.key == "storage_collect":
             row = self._build_storage_detection(row, form_pad)
@@ -10170,7 +10170,7 @@ class DaisyApp:
                       job_count: int = 1) -> bool:
         warnings: list[str] = []
         active_keys = active_field_keys(self.task.key, values)
-        if (self.task.key in _STG_ADMIN_TASKS
+        if (self.task.key in _STORAGE_ADMIN_TASKS
                 and not self.is_administrator):
             warnings.append(
                 "当前不是管理员模式。管理员权限通常能获得更完整的硬盘信息；"
@@ -10759,7 +10759,7 @@ class DaisyApp:
                 manual_paths=self.manual_tool_paths,
             )
             tool_args = build_tool_args(task_key, effective)
-            command = [_console_python(), "-u", _MAIN] + tool_args
+            command = [_console_python(), "-u", _CLI] + tool_args
             command_text = preview_commands(task_key, effective)[0][1]
         total = len(self.run_jobs)
         action = (

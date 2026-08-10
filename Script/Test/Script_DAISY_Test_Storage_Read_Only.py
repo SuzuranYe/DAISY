@@ -12,9 +12,9 @@ _SCRIPT_DIR = os.path.dirname(_TEST_DIR)
 _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 sys.path.insert(0, _LIB_DIR)
 
-import Script_DAISY_Lib_STG_01_Core as core
-import Script_DAISY_Lib_STG_02_Windows as windows
-import Script_DAISY_Lib_STG_03_Smartctl as smartctl
+import Script_DAISY_Lib_Storage_Core as core
+import Script_DAISY_Lib_Storage_Windows as windows
+import Script_DAISY_Lib_Storage_Smartctl as smartctl
 
 
 class TestReadOnlyBoundary(unittest.TestCase):

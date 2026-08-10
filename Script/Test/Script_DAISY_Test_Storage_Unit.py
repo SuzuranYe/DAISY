@@ -20,13 +20,13 @@ _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 _MODULE_DIR = os.path.join(_SCRIPT_DIR, "Module")
 sys.path[:0] = [_LIB_DIR, _MODULE_DIR, _SCRIPT_DIR]
 
-import Script_DAISY_Lib_STG_01_Core as core
-import Script_DAISY_Lib_STG_02_Windows as windows
-import Script_DAISY_Lib_STG_03_Smartctl as smartctl
-import Script_DAISY_Lib_STG_04_Service as service
-import Script_DAISY_Lib_STG_05_Archive as archive
-import Script_DAISY_MAIN as entry
-import Script_DAISY_Module_STG_11_Collect as collect_module
+import Script_DAISY_Lib_Storage_Core as core
+import Script_DAISY_Lib_Storage_Windows as windows
+import Script_DAISY_Lib_Storage_Smartctl as smartctl
+import Script_DAISY_Lib_Storage_Service as service
+import Script_DAISY_Lib_Storage_Archive as archive
+import Script_DAISY_CLI as entry
+import Script_DAISY_Module_Storage_Collect as collect_module
 
 
 def fixture_record(
@@ -133,7 +133,7 @@ def fixture_collection(
 
 class TestCore(unittest.TestCase):
     def test_integrated_version_matches_daisy_release(self):
-        import Script_DAISY_Lib_DBS_01_Core as daisy_core
+        import Script_DAISY_Lib_Snapshot_Core as daisy_core
 
         self.assertEqual(core.APP_VERSION, "1.6.6")
         self.assertEqual(core.APP_VERSION, daisy_core.SCANNER_VERSION)

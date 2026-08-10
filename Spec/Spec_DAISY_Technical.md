@@ -8,46 +8,46 @@
   继续完成 UI、默认窗口、文案和交互一致性整理；v1.6.4 修正核验工具的环境检测门控，
   并把上述成果收敛为长期稳定基线；v1.6.5 维护界面可见性、控件对齐和说明文案；
   v1.6.6 收敛界面细节、文档和内部冗余，不改变数据契约。
-- 本文定义 DAISY 的现行统一语义：DBS 登记、比较、核验并解析文件档案快照，STG
-  只读登记物理硬盘信息；两者共用应用外壳，但保持独立数据模型。DBS 与 STG 的完整
+- 本文定义 DAISY 的现行统一语义：档案数据功能登记、比较、核验并解析文件档案快照，硬盘信息
+  只读登记物理硬盘信息；两者共用应用外壳，但保持独立数据模型。两个功能域的完整
   技术约束均以本文为准。
 - 安装、启动与常用工作流见项目根目录的 [README](../README.md)。
 - 从 `Kit_AL v1.0.2` 到当前版本的阶段变化见
   [版本演进](Spec_DAISY_Version_Evolution.md)。
 
-## 一、功能域、编号与权威边界
+## 一、功能域与权威边界
 
 DAISY v1.6.6 的信息能力分为两个并列功能域：
 
-- **DBS 档案数据**：登记文件树、大小、时间、NTFS-ID、元数据、哈希和
+- **档案数据**：登记文件树、大小、时间、NTFS-ID、元数据、哈希和
   快照变化，保存为 SQLite 快照或 Diff，并支持核验与导出。
-- **STG 硬盘信息**：只读获取物理盘、分区、卷、Windows 存储属性和 smartctl
+- **硬盘信息**：只读获取物理盘、分区、卷、Windows 存储属性和 smartctl
   原始证据，保存为独立 ZIP，并支持归档核验。
 
-统一 GUI、CLI、运行环境检测、管理员模式与测试入口只负责调度和交互。STG 不
-写入 DBS 的 SQLite，DBS 也不把物理盘资料嵌入快照；当前版本不自动建立文件条目
+统一 GUI、CLI、运行环境检测、管理员模式与测试入口只负责调度和交互。硬盘信息功能不
+写入档案快照 SQLite，档案数据功能也不把物理盘资料嵌入快照；当前版本不自动建立文件条目
 与物理硬盘档案之间的关联。
 
 GUI 顶部使用 6 个四字短入口，并按档案工作流、设备、环境的顺序排列；六个入口与环境页
 六个检测／安装列使用相同横向起点、按钮宽度和间距。设置页、进度和报告
-仍使用下表中的完整功能名。统一入口组合既有 DBS 能力，冻结入口继续供旧脚本调用：
+仍使用下表中的完整功能名。统一入口组合既有档案能力，冻结入口继续供旧脚本调用：
 
 | GUI 入口 | 现行 CLI | 编排脚本 | 冻结兼容入口 |
 |---|---|---|---|
-| 运行环境检测 | `env-check` | `Script_DAISY_Module_ENV_01_Env_Check.py` | 无 |
-| 档案扫描建库 | `scan` | `Script_DAISY_Module_DBS_10_Scan.py` | DBS-11 `full-scan`、DBS-12 `quick-scan` |
-| 档案快照对比 | `diff` | `Script_DAISY_Module_DBS_21_Diff.py` | 同一入口 |
-| 档案数据核验 | `verify` | `Script_DAISY_Module_DBS_30_Verify.py` | DBS-31 `check-hash`、DBS-32 `check-format` |
-| 档案数据解析 | `parse-db` | `Script_DAISY_Module_DBS_41_Export_Report.py` | DBS-41 `export-report` |
-| 硬盘信息登记 | `storage-collect` | `Script_DAISY_Module_STG_11_Collect.py` | 同一入口 |
+| 运行环境检测 | `env-check` | `Script_DAISY_Module_Environment_Check.py` | 无 |
+| 档案扫描建库 | `scan` | `Script_DAISY_Module_Scan.py` | 完整扫描 `full-scan`、快速扫描 `quick-scan` |
+| 档案快照对比 | `diff` | `Script_DAISY_Module_Snapshot_Diff.py` | 同一入口 |
+| 档案数据核验 | `verify` | `Script_DAISY_Module_Verify.py` | 哈希核验 `check-hash`、格式校验 `check-format` |
+| 档案数据解析 | `parse-db` | `Script_DAISY_Module_Parse.py` | 数据解析 `export-report` |
+| 硬盘信息登记 | `storage-collect` | `Script_DAISY_Module_Storage_Collect.py` | 同一入口 |
 
-`DBS-91 DAISY 功能自检` 只属于「高级」维护入口，通过 `unittest` 运行正式测试，
-不占用功能模块或 Module 脚本。`storage-list` 是同一 STG-11 脚本的 `--list` 内部
-准备模式，也不另占编号或脚本。归档核验不再提供独立用户命令；创建 ZIP 后仍由
-STG-11 在底层自动执行同等完整核验。
+`DAISY 功能自检` 只属于「高级」维护入口，通过 `unittest` 运行正式测试，
+不占用功能模块或 Module 脚本。`storage-list` 是同一硬盘信息登记脚本的 `--list` 内部
+准备模式，也不另建脚本。归档核验不再提供独立用户命令；创建 ZIP 后仍由
+硬盘信息登记在底层自动执行同等完整核验。
 
-`scan` 与 `verify` 的统一编排脚本不新增业务编号；它们分别组合 DBS-11/12 与
-DBS-31/32。`storage-list` 是 STG-11 页内准备模式。冻结命令保留原参数和业务投影，
+`scan` 与 `verify` 的统一编排脚本分别组合完整／快速扫描与
+哈希／格式核验。`storage-list` 是硬盘信息登记页内准备模式。冻结命令保留原参数和业务投影，
 但 GUI 不重复显示这些入口。
 
 ### 1.1 用户可见文字规范
@@ -97,29 +97,29 @@ GUI、CLI 帮助、报告、README 与现行规格使用同一套用户术语：
 
 | 内容 | 最终权威 |
 |---|---|
-| schema 3 快照 SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_01_Core.py` 中的 `SNAPSHOT_DDL` |
-| schema 4 DDL、会话、处理尝试、任务占用、续传与发布 | `Script\Lib\Script_DAISY_Lib_DBS_08_State.py` |
-| schema 4 未完成快照创建、续传预览、任务占用心跳与运行编排 | `Script\Lib\Script_DAISY_Lib_DBS_09_Run.py` |
-| Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_04_Diff.py` 中的 `DIFF_DDL` |
-| 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_DBS_02_Meta.py` |
-| 哈希、schema 4 隔离工作进程、超时、复用和哈希复检 | `Script\Lib\Script_DAISY_Lib_DBS_03_Hash.py` |
-| 数据库类型、schema、模块能力与业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_05_Reader.py` |
-| 核验快照准入、文件状态／哈希、格式判据和报告服务 | `Script\Lib\Script_DAISY_Lib_DBS_06_Verify.py` |
-| 档案数据解析模块注册表、CSV 与旧 Excel 写入器 | `Script\Lib\Script_DAISY_Lib_DBS_07_Parse.py` |
-| schema 3/4 快照问题的只读分析与分板块 Markdown | `Script\Lib\Script_DAISY_Lib_DBS_10_Issues.py` |
-| 档案数据核验阶段、控制、报告和退出码投影 | `Script\Lib\Script_DAISY_Lib_DBS_11_Verify_Run.py` |
-| ExifTool/ffprobe/7-Zip 精确子进程监督 | `Script\Lib\Script_DAISY_Lib_DBS_12_Verify_Tools.py` |
-| rawpy/LibRaw 隔离能力与每文件深度解码 | `Script\Lib\Script_DAISY_Lib_DBS_13_Raw.py` |
-| RAW 续传 JSONL、最终伴随 JSON 与 Markdown 投影 | `Script\Lib\Script_DAISY_Lib_DBS_14_Raw_Evidence.py` |
-| 档案数据解析稳定字段与流式业务投影 | `Script\Lib\Script_DAISY_Lib_DBS_15_Parse_Projection.py` |
-| 档案数据解析技术写入器、运行清单、暂存与不覆盖发布 | `Script\Lib\Script_DAISY_Lib_DBS_16_Parse_Run.py` |
-| 档案数据解析自包含 HTML 与流式 XLSX 阅读投影 | `Script\Lib\Script_DAISY_Lib_DBS_17_Parse_Human.py` |
-| 外部工具统一故障证据、受控一次性进程与连续失败熔断 | `Script\Lib\Script_DAISY_Lib_DBS_18_Tool_Runtime.py` |
-| Python 可选运行能力统一探测 | `Script\Lib\Script_DAISY_Lib_ENV_01_Capabilities.py` |
-| CLI 分发、现行脚本名 | `Script\Script_DAISY_MAIN.py` 中的 `COMMANDS` |
+| schema 3 快照 SQLite DDL | `Script\Lib\Script_DAISY_Lib_Snapshot_Core.py` 中的 `SNAPSHOT_DDL` |
+| schema 4 DDL、会话、处理尝试、任务占用、续传与发布 | `Script\Lib\Script_DAISY_Lib_Scan_State.py` |
+| schema 4 未完成快照创建、续传预览、任务占用心跳与运行编排 | `Script\Lib\Script_DAISY_Lib_Scan_Runtime.py` |
+| Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_Snapshot_Diff.py` 中的 `DIFF_DDL` |
+| 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_Metadata.py` |
+| 哈希、schema 4 隔离工作进程、超时、复用和哈希复检 | `Script\Lib\Script_DAISY_Lib_File_Hash.py` |
+| 数据库类型、schema、模块能力与业务投影 | `Script\Lib\Script_DAISY_Lib_Database_Reader.py` |
+| 核验快照准入、文件状态／哈希、格式判据和报告服务 | `Script\Lib\Script_DAISY_Lib_Snapshot_Verify.py` |
+| 档案数据解析模块注册表、CSV 与旧 Excel 写入器 | `Script\Lib\Script_DAISY_Lib_Database_Parse.py` |
+| schema 3/4 快照问题的只读分析与分板块 Markdown | `Script\Lib\Script_DAISY_Lib_Snapshot_Issues.py` |
+| 档案数据核验阶段、控制、报告和退出码投影 | `Script\Lib\Script_DAISY_Lib_Verify_Runtime.py` |
+| ExifTool/ffprobe/7-Zip 精确子进程监督 | `Script\Lib\Script_DAISY_Lib_Verify_Tools.py` |
+| rawpy/LibRaw 隔离能力与每文件深度解码 | `Script\Lib\Script_DAISY_Lib_Raw_Verify.py` |
+| RAW 续传 JSONL、最终伴随 JSON 与 Markdown 投影 | `Script\Lib\Script_DAISY_Lib_Raw_Evidence.py` |
+| 档案数据解析稳定字段与流式业务投影 | `Script\Lib\Script_DAISY_Lib_Parse_Projection.py` |
+| 档案数据解析技术写入器、运行清单、暂存与不覆盖发布 | `Script\Lib\Script_DAISY_Lib_Parse_Runtime.py` |
+| 档案数据解析自包含 HTML 与流式 XLSX 阅读投影 | `Script\Lib\Script_DAISY_Lib_Parse_Human.py` |
+| 外部工具统一故障证据、受控一次性进程与连续失败熔断 | `Script\Lib\Script_DAISY_Lib_Tool_Runtime.py` |
+| Python 可选运行能力统一探测 | `Script\Lib\Script_DAISY_Lib_Environment_Capabilities.py` |
+| CLI 分发、现行脚本名 | `Script\Script_DAISY_CLI.py` 中的 `COMMANDS` |
 | CLI 参数及默认值 | 上表对应任务脚本及统一编排脚本的参数解析器 |
 | GUI 显示值到 CLI 的映射 | `Script\Script_DAISY_GUI.py` |
-| STG 物理盘只读登记与 ZIP 协议 | 本文第十一节及 `Script\Lib\Script_DAISY_Lib_STG_*.py` |
+| 物理盘只读登记与 ZIP 协议 | 本文第十一节及 `Script\Lib\Script_DAISY_Lib_Storage_*.py` |
 
 ## 二、系统不变量
 
@@ -132,7 +132,7 @@ GUI、CLI 帮助、报告、README 与现行规格使用同一套用户术语：
 7. **文本统一**：正式文本输出使用 UTF-8（无 BOM）和 LF。
 8. **失败如实保留**：单文件失败通常记录到 `errors`，不会伪装为成功；同一工具连续出现
    同类故障时重建工具会话或停止相应阶段。
-9. **物理盘只读**：STG 不修改磁盘、分区、卷、文件系统、BitLocker 或 SMART
+9. **物理盘只读**：硬盘信息登记不修改磁盘、分区、卷、文件系统、BitLocker 或 SMART
    设置，也不启动 SMART 自检；只读查询仍可能唤醒休眠硬盘。
 
 ### 2.1 内容读取边界
@@ -407,7 +407,7 @@ rawpy/LibRaw 能力，发生变化时拒绝续传。微秒和随机运行 ID 只
 `resume_hint=manual_only`，下次不主动推荐。已提交的文件级结果继续保留；正在处理的文件
 不序列化 Python 哈希对象或外部工具进程状态，继续或跨重启续传时可能从该文件起点重试。
 进程异常退出时，只有确认旧 lease 无效后才能把遗留 attempt 标为 `abandoned` 并创建新的
-resume session。精确 DDL、事务和状态转换以 `Script_DAISY_Lib_DBS_08_State.py` 及其
+resume session。精确 DDL、事务和状态转换以 `Script_DAISY_Lib_Scan_State.py` 及其
 契约测试为准。
 
 ### 7.4 冻结 schema 3 续传边界
@@ -542,18 +542,18 @@ v1.6.6 的统一 Reader 只读支持 v1.4.1/schema 3 与当前 schema 4 封存�
 统一 `scan` 的 schema 4 续传按独立续传契约判断。v1.4.0 及更早数据库要获得当前
 规范化结果，必须重新扫描原档案。
 
-`verify`、`DBS-31 check-hash` 和 `DBS-32 check-format` 都必须用 `--root` 指定当前
+`verify`、`哈希核验 check-hash` 和 `格式校验 check-format` 都必须用 `--root` 指定当前
 档案根目录，不回退到快照保存的旧绝对路径。单根快照可直接传一个文件夹路径；多根
 快照必须逐项使用 `根目录名=当前路径`。普通文件不能作为根目录。
 
-`DBS-31 check-hash`：
+`哈希核验 check-hash`：
 
 - 总是先检查记录条目的存在性、size 和 mtime；
 - 默认抽样 1%，至少 100 个有有效基准哈希的条目；
 - `--full` 对所有有有效基准哈希的条目独立复算；
 - 结论只覆盖本次实际检查口径。
 
-`DBS-32 check-format`：
+`格式校验 check-format`：
 
 - 默认检查全部可校验文件；冻结 CLI 仍可指定抽样比例，现行 GUI 固定检查全部适用文件；
 - ZIP/OOXML 可读取成员并校验 CRC；
@@ -610,7 +610,7 @@ ExifTool 与 ffprobe 都适用于同一文件时，监督器先执行 ExifTool�
 
 ### 10.3 跨版本只读投影
 
-v1.6.0 的 DBS-21 支持 schema 3/4 的旧旧、旧新、新旧和新新四种方向。输入先由
+v1.6.0 的快照对比支持 schema 3/4 的旧旧、旧新、新旧和新新四种方向。输入先由
 统一 Reader 转成 `daisy-diff-input-v1`，Diff 业务层不直接查询快照物理表。交换方向时，
 `added`/`deleted`、`old`/`new` 路径、schema 和未配对 root 必须一起反转；枚举失败范围在任一方向
 都保持 `unknown`。
@@ -620,38 +620,37 @@ v1.6.0 的 DBS-21 支持 schema 3/4 的旧旧、旧新、新旧和新新四种�
 写能力说明，不套用现有文件变化状态。Diff 输出仍使用冻结的 schema 3 `DIFF_DDL`，来源
 schema、投影标识和能力结论写入既有身份列与 `counts_json`，不改变 v1.4.1 的表列契约。
 
-## 十一、STG 物理硬盘信息登记
+## 十一、物理硬盘信息登记
 
 ### 11.1 定位、版本与权威实现
 
-STG 用于 Windows 单机上的只读物理硬盘信息登记与证据归档。GUI 只有一个硬盘
-功能模块：`STG-11 硬盘信息登记`。同一页的「检测硬盘」按钮调用该模块脚本的
-内部列盘模式并刷新硬盘池，不另占功能编号。统一 CLI 的 `storage-list` 和
-`storage-collect` 均由同一个 STG-11 Module 脚本分派；`storage-list` 只是登记前的
-准备模式。归档类型标识为 `PROFILE`，源码统一使用 `DAISY_Lib_STG` 和
-`DAISY_Module_STG` 命名空间。
+硬盘信息登记用于 Windows 单机上的只读物理硬盘信息登记与证据归档。GUI 只有一个硬盘
+功能模块：`硬盘信息登记`。同一页的「检测硬盘」按钮调用该模块脚本的
+内部列盘模式并刷新硬盘池，不另列为功能入口。统一 CLI 的 `storage-list` 和
+`storage-collect` 均由同一个硬盘信息登记 Module 脚本分派；`storage-list` 只是登记前的
+准备模式。归档类型标识为 `PROFILE`，相关源码统一使用 `Storage` 职责名称。
 
-STG 的 `archive_schema_version=3` 只表示 ZIP 协议，与快照和 Diff 的 SQLite
-`schema_version=3` 没有数据模型关系。STG 不导入 `sqlite3`，不创建、读取或修改
-数据库。默认产物目录为 `Output/Storage`。当前只读取 STG 归档 schema 3，不兼容
+硬盘归档的 `archive_schema_version=3` 只表示 ZIP 协议，与快照和 Diff 的 SQLite
+`schema_version=3` 没有数据模型关系。硬盘信息模块不导入 `sqlite3`，不创建、读取或修改
+数据库。默认产物目录为 `Output/Storage`。当前只读取硬盘归档 schema 3，不兼容
 早期协议；Manifest 中的应用版本取当前 `APP_VERSION`，本版为 `1.6.6`。
 
 代码权威边界：
 
 | 范围 | 文件 |
 |---|---|
-| 数据模型、命名、编码与摘要 | `Script/Lib/Script_DAISY_Lib_STG_01_Core.py` |
-| Windows 存储清单 | `Script/Lib/Script_DAISY_Lib_STG_02_Windows.py` |
-| smartctl 命令与解析 | `Script/Lib/Script_DAISY_Lib_STG_03_Smartctl.py` |
-| 扫描关联、身份确认与报告 | `Script/Lib/Script_DAISY_Lib_STG_04_Service.py` |
-| ZIP 生成、发布与核验 | `Script/Lib/Script_DAISY_Lib_STG_05_Archive.py` |
-| `STG-11` 列盘与登记入口 | `Script/Module/Script_DAISY_Module_STG_11_Collect.py` |
-| 统一 GUI/CLI 接入 | `Script/Script_DAISY_GUI.py`、`Script/Script_DAISY_MAIN.py` |
+| 数据模型、命名、编码与摘要 | `Script/Lib/Script_DAISY_Lib_Storage_Core.py` |
+| Windows 存储清单 | `Script/Lib/Script_DAISY_Lib_Storage_Windows.py` |
+| smartctl 命令与解析 | `Script/Lib/Script_DAISY_Lib_Storage_Smartctl.py` |
+| 扫描关联、身份确认与报告 | `Script/Lib/Script_DAISY_Lib_Storage_Service.py` |
+| ZIP 生成、发布与核验 | `Script/Lib/Script_DAISY_Lib_Storage_Archive.py` |
+| `硬盘信息登记` 列盘与登记入口 | `Script/Module/Script_DAISY_Module_Storage_Collect.py` |
+| 统一 GUI/CLI 接入 | `Script/Script_DAISY_GUI.py`、`Script/Script_DAISY_CLI.py` |
 
-smartctl 由 `ENV-01` 发现、验证与缓存。缺失时，只能在用户逐项确认后通过固定
+smartctl 由 `运行环境检测` 发现、验证与缓存。缺失时，只能在用户逐项确认后通过固定
 `smartmontools.smartmontools` WinGet 包安装；PowerShell 不由 GUI 安装。
 
-### 11.2 STG 系统不变量
+### 11.2 系统不变量
 
 1. **物理盘只读**：不执行修改磁盘、分区、卷、文件系统、BitLocker 或 SMART
    设置的命令，也不启动 SMART 自检。
@@ -670,7 +669,7 @@ smartctl 由 `ENV-01` 发现、验证与缓存。缺失时，只能在用户逐�
 9. **本地运行**：采集、归档和验证不联网、不上传、不遥测。
 10. **完整性显式**：访问或命令层错误必须标为 `incomplete`，不得仅凭 ZIP
     成功生成就宣称登记完整。
-11. **权限显式**：STG-11 的硬盘检测与登记建议使用管理员权限，以取得更完整的信息。
+11. **权限显式**：硬盘信息登记的硬盘检测与登记建议使用管理员权限，以取得更完整的信息。
     GUI 只在「硬盘信息登记」页提供管理员模式按钮，并在悬停说明和启动确认中说明
     非管理员模式可能不完整或失败；提权通过 Windows UAC 重启。
 12. **发布后自检**：最终 ZIP 发布后必须自动执行完整核验；不提供可被误认为独立
@@ -678,7 +677,7 @@ smartctl 由 `ENV-01` 发现、验证与缓存。缺失时，只能在用户逐�
 
 ### 11.3 管理员权限与只读命令边界
 
-STG-11 的硬盘检测和登记应在管理员模式下运行，以取得完整的 Windows 存储与
+硬盘信息登记的硬盘检测和登记应在管理员模式下运行，以取得完整的 Windows 存储与
 smartctl 信息。GUI「硬盘信息登记」页的管理员模式按钮会先确认，再通过 Windows UAC 重启当前
 应用；任务运行期间不可切换权限。未提权运行不放宽只读边界，只会如实记录权限
 缺口、失败或 `incomplete` 诊断结果。
@@ -713,7 +712,7 @@ Windows 清单和 smartctl 设备枚举独立执行，任一失败时仍保留�
 2. `/dev/pdN`；
 3. Windows smartmontools 的 `/dev/sdX` 编号规则。
 
-Windows 盘存在而 smartctl 未发现时，STG-11 仍列出 Windows 目标并说明关联缺口，
+Windows 盘存在而 smartctl 未发现时，硬盘信息登记仍列出 Windows 目标并说明关联缺口，
 但禁止为该项建立完整硬盘档案。smartctl 项无法关联 Windows `DiskNumber` 时也列出，
 但不能当作完整目标。同一物理盘出现多个 smartctl 项时保留提示，并使用扫描顺序
 中的第一项。
@@ -726,7 +725,7 @@ GUI 硬盘池列出本次检测到的全部有效 DiskNumber。脱机、Windows 
 都会先清除上一轮清单与选择。选择框使用 20 px 自绘指示器；接入状态改变后必须重新检测，
 不得沿用旧 `DiskNumber`。
 
-登记开始后，STG-11 按 `DiskNumber` 重新取得详细 Windows 清单，并核对容量、
+登记开始后，硬盘信息登记按 `DiskNumber` 重新取得详细 Windows 清单，并核对容量、
 `UniqueId` 和序列号，再以固定只读模板采集单盘证据。
 
 硬盘登记页的「管理员模式」使用与「检测硬盘」相同的字符宽度、内边距和实际尺寸；按钮
@@ -882,7 +881,7 @@ BitLocker 状态；不得未经检查公开分享。
 
 实盘验证是显式的额外步骤，必须先重新列盘并按物理盘编号选择。
 
-### 11.11 STG 已知限制
+### 11.11 已知限制
 
 - RAID 控制器、厂商驱动、USB 桥和虚拟磁盘可能隐藏或改写 SMART；
 - Windows `Healthy` 与 smartctl 结论来自不同层，不能互相替代；
@@ -901,10 +900,10 @@ BitLocker 状态；不得未经检查公开分享。
 - v1.6.1 是未打标签的阶段性修改，不作为发布版本；v1.6.2 在完整自动化回归、
   v1.4.1 FULL 兼容专项与发布审计通过后成为稳定标签。自动化验收不替代真实工具、特殊
   文件、超大档案和不同 Windows 设备的持续验证。
-- v1.5.0 新增 STG 功能域，并统一 Module 与 Lib 脚本的 ENV/DBS/STG 前缀；
-  v1.5.1 只优化 UI、交互、阅读报告和对应测试。v1.5.1 对 DBS Core 的功能改动
+- v1.5.0 新增硬盘信息功能域，并统一 Module 与 Lib 脚本的旧域缩写前缀；
+  v1.5.1 只优化 UI、交互、阅读报告和对应测试。v1.5.1 对快照核心层的功能改动
   仅限应用版本与 `_Issues.md` 问题报告的呈现边界；数据库 DDL、字段、约束、schema、扫描、
-  Diff、数据库生成和业务语义均未改变。DBS 库文件名与导入路径的统一属于 v1.5.0。
+  Diff、数据库生成和业务语义均未改变。档案库文件名与导入路径的统一属于 v1.5.0。
 - v1.6.2 是 v1.6.0 数据契约上的 UI 与交互正式版本：统一扫描新增 ExifTool/ffprobe 两个
   schema 4 冻结配置键，缺键默认 `true`；schema 3/4 DDL、Diff DDL、Reader 投影、
   resume contract 和各 schema 的读取版本声明均不变。冻结 `full-scan`、`quick-scan` 参数集合保持不变。
@@ -912,14 +911,14 @@ BitLocker 状态；不得未经检查公开分享。
   完全匹配；v1.5.1 及更早的未完成快照不能由 v1.6.0 接管。schema 4 续传按独立
   续传契约、冻结配置、会话 (`session`) 和占用锁 (`lease`) 判定，不用补丁版本号替代续传契约。
   已完成的 schema 3 封存快照继续只读使用。
-- 项目长期兼容门槛：v1.6.0 及后续版本中，所有接受封存 DBS 快照或 Diff 的功能至少
+- 项目长期兼容门槛：v1.6.0 及后续版本中，所有接受封存档案快照或 Diff 的功能至少
   必须只读支持 v1.4.1/schema 3。旧库不得原地迁移；缺少新字段时使用明确的能力降级，
   不得显示为 0、空值或成功。该门槛不表示 v1.4.1 程序能够读取未来新 schema，也不把
   v1.4.1 未完成快照纳入无条件续传承诺。状态与恢复边界见本文第 7.3 节及本节；
   精确 DDL 和状态转换以状态层代码及其契约测试为准。
 - v1.6.0 使用统一只读 Reader。它按身份表、数据库结构版本、封存状态和实际表列识别
   快照、Diff 和未完成快照，并将模块状态区分为 `available`、`empty`、`unavailable`、
-  `incompatible` 和 `invalid`。DBS-21/31/32/41、增量来源和问题报告读取均通过该层；
+  `incompatible` 和 `invalid`。对比／哈希核验／格式校验／解析、增量来源和问题报告读取均通过该层；
   schema 3 的 DDL、数据契约和发布版本身份在阶段 1 未改变。对于 schema 3，Reader 还
   读取 `hash_coverage`、配置和运行清单 (`manifest`) 的执行证据：模块执行后 0 行才是
   `empty/0`，
@@ -967,15 +966,15 @@ BitLocker 状态；不得未经检查公开分享。
   每 9 GiB 增加 90 秒的动态无进展超时、三种原子处置、精确句柄回收、逐文件检查点、
   处理尝试与低频性能摘要。schema 4 哈希当前结果与历史处理尝试在同一 SQLite 事务提交；
   暂停或停止中的当前文件不保存 `hashlib` 内部状态，续传时从文件起点重做。该内核已接入
-  `DBS_09_Run.py` 的 schema 4 生产链，并由 `scan` CLI 与 GUI 可见扫描页调用；旧兼容
+  `Script_DAISY_Lib_Scan_Runtime.py` 的 schema 4 生产链，并由 `scan` CLI 与 GUI 可见扫描页调用；旧兼容
   命令未接入，因此 schema 3 兼容扫描业务语义未改变。
-- `DBS_09_Run.py` 进一步封装 schema 4 未完成快照的不覆盖预留、只读续传预览、
+- `Script_DAISY_Lib_Scan_Runtime.py` 进一步封装 schema 4 未完成快照的不覆盖预留、只读续传预览、
   `<partial>.lease` 明确接管和数据库／占用锁双端心跳。未完成快照、发布基名和事件日志
   必须互不相同；同一会话暂停后进程消失时，旧会话先转为 `abandoned`，再创建续传会话。
   续传与心跳只以 `mode=rw` 打开现有数据库，损坏的占用锁仅能由明确续传接管，
   且接管后重新核对会话、状态和配置。该层只操作调用方给出的精确路径与 PID，不枚举
   或终止其他进程。
-- `DBS_09_Run.py` 的阶段 4 控制子层使用 `daisy-control-v1` 单行 UTF-8 JSONL，把 GUI
+- `Script_DAISY_Lib_Scan_Runtime.py` 的阶段 4 控制子层使用 `daisy-control-v1` 单行 UTF-8 JSONL，把 GUI
   的暂停、继续、保存并退出、停止和超时决定路由到当前运行段。消息上限为 4096 字节，
   并使用严格递增序号；首个生命周期动作生效，超时决定绑定当前工作进程 PID。
   同会话暂停后的继续会创建新控制对象并从当前文件起点重试；稍后保存并退出通过受审计的
@@ -986,7 +985,7 @@ BitLocker 状态；不得未经检查公开分享。
   在单文件提交后停下并从数据库状态重建全局进度，复扫保存已观察变化后可重跑。数值进度
   以 500 ms、当前文件以 100 ms 限频；当前文件开关关闭时不调用生产回调。Core/Meta 的
   schema 3 旧函数只增加默认关闭的末尾参数，未传回调的旧扫描路径不改变。
-- `DBS_09_Run.py` 的 schema 4 内部生产链依次执行枚举、哈希、元数据、可选格式、复扫、
+- `Script_DAISY_Lib_Scan_Runtime.py` 的 schema 4 内部生产链依次执行枚举、哈希、元数据、可选格式、复扫、
   独立哈希复检、读取性能分析、封存和发布。扫描专用 `verify_format` 明确记为 skipped，
   不把未执行写成完成。只有前置 checkpoint 全部为 completed/skipped 且不存在 running
   处理尝试或 `pending`/`processing` 当前结果时才进入封存。运行清单、计数和事件先内嵌，
@@ -1000,7 +999,7 @@ BitLocker 状态；不得未经检查公开分享。
   和 25% 作为低／高置信度界线。30 秒无进展至少为低置信度，达到该文件动态超时
   阈值为高置信度。低置信度只留 `read_performance`，高置信度进入同名 `_Issues.md` 问题报告；措辞只称
   可疑逻辑路径／时段，明确不能推断物理坏区。
-- `DBS_10_Issues.py` 通过统一 Reader 只读分析 schema 3/4 快照，固定输出「目录枚举问题」、
+- `Script_DAISY_Lib_Snapshot_Issues.py` 通过统一 Reader 只读分析 schema 3/4 快照，固定输出「目录枚举问题」、
   「哈希问题」、「元数据问题」、「格式校验问题」、「RAW 深度校验问题」、
   「读取性能异常候选」和「运行与证据问题」七个板块。已执行且无问题为 `0`，未执行、
   旧库未记录或能力不可解释为 `NULL`；不支持、无法判定或格式未识别只显示去重总数，
@@ -1013,7 +1012,7 @@ BitLocker 状态；不得未经检查公开分享。
   但未发布的快照供发布重试。该能力已接入 schema 4 生产链、新 `scan` CLI 和 GUI 的可见扫描页；
   旧兼容命令保持冻结路径。
 
-- `Script_DAISY_Module_DBS_10_Scan.py` 是 schema 4 的首个生产编排入口。新建时冻结
+- `Script_DAISY_Module_Scan.py` 是 schema 4 的首个生产编排入口。新建时冻结
   Full/Quick、格式校验、每 9 GiB 增加 90 秒的无进展策略和工具身份；续传前先做只读预览，
   存在有效占用者时，会在源目录或工具预检前拒绝接管；`stopped` 状态必须显式指定
   `--manual-resume`。
@@ -1220,7 +1219,7 @@ v1.6.0 的生产事件与 UI 绘制使用独立限频：冻结兼容命令的 `P
 | `recovery_scans` | `[]` | 最多 20 条受控未完成快照续传提示，不自动开始读取 |
 
 旧配置中的 `binary_control_style` 与其他未知键一样被忽略，不会转成任务参数或再次写入；
-非法字段逐项回退。`storage_list` 是 STG-11 内部步骤，不能
+非法字段逐项回退。`storage_list` 是硬盘信息登记的内部步骤，不能
 作为恢复页面。除 `recovery_scans` 中受控的未完成快照路径外，配置文件不得包含档案路径、
 封存数据库路径、输出路径、硬盘编号、目录队列、日志或进度。运行或启动中关闭始终执行
 确认；确认退出时先保存页面配置，再停止
@@ -1249,7 +1248,7 @@ v1.6.0 的生产事件与 UI 绘制使用独立限频：冻结兼容命令的 `P
   `export-report` 继续按冻结顺序生成旧 CSV/XLSX，供已有自动化兼容使用。
 - 「帮助」依次提供「关于」「联系作者」「GitHub 主页」；「关于」
   显示应用版本、统一扫描与旧版兼容快照各自的数据库结构版本、元数据配置、
-  DBS/STG 文件名布局、STG 归档结构版本和 `v1.4.1` 封存快照兼容基线。续传说明区分
+  快照／硬盘归档文件名布局、硬盘归档结构版本和 `v1.4.1` 封存快照兼容基线。续传说明区分
   按独立续传契约判断的 schema 4 统一扫描，以及要求同一生成程序版本的冻结 schema 3 旧入口。
 - GUI 默认优先使用 `Microsoft YaHei UI`，并可在本机已安装的中文／系统候选字体间
   切换，不依赖第三方字体。标准正文基准为 10 号，「较大」和「特大」分别在此基础上增加
@@ -1265,12 +1264,12 @@ v1.6.0 的生产事件与 UI 绘制使用独立限频：冻结兼容命令的 `P
   句柄属于各自实例；相同或不同任务可并发运行。窗口仍共享操作系统资源、外部工具和
   用户指定的输出路径，因此并发会竞争磁盘 I/O；并发任务应使用不同输出目录，
   快照类产物继续依靠唯一未完成文件与不覆盖发布保护正式文件。
-- STG-11 检测开始时自动展示进度与日志。检测成功后弹窗，展开任务设置并收起进度、
+- 硬盘信息登记检测开始时自动展示进度与日志。检测成功后弹窗，展开任务设置并收起进度、
   日志，便于选择硬盘；随后点击开始任务会再次进入标准运行布局。检测失败时保留进度
   与日志，避免隐藏诊断信息。
 - JSON 和 Markdown/TXT 报告直接写入 DAISY 工具名、版本与作者；纯业务 CSV
   保持原有表头，并用同组的 `Report_info.csv` 或 `_Info.csv` 保存报告身份。
-  档案数据解析与冻结 DBS-41 兼容入口均生成便于阅读的中文 XLSX，避免 Excel 双击
+  档案数据解析与冻结的报告导出兼容入口均生成便于阅读的中文 XLSX，避免 Excel 双击
   UTF-8 无 BOM CSV 时按本地 ANSI 代码页误判中文。
 
 ### 12.7 GUI 安装与软件重置边界
@@ -1317,5 +1316,5 @@ v1.6.0 的生产事件与 UI 绘制使用独立限频：冻结兼容命令的 `P
 
 可重复执行的回归测试位于 [`Script\Test`](../Script/Test/)；GUI 顶部「高级→
 功能自检」可启动同一套测试，覆盖 SQLite schema、数据库约束、快照、Diff、
-GUI 参数映射和 STG 只读／归档边界；它不属于业务任务。完整测试命令见
+GUI 参数映射和硬盘信息只读／归档边界；它不属于业务任务。完整测试命令见
 [README](../README.md#测试)，历史版本变化见[版本演进](Spec_DAISY_Version_Evolution.md)。

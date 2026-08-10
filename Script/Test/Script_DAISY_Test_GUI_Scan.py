@@ -26,14 +26,14 @@ _LIB_DIR = os.path.join(_SCRIPT_DIR, "Lib")
 sys.path[:0] = [_TEST_DIR, _SCRIPT_DIR, _LIB_DIR]
 
 import Script_DAISY_GUI as gui
-import Script_DAISY_Lib_DBS_01_Core as core
-import Script_DAISY_Lib_DBS_09_Run as dbrun
+import Script_DAISY_Lib_Snapshot_Core as core
+import Script_DAISY_Lib_Scan_Runtime as dbrun
 import Script_DAISY_Test_Tree as tree_fixture
 
 
 _RUNTIME_ROOT = os.path.join(
     _REPO_ROOT, ".test_runtime", "v1_6_1", "gui_scan")
-_MAIN = os.path.join(_SCRIPT_DIR, "Script_DAISY_MAIN.py")
+_CLI = os.path.join(_SCRIPT_DIR, "Script_DAISY_CLI.py")
 _GUI_PREFIX = b"@@DAISY_GUI@@"
 
 
@@ -492,7 +492,7 @@ class TestControlledScanSubprocess(unittest.TestCase):
             subprocess.Popen[bytes], queue.Queue[dict[str, object]]]:
         process = subprocess.Popen(
             [
-                sys.executable, "-B", _MAIN, "scan",
+                sys.executable, "-B", _CLI, "scan",
                 "--mode", "quick",
                 "--root", f"档案={self.source}",
                 "--output-dir", self.output,
@@ -565,7 +565,7 @@ class TestControlledScanSubprocess(unittest.TestCase):
     def _resume_to_publication(self, partial: str) -> None:
         completed = subprocess.run(
             [
-                sys.executable, "-B", _MAIN, "scan",
+                sys.executable, "-B", _CLI, "scan",
                 "--mode", "quick", "--resume", partial,
                 "--manual-resume", "--quiet",
             ],

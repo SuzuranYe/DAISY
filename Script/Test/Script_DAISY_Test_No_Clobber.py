@@ -22,11 +22,11 @@ _LIB = os.path.join(_SCRIPT, "Lib")
 _MODULE = os.path.join(_SCRIPT, "Module")
 sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
-import Script_DAISY_Lib_DBS_01_Core as core
-import Script_DAISY_Lib_DBS_04_Diff as dbdiff
+import Script_DAISY_Lib_Snapshot_Core as core
+import Script_DAISY_Lib_Snapshot_Diff as dbdiff
 
 QUICK = os.path.join(
-    _MODULE, "Script_DAISY_Module_DBS_12_Quick_Scan.py")
+    _MODULE, "Script_DAISY_Module_Quick_Scan.py")
 
 
 def snapshot_uuid(db: str) -> str:

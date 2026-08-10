@@ -25,9 +25,9 @@ _LIB = os.path.join(_SCRIPT, "Lib")
 _MODULE = os.path.join(_SCRIPT, "Module")
 sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
-import Script_DAISY_Lib_DBS_01_Core as core
+import Script_DAISY_Lib_Snapshot_Core as core
 import Script_DAISY_GUI as gui
-import Script_DAISY_MAIN as entry
+import Script_DAISY_CLI as entry
 
 
 class TestGuiArguments(unittest.TestCase):
@@ -238,10 +238,10 @@ class TestGuiArguments(unittest.TestCase):
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
         self.assertEqual(
-            gui.TASK_BY_KEY["env_check"].nav, "ENV-01  运行环境检测")
+            gui.TASK_BY_KEY["env_check"].nav, "运行环境检测")
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "DBS-91  DAISY 功能自检",
+            "DAISY 功能自检",
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].fields, ())
@@ -386,7 +386,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertNotIn("--sample-percent", full_hash_check)
         self.assertNotIn(
             "--report", full_hash_check,
-            "GUI 显示默认报告目录时仍须沿用 DBS-31 的自动命名规则",
+            "GUI 显示默认报告目录时仍须沿用哈希核验的自动命名规则",
         )
         custom_hash_report = gui.build_tool_args(
             "check_hash",
@@ -779,8 +779,8 @@ class TestGuiArguments(unittest.TestCase):
             },
         )
         self.assertEqual(
-            gui._MAIN,
-            os.path.join(gui._SCRIPT_DIR, "Script_DAISY_MAIN.py"),
+            gui._CLI,
+            os.path.join(gui._SCRIPT_DIR, "Script_DAISY_CLI.py"),
         )
         self.assertEqual(
             gui._LIB_DIR,
@@ -790,7 +790,7 @@ class TestGuiArguments(unittest.TestCase):
             gui._TEST_DIR,
             os.path.join(gui._SCRIPT_DIR, "Test"),
         )
-        self.assertTrue(os.path.isfile(gui._MAIN))
+        self.assertTrue(os.path.isfile(gui._CLI))
         self.assertFalse(os.path.isdir(os.path.join(gui._BASE, "Tests")))
         self.assertEqual(gui.project_self_test_missing_files(), [])
         self.assertEqual(
@@ -815,7 +815,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("Copyright (c) 2026 Suzuran Ye", license_text)
         preview = gui.preview_command(
             "quick_scan", {"roots": r"E:\Archive"})
-        self.assertIn(r".\Script\Script_DAISY_MAIN.py", preview)
+        self.assertIn(r".\Script\Script_DAISY_CLI.py", preview)
 
     def test_cold_start_installer_only_installs_python(self):
         installer_path = os.path.join(
@@ -1846,7 +1846,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("archive_schema_version=3", spec)
         self.assertIn("不创建、读取或修改\n数据库", spec)
         self.assertIn("### 11.8 创建后自动核验准入", spec)
-        self.assertIn("当前只读取 STG 归档 schema 3", spec)
+        self.assertIn("当前只读取硬盘归档 schema 3", spec)
         self.assertIn("不兼容\n早期协议", spec)
         self.assertIn("不提供按 mtime 静默跳过", spec)
         self.assertIn("暂停只在当前任务进程内生效", spec)
@@ -1884,37 +1884,37 @@ class TestGuiArguments(unittest.TestCase):
             "Spec_DAISY_Technical.md",
             "Spec_DAISY_Version_Evolution.md",
         })
-        self.assertIn("STG-11 硬盘信息登记", evolution)
+        self.assertIn("硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
         self.assertFalse(os.path.exists(retired_storage_spec))
         lib_dir = os.path.join(gui._BASE, "Script", "Lib")
         self.assertEqual(
             {
-                "Script_DAISY_Lib_DBS_01_Core.py",
-                "Script_DAISY_Lib_DBS_02_Meta.py",
-                "Script_DAISY_Lib_DBS_03_Hash.py",
-                "Script_DAISY_Lib_DBS_04_Diff.py",
-                "Script_DAISY_Lib_DBS_05_Reader.py",
-                "Script_DAISY_Lib_DBS_06_Verify.py",
-                "Script_DAISY_Lib_DBS_07_Parse.py",
-                "Script_DAISY_Lib_DBS_08_State.py",
-                "Script_DAISY_Lib_DBS_09_Run.py",
-                "Script_DAISY_Lib_DBS_10_Issues.py",
-                "Script_DAISY_Lib_DBS_11_Verify_Run.py",
-                "Script_DAISY_Lib_DBS_12_Verify_Tools.py",
-                "Script_DAISY_Lib_DBS_13_Raw.py",
-                "Script_DAISY_Lib_DBS_14_Raw_Evidence.py",
-                "Script_DAISY_Lib_DBS_15_Parse_Projection.py",
-                "Script_DAISY_Lib_DBS_16_Parse_Run.py",
-                "Script_DAISY_Lib_DBS_17_Parse_Human.py",
-                "Script_DAISY_Lib_DBS_18_Tool_Runtime.py",
-                "Script_DAISY_Lib_ENV_01_Capabilities.py",
-                "Script_DAISY_Lib_STG_01_Core.py",
-                "Script_DAISY_Lib_STG_02_Windows.py",
-                "Script_DAISY_Lib_STG_03_Smartctl.py",
-                "Script_DAISY_Lib_STG_04_Service.py",
-                "Script_DAISY_Lib_STG_05_Archive.py",
+                "Script_DAISY_Lib_Snapshot_Core.py",
+                "Script_DAISY_Lib_Metadata.py",
+                "Script_DAISY_Lib_File_Hash.py",
+                "Script_DAISY_Lib_Snapshot_Diff.py",
+                "Script_DAISY_Lib_Database_Reader.py",
+                "Script_DAISY_Lib_Snapshot_Verify.py",
+                "Script_DAISY_Lib_Database_Parse.py",
+                "Script_DAISY_Lib_Scan_State.py",
+                "Script_DAISY_Lib_Scan_Runtime.py",
+                "Script_DAISY_Lib_Snapshot_Issues.py",
+                "Script_DAISY_Lib_Verify_Runtime.py",
+                "Script_DAISY_Lib_Verify_Tools.py",
+                "Script_DAISY_Lib_Raw_Verify.py",
+                "Script_DAISY_Lib_Raw_Evidence.py",
+                "Script_DAISY_Lib_Parse_Projection.py",
+                "Script_DAISY_Lib_Parse_Runtime.py",
+                "Script_DAISY_Lib_Parse_Human.py",
+                "Script_DAISY_Lib_Tool_Runtime.py",
+                "Script_DAISY_Lib_Environment_Capabilities.py",
+                "Script_DAISY_Lib_Storage_Core.py",
+                "Script_DAISY_Lib_Storage_Windows.py",
+                "Script_DAISY_Lib_Storage_Smartctl.py",
+                "Script_DAISY_Lib_Storage_Service.py",
+                "Script_DAISY_Lib_Storage_Archive.py",
             },
             {name for name in os.listdir(lib_dir) if name.endswith(".py")},
         )
@@ -4745,7 +4745,7 @@ class TestGuiArguments(unittest.TestCase):
 
         for text in tooltip_texts:
             for internal_word in (
-                    "内部 STG-11", "受监督", "不伪装", "原子发布",
+                    "内部硬盘信息登记", "受监督", "不伪装", "原子发布",
                     "不会连带", "只按需", "恢复卡片", "可导出内容",
                     "内容模块", "导出模块", "自动发现", "检测物理硬盘",
                     "内容预设", "简化文本", "保存进度并退出",
@@ -4777,9 +4777,6 @@ class TestGuiArguments(unittest.TestCase):
                         font.measure(lines[-1]), width * 0.12, text)
         self.assertEqual(
             gui._CONTROL_ACTION_LABELS["save_exit"], "保存并退出")
-        self.assertNotIn(
-            "DBS 数据库生成程序版本", gui.about_message())
-
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_binary_scan_setting_uses_amber_green_button(self):
         root, app = self._real_tk_app()
@@ -5266,7 +5263,7 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(launcher_exit.exception.code, 0)
 
             with patch.object(
-                    sys, "argv", ["Script_DAISY_MAIN.py", "gui"]):
+                    sys, "argv", ["Script_DAISY_CLI.py", "gui"]):
                 self.assertEqual(entry.main(), 0)
 
         self.assertEqual(len(roots), 2)
@@ -5501,8 +5498,7 @@ class TestGuiArguments(unittest.TestCase):
             if task.key == "storage_list":
                 self.assertEqual(task.nav, f"内部步骤：{task.title}")
                 continue
-            menu_name = task.nav.split(maxsplit=1)[1]
-            self.assertEqual(task.title, menu_name)
+            self.assertEqual(task.title, task.nav)
         for task_key in gui._TASK_MENU_ORDER:
             self.assertEqual(
                 gui.task_display_title(task_key),
@@ -5522,31 +5518,31 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [gui.TASK_BY_KEY[key].nav for key in gui._TASK_MENU_ORDER],
             [
-                "DBS-10  档案扫描建库",
-                "DBS-21  档案快照对比",
-                "DBS-30  档案数据核验",
-                "DBS-41  档案数据解析",
-                "STG-11  硬盘信息登记",
-                "ENV-01  运行环境检测",
+                "档案扫描建库",
+                "档案快照对比",
+                "档案数据核验",
+                "档案数据解析",
+                "硬盘信息登记",
+                "运行环境检测",
             ],
         )
         expected = (
-            ("env-check", "env_check", "ENV-01  运行环境检测",
-             "Script_DAISY_Module_ENV_01_Env_Check"),
-            ("scan", "full_scan", "DBS-11  完整档案扫描",
-             "Script_DAISY_Module_DBS_10_Scan"),
-            ("scan", "quick_scan", "DBS-12  快速档案扫描",
-             "Script_DAISY_Module_DBS_10_Scan"),
-            ("diff", "diff", "DBS-21  档案快照对比",
-             "Script_DAISY_Module_DBS_21_Diff"),
-            ("check-hash", "check_hash", "DBS-31  哈希核验",
-             "Script_DAISY_Module_DBS_31_Check_Hash"),
-            ("check-format", "check_format", "DBS-32  格式校验",
-             "Script_DAISY_Module_DBS_32_Check_Format"),
-            ("export-report", "export_report", "DBS-41  旧版报告导出",
-             "Script_DAISY_Module_DBS_41_Export_Report"),
-            ("storage-collect", "storage_collect", "STG-11  硬盘信息登记",
-             "Script_DAISY_Module_STG_11_Collect"),
+            ("env-check", "env_check", "运行环境检测",
+             "Script_DAISY_Module_Environment_Check"),
+            ("scan", "full_scan", "完整档案扫描",
+             "Script_DAISY_Module_Scan"),
+            ("scan", "quick_scan", "快速档案扫描",
+             "Script_DAISY_Module_Scan"),
+            ("diff", "diff", "档案快照对比",
+             "Script_DAISY_Module_Snapshot_Diff"),
+            ("check-hash", "check_hash", "哈希核验",
+             "Script_DAISY_Module_Check_Hash"),
+            ("check-format", "check_format", "格式校验",
+             "Script_DAISY_Module_Check_Format"),
+            ("export-report", "export_report", "旧版报告导出",
+             "Script_DAISY_Module_Parse"),
+            ("storage-collect", "storage_collect", "硬盘信息登记",
+             "Script_DAISY_Module_Storage_Collect"),
         )
         for command, task_key, nav, module in expected:
             task = gui.TASK_BY_KEY[task_key]
@@ -5561,11 +5557,11 @@ class TestGuiArguments(unittest.TestCase):
                 self.assertIn("旧版报告导出兼容入口", module_text)
             else:
                 self.assertIn(" ".join(nav.split()), module_text)
-        scan_module = "Script_DAISY_Module_DBS_10_Scan"
+        scan_module = "Script_DAISY_Module_Scan"
         self.assertEqual(entry.COMMANDS["scan"][0], scan_module)
         self.assertTrue(os.path.isfile(os.path.join(
             _MODULE, scan_module + ".py")))
-        verify_module = "Script_DAISY_Module_DBS_30_Verify"
+        verify_module = "Script_DAISY_Module_Verify"
         self.assertEqual(entry.COMMANDS["verify"][0], verify_module)
         self.assertTrue(os.path.isfile(os.path.join(
             _MODULE, verify_module + ".py")))
@@ -5582,20 +5578,20 @@ class TestGuiArguments(unittest.TestCase):
             sorted([
                 *(module + ".py" for module in {
                     *(item[-1] for item in expected),
-                    "Script_DAISY_Module_DBS_11_Full_Scan",
-                    "Script_DAISY_Module_DBS_12_Quick_Scan",
+                    "Script_DAISY_Module_Full_Scan",
+                    "Script_DAISY_Module_Quick_Scan",
                     verify_module,
                 }),
             ]),
         )
         self.assertEqual(
             gui.TASK_BY_KEY[gui._PROJECT_SELF_TEST_KEY].nav,
-            "DBS-91  DAISY 功能自检",
+            "DAISY 功能自检",
         )
         self.assertNotIn(gui._PROJECT_SELF_TEST_KEY, gui._TASK_MENU_ORDER)
         self.assertEqual(
             entry.COMMANDS["storage-list"][0],
-            "Script_DAISY_Module_STG_11_Collect",
+            "Script_DAISY_Module_Storage_Collect",
         )
         self.assertNotIn("storage-" + "verify", entry.COMMANDS)
         self.assertNotIn("storage_" + "verify", gui.TASK_BY_KEY)
@@ -5603,11 +5599,11 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_stg_gui_module_and_internal_detection_require_admin(self):
         self.assertEqual(
-            gui._STG_ADMIN_TASKS,
+            gui._STORAGE_ADMIN_TASKS,
             {"storage_list", "storage_collect"},
         )
         self.assertEqual(gui._TASK_MENU_SECTIONS[1][1], ("storage_collect",))
-        for task_key in gui._STG_ADMIN_TASKS:
+        for task_key in gui._STORAGE_ADMIN_TASKS:
             app = object.__new__(gui.DaisyApp)
             app.root = object()
             app.task = gui.TASK_BY_KEY[task_key]
@@ -5680,9 +5676,9 @@ class TestGuiArguments(unittest.TestCase):
                 "环境：", "档案：", "硬盘：",
                 f"统一扫描数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
                 f"旧版兼容快照结构版本：{core.SCHEMA_VERSION}",
-                f"DBS 元数据配置版本：{gui.metadata.PROFILE_VERSION}",
-                f"STG 归档结构版本：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
-                f"DBS 封存快照只读兼容基线：v{core.MIN_READER_VERSION}",
+                f"元数据配置版本：{gui.metadata.PROFILE_VERSION}",
+                f"硬盘归档结构版本：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
+                f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}",
                 "统一扫描续传：按数据库结构版本 4 的续传规则检查",
                 "旧版兼容入口：仅续传数据库生成程序版本相同的结构版本 3 未完成快照",
                 "快照数据库与硬盘档案彼此独立"):
@@ -6398,7 +6394,7 @@ class TestFinalize(_SnapshotFixture):
             core.finalize_snapshot(self.con, self.partial, hash_coverage="none")
 
 
-import Script_DAISY_Lib_DBS_02_Meta as meta                              # noqa: E402
+import Script_DAISY_Lib_Metadata as meta                              # noqa: E402
 
 
 class TestTagIndex(unittest.TestCase):
@@ -7175,12 +7171,12 @@ class TestVideoGpsStage(unittest.TestCase):
 import importlib                                               # noqa: E402
 import time                                                    # noqa: E402
 
-import Script_DAISY_Lib_DBS_03_Hash as dbh                               # noqa: E402
-import Script_DAISY_Module_ENV_01_Env_Check as envcheck                  # noqa: E402
+import Script_DAISY_Lib_File_Hash as dbh                               # noqa: E402
+import Script_DAISY_Module_Environment_Check as envcheck                  # noqa: E402
 
 SHA_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
-FullScan = importlib.import_module("Script_DAISY_Module_DBS_11_Full_Scan")
+FullScan = importlib.import_module("Script_DAISY_Module_Full_Scan")
 
 
 class TestEnvironmentInventory(unittest.TestCase):
@@ -7852,7 +7848,7 @@ import hashlib                                                 # noqa: E402
 import shutil                                                  # noqa: E402
 import subprocess                                              # noqa: E402
 
-import Script_DAISY_Lib_DBS_04_Diff as dbdiff                            # noqa: E402
+import Script_DAISY_Lib_Snapshot_Diff as dbdiff                            # noqa: E402
 import Script_DAISY_Test_Tree as tt                                           # noqa: E402
 
 
@@ -8567,7 +8563,7 @@ class TestQuickScan(unittest.TestCase):
 
     def _run_quick(self):
         script = os.path.join(
-            _MODULE, "Script_DAISY_Module_DBS_12_Quick_Scan.py")
+            _MODULE, "Script_DAISY_Module_Quick_Scan.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--root", f"Q={self.arch}",
                             "--output-dir", self.out, "--quiet"],
@@ -8651,7 +8647,7 @@ class TestQuickScan(unittest.TestCase):
         s2 = tt.build_snapshot(self.arch, self.out, "d2", label="测试库")
         diffs = os.path.join(self._td.name, "Diffs")
         script = os.path.join(
-            _MODULE, "Script_DAISY_Module_DBS_21_Diff.py")
+            _MODULE, "Script_DAISY_Module_Snapshot_Diff.py")
         r = subprocess.run([sys.executable, "-B", script,
                             "--old", s1, "--new", s2,
                             "--output-dir", diffs], capture_output=True,
@@ -8677,7 +8673,7 @@ class TestQuickScan(unittest.TestCase):
         os.rename(s2, legacy)
         diffs = os.path.join(self._td.name, "ForcedDiffs")
         script = os.path.join(
-            _MODULE, "Script_DAISY_Module_DBS_21_Diff.py")
+            _MODULE, "Script_DAISY_Module_Snapshot_Diff.py")
         result = subprocess.run(
             [sys.executable, "-B", script, "--old", s1, "--new", legacy,
              "--output-dir", diffs, "--force"],
