@@ -4784,32 +4784,6 @@ def _monitor_work_area_for_window(
         )
 
 
-def action_button_row_indexes(
-    widths: tuple[int, ...], available: int,
-    gap: int = _STANDARD_BUTTON_GAP,
-) -> tuple[tuple[int, ...], ...]:
-    """从末项向前换行，返回保持原顺序的按钮行索引。"""
-    if available <= 0 or gap < 0 or any(width <= 0 for width in widths):
-        raise ValueError("按钮宽度、可用宽度与间距必须为正数")
-    rows_from_right: list[list[int]] = []
-    current: list[int] = []
-    current_width = 0
-    for index in reversed(range(len(widths))):
-        needed = widths[index] + (gap if current else 0)
-        if current and current_width + needed > available:
-            rows_from_right.append(current)
-            current = []
-            current_width = 0
-            needed = widths[index]
-        current.append(index)
-        current_width += needed
-    if current:
-        rows_from_right.append(current)
-    return tuple(
-        tuple(reversed(row)) for row in reversed(rows_from_right)
-    )
-
-
 def _version() -> str:
     return "v" + core.SCANNER_VERSION
 
@@ -7717,13 +7691,6 @@ class DaisyApp:
                 else:
                     self._set_status("就绪")
 
-    def _choice_display(self, spec: FieldSpec, value: object) -> str:
-        choices = self._field_choices(spec)
-        for label, internal in choices:
-            if internal == value:
-                return label
-        return choices[0][0] if choices else str(value or "")
-
     def _field_choices(
         self, spec: FieldSpec,
     ) -> tuple[tuple[str, object], ...]:
@@ -8522,74 +8489,6 @@ class DaisyApp:
             if self.task.key == key else None
         )
         self._update_preview()
-
-    def _choice_changed(self, event: tk.Event) -> None:
-        task_key = self.task.key
-        field_key = getattr(event.widget, "_daisy_field_key", None)
-        previous = _task_values(
-            self.task, self.saved_values.get(task_key, {}))
-        scroll_fraction = self.form_canvas.yview()[0]
-        collected = self._collect_values()
-        expected_display: str | None = None
-        if field_key is not None and isinstance(event.widget, ttk.Combobox):
-            spec = next((
-                field for field in self.task.fields
-                if field.key == field_key
-            ), None)
-            choices = self._field_choices(spec) if spec is not None else ()
-            try:
-                selected_index = int(event.widget.current())
-            except (tk.TclError, TypeError, ValueError):
-                selected_index = -1
-            if 0 <= selected_index < len(choices):
-                expected_display, selected_value = choices[selected_index]
-                collected[field_key] = selected_value
-        self.saved_values[task_key] = collected
-        if field_key is not None and (
-                collected.get(field_key) == previous.get(field_key)):
-            if expected_display is None:
-                spec = next((
-                    field for field in self.task.fields
-                    if field.key == field_key
-                ), None)
-                if spec is not None:
-                    expected_display = self._choice_display(
-                        spec, collected.get(field_key))
-            if expected_display:
-                event.widget.set(expected_display)
-                try:
-                    event.widget.selection_clear()
-                    event.widget.icursor(tk.END)
-                except tk.TclError:
-                    pass
-                self.root.after_idle(
-                    lambda widget=event.widget, text=expected_display:
-                    self._restore_choice_display(widget, text)
-                )
-            self._update_preview()
-            return
-
-        # 等待 ComboboxSelected 事件完成后再重建条件字段，避免 Tcl/Tk 在原
-        # 控件销毁后继续刷新选择状态，导致重复选择当前项时显示为空。
-        self.root.after_idle(
-            lambda key=task_key, fraction=scroll_fraction:
-            self._build_form(fraction) if self.task.key == key else None
-        )
-
-    @staticmethod
-    def _restore_choice_display(
-        widget: ttk.Combobox, display_text: str,
-    ) -> None:
-        """重选当前项后恢复正常文字色，不保留编辑框选区。"""
-        try:
-            if not widget.winfo_exists():
-                return
-            widget.set(display_text)
-            widget.selection_clear()
-            widget.icursor(tk.END)
-            widget.winfo_toplevel().focus_set()
-        except tk.TclError:
-            return
 
     def _value_toggle_changed(self, source: ValueToggleButton) -> None:
         """同步非布尔二态按钮，并保持当前表单几何结构稳定。"""
@@ -9660,9 +9559,6 @@ class DaisyApp:
             text=f"{task_title} · 等待开始", fg=_MUTED)
         self.progress_detail_label.configure(text="尚未运行", fg=_MUTED)
         self.progress_percent_label.configure(text="0%", fg=_GREEN_DARK)
-
-    def _queue_total(self) -> int:
-        return max(1, len(self.run_jobs))
 
     def _queue_prefix(self) -> str:
         total = len(self.run_jobs)

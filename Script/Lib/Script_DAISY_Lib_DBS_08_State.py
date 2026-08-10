@@ -2643,20 +2643,6 @@ def _publish_with_artifacts_no_clobber(
     return issue_path, tuple(path for path, _payload in normalized_artifacts)
 
 
-def _publish_with_issue_no_clobber(
-    working_path: str,
-    final_path: str,
-    issue_markdown: str | None,
-) -> str | None:
-    issue_path, _artifact_paths = _publish_with_artifacts_no_clobber(
-        working_path,
-        final_path,
-        issue_markdown,
-        {},
-    )
-    return issue_path
-
-
 def publish_sealed_snapshot(
     partial_path: str,
     staging_path: str,

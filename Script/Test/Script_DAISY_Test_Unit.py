@@ -1836,8 +1836,8 @@ class TestGuiArguments(unittest.TestCase):
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
         with open(spec_path, "r", encoding="utf-8") as f:
             spec = f.read()
-        self.assertIn("# DAISY v1.6.5 技术规格", spec)
-        self.assertIn("v1.4.1 是第一版，v1.6.4 是第二版", spec)
+        self.assertIn("# DAISY v1.6.6 技术规格", spec)
+        self.assertIn("v1.4.1 → v1.6.4 → v1.6.6", spec)
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
         self.assertIn("元数据 profile v7", spec)
@@ -1857,7 +1857,7 @@ class TestGuiArguments(unittest.TestCase):
         readme_path = os.path.join(gui._BASE, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
-        self.assertIn("当前长期生产版本与最近稳定标签：**v1.6.5**", readme)
+        self.assertIn("当前版本：**v1.6.6 长期稳定版**", readme)
         self.assertIn("默认窗口目标为 `1600×900`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
@@ -1874,12 +1874,18 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.2", evolution)
         self.assertIn("DAISY v1.6.3", evolution)
         self.assertIn("DAISY v1.6.5", evolution)
-        self.assertIn("v1.4.1 → v1.6.4 → v1.6.5", evolution)
-        for filename in (
-                "Spec_DAISY_V1_6_5_Release_Plan.md",
-                "Spec_DAISY_V1_6_5_Test_Record.md"):
-            self.assertTrue(os.path.isfile(os.path.join(
-                gui._BASE, "Spec", filename)))
+        self.assertIn("DAISY v1.6.6", evolution)
+        self.assertIn("v1.4.1 → v1.6.4 → v1.6.6", evolution)
+        spec_files = {
+            name for name in os.listdir(os.path.join(gui._BASE, "Spec"))
+            if name.endswith(".md")
+        }
+        self.assertEqual(spec_files, {
+            "Spec_DAISY_Technical.md",
+            "Spec_DAISY_V1_6_0_Data_Contract.md",
+            "Spec_DAISY_V1_6_0_Database_Parsing_Design.md",
+            "Spec_DAISY_Version_Evolution.md",
+        })
         self.assertIn("STG-11 硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
@@ -5649,7 +5655,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.5")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.6")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")

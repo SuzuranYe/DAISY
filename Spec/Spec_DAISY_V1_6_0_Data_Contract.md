@@ -367,17 +367,3 @@ Diff 输入统一投影标识为 `daisy-diff-input-v1`。DBS-21 不再查询快�
 `old_schema_version`／`new_schema_version`；投影标识、双侧能力和元数据证据摘要写入既有
 `counts_json`，不新增表、列或状态枚举。整个对比前后，两份输入快照的 SHA-256、大小和
 mtime 必须保持不变。
-
-## 十、阶段 3 验收
-
-- schema 3 DDL 哈希保持既有固定值；
-- schema 4 DDL 有独立固定哈希与表／列契约测试；
-- 非法状态转换、旧 revision 和错误 session 均原子拒绝；
-- 三种退出语义及 resume hint 正确；
-- 活锁、死锁、PID 复用、异机未过期／过期和损坏锁使用纯合成测试；
-- 本测试精确创建的 Windows 子进程退出但句柄仍由父端持有时，不得误判为活 owner；
-- running attempt 恢复为 abandoned，当前 processing 结果回到 pending；
-- JSONL 截断尾部可恢复，中间坏行拒绝；
-- 发布副本失败不覆盖目标且原 partial 可重试；
-- schema 3 封存库在所有消费者执行前后 SHA-256 不变；
-- 一次完成与多 session 的业务投影相同，差异只落入白名单。
