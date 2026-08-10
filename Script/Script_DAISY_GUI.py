@@ -217,9 +217,9 @@ _UI_FONT_SIZE_OPTIONS = (
     ("标准", 0), ("较大", 1), ("特大", 2),
 )
 _WINDOW_SIZE_OPTIONS = (
+    ("1366 × 768", (1366, 768)),
     ("1600 × 900", (1600, 900)),
     ("1920 × 1080", (1920, 1080)),
-    ("1366 × 768", (1366, 768)),
 )
 _COLOUR_STRIP_HEIGHT = 4
 
@@ -2314,6 +2314,9 @@ _FORM_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _FILE_PICKER_BUTTON_WIDTH = 12
 _FILE_PICKER_BUTTON_PADDING = (10, 5)
 _PANEL_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
+_ADMIN_MODE_PENDING_STYLE = "AdminPending.TButton"
+_ADMIN_MODE_ACTIVE_STYLE = "AdminActive.TButton"
+_ADMIN_MODE_DISABLED_STYLE = "AdminDisabled.TButton"
 _TASK_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
 _TASK_ACTION_BUTTON_PADDING = (
     _STANDARD_BUTTON_PADDING[0] - 1,
@@ -3133,13 +3136,56 @@ class AdminModeButton(tk.Frame):
         self._value = bool(value)
         self._enabled = bool(enabled)
         self._command = command
-        self.button = tk.Button(
-            self, text="管理员模式", width=_STANDARD_BUTTON_WIDTH,
-            relief="flat", bd=0, highlightthickness=1,
-            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
-            anchor="center", justify="center",
-            padx=_STANDARD_BUTTON_PADDING[0],
-            pady=_STANDARD_BUTTON_PADDING[1],
+        top_level = self.winfo_toplevel()
+        font_family = getattr(
+            top_level, "_daisy_font_family", _UI_FONT_FAMILY)
+        font_size_delta = int(getattr(
+            top_level, "_daisy_font_size_delta", 0))
+        self._style = ttk.Style(self)
+        common_style = {
+            "padding": _FILE_PICKER_BUTTON_PADDING,
+            "font": (
+                font_family, _UI_BODY_FONT_SIZE + font_size_delta),
+        }
+        self._style.configure(
+            _ADMIN_MODE_PENDING_STYLE,
+            background=_AMBER, foreground=_AMBER_DEEP,
+            bordercolor=_AMBER, lightcolor=_AMBER, darkcolor=_AMBER,
+            **common_style,
+        )
+        self._style.map(
+            _ADMIN_MODE_PENDING_STYLE,
+            background=[("active", _AMBER_SOFT)],
+            foreground=[("disabled", _MUTED)],
+        )
+        self._style.configure(
+            _ADMIN_MODE_ACTIVE_STYLE,
+            background=_GREEN_DARK, foreground="white",
+            bordercolor=_GREEN_DARK,
+            lightcolor=_GREEN_DARK, darkcolor=_GREEN_DARK,
+            **common_style,
+        )
+        self._style.map(
+            _ADMIN_MODE_ACTIVE_STYLE,
+            background=[("disabled", _GREEN_DARK)],
+            foreground=[("disabled", "white")],
+            bordercolor=[("disabled", _GREEN_DARK)],
+            lightcolor=[("disabled", _GREEN_DARK)],
+            darkcolor=[("disabled", _GREEN_DARK)],
+        )
+        self._style.configure(
+            _ADMIN_MODE_DISABLED_STYLE,
+            background=_CONTROL, foreground=_MUTED,
+            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            **common_style,
+        )
+        self._style.map(
+            _ADMIN_MODE_DISABLED_STYLE,
+            background=[("disabled", _CONTROL)],
+            foreground=[("disabled", _MUTED)],
+        )
+        self.button = ttk.Button(
+            self, text="管理员模式", width=_PANEL_ACTION_BUTTON_WIDTH,
             takefocus=True, command=self._activate,
         )
         self.button.pack()
@@ -3175,20 +3221,14 @@ class AdminModeButton(tk.Frame):
 
     def _refresh(self) -> None:
         if self._value:
-            background, foreground = _GREEN_DARK, "white"
+            style_name = _ADMIN_MODE_ACTIVE_STYLE
         elif self._enabled:
-            background, foreground = _AMBER, _AMBER_DEEP
+            style_name = _ADMIN_MODE_PENDING_STYLE
         else:
-            background, foreground = _CONTROL, _MUTED
+            style_name = _ADMIN_MODE_DISABLED_STYLE
         self.button.configure(
             state="normal" if self._enabled and not self._value else "disabled",
-            bg=background, fg=foreground,
-            activebackground=(
-                _GREEN_DEEP if self._value else _AMBER_SOFT),
-            activeforeground=foreground,
-            disabledforeground=foreground,
-            highlightbackground=background,
-            highlightcolor=background,
+            style=style_name,
             cursor="hand2" if self._enabled and not self._value else "arrow",
         )
 
@@ -3582,16 +3622,16 @@ class StorageDiskPool(tk.Frame):
             padx=_SPACING_INLINE, pady=(5, 2))
         actions.grid_columnconfigure(2, weight=1)
         self.select_all_button = ttk.Button(
-            actions, text="全选", style="FormAction.TButton",
-            width=_FORM_ACTION_BUTTON_WIDTH,
+            actions, text="全选", style="FilePicker.TButton",
+            width=_FILE_PICKER_BUTTON_WIDTH,
             command=self.select_all_online,
         )
         self.select_all_button.grid(
             row=0, column=0, sticky="w",
             padx=(0, _STANDARD_BUTTON_GAP))
         self.clear_selection_button = ttk.Button(
-            actions, text="取消选择", style="FormAction.TButton",
-            width=_FORM_ACTION_BUTTON_WIDTH,
+            actions, text="取消选择", style="FilePicker.TButton",
+            width=_FILE_PICKER_BUTTON_WIDTH,
             command=self.clear_selection,
         )
         self.clear_selection_button.grid(row=0, column=1, sticky="w")
@@ -4045,15 +4085,35 @@ class VerificationToolButtonGroup(tk.Frame):
         }
         self.status_text = (
             "" if environment_checked else "需要先运行环境检测")
-        self.status_label = tk.Label(
+        self.status_panel = tk.Frame(
             self,
+            bg=_AMBER_SOFT,
+            highlightbackground=_AMBER,
+            highlightthickness=1,
+        )
+        status_header = tk.Frame(self.status_panel, bg=_AMBER_SOFT)
+        status_header.pack(fill="x", padx=12, pady=5)
+        self.status_label = tk.Label(
+            status_header,
             text=self.status_text,
-            bg=_SURFACE,
-            fg=_WARNING,
+            bg=_AMBER_SOFT,
+            fg=_AMBER_DEEP,
             anchor="w",
             justify="left",
-            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
+            font=("Microsoft YaHei UI", 9, "bold"),
         )
+        self.status_label.pack(side="left")
+        self.status_detail_label = tk.Label(
+            status_header,
+            text="检测前不能开始任务。",
+            bg=_AMBER_SOFT,
+            fg=_TEXT,
+            anchor="w",
+            justify="left",
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.status_detail_label.pack(
+            side="left", padx=(12, 0))
         definitions = (
             (
                 "verify_builtin", "基本校验",
@@ -4120,12 +4180,12 @@ class VerificationToolButtonGroup(tk.Frame):
         ) // columns
         row_offset = 1 if self.status_text else 0
         if self.status_text:
-            self.status_label.grid(
+            self.status_panel.grid(
                 row=0, column=0, columnspan=max(1, columns * 2 - 1),
-                sticky="w", pady=(0, _STANDARD_BUTTON_GAP),
+                sticky="ew", pady=(0, _STANDARD_BUTTON_GAP),
             )
         else:
-            self.status_label.grid_forget()
+            self.status_panel.grid_forget()
         for index, control in enumerate(self._ordered_controls):
             row, column = divmod(index, columns)
             control.grid(
@@ -4903,6 +4963,7 @@ class DaisyApp:
         self.missing_installable_tools: tuple[str, ...] = ()
         self.is_administrator = is_windows_administrator()
         self.admin_mode_button: AdminModeButton | None = None
+        self.admin_requirement_label: tk.Label | None = None
         self.storage_disk_choices: tuple[tuple[str, str], ...] = ()
         self.storage_disk_options: tuple[StorageDiskOption, ...] = ()
         self.parse_inspection: dbparse.ParseDatabaseInspection | None = None
@@ -5124,6 +5185,9 @@ class DaisyApp:
             "FormAction.TButton": (10, "normal"),
             "DiscoveryAction.TButton": (10, "normal"),
             "FilePicker.TButton": (10, "normal"),
+            _ADMIN_MODE_PENDING_STYLE: (10, "normal"),
+            _ADMIN_MODE_ACTIVE_STYLE: (10, "normal"),
+            _ADMIN_MODE_DISABLED_STYLE: (10, "normal"),
             "Remove.TButton": (10, "normal"),
             "Primary.TButton": (10, "normal"),
             "Stop.TButton": (10, "normal"),
@@ -6080,7 +6144,7 @@ class DaisyApp:
             value=getattr(
                 self, "result_directory_prompt_enabled", False))
         settings_menu.add_checkbutton(
-            label="结果目录提示",
+            label="结果目录弹窗",
             variable=self.result_directory_prompt_enabled_var,
             command=lambda: self._set_result_directory_prompt(
                 self.result_directory_prompt_enabled_var.get()),
@@ -6796,7 +6860,7 @@ class DaisyApp:
             execution_action_area, text=_RUN_BUTTON_TEXT, tone="primary",
             command=self._run)
         self.open_output_button = self._create_task_action_button(
-            execution_action_area, text="打开结果目录", tone="result",
+            execution_action_area, text="产出", tone="result",
             command=self._open_output)
         self.execution_buttons = (
             self.pause_scan_button, self.save_scan_button,
@@ -7862,22 +7926,29 @@ class DaisyApp:
             padx=form_pad, pady=(5, 2),
         )
         header = tk.Frame(panel, bg=background)
-        header.pack(fill="x", padx=12, pady=(6, 2))
-        tk.Label(
+        header.pack(fill="x", padx=(12, 0), pady=(6, 2))
+        self.admin_requirement_label = tk.Label(
             header,
             text=("管理员权限已启用" if already_admin else
                   "管理员权限未启用"),
             bg=background, fg=heading_colour,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
-        ).pack(side="left")
+        )
+        self.admin_requirement_label.pack(side="left")
+        admin_actions = tk.Frame(header, bg=background)
+        admin_actions.pack(side="right")
+        admin_actions.grid_columnconfigure(
+            1, minsize=_PANEL_ACTION_BUTTON_GAP)
+        admin_actions.grid_columnconfigure(
+            2, minsize=self.settings_toggle_button.winfo_reqwidth())
         self.admin_mode_button = AdminModeButton(
-            header,
+            admin_actions,
             value=already_admin,
             enabled=(os.name == "nt" and not already_admin),
             command=self._request_admin_mode,
             background=background,
         )
-        self.admin_mode_button.pack(side="right")
+        self.admin_mode_button.grid(row=0, column=0, sticky="ew")
         admin_tooltip = (
             "当前已启用管理员权限。关闭 DAISY 后以普通方式重新打开，即可回到普通权限。"
             if already_admin else
@@ -8053,6 +8124,7 @@ class DaisyApp:
         self.environment_status_buttons = {}
         self.environment_status_tooltips = {}
         self.admin_mode_button = None
+        self.admin_requirement_label = None
         self.storage_detect_button = None
         self.parse_detect_button = None
         self.parse_detection_detail_label = None

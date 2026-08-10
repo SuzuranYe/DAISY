@@ -1,4 +1,4 @@
-"""DAISY v1.6.3 统一扫描 GUI 控制链测试。
+"""DAISY v1.6.4 统一扫描 GUI 控制链测试。
 
 只使用工作区内合成路径、内存管道和本测试精确创建的 Tcl/Tk 窗口；不枚举、
 附加或终止其它进程。
@@ -1646,6 +1646,14 @@ class TestRealTkScanControls(unittest.TestCase):
         ))
         self.assertEqual(tools.status_text, "需要先运行环境检测")
         self.assertEqual(tools.status_label.cget("text"), "需要先运行环境检测")
+        self.assertTrue(tools.status_panel.winfo_ismapped())
+        self.assertEqual(tools.status_panel.cget("background"), gui._AMBER_SOFT)
+        self.assertEqual(
+            tools.status_panel.cget("highlightbackground"), gui._AMBER)
+        self.assertIn(
+            "检测前不能开始任务",
+            tools.status_detail_label.cget("text"),
+        )
         self.assertTrue(tools.controls["verify_builtin"].enabled)
         self.assertTrue(tools.controls["verify_builtin"].get())
         for key in (
@@ -1676,6 +1684,7 @@ class TestRealTkScanControls(unittest.TestCase):
         self._apply_available_verification_environment()
         tools = self.app.values["verify_builtin"]
         self.assertEqual(tools.status_text, "")
+        self.assertFalse(tools.status_panel.winfo_ismapped())
         self.assertTrue(all(
             control.enabled and control.get()
             for control in tools.controls.values()

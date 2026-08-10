@@ -36,7 +36,13 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             gui.default_gui_preferences()["window_size"], [1600, 900])
         self.assertEqual(
-            gui._WINDOW_SIZE_OPTIONS[0], ("1600 × 900", (1600, 900)))
+            gui._WINDOW_SIZE_OPTIONS,
+            (
+                ("1366 × 768", (1366, 768)),
+                ("1600 × 900", (1600, 900)),
+                ("1920 × 1080", (1920, 1080)),
+            ),
+        )
 
     def test_gui_preferences_round_trip_as_utf8_lf(self):
         preferences = gui.default_gui_preferences()
@@ -1158,7 +1164,7 @@ class TestGuiArguments(unittest.TestCase):
             )
         self.assertEqual(
             [button.cget("text") for button in visible],
-            ["打开结果目录", "暂停", "开始"],
+            ["产出", "暂停", "开始"],
         )
         self.assertEqual(app.pause_scan_button.cget("state"), "disabled")
         self.assertFalse(app.stop_button.winfo_ismapped())
@@ -1189,7 +1195,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             [button.cget("text") for button in running_visible],
-            ["打开结果目录", "暂停", "停止"],
+            ["产出", "暂停", "停止"],
         )
         self.assertEqual(app.run_button.cget("background"), gui._AMBER)
 
@@ -1203,7 +1209,7 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             [button.cget("text") for button in paused_visible],
-            ["保存并退出", "打开结果目录", "继续", "停止"],
+            ["保存并退出", "产出", "继续", "停止"],
         )
         self.assertEqual(app.save_scan_button.cget("state"), "disabled")
         app.scan_control_state = "paused"
@@ -1822,6 +1828,8 @@ class TestGuiArguments(unittest.TestCase):
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
         with open(spec_path, "r", encoding="utf-8") as f:
             spec = f.read()
+        self.assertIn("# DAISY v1.6.4 技术规格", spec)
+        self.assertIn("v1.4.1 是第一版，v1.6.4 是第二版", spec)
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
         self.assertIn("元数据 profile v7", spec)
@@ -1841,6 +1849,7 @@ class TestGuiArguments(unittest.TestCase):
         readme_path = os.path.join(gui._BASE, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
+        self.assertIn("当前长期生产版本与最近稳定标签：**v1.6.4**", readme)
         self.assertIn("默认窗口目标为 `1600×900`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
@@ -1856,6 +1865,13 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.1", evolution)
         self.assertIn("DAISY v1.6.2", evolution)
         self.assertIn("DAISY v1.6.3", evolution)
+        self.assertIn("DAISY v1.6.4", evolution)
+        self.assertIn("v1.4.1 → v1.6.4", evolution)
+        for filename in (
+                "Spec_DAISY_V1_6_4_Release_Plan.md",
+                "Spec_DAISY_V1_6_4_Test_Record.md"):
+            self.assertTrue(os.path.isfile(os.path.join(
+                gui._BASE, "Spec", filename)))
         self.assertIn("STG-11 硬盘信息登记", evolution)
         retired_storage_spec = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_" + "Storage.md")
@@ -2173,7 +2189,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
              if entry["kind"] == "checkbutton"],
-            ["完成提示音", "结果目录提示"],
+            ["完成提示音", "结果目录弹窗"],
         )
         self.assertEqual(
             [entry["label"] for entry in app.settings_menu.entries
@@ -2420,7 +2436,7 @@ class TestGuiArguments(unittest.TestCase):
             )
             control.pack()
             root.update_idletasks()
-            self.assertIsInstance(control.button, gui.tk.Button)
+            self.assertIsInstance(control.button, gui.ttk.Button)
             self.assertFalse(any(
                 isinstance(widget, gui.tk.Canvas)
                 for widget in control.winfo_children()
@@ -2434,7 +2450,12 @@ class TestGuiArguments(unittest.TestCase):
             self.assertEqual(requested, [True])
             control.set_mode(value=True, enabled=False)
             root.update_idletasks()
-            self.assertEqual(control.button.cget("background"), gui._GREEN_DARK)
+            style = gui.ttk.Style(root)
+            self.assertEqual(
+                style.lookup(
+                    control.button.cget("style"), "background", ("disabled",)),
+                gui._GREEN_DARK,
+            )
             self.assertEqual(str(control.button.cget("state")), "disabled")
             self.assertEqual(
                 size,
@@ -3170,7 +3191,7 @@ class TestGuiArguments(unittest.TestCase):
             for index in range(int(app.settings_menu.index("end")) + 1)
             if app.settings_menu.type(index) != "separator"
             and app.settings_menu.entrycget(index, "label")
-            == "结果目录提示"
+            == "结果目录弹窗"
         )
         self.assertFalse(app.result_directory_prompt_enabled)
         self.assertFalse(app.result_directory_prompt_enabled_var.get())
@@ -3374,18 +3395,42 @@ class TestGuiArguments(unittest.TestCase):
         root.update()
         admin_button = app.admin_mode_button.button
         self.assertIsInstance(app.admin_mode_button, gui.AdminModeButton)
-        self.assertIsInstance(admin_button, gui.tk.Button)
+        self.assertIsInstance(admin_button, gui.ttk.Button)
         self.assertFalse(any(
             isinstance(widget, gui.tk.Canvas)
             for widget in app.admin_mode_button.winfo_children()
         ))
         actual_font = gui.tkfont.Font(
-            root=root, font=admin_button.cget("font"))
+            root=root,
+            font=app.style.lookup(admin_button.cget("style"), "font"),
+        )
         self.assertEqual(
             abs(int(actual_font.actual("size"))),
             gui._UI_BODY_FONT_SIZE,
         )
         self.assertEqual(actual_font.actual("weight"), "normal")
+        self.assertEqual(
+            (
+                admin_button.winfo_reqwidth(),
+                admin_button.winfo_reqheight(),
+            ),
+            (
+                app.settings_toggle_button.winfo_reqwidth(),
+                app.settings_toggle_button.winfo_reqheight(),
+            ),
+        )
+        self.assertIsNotNone(app.admin_requirement_label)
+        assert app.admin_requirement_label is not None
+        admin_center_y = (
+            admin_button.winfo_rooty() + admin_button.winfo_height() / 2)
+        label_center_y = (
+            app.admin_requirement_label.winfo_rooty()
+            + app.admin_requirement_label.winfo_height() / 2)
+        self.assertLessEqual(abs(admin_center_y - label_center_y), 1)
+        self.assertLessEqual(abs(
+            admin_button.winfo_rootx()
+            - app.reset_current_settings_button.winfo_rootx()
+        ), 1)
         ancestors = []
         current = app.admin_mode_button
         while current is not None:
@@ -3645,13 +3690,42 @@ class TestGuiArguments(unittest.TestCase):
         root.update()
         pool = app.values["disk_number"]
         self.assertEqual(
-            pool.select_all_button.cget("style"), "FormAction.TButton")
+            pool.select_all_button.cget("style"), "FilePicker.TButton")
         self.assertEqual(
             pool.clear_selection_button.cget("style"),
-            "FormAction.TButton",
+            "FilePicker.TButton",
         )
-        self.assertLess(pool.select_all_button.winfo_reqwidth(), 220)
-        self.assertLess(pool.clear_selection_button.winfo_reqwidth(), 220)
+        self.assertEqual(
+            int(pool.select_all_button.cget("width")),
+            gui._FILE_PICKER_BUTTON_WIDTH,
+        )
+        self.assertEqual(
+            int(pool.clear_selection_button.cget("width")),
+            gui._FILE_PICKER_BUTTON_WIDTH,
+        )
+        browse_button = next(
+            child for child in self._tk_descendants(app.form_inner)
+            if isinstance(child, gui.ttk.Button)
+            and child.cget("style") == "FilePicker.TButton"
+            and child.cget("text") == "浏览"
+        )
+        root.update_idletasks()
+        browse_size = (
+            browse_button.winfo_reqwidth(), browse_button.winfo_reqheight())
+        self.assertEqual(
+            (
+                pool.select_all_button.winfo_reqwidth(),
+                pool.select_all_button.winfo_reqheight(),
+            ),
+            browse_size,
+        )
+        self.assertEqual(
+            (
+                pool.clear_selection_button.winfo_reqwidth(),
+                pool.clear_selection_button.winfo_reqheight(),
+            ),
+            browse_size,
+        )
         self.assertEqual(
             app.storage_detect_button.cget("style"),
             "DiscoveryAction.TButton",
@@ -5424,7 +5498,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.3")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.4")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
