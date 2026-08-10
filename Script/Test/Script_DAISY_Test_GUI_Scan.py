@@ -34,7 +34,11 @@ import Script_DAISY_Test_Tree as tree_fixture
 _RUNTIME_ROOT = os.path.join(
     _REPO_ROOT, ".test_runtime", "v1_6_1", "gui_scan")
 _CLI = os.path.join(_SCRIPT_DIR, "Script_DAISY_CLI.py")
+_HASH_WORKER_FIXTURE = os.path.join(
+    _TEST_DIR, "Fixtures", "Hash_Worker_Fixture.py")
 _GUI_PREFIX = b"@@DAISY_GUI@@"
+_RUN_REAL_TK_TESTS = os.environ.get(
+    "DAISY_RUN_REAL_TK_TESTS", "").strip() == "1"
 
 
 class _ButtonProbe:
@@ -637,8 +641,33 @@ class TestControlledScanSubprocess(unittest.TestCase):
             "Windows 进程对象仍有父端句柄时，已退出 PID 也不能算 active",
         )
 
+    def test_open_control_pipe_does_not_block_spawn_hash_worker(self) -> None:
+        """父端保持控制管道打开时，spawn worker 仍须启动并干净退出。"""
+        process = subprocess.Popen(
+            [sys.executable, "-B", _HASH_WORKER_FIXTURE],
+            cwd=_REPO_ROOT,
+            env=self._environment(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        self.processes.append(process)
+        output = process.stdout.read() if process.stdout is not None else b""
+        returncode = process.wait(timeout=15)
+        self.assertEqual(
+            returncode,
+            0,
+            output.decode("utf-8", errors="replace"),
+        )
+        self.assertIn(b"outcome=completed worker_reaped=True", output)
+
 
 @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+@unittest.skipUnless(
+    _RUN_REAL_TK_TESTS,
+    "真实 Tk／桌面集成测试默认关闭；"
+    "设置 DAISY_RUN_REAL_TK_TESTS=1 后单独运行",
+)
 class TestRealTkScanControls(unittest.TestCase):
     def setUp(self) -> None:
         gui._enable_dpi_awareness()

@@ -264,6 +264,36 @@ class TestControlInbox(unittest.TestCase):
         self.assertEqual(
             ["unterminated_line"], [item.code for item in rejected])
 
+    @unittest.skipUnless(os.name == "nt", "验证 Windows GUI 匿名管道")
+    def test_open_windows_pipe_stops_without_buffered_stdin_deadlock(
+        self,
+    ) -> None:
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        received = []
+        inbox = dbrun.ControlInbox(stream, on_command=received.append)
+        try:
+            inbox.start()
+            os.write(
+                write_fd,
+                dbrun.encode_control_command(
+                    dbrun.ControlCommand(1, "pause")),
+            )
+            deadline = time.monotonic() + 2.0
+            while not received and time.monotonic() < deadline:
+                time.sleep(0.005)
+            self.assertEqual(
+                [dbrun.ControlCommand(1, "pause")], received)
+
+            # 故意保持 GUI 父端写句柄打开；stop 仍必须主动结束轮询线程。
+            inbox.stop()
+            self.assertFalse(inbox.alive)
+            self.assertTrue(inbox.eof)
+        finally:
+            inbox.stop()
+            os.close(write_fd)
+            stream.close()
+
 
 class _RunFixture(unittest.TestCase):
     def setUp(self) -> None:

@@ -30,6 +30,7 @@ import Script_DAISY_Lib_Tool_Runtime as toolruntime
 LEASE_SUFFIX = ".lease"
 CONTROL_PROTOCOL = "daisy-control-v1"
 CONTROL_MAX_LINE_BYTES = 4096
+CONTROL_PIPE_POLL_SECONDS = 0.05
 CONTROL_ACTIONS = frozenset((
     "pause", "continue", "save_exit", "stop", "timeout_decision",
 ))
@@ -176,7 +177,13 @@ def encode_control_command(command: ControlCommand) -> bytes:
 
 
 class ControlInbox:
-    """后台读取一个已知输入流；不关闭、不替换调用方的 stdin。"""
+    """后台读取一个已知输入流；不关闭、不替换调用方的 stdin。
+
+    Windows GUI 使用匿名管道传入控制消息。真实管道必须绕过
+    ``BufferedReader.readline`` 做短间隔非阻塞轮询，否则读取线程会永久
+    持有 ``sys.stdin.buffer`` 的内部锁，并与 ``multiprocessing`` 的 spawn
+    子进程关闭标准输入及解释器退出流程互锁。
+    """
 
     def __init__(
         self,
@@ -201,6 +208,10 @@ class ControlInbox:
     def eof(self) -> bool:
         return self._eof.is_set()
 
+    @property
+    def alive(self) -> bool:
+        return bool(self._thread is not None and self._thread.is_alive())
+
     def _reject(self, code: str, detail: str) -> None:
         if self._on_rejected is not None:
             try:
@@ -219,50 +230,156 @@ class ControlInbox:
             if not tail or self._has_line_end(tail):
                 return
 
-    def _run(self) -> None:
+    def _accept_line(self, line: str | bytes) -> None:
         try:
-            while not self._stop.is_set():
-                line = self._stream.readline(CONTROL_MAX_LINE_BYTES + 1)
-                if not line:
-                    return
-                if self._stop.is_set():
-                    return
-                byte_length = (
-                    len(line) if isinstance(line, bytes)
-                    else len(str(line).encode("utf-8"))
-                )
-                if byte_length > CONTROL_MAX_LINE_BYTES:
-                    if not self._has_line_end(line):
-                        self._discard_line_tail()
-                    self._reject("line_too_long", "控制消息超过长度上限")
-                    continue
+            command = decode_control_line(line)
+        except ValueError as exc:
+            self._reject("invalid_message", str(exc))
+            return
+        if command.sequence <= self._last_sequence:
+            self._reject(
+                "stale_sequence",
+                f"sequence={command.sequence} 不大于 {self._last_sequence}",
+            )
+            return
+        self._last_sequence = command.sequence
+        if self._on_command is not None:
+            try:
+                self._on_command(command)
+            except Exception as exc:
+                self._reject("command_callback_failed", str(exc))
+            return
+        try:
+            self._queue.put_nowait(command)
+        except queue.Full:
+            self._reject("queue_full", "控制队列已满")
+
+    def _run_blocking_stream(self) -> None:
+        """仅用于 BytesIO 等不会永久阻塞且没有真实 fd 的测试流。"""
+        while not self._stop.is_set():
+            line = self._stream.readline(CONTROL_MAX_LINE_BYTES + 1)
+            if not line:
+                return
+            if self._stop.is_set():
+                return
+            byte_length = (
+                len(line) if isinstance(line, bytes)
+                else len(str(line).encode("utf-8"))
+            )
+            if byte_length > CONTROL_MAX_LINE_BYTES:
                 if not self._has_line_end(line):
+                    self._discard_line_tail()
+                self._reject("line_too_long", "控制消息超过长度上限")
+                continue
+            if not self._has_line_end(line):
+                self._reject(
+                    "unterminated_line", "控制消息缺少 JSONL 换行边界")
+                return
+            self._accept_line(line)
+
+    def _run_windows_pipe(self, fd: int) -> bool:
+        """轮询 Windows 匿名管道；不是管道时返回 False 交给其它读取器。"""
+        if os.name != "nt":
+            return False
+        try:
+            import _winapi
+            import msvcrt
+
+            handle = msvcrt.get_osfhandle(fd)
+            file_type = _winapi.GetFileType(handle)
+        except (ImportError, OSError, ValueError):
+            return False
+        if file_type != _winapi.FILE_TYPE_PIPE:
+            self._reject(
+                "unsupported_stream",
+                "Windows 控制输入必须使用管道",
+            )
+            return True
+
+        pending = bytearray()
+        discarding = False
+        while not self._stop.is_set():
+            try:
+                available, _left_in_message = _winapi.PeekNamedPipe(handle)
+            except BrokenPipeError:
+                if pending:
                     self._reject(
                         "unterminated_line", "控制消息缺少 JSONL 换行边界")
-                    return
-                try:
-                    command = decode_control_line(line)
-                except ValueError as exc:
-                    self._reject("invalid_message", str(exc))
-                    continue
-                if command.sequence <= self._last_sequence:
+                return True
+            if available <= 0:
+                self._stop.wait(CONTROL_PIPE_POLL_SECONDS)
+                continue
+            chunk = os.read(
+                fd, min(int(available), CONTROL_MAX_LINE_BYTES + 1))
+            if not chunk:
+                if pending:
                     self._reject(
-                        "stale_sequence",
-                        f"sequence={command.sequence} 不大于"
-                        f" {self._last_sequence}",
-                    )
+                        "unterminated_line", "控制消息缺少 JSONL 换行边界")
+                return True
+            for value in chunk:
+                if discarding:
+                    if value == 0x0A:
+                        discarding = False
                     continue
-                self._last_sequence = command.sequence
-                if self._on_command is not None:
-                    try:
-                        self._on_command(command)
-                    except Exception as exc:
-                        self._reject("command_callback_failed", str(exc))
+                pending.append(value)
+                if len(pending) > CONTROL_MAX_LINE_BYTES:
+                    self._reject("line_too_long", "控制消息超过长度上限")
+                    pending.clear()
+                    discarding = value != 0x0A
                     continue
-                try:
-                    self._queue.put_nowait(command)
-                except queue.Full:
-                    self._reject("queue_full", "控制队列已满")
+                if value == 0x0A:
+                    self._accept_line(bytes(pending))
+                    pending.clear()
+        return True
+
+    def _run_posix_fd(self, fd: int) -> bool:
+        """用 select 轮询 POSIX fd，避免后台线程永久占用输入缓冲锁。"""
+        if os.name == "nt":
+            return False
+        try:
+            import select
+        except ImportError:
+            return False
+
+        pending = bytearray()
+        discarding = False
+        while not self._stop.is_set():
+            readable, _writable, _exceptional = select.select(
+                [fd], [], [], CONTROL_PIPE_POLL_SECONDS)
+            if not readable:
+                continue
+            chunk = os.read(fd, CONTROL_MAX_LINE_BYTES + 1)
+            if not chunk:
+                if pending:
+                    self._reject(
+                        "unterminated_line", "控制消息缺少 JSONL 换行边界")
+                return True
+            for value in chunk:
+                if discarding:
+                    if value == 0x0A:
+                        discarding = False
+                    continue
+                pending.append(value)
+                if len(pending) > CONTROL_MAX_LINE_BYTES:
+                    self._reject("line_too_long", "控制消息超过长度上限")
+                    pending.clear()
+                    discarding = value != 0x0A
+                    continue
+                if value == 0x0A:
+                    self._accept_line(bytes(pending))
+                    pending.clear()
+        return True
+
+    def _run(self) -> None:
+        try:
+            try:
+                fd = int(self._stream.fileno())
+            except (AttributeError, OSError, TypeError, ValueError):
+                fd = -1
+            if fd >= 0 and (
+                    self._run_windows_pipe(fd) or self._run_posix_fd(fd)):
+                return
+            self._run_blocking_stream()
         except (OSError, ValueError) as exc:
             self._reject("stream_failed", str(exc))
         finally:

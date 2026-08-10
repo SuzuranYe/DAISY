@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 
@@ -67,3 +68,36 @@ def delayed_worker(connection, _path, expected_size, _chunk_bytes) -> None:
 def crashing_worker(connection, _path, _expected_size, _chunk_bytes) -> None:
     connection.close()
     os._exit(7)
+
+
+def _controlled_hash_main() -> int:
+    """复现 GUI 控制管道与 spawn 哈希 worker 的真实交叉路径。"""
+    fixture_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.dirname(os.path.dirname(fixture_dir))
+    lib_dir = os.path.join(script_dir, "Lib")
+    sys.path[:0] = [path for path in (script_dir, lib_dir)
+                    if path not in sys.path]
+
+    import Script_DAISY_Lib_File_Hash as dbhash
+    import Script_DAISY_Lib_Scan_Runtime as dbrun
+
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    inbox = dbrun.ControlInbox(stream)
+    inbox.start()
+    try:
+        outcome = dbhash.run_hash_worker(
+            __file__,
+            expected_size=os.path.getsize(__file__),
+            worker_start_timeout_seconds=5.0,
+        )
+    finally:
+        inbox.stop()
+    print(
+        f"outcome={outcome.outcome} worker_reaped={outcome.worker_reaped}",
+        flush=True,
+    )
+    return int(outcome.outcome != "completed" or not outcome.worker_reaped)
+
+
+if __name__ == "__main__":
+    raise SystemExit(_controlled_hash_main())

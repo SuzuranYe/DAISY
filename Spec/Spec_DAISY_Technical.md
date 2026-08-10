@@ -41,8 +41,9 @@ GUI 顶部使用 6 个四字短入口，并按档案工作流、设备、环境�
 | 档案数据解析 | `parse-db` | `Script_DAISY_Module_Parse.py` | 数据解析 `export-report` |
 | 硬盘信息登记 | `storage-collect` | `Script_DAISY_Module_Storage_Collect.py` | 同一入口 |
 
-`DAISY 功能自检` 只属于「高级」维护入口，通过 `unittest` 运行正式测试，
-不占用功能模块或 Module 脚本。`storage-list` 是同一硬盘信息登记脚本的 `--list` 内部
+`DAISY 功能自检` 只属于「高级」维护入口，通过 `unittest` 运行默认安全测试；
+会反复创建完整窗口的真实 Tk／桌面集成测试默认跳过，只能通过专用环境变量单独启用。
+自检不占用功能模块或 Module 脚本。`storage-list` 是同一硬盘信息登记脚本的 `--list` 内部
 准备模式，也不另建脚本。归档核验不再提供独立用户命令；创建 ZIP 后仍由
 硬盘信息登记在底层自动执行同等完整核验。
 
@@ -1315,6 +1316,7 @@ v1.6.0 的生产事件与 UI 绘制使用独立限频：冻结兼容命令的 `P
   都已经过实样验证。
 
 可重复执行的回归测试位于 [`Script\Test`](../Script/Test/)；GUI 顶部「高级→
-功能自检」可启动同一套测试，覆盖 SQLite schema、数据库约束、快照、Diff、
-GUI 参数映射和硬盘信息只读／归档边界；它不属于业务任务。完整测试命令见
+功能自检」可启动默认安全测试，覆盖 SQLite schema、数据库约束、快照、Diff、
+无窗口 GUI 参数映射和硬盘信息只读／归档边界；它不属于业务任务。真实 Tk／桌面集成
+测试需显式 opt-in，并与日常自检分开运行。命令见
 [README](../README.md#测试)，历史版本变化见[版本演进](Spec_DAISY_Version_Evolution.md)。

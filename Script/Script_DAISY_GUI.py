@@ -8195,8 +8195,8 @@ class DaisyApp:
             info_text = tk.Label(
                 info,
                 text=(
-                    "将运行 Script\\Test 中的全部自动化测试，并在系统"
-                    "临时目录创建测试夹具。"
+                    "将运行 Script\\Test 中默认安全的自动化测试，并在系统"
+                    "临时目录创建测试夹具；真实 Tk／桌面集成测试默认跳过。"
                 ),
                 bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9), anchor="w",
@@ -10315,11 +10315,13 @@ class DaisyApp:
             return
         confirmed = messagebox.askyesno(
             "运行 DAISY 功能自检",
-            f"将运行 Script\\Test 中的全部自动化测试；当前版本 {_version()}。"
+            f"将运行 Script\\Test 中默认安全的自动化测试；当前版本 {_version()}。"
             "\n\n"
             "测试不会读取 GUI 表单中的档案目录；测试夹具在工作区测试目录或"
             "系统临时目录中创建并清理，也不会访问真实硬盘。部分集成测试会调用 ExifTool、"
-            "ffprobe 与 7-Zip，"
+            "ffprobe 与 7-Zip。为避免反复创建窗口影响桌面稳定性，真实 Tk／"
+            "桌面集成测试默认不在本功能中运行。"
+            "\n\n"
             "建议先运行「运行环境检测」。\n\n确定继续吗？",
             icon="question", parent=self.root,
         )

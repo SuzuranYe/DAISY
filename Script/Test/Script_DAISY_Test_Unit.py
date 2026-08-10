@@ -25,6 +25,13 @@ _LIB = os.path.join(_SCRIPT, "Lib")
 _MODULE = os.path.join(_SCRIPT, "Module")
 sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
+_RUN_REAL_TK_TESTS = os.environ.get(
+    "DAISY_RUN_REAL_TK_TESTS", "").strip() == "1"
+_REAL_TK_SKIP_REASON = (
+    "真实 Tk／桌面集成测试默认关闭；"
+    "设置 DAISY_RUN_REAL_TK_TESTS=1 后单独运行"
+)
+
 import Script_DAISY_Lib_Snapshot_Core as core
 import Script_DAISY_GUI as gui
 import Script_DAISY_CLI as entry
@@ -2448,6 +2455,7 @@ class TestGuiArguments(unittest.TestCase):
             app._request_admin_mode(False)
         restart.assert_not_called()
 
+    @unittest.skipUnless(_RUN_REAL_TK_TESTS, _REAL_TK_SKIP_REASON)
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_admin_mode_control_is_a_fixed_button_without_switch_canvas(self):
         gui._enable_dpi_awareness()
@@ -2921,6 +2929,8 @@ class TestGuiArguments(unittest.TestCase):
             app.queue_detail_label.options["text"], "0/3 · 队列已准备")
 
     def _real_tk_app(self, preferences=None):
+        if not _RUN_REAL_TK_TESTS:
+            self.skipTest(_REAL_TK_SKIP_REASON)
         gui._enable_dpi_awareness()
         try:
             root = gui.tk.Tk()
@@ -5197,6 +5207,7 @@ class TestGuiArguments(unittest.TestCase):
             checked += 1
         self.assertEqual(checked, len(expected_specs))
 
+    @unittest.skipUnless(_RUN_REAL_TK_TESTS, _REAL_TK_SKIP_REASON)
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_tcl_runtime_bootstrap_survives_missing_or_bad_environment(self):
         code = (
@@ -5233,6 +5244,7 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(all(
                 version.startswith("8.6") for version in versions), mode)
 
+    @unittest.skipUnless(_RUN_REAL_TK_TESTS, _REAL_TK_SKIP_REASON)
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_both_user_gui_entries_construct_and_close_cleanly(self):
         original_tk = gui.tk.Tk

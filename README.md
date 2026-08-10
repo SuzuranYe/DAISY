@@ -314,7 +314,7 @@ GUI 负责参数、状态和进程控制；业务逻辑仍由同一 CLI/Module �
 
 ## 测试
 
-运行完整回归：
+运行默认安全回归：
 
 ```powershell
 python -B -W error -m unittest discover -s .\Script\Test -p "Script_DAISY_Test_*.py" -v
@@ -322,7 +322,15 @@ python -B -W error -m unittest discover -s .\Script\Test -p "Script_DAISY_Test_*
 
 默认测试只使用工作区或系统临时目录中的合成夹具，以及本次精确创建的子进程；不读取
 真实档案、不运行真实硬盘检测，也不枚举或终止其他进程。真实 RAW 验收只使用经明确
-授权后复制到工作区测试目录的最小夹具。
+授权后复制到工作区测试目录的最小夹具。真实 Tk／桌面集成测试会反复创建完整窗口，
+为避免影响桌面稳定性而默认跳过；只在需要专项验证、已保存其它工作且一次只运行一个
+明确测试方法时启用。例如：
+
+```powershell
+$env:DAISY_RUN_REAL_TK_TESTS = "1"
+python -B -W error .\Script\Test\Script_DAISY_Test_GUI_Scan.py -v TestRealTkScanControls.test_current_file_uses_middle_ellipsis_and_full_tooltip
+Remove-Item Env:DAISY_RUN_REAL_TK_TESTS
+```
 
 ## 联系与许可证
 
