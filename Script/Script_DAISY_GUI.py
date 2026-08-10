@@ -2307,6 +2307,9 @@ _STANDARD_BUTTON_GAP = _SPACING_STANDARD
 _PANEL_ACTION_BUTTON_GAP = _STANDARD_BUTTON_GAP
 _PANEL_GAP = _SPACING_STANDARD
 _INLINE_CONTROL_GAP = _SPACING_INLINE
+_PROGRESS_AUTO_COLLAPSE_DELAY_MS = 2_000
+_LOG_BODY_HEIGHT_COMPACT = 140
+_LOG_BODY_HEIGHT_STANDARD = 160
 _FORM_FIELD_GAP = _SPACING_STANDARD
 _FORM_FIELD_PADY = _FORM_FIELD_GAP // 2
 _FORM_SECTION_PADY = (_SPACING_COMPACT, 0)
@@ -5011,6 +5014,7 @@ class DaisyApp:
         self.timeout_dialog: tk.Toplevel | None = None
         self.timeout_dialog_label: tk.Label | None = None
         self.timeout_worker_pid: int | None = None
+        self._progress_auto_collapse_after_id: str | None = None
         self.open_result_flash_after_id: str | None = None
         self.events: queue.Queue[tuple] = queue.Queue()
         self._configure_window()
@@ -6510,7 +6514,8 @@ class DaisyApp:
             form_host, orient="vertical", command=self.form_canvas.yview,
             style="Daisy.Vertical.TScrollbar",
         )
-        self.form_canvas.configure(yscrollcommand=self.form_scroll.set)
+        self.form_canvas.configure(
+            yscrollcommand=self._update_form_scrollbar)
         self.form_canvas.pack(side="left", fill="both", expand=True)
         self.form_inner = tk.Frame(self.form_canvas, bg=_SURFACE)
         self.form_window = self.form_canvas.create_window(
@@ -6535,24 +6540,19 @@ class DaisyApp:
         self.progress_panel = progress_panel
         progress_panel.grid(
             row=1, column=0, sticky="ew", pady=(_PANEL_GAP, 0))
-        progress_inner = tk.Frame(progress_panel, bg=_LOG_BG)
-        self.progress_inner = progress_inner
-        progress_inner.pack(
-            fill="x", padx=_PANEL_HEADER_PADX,
-            pady=(_SPACING_INLINE
-                  if self.compact_layout else _SPACING_STANDARD),
-        )
-
-        progress_header = tk.Frame(progress_inner, bg=_LOG_HEADER)
+        progress_header = tk.Frame(progress_panel, bg=_LOG_HEADER)
         self.progress_header = progress_header
         progress_header.pack(fill="x")
         self.progress_title_label = tk.Label(
             progress_header, text="运行进度", bg=_LOG_HEADER, fg=_TEXT,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         )
-        self.progress_title_label.pack(side="left")
+        self.progress_title_label.pack(
+            side="left", padx=_PANEL_HEADER_PADX,
+            pady=_SPACING_INLINE)
         progress_actions = tk.Frame(progress_header, bg=_LOG_HEADER)
-        progress_actions.pack(side="right")
+        progress_actions.pack(
+            side="right", padx=_PANEL_HEADER_PADX, pady=5)
         progress_actions.grid_columnconfigure(
             0, weight=1, uniform="panel_header_action")
         progress_actions.grid_columnconfigure(
@@ -6607,9 +6607,19 @@ class DaisyApp:
             "暂停当前任务；再次点击可继续。当前文件可能从起点重试。",
         )
 
+        progress_inner = tk.Frame(progress_panel, bg=_LOG_BG)
+        self.progress_inner = progress_inner
+        progress_inner.pack(
+            fill="x", padx=_PANEL_HEADER_PADX,
+            pady=(
+                _SPACING_INLINE,
+                _SPACING_INLINE
+                if self.compact_layout else _SPACING_STANDARD,
+            ),
+        )
         progress_body = tk.Frame(progress_inner, bg=_LOG_BG)
         self.progress_body = progress_body
-        progress_body.pack(fill="x", pady=(_SPACING_INLINE, 0))
+        progress_body.pack(fill="x")
         progress_body.grid_columnconfigure(1, weight=1)
 
         tk.Label(
@@ -6722,11 +6732,13 @@ class DaisyApp:
         log_panel.grid(
             row=2, column=0, sticky="ew", pady=(_PANEL_GAP, 0))
         log_header = tk.Frame(log_panel, bg=_LOG_HEADER)
+        self.log_header = log_header
         log_header.pack(fill="x")
-        tk.Label(
+        self.log_title_label = tk.Label(
             log_header, text="运行日志", bg=_LOG_HEADER, fg=_TEXT,
             font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(
+        )
+        self.log_title_label.pack(
             side="left", padx=_PANEL_HEADER_PADX,
             pady=_SPACING_INLINE)
         log_actions = tk.Frame(log_header, bg=_LOG_HEADER)
@@ -6774,7 +6786,10 @@ class DaisyApp:
         )
         log_body = tk.Frame(
             log_panel, bg=_LOG_BG,
-            height=100 if self.compact_layout else 120,
+            height=(
+                _LOG_BODY_HEIGHT_COMPACT
+                if self.compact_layout else _LOG_BODY_HEIGHT_STANDARD
+            ),
         )
         self.log_body = log_body
         log_body.pack(fill="both", expand=True)
@@ -7052,11 +7067,17 @@ class DaisyApp:
     def _set_progress_expanded(self, expanded: bool) -> None:
         self.progress_expanded = expanded
         if expanded:
-            if not self.progress_body.winfo_manager():
-                self.progress_body.pack(
-                    fill="x", pady=(_SPACING_INLINE, 0))
+            if not self.progress_inner.winfo_manager():
+                self.progress_inner.pack(
+                    fill="x", padx=_PANEL_HEADER_PADX,
+                    pady=(
+                        _SPACING_INLINE,
+                        _SPACING_INLINE
+                        if self.compact_layout else _SPACING_STANDARD,
+                    ),
+                )
         else:
-            self.progress_body.pack_forget()
+            self.progress_inner.pack_forget()
         self.progress_toggle_button.configure(
             text="收起进度" if expanded else "展开进度")
         if hasattr(self, "progress_visible_var"):
@@ -7064,7 +7085,34 @@ class DaisyApp:
         self._refresh_view_menu_labels()
 
     def _toggle_progress_panel(self) -> None:
+        self._cancel_progress_auto_collapse()
         self._set_progress_expanded(not self.progress_expanded)
+
+    def _cancel_progress_auto_collapse(self) -> None:
+        pending = getattr(self, "_progress_auto_collapse_after_id", None)
+        if pending is None:
+            return
+        self._progress_auto_collapse_after_id = None
+        try:
+            self.root.after_cancel(pending)
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _schedule_progress_auto_collapse(self) -> None:
+        self._cancel_progress_auto_collapse()
+        try:
+            self._progress_auto_collapse_after_id = self.root.after(
+                _PROGRESS_AUTO_COLLAPSE_DELAY_MS,
+                self._auto_collapse_progress,
+            )
+        except (AttributeError, tk.TclError):
+            self._progress_auto_collapse_after_id = None
+
+    def _auto_collapse_progress(self) -> None:
+        self._progress_auto_collapse_after_id = None
+        if self._task_is_active():
+            return
+        self._set_progress_expanded(False)
 
     def _set_log_expanded(self, expanded: bool) -> None:
         self.log_expanded = expanded
@@ -7377,6 +7425,7 @@ class DaisyApp:
                 self.form_window, width=max(1, int(event.width)))
         except (AttributeError, tk.TclError, TypeError, ValueError):
             return
+        self._sync_form_scroll_region()
         self._schedule_form_scroll_sync()
 
     def _schedule_form_scroll_sync(
@@ -7416,6 +7465,42 @@ class DaisyApp:
             pass
         return max((0, *heights)) if heights else -1
 
+    def _set_form_scrollbar_visible(self, visible: bool) -> None:
+        """覆盖右侧表单留白显示滚动条，不改变 Canvas 可用宽度。"""
+        try:
+            manager = self.form_scroll.winfo_manager()
+            if visible:
+                if manager != "place":
+                    self.form_scroll.place(
+                        relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
+                self.form_scroll.lift()
+            elif manager:
+                self.form_scroll.place_forget()
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return
+
+    def _update_form_scrollbar(self, first: str, last: str) -> None:
+        """同步滑块，并在 Canvas 视域变化后校准滚动条显隐。"""
+        try:
+            self.form_scroll.set(first, last)
+            first_fraction = float(first)
+            last_fraction = float(last)
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return
+        try:
+            content_height = self._form_content_height()
+            viewport_height = max(1, int(self.form_canvas.winfo_height()))
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            content_height = -1
+            viewport_height = 1
+        overflow = (
+            content_height
+            > viewport_height + _FORM_SCROLL_OVERFLOW_TOLERANCE
+            if content_height >= 0 else
+            first_fraction > 0.0 or last_fraction < 1.0
+        )
+        self._set_form_scrollbar_visible(overflow)
+
     def _sync_form_scroll_region(self) -> None:
         """仅在表单真实溢出时启用滚动，并把未溢出页面锁在顶部。"""
         self._form_scroll_sync_after_id = None
@@ -7434,13 +7519,10 @@ class DaisyApp:
                 ),
             )
             if overflow:
-                if not self.form_scroll.winfo_manager():
-                    self.form_scroll.pack(
-                        side="right", fill="y", before=self.form_canvas)
+                self._set_form_scrollbar_visible(True)
             else:
                 self.form_canvas.yview_moveto(0.0)
-                if self.form_scroll.winfo_manager():
-                    self.form_scroll.pack_forget()
+                self._set_form_scrollbar_visible(False)
         except (AttributeError, tk.TclError, TypeError, ValueError):
             return
 
@@ -9465,7 +9547,6 @@ class DaisyApp:
         if self.mini_mode:
             self._leave_mini_mode()
         self._set_settings_expanded(True)
-        self._set_progress_expanded(False)
         self._set_log_expanded(False)
         found_count = len(self.storage_disk_options)
         selectable_count = sum(
@@ -10279,6 +10360,7 @@ class DaisyApp:
 
     def _begin_run_jobs(self, task_key: str, jobs: list[RunJob]) -> None:
         """锁定界面并启动同一任务的一项或多项目标。"""
+        self._cancel_progress_auto_collapse()
         self._cancel_open_result_flash()
         if task_key == _DEPENDENCY_VERSION_CHECK_KEY:
             self.dependency_version_query_output = ""
@@ -11197,10 +11279,13 @@ class DaisyApp:
         if restore_settings:
             if self.mini_mode:
                 self._leave_mini_mode()
+                self._set_progress_expanded(True)
             self._set_settings_expanded(True)
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         self._set_recovery_card_state()
+        if not self.close_after_stop:
+            self._schedule_progress_auto_collapse()
         if play_completion_sound:
             self.root.after_idle(self._play_completion_sound)
         if result_directory and os.path.isdir(result_directory):

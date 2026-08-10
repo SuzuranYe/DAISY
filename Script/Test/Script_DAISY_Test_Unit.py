@@ -3042,7 +3042,8 @@ class TestGuiArguments(unittest.TestCase):
                 context,
             )
         else:
-            self.assertEqual(app.form_scroll.winfo_manager(), "pack", context)
+            self.assertEqual(
+                app.form_scroll.winfo_manager(), "place", context)
             app.form_canvas.yview_moveto(1.0)
             root.update_idletasks()
             visible_bottom = app.form_canvas.canvasy(viewport_height)
@@ -4302,6 +4303,26 @@ class TestGuiArguments(unittest.TestCase):
             app.progress_header.cget("background"), gui._LOG_HEADER)
         self.assertEqual(
             app.progress_title_label.cget("background"), gui._LOG_HEADER)
+        self.assertEqual(
+            app.log_header.cget("background"), gui._LOG_HEADER)
+        self.assertEqual(
+            app.log_title_label.cget("background"), gui._LOG_HEADER)
+        self.assertEqual(
+            app.progress_header.winfo_rootx(),
+            app.log_header.winfo_rootx(),
+        )
+        self.assertEqual(
+            app.progress_header.winfo_width(),
+            app.log_header.winfo_width(),
+        )
+        self.assertEqual(
+            app.progress_title_label.winfo_rootx(),
+            app.log_title_label.winfo_rootx(),
+        )
+        self.assertEqual(
+            int(app.log_body.cget("height")),
+            gui._LOG_BODY_HEIGHT_STANDARD,
+        )
         for label in (
                 app.progress_target_label, app.current_file_title_label,
                 app.current_file_label, app.queue_title_label,
@@ -4421,13 +4442,27 @@ class TestGuiArguments(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_scrollbar_only_appears_for_actual_overflow(self):
         root, app = self._real_tk_app()
+        app._select_task("full_scan", save_current=False)
+        root.update()
+        self.assertFalse(app.form_scroll.winfo_manager())
+        full_height_canvas_width = app.form_canvas.winfo_width()
+        root.geometry(f"{root.winfo_width()}x640+0+0")
+        root.update()
+        self.assertGreater(
+            app._form_content_height(), app.form_canvas.winfo_height())
+        self.assertEqual(app.form_scroll.winfo_manager(), "place")
+        self.assertEqual(
+            app.form_canvas.winfo_width(), full_height_canvas_width,
+            "滚动条出现时不应挤压表单宽度",
+        )
+
         app._set_default_window_size((1366, 768), persist=False)
         app._set_ui_font(size_delta=2, persist=False)
         app._select_task("full_scan", save_current=False)
         root.update()
         self.assertGreater(
             app._form_content_height(), app.form_canvas.winfo_height())
-        self.assertEqual(app.form_scroll.winfo_manager(), "pack")
+        self.assertEqual(app.form_scroll.winfo_manager(), "place")
         for _index in range(8):
             app._scroll_form(types.SimpleNamespace(delta=-120, num=0))
         root.update_idletasks()
@@ -4470,9 +4505,12 @@ class TestGuiArguments(unittest.TestCase):
             root.update()
         shown.assert_called_once()
         self.assertTrue(app.settings_expanded)
-        self.assertFalse(app.progress_expanded)
+        self.assertTrue(app.progress_expanded)
         self.assertFalse(app.log_expanded)
         self.assertIn("1 块可登记硬盘", app.status_label.cget("text"))
+        app._cancel_progress_auto_collapse()
+        app._auto_collapse_progress()
+        self.assertFalse(app.progress_expanded)
 
         app._start_next_job = lambda: None
         app._begin_run_jobs(
@@ -4506,6 +4544,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertTrue(app.settings_expanded)
         self.assertTrue(app.progress_expanded)
         self.assertTrue(app.log_expanded)
+        app._cancel_progress_auto_collapse()
+        app._auto_collapse_progress()
+        self.assertFalse(app.progress_expanded)
+        self.assertTrue(app.log_expanded)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_storage_detection_without_selectable_disk_warns(self):
@@ -4529,9 +4571,51 @@ class TestGuiArguments(unittest.TestCase):
             root.update()
         shown.assert_called_once()
         self.assertTrue(app.settings_expanded)
-        self.assertFalse(app.progress_expanded)
+        self.assertTrue(app.progress_expanded)
         self.assertFalse(app.log_expanded)
         self.assertIn("没有找到可登记", app.status_label.cget("text"))
+        app._cancel_progress_auto_collapse()
+        app._auto_collapse_progress()
+        self.assertFalse(app.progress_expanded)
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_completed_run_auto_collapses_progress_after_two_seconds(
+        self,
+    ):
+        root, app = self._real_tk_app()
+        app._set_progress_expanded(True)
+        app.process_task_key = "env_check"
+        app.run_jobs = [gui.RunJob("环境检测", {})]
+        app.run_job_index = 0
+        app.run_results = [0]
+        app.run_outcomes = [None]
+        app.stop_requested = False
+        app.save_exit_requested = False
+        app.worker_starting = False
+        app.close_after_stop = False
+
+        with patch.object(root, "after", wraps=root.after) as scheduled:
+            app._finalize_run(0.2)
+        self.assertIn(
+            gui._PROGRESS_AUTO_COLLAPSE_DELAY_MS,
+            [call.args[0] for call in scheduled.call_args_list if call.args],
+        )
+        self.assertEqual(gui._PROGRESS_AUTO_COLLAPSE_DELAY_MS, 2_000)
+        self.assertTrue(app.progress_expanded)
+        self.assertIsNotNone(app._progress_auto_collapse_after_id)
+
+        app._cancel_progress_auto_collapse()
+        app._auto_collapse_progress()
+        self.assertFalse(app.progress_expanded)
+
+        app._set_progress_expanded(True)
+        app._schedule_progress_auto_collapse()
+        app._start_next_job = lambda: None
+        app._begin_run_jobs(
+            "env_check", [gui.RunJob("新一轮环境检测", {})])
+        self.assertIsNone(app._progress_auto_collapse_after_id)
+        app._auto_collapse_progress()
+        self.assertTrue(app.progress_expanded)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_every_field_tooltip_uses_text_cell_and_control(self):

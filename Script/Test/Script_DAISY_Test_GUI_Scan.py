@@ -1021,7 +1021,7 @@ class TestRealTkScanControls(unittest.TestCase):
                             else:
                                 self.assertEqual(
                                     self.app.form_scroll.winfo_manager(),
-                                    "pack", context,
+                                    "place", context,
                                 )
                                 self.app.form_canvas.yview_moveto(1.0)
                                 self.root.update_idletasks()
@@ -2035,7 +2035,7 @@ class TestRealTkScanControls(unittest.TestCase):
                                 else:
                                     self.assertEqual(
                                         self.app.form_scroll.winfo_manager(),
-                                        "pack",
+                                        "place",
                                         context,
                                     )
                                     self.app.form_canvas.yview_moveto(1.0)
