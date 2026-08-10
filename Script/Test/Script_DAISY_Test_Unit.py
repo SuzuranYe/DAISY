@@ -1843,8 +1843,8 @@ class TestGuiArguments(unittest.TestCase):
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
         with open(spec_path, "r", encoding="utf-8") as f:
             spec = f.read()
-        self.assertIn("# DAISY v1.6.6 技术规格", spec)
-        self.assertIn("v1.4.1 → v1.6.4 → v1.6.6", spec)
+        self.assertIn("# DAISY v1.6.7 技术规格", spec)
+        self.assertIn("v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7", spec)
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
         self.assertIn("元数据 profile v7", spec)
@@ -1864,7 +1864,7 @@ class TestGuiArguments(unittest.TestCase):
         readme_path = os.path.join(gui._BASE, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
-        self.assertIn("当前版本：**v1.6.6 长期稳定版**", readme)
+        self.assertIn("当前版本：**v1.6.7 致命错误修复版**", readme)
         self.assertIn("默认窗口目标为 `1600×900`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
@@ -1882,7 +1882,17 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.3", evolution)
         self.assertIn("DAISY v1.6.5", evolution)
         self.assertIn("DAISY v1.6.6", evolution)
-        self.assertIn("v1.4.1 → v1.6.4 → v1.6.6", evolution)
+        self.assertIn("DAISY v1.6.7", evolution)
+        self.assertIn(
+            "v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7",
+            evolution,
+        )
+        self.assertIn("GUI 完整扫描的 SHA-256 采集功能实际失效", evolution)
+        self.assertIn(
+            "v1.6.0、v1.6.2、v1.6.3、v1.6.4、v1.6.5、v1.6.6",
+            evolution,
+        )
+        self.assertIn("默认功能自检存在桌面卡顿或卡死风险", evolution)
         spec_files = {
             name for name in os.listdir(os.path.join(gui._BASE, "Spec"))
             if name.endswith(".md")
@@ -5661,7 +5671,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.6")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.7")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
