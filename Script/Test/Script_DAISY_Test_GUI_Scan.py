@@ -613,6 +613,14 @@ class TestRealTkScanControls(unittest.TestCase):
         self.app._destroy_root()
         self.preference_patch.stop()
 
+    def _set_1080p_geometry(self) -> None:
+        """让明确验证 1080p 的用例不依赖当前默认窗口尺寸。"""
+        self.root.geometry("1840x1020+0+0")
+        self.app._preferred_normal_size = (1840, 1020)
+        self.app._monitor_signature = None
+        self.app._refresh_monitor_layout()
+        self.root.update()
+
     def test_current_file_uses_middle_ellipsis_and_full_tooltip(self) -> None:
         value = "前" * 90 + "\\中间\\" + "后" * 90 + ".dng"
         self.app._set_current_file(value)
@@ -794,6 +802,7 @@ class TestRealTkScanControls(unittest.TestCase):
         )
 
     def test_inline_recovery_card_keeps_full_page_fit_at_1080p(self) -> None:
+        self._set_1080p_geometry()
         partial = os.path.join(_RUNTIME_ROOT, "Long_Restart.partial.sqlite")
         self.app._select_task("full_scan", save_current=False)
         with patch.object(gui, "save_gui_preferences"):
@@ -1158,6 +1167,7 @@ class TestRealTkScanControls(unittest.TestCase):
         ))
     def test_scan_requires_mode_choice_before_expanding_settings(self) \
             -> None:
+        self._set_1080p_geometry()
         self.app.saved_values.pop("scan", None)
         self.app._select_task("scan", save_current=False)
         self.root.update()
@@ -1530,7 +1540,7 @@ class TestRealTkScanControls(unittest.TestCase):
         hash_control._toggle()
         self.root.update_idletasks()
         self.assertEqual(hash_control.get(), "none")
-        self.assertEqual(hash_control.button.cget("text"), "SHA-256")
+        self.assertEqual(hash_control.button.cget("text"), "不采集")
         self.assertIn("--hash none", self.app.preview_var.get())
 
         self.app.values["roots"].add_value(r"C:\ArchiveA")

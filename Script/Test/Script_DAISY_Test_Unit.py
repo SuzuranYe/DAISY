@@ -31,6 +31,13 @@ import Script_DAISY_MAIN as entry
 
 
 class TestGuiArguments(unittest.TestCase):
+    def test_gui_preferences_default_to_1600x900(self):
+        self.assertEqual(gui._DEFAULT_WINDOW_SIZE, (1600, 900))
+        self.assertEqual(
+            gui.default_gui_preferences()["window_size"], [1600, 900])
+        self.assertEqual(
+            gui._WINDOW_SIZE_OPTIONS[0], ("1600 × 900", (1600, 900)))
+
     def test_gui_preferences_round_trip_as_utf8_lf(self):
         preferences = gui.default_gui_preferences()
         preferences.update({
@@ -1478,9 +1485,13 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(2048, 1280), (1920, 1080))
+            gui.window_size_for_screen(2048, 1280), (1600, 900))
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1840, 1020))
+            gui.window_size_for_screen(1920, 1080), (1600, 900))
+        self.assertEqual(
+            gui.window_size_for_screen(
+                1920, 1080, preferred_size=(1920, 1080)),
+            (1840, 1020))
         self.assertEqual(
             gui.window_size_for_screen(1366, 768), (1286, 708))
         self.assertEqual(
@@ -1705,7 +1716,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(gui._PERSISTABLE_NUMERIC_OPTION_KEYS, frozenset())
         self.assertFalse(hasattr(gui, "_HASH_PERCENTAGE_MENU_FIELDS"))
 
-    def test_page_parameters_use_dropdowns_without_expand_or_check_controls(self):
+    def test_page_parameters_use_choice_flags_without_legacy_bool_kinds(self):
         self.assertFalse(any(
             spec.kind in ("bool", "inverse_bool")
             for task in gui.TASKS for spec in task.fields))
@@ -1744,7 +1755,7 @@ class TestGuiArguments(unittest.TestCase):
         })
         self.assertEqual(validated, {"scan": {"scan_mode": "full"}})
 
-    def test_tool_paths_live_in_top_menu_not_page_dropdowns(self):
+    def test_tool_paths_live_in_top_menu_not_task_form(self):
         tool_fields = {
             spec.key: spec
             for task in gui.TASKS
@@ -1817,6 +1828,17 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("当前只读取 STG 归档 schema 3", spec)
         self.assertIn("不兼容\n早期协议", spec)
         self.assertIn("不提供按 mtime 静默跳过", spec)
+        self.assertIn("暂停只在当前任务进程内生效", spec)
+        self.assertIn("`resume_hint=suggest`", spec)
+        self.assertIn("`resume_hint=manual_only`", spec)
+        self.assertIn("| `window_size` | `[1600, 900]` |", spec)
+        self.assertNotIn("| `window_size` | `[1920, 1080]` |", spec)
+        readme_path = os.path.join(gui._BASE, "README.md")
+        with open(readme_path, "r", encoding="utf-8") as f:
+            readme = f.read()
+        self.assertIn("默认窗口目标为 `1600×900`", readme)
+        self.assertIn("暂停只适用于当前进程", readme)
+        self.assertIn("再由用户开始任务", readme)
         evolution_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Version_Evolution.md")
         with open(evolution_path, "r", encoding="utf-8") as f:
@@ -3010,6 +3032,43 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(root.winfo_height(), 1020)
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_default_1600x900_keeps_all_pages_usable(self):
+        root, app = self._real_tk_app()
+        root.geometry("1600x900+0+0")
+        root.update()
+        self.assertEqual(
+            (root.winfo_width(), root.winfo_height()), (1600, 900))
+
+        def assert_current_page_fits(context):
+            self._assert_real_tk_page_geometry(root, app, context)
+            self.assertLessEqual(
+                app._form_content_height(),
+                (app.form_canvas.winfo_height()
+                 + gui._FORM_SCROLL_OVERFLOW_TOLERANCE),
+                context,
+            )
+            self.assertFalse(app.form_scroll.winfo_manager(), context)
+
+        for task_key in gui._TASK_TOOLBAR_KEYS:
+            app._select_task(task_key, save_current=False)
+            root.update()
+            context = f"1600×900 · {task_key}"
+            assert_current_page_fits(context)
+
+        for scan_mode in ("full", "quick"):
+            for start_mode in ("new", "resume"):
+                app.saved_values["scan"] = {}
+                app._select_task("scan", save_current=False)
+                root.update()
+                app.values["scan_mode"].buttons[scan_mode].invoke()
+                root.update()
+                app.values["start_mode"].buttons[start_mode].invoke()
+                root.update()
+                self._assert_real_tk_page_geometry(
+                    root, app,
+                    f"1600×900 · scan · {scan_mode} · {start_mode}")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
     def test_real_tk_reopens_last_page_with_safe_options_only(self):
         preferences = gui.default_gui_preferences()
         preferences["last_task_key"] = "verify"
@@ -3527,11 +3586,15 @@ class TestGuiArguments(unittest.TestCase):
         self.assertGreaterEqual(roots.add_button.winfo_reqwidth(), 100)
         self.assertLess(gui._FILE_PICKER_BUTTON_WIDTH,
                         gui._FORM_ACTION_BUTTON_WIDTH)
-        self.assertLess(
+        self.assertEqual(
+            app.reset_current_settings_button.cget("style"),
+            "FilePicker.TButton",
+        )
+        self.assertEqual(
             roots.add_button.winfo_reqwidth(),
             app.reset_current_settings_button.winfo_reqwidth(),
         )
-        self.assertLess(
+        self.assertEqual(
             roots.add_button.winfo_reqheight(),
             app.reset_current_settings_button.winfo_reqheight(),
         )

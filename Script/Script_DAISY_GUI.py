@@ -205,7 +205,7 @@ _LEGACY_TASK_PAGE_MAP = {
 }
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
-_DEFAULT_WINDOW_SIZE = (1920, 1080)
+_DEFAULT_WINDOW_SIZE = (1600, 900)
 _WINDOW_WORK_MARGIN = (32, 40)
 _UI_FONT_FAMILY = "Microsoft YaHei UI"
 _UI_BODY_FONT_SIZE = 10
@@ -217,8 +217,8 @@ _UI_FONT_SIZE_OPTIONS = (
     ("标准", 0), ("较大", 1), ("特大", 2),
 )
 _WINDOW_SIZE_OPTIONS = (
-    ("1920 × 1080", (1920, 1080)),
     ("1600 × 900", (1600, 900)),
+    ("1920 × 1080", (1920, 1080)),
     ("1366 × 768", (1366, 768)),
 )
 _COLOUR_STRIP_HEIGHT = 4
@@ -4544,7 +4544,7 @@ def window_size_for_screen(
     screen_width: int, screen_height: int,
     preferred_size: tuple[int, int] = _DEFAULT_WINDOW_SIZE,
 ) -> tuple[int, int]:
-    """以 1920×1080 为目标，并按当前屏幕留出安全边缘。"""
+    """以用户首选尺寸为目标，并按当前屏幕留出安全边缘。"""
     target_width, target_height = preferred_size
     width = min(target_width, max(640, screen_width - 80))
     height = min(target_height, max(480, screen_height - 60))
