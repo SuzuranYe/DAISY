@@ -98,7 +98,7 @@ GUI、CLI 帮助、报告、README 与现行规格使用同一套用户术语：
 | 内容 | 最终权威 |
 |---|---|
 | schema 3 快照 SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_01_Core.py` 中的 `SNAPSHOT_DDL` |
-| schema 4 DDL、会话、处理尝试、任务占用、续传与发布 | `Script\Lib\Script_DAISY_Lib_DBS_08_State.py` 及 `Spec\Spec_DAISY_V1_6_0_Data_Contract.md` |
+| schema 4 DDL、会话、处理尝试、任务占用、续传与发布 | `Script\Lib\Script_DAISY_Lib_DBS_08_State.py` |
 | schema 4 未完成快照创建、续传预览、任务占用心跳与运行编排 | `Script\Lib\Script_DAISY_Lib_DBS_09_Run.py` |
 | Diff SQLite DDL | `Script\Lib\Script_DAISY_Lib_DBS_04_Diff.py` 中的 `DIFF_DDL` |
 | 规范化元数据取值链 | `Script\Lib\Script_DAISY_Lib_DBS_02_Meta.py` |
@@ -407,8 +407,8 @@ rawpy/LibRaw 能力，发生变化时拒绝续传。微秒和随机运行 ID 只
 `resume_hint=manual_only`，下次不主动推荐。已提交的文件级结果继续保留；正在处理的文件
 不序列化 Python 哈希对象或外部工具进程状态，继续或跨重启续传时可能从该文件起点重试。
 进程异常退出时，只有确认旧 lease 无效后才能把遗留 attempt 标为 `abandoned` 并创建新的
-resume session。完整事务和状态转换以
-[v1.6.0 数据与恢复契约](Spec_DAISY_V1_6_0_Data_Contract.md#五用户动作语义)为准。
+resume session。精确 DDL、事务和状态转换以 `Script_DAISY_Lib_DBS_08_State.py` 及其
+契约测试为准。
 
 ### 7.4 冻结 schema 3 续传边界
 
@@ -451,8 +451,8 @@ row ID 与物理布局后，文件清单、SHA-256、规范化元数据、统计
 哈希错误率超过 20% 的告警和超过 50% 的整次中止不等于单文件超时机制。
 
 上述限制只用于冻结的 schema 3 兼容入口。统一 schema 4 扫描已经实现独立状态机、
-lease、失败重试、工具溯源、输出目录冻结、动态哈希 timeout 和业务投影等价测试；完整
-契约见[v1.6.0 数据契约](Spec_DAISY_V1_6_0_Data_Contract.md)。
+lease、失败重试、工具溯源、输出目录冻结、动态哈希 timeout 和业务投影等价测试；精确
+定义仍以状态层代码及其契约测试为准。
 
 ### 7.5 文件名
 
@@ -915,8 +915,8 @@ BitLocker 状态；不得未经检查公开分享。
 - 项目长期兼容门槛：v1.6.0 及后续版本中，所有接受封存 DBS 快照或 Diff 的功能至少
   必须只读支持 v1.4.1/schema 3。旧库不得原地迁移；缺少新字段时使用明确的能力降级，
   不得显示为 0、空值或成功。该门槛不表示 v1.4.1 程序能够读取未来新 schema，也不把
-  v1.4.1 未完成快照纳入无条件续传承诺。详细状态与恢复边界见
-  [数据与恢复契约](Spec_DAISY_V1_6_0_Data_Contract.md)。
+  v1.4.1 未完成快照纳入无条件续传承诺。状态与恢复边界见本文第 7.3 节及本节；
+  精确 DDL 和状态转换以状态层代码及其契约测试为准。
 - v1.6.0 使用统一只读 Reader。它按身份表、数据库结构版本、封存状态和实际表列识别
   快照、Diff 和未完成快照，并将模块状态区分为 `available`、`empty`、`unavailable`、
   `incompatible` 和 `invalid`。DBS-21/31/32/41、增量来源和问题报告读取均通过该层；

@@ -1882,8 +1882,6 @@ class TestGuiArguments(unittest.TestCase):
         }
         self.assertEqual(spec_files, {
             "Spec_DAISY_Technical.md",
-            "Spec_DAISY_V1_6_0_Data_Contract.md",
-            "Spec_DAISY_V1_6_0_Database_Parsing_Design.md",
             "Spec_DAISY_Version_Evolution.md",
         })
         self.assertIn("STG-11 硬盘信息登记", evolution)

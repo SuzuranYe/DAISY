@@ -293,9 +293,7 @@ BitLocker 状态；公开分享前必须人工检查。
 - 多个 GUI 窗口彼此拥有独立表单、日志、控制流和子进程句柄，但仍共享磁盘 I/O、外部工具
   和用户指定输出目录；并发任务应使用不同的输出目录，或确保目标名称不会冲突。
 
-详细契约见[技术规格](Spec/Spec_DAISY_Technical.md)、
-[v1.6.0 数据与恢复契约](Spec/Spec_DAISY_V1_6_0_Data_Contract.md)和
-[v1.6.0 数据库解析设计](Spec/Spec_DAISY_V1_6_0_Database_Parsing_Design.md)。
+详细契约见[技术规格](Spec/Spec_DAISY_Technical.md)。
 
 ## 项目结构
 

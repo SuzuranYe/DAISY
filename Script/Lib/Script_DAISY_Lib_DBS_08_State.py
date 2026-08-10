@@ -1,7 +1,7 @@
 """DAISY schema 4 运行状态、session、attempt、lease 与续传事务。
 
-本模块实现 Spec_DAISY_V1_6_0_Data_Contract.md。schema 4 是冻结 schema 3
-业务表的超集；这里不迁移或写入任何 schema 3 封存库或旧 partial。
+本模块保存 schema 4 DDL 与状态转换的精确定义。schema 4 是冻结 schema 3 业务表的
+超集；这里不迁移或写入任何 schema 3 封存库或旧 partial。
 """
 from __future__ import annotations
 
