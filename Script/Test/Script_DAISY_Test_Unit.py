@@ -206,7 +206,7 @@ class TestGuiArguments(unittest.TestCase):
             ("scan", "resume"): "续传快照",
             ("scan", "metadata_storage"): "元数据",
             ("scan", "hash_mode"): "哈希",
-            ("scan", "collect_file_id"): "NTFS-ID",
+            ("scan", "collect_file_id"): "文件标识",
             ("verify", "root_map"): "档案根目录",
             ("verify", "force"): "指纹降级",
             ("diff", "old"): "基准快照",
@@ -287,6 +287,11 @@ class TestGuiArguments(unittest.TestCase):
                 quick_fields["collect_file_id"]):
             self.assertEqual(spec.kind, "choice_flag")
             self.assertEqual(spec.flag_value, False)
+            self.assertEqual(spec.label, "文件标识")
+            self.assertEqual(
+                spec.choices,
+                (("NTFS-ID", True), ("不采集", False)),
+            )
             self.assertEqual(
                 tuple(value for _label, value in spec.choices),
                 (True, False),
@@ -3765,6 +3770,13 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             set(preset.buttons), {"human-summary", "full-audit", "custom"})
         self.assertEqual(
+            tuple(
+                preset.buttons[value].cget("text")
+                for value in ("human-summary", "full-audit", "custom")
+            ),
+            ("摘要", "全部", "自定义"),
+        )
+        self.assertEqual(
             preset.buttons["full-audit"].cget("background"),
             gui._BLOCK_SELECTION_BACKGROUND,
         )
@@ -4591,14 +4603,14 @@ class TestGuiArguments(unittest.TestCase):
         field_label = next(
                 child for child in app.form_inner.winfo_children()
                 if (isinstance(child, gui.tk.Label)
-                    and child.cget("text") == "NTFS-ID")
+                    and child.cget("text") == "文件标识")
         )
         label_font = gui.tkfont.Font(
             root=root, font=field_label.cget("font"))
         self.assertEqual(int(field_label.cget("width")), 0)
         self.assertGreaterEqual(
             field_label.winfo_width(),
-            label_font.measure("NTFS-ID"),
+            label_font.measure("文件标识"),
         )
         self.assertEqual(field_label.cget("anchor"), "e")
 

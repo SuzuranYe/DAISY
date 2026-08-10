@@ -122,14 +122,14 @@ def build_parser(*, database_mode: bool = False) -> argparse.ArgumentParser:
         "--preset",
         choices=tuple(sorted(dbparse.PARSE_PRESETS)),
         default=None,
-        help="导出范围；命令行省略时使用 human-summary（摘要内容）",
+        help="导出范围；命令行省略时使用 human-summary（摘要）",
     )
     parser.add_argument(
         "--include",
         action="append",
         default=None,
         metavar="MODULE[,MODULE...]",
-        help=("数据模块 ID；使用摘要内容或全部内容范围时追加，使用自定义"
+        help=("数据模块 ID；使用摘要或全部范围时追加，使用自定义"
               "范围时作为完整选择；可重复或用逗号分隔"),
     )
     parser.add_argument(

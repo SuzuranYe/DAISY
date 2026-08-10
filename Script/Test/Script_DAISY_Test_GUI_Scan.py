@@ -1631,9 +1631,9 @@ class TestRealTkScanControls(unittest.TestCase):
         self.root.update()
         toggle = self.app.values["collect_file_id"]
         self.assertIsInstance(toggle, gui.BooleanToggleButton)
-        self.assertEqual(toggle.true_label, "采集")
+        self.assertEqual(toggle.true_label, "NTFS-ID")
         self.assertEqual(toggle.false_label, "不采集")
-        self.assertNotIn("No-FID", toggle.false_label)
+        self.assertNotEqual(toggle.true_label, "FID")
         original_size = (
             toggle.button.winfo_width(), toggle.button.winfo_height())
         toggle._toggle()
@@ -1670,7 +1670,7 @@ class TestRealTkScanControls(unittest.TestCase):
         tools = self.app.values["verify_builtin"]
         self.assertIsInstance(tools, gui.VerificationToolButtonGroup)
         full_labels = {
-            "verify_builtin": "内置格式校验",
+            "verify_builtin": "基本校验",
             "verify_exiftool": "ExifTool",
             "verify_ffprobe": "ffprobe",
             "verify_sevenzip": "7-Zip",

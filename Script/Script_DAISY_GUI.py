@@ -1445,14 +1445,15 @@ TASKS = (
                 active_when=_FULL_RAW,
             ),
             FieldSpec(
-                "collect_file_id", "NTFS-ID",
+                "collect_file_id", "文件标识",
                 "--no-file-id", "choice_flag", True,
                 choices=(
-                    ("采集", True),
+                    ("NTFS-ID", True),
                     ("不采集", False),
                 ),
                 flag_value=False,
-                help="采集 NTFS 卷序列号与文件索引，用于辅助判断移动和重命名。",
+                help="NTFS-ID 由 NTFS 卷序列号与文件索引组成，"
+                     "用于辅助判断移动和重命名。",
                 section="快照内容", active_when=_FULL_NEW,
             ),
             FieldSpec(
@@ -1598,14 +1599,15 @@ TASKS = (
                 section="结果输出", active_when=_QUICK_NEW,
             ),
             FieldSpec(
-                "collect_file_id", "NTFS-ID", "--no-file-id",
+                "collect_file_id", "文件标识", "--no-file-id",
                 "choice_flag", True,
                 choices=(
-                    ("采集", True),
+                    ("NTFS-ID", True),
                     ("不采集", False),
                 ),
                 flag_value=False,
-                help="采集 NTFS 卷序列号与文件索引，用于辅助判断移动和重命名。",
+                help="NTFS-ID 由 NTFS 卷序列号与文件索引组成，"
+                     "用于辅助判断移动和重命名。",
                 section="快照内容", active_when=_QUICK_NEW,
             ),
         ),
@@ -2138,10 +2140,10 @@ TASKS = (*TASKS,
             FieldSpec(
                 "preset", "导出范围", "--preset", "choice_buttons",
                 "full-audit",
-                choices=(("摘要内容", "human-summary"),
-                         ("全部内容", "full-audit"),
+                choices=(("摘要", "human-summary"),
+                         ("全部", "full-audit"),
                          ("自定义", "custom")),
-                help="摘要内容仅选择概览和关键证据；全部内容选择所有可用的数据模块；"
+                help="摘要仅选择概览和关键证据；全部选择所有可用的数据模块；"
                      "自定义可逐项调整。",
                 section="导出内容",
             ),
@@ -3985,7 +3987,7 @@ class VerificationToolButtonGroup(tk.Frame):
         self._requested_raw = bool(initial.get("raw_deep_validation", True))
         definitions = (
             (
-                "verify_builtin", "内置格式校验", True,
+                "verify_builtin", "基本校验", True,
                 "使用 DAISY 内置校验器检查 ZIP/OOXML 的 CRC，以及 PDF 的基本结构。",
             ),
             (
