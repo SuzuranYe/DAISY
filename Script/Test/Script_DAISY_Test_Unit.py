@@ -226,6 +226,14 @@ class TestGuiArguments(unittest.TestCase):
         }
         for identity, label in expected.items():
             self.assertEqual(actual[identity], label)
+        storage_target = next(
+            spec for spec in gui.TASK_BY_KEY["storage_collect"].fields
+            if spec.key == "disk_number"
+        )
+        self.assertEqual(
+            storage_target.help,
+            "从检测结果中选择要登记的联机硬盘；重新检测会清除当前选择。",
+        )
 
     def test_env_check_exposes_only_environment_settings(self):
         fields = [spec.key for spec in gui.TASK_BY_KEY["env_check"].fields]
@@ -1828,7 +1836,7 @@ class TestGuiArguments(unittest.TestCase):
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
         with open(spec_path, "r", encoding="utf-8") as f:
             spec = f.read()
-        self.assertIn("# DAISY v1.6.4 技术规格", spec)
+        self.assertIn("# DAISY v1.6.5 技术规格", spec)
         self.assertIn("v1.4.1 是第一版，v1.6.4 是第二版", spec)
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
@@ -1849,7 +1857,7 @@ class TestGuiArguments(unittest.TestCase):
         readme_path = os.path.join(gui._BASE, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
-        self.assertIn("当前长期生产版本与最近稳定标签：**v1.6.4**", readme)
+        self.assertIn("当前长期生产版本与最近稳定标签：**v1.6.5**", readme)
         self.assertIn("默认窗口目标为 `1600×900`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
@@ -1865,11 +1873,11 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.1", evolution)
         self.assertIn("DAISY v1.6.2", evolution)
         self.assertIn("DAISY v1.6.3", evolution)
-        self.assertIn("DAISY v1.6.4", evolution)
-        self.assertIn("v1.4.1 → v1.6.4", evolution)
+        self.assertIn("DAISY v1.6.5", evolution)
+        self.assertIn("v1.4.1 → v1.6.4 → v1.6.5", evolution)
         for filename in (
-                "Spec_DAISY_V1_6_4_Release_Plan.md",
-                "Spec_DAISY_V1_6_4_Test_Record.md"):
+                "Spec_DAISY_V1_6_5_Release_Plan.md",
+                "Spec_DAISY_V1_6_5_Test_Record.md"):
             self.assertTrue(os.path.isfile(os.path.join(
                 gui._BASE, "Spec", filename)))
         self.assertIn("STG-11 硬盘信息登记", evolution)
@@ -2202,10 +2210,7 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.view_menu.entries
                 if entry["kind"] == "command"
             ],
-            [
-                "隐藏功能栏", "隐藏设置区",
-                "显示进度区", "显示日志区", "小窗模式",
-            ],
+            ["小窗模式"],
         )
         self.assertEqual(
             [
@@ -2213,7 +2218,15 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.view_menu.entries
                 if entry["kind"] == "checkbutton"
             ],
-            [],
+            ["功能栏", "设置区", "进度区", "日志区"],
+        )
+        self.assertEqual(
+            [
+                entry["variable"].get()
+                for entry in app.view_menu.entries
+                if entry["kind"] == "checkbutton"
+            ],
+            [True, True, False, False],
         )
         help_menu = app.app_menu.entries[-1]["menu"]
         self.assertEqual(
@@ -2254,7 +2267,7 @@ class TestGuiArguments(unittest.TestCase):
             0,
         )
 
-    def test_view_menu_uses_concise_visibility_actions(self):
+    def test_view_menu_keeps_visibility_labels_fixed(self):
         class MenuProbe:
             def __init__(self):
                 self.labels = {}
@@ -2264,32 +2277,42 @@ class TestGuiArguments(unittest.TestCase):
 
         app = object.__new__(gui.DaisyApp)
         app.view_menu = MenuProbe()
-        app.view_panel_menu_entries = {
-            "task_toolbar": 0,
-            "settings": 2,
-            "progress": 3,
-            "log": 4,
-        }
         app.view_mini_mode_menu_index = 6
-        app.task_toolbar_expanded = True
-        app.settings_expanded = False
-        app.progress_expanded = True
-        app.log_expanded = False
         app.mini_mode = False
         app._refresh_view_menu_labels()
-        self.assertEqual(
-            app.view_menu.labels,
-            {
-                0: "隐藏功能栏",
-                2: "显示设置区",
-                3: "隐藏进度区",
-                4: "显示日志区",
-                6: "小窗模式",
-            },
-        )
+        self.assertEqual(app.view_menu.labels, {6: "小窗模式"})
         app.mini_mode = True
         app._refresh_view_menu_labels()
         self.assertEqual(app.view_menu.labels[6], "完整界面")
+
+    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
+    def test_real_tk_view_menu_checkmarks_follow_panel_visibility(self):
+        root, app = self._real_tk_app()
+        entries = {
+            app.view_menu.entrycget(index, "label"): index
+            for index in range(int(app.view_menu.index("end")) + 1)
+            if app.view_menu.type(index) != "separator"
+        }
+        expectations = (
+            ("功能栏", app.task_toolbar_visible_var,
+             "task_toolbar_expanded"),
+            ("设置区", app.settings_visible_var, "settings_expanded"),
+            ("进度区", app.progress_visible_var, "progress_expanded"),
+            ("日志区", app.log_visible_var, "log_expanded"),
+        )
+        for label, variable, attribute in expectations:
+            index = entries[label]
+            self.assertEqual(app.view_menu.type(index), "checkbutton")
+            initial = bool(variable.get())
+            self.assertEqual(bool(getattr(app, attribute)), initial)
+            app.view_menu.invoke(index)
+            root.update_idletasks()
+            self.assertEqual(bool(variable.get()), not initial)
+            self.assertEqual(bool(getattr(app, attribute)), not initial)
+            app.view_menu.invoke(index)
+            root.update_idletasks()
+            self.assertEqual(bool(variable.get()), initial)
+            self.assertEqual(bool(getattr(app, attribute)), initial)
 
     def test_idle_close_never_requires_confirmation(self):
         class RootProbe:
@@ -3138,6 +3161,10 @@ class TestGuiArguments(unittest.TestCase):
             "需要先运行环境检测",
         )
         self.assertEqual(
+            app.values["verify_builtin"].status_detail_label.cget("text"),
+            "完成环境检测后，才可选择并开始核验。",
+        )
+        self.assertEqual(
             app.gui_preferences["last_task_key"], "verify")
 
     @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
@@ -3415,8 +3442,8 @@ class TestGuiArguments(unittest.TestCase):
                 admin_button.winfo_reqheight(),
             ),
             (
-                app.settings_toggle_button.winfo_reqwidth(),
-                app.settings_toggle_button.winfo_reqheight(),
+                app.storage_detect_button.winfo_reqwidth(),
+                app.storage_detect_button.winfo_reqheight(),
             ),
         )
         self.assertIsNotNone(app.admin_requirement_label)
@@ -3429,8 +3456,12 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLessEqual(abs(admin_center_y - label_center_y), 1)
         self.assertLessEqual(abs(
             admin_button.winfo_rootx()
-            - app.reset_current_settings_button.winfo_rootx()
+            - app.storage_detect_button.winfo_rootx()
         ), 1)
+        self.assertLess(
+            admin_button.winfo_rootx(),
+            app.admin_requirement_label.winfo_rootx(),
+        )
         ancestors = []
         current = app.admin_mode_button
         while current is not None:
@@ -3730,6 +3761,19 @@ class TestGuiArguments(unittest.TestCase):
             app.storage_detect_button.cget("style"),
             "DiscoveryAction.TButton",
         )
+        storage_texts = {
+            child.cget("text")
+            for child in self._tk_descendants(app.form_inner)
+            if isinstance(child, gui.tk.Label)
+        }
+        self.assertIn(
+            "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。",
+            storage_texts,
+        )
+        self.assertEqual(
+            app.storage_detect_button._daisy_tooltip.text,
+            "读取硬盘、分区、卷与 SMART 信息，并刷新下方可登记硬盘清单。",
+        )
 
         app.process_task_key = "storage_list"
         app.run_jobs = [gui.RunJob("检测硬盘", {})]
@@ -3911,6 +3955,15 @@ class TestGuiArguments(unittest.TestCase):
         parse_button = app.parse_detect_button
         self.assertEqual(parse_button.cget("text"), "解析数据库")
         self.assertEqual(
+            app.parse_detection_detail_label.cget("text"),
+            "选择数据库后，点击「解析数据库」读取类型、来源版本、"
+            "结构版本和数据模块。",
+        )
+        self.assertEqual(
+            parse_button._daisy_tooltip.text,
+            "读取所选数据库的类型、来源版本、结构版本和数据模块。",
+        )
+        self.assertEqual(
             parse_button.cget("style"), "DiscoveryAction.TButton")
         self.assertEqual(
             app.style.lookup(parse_button.cget("style"), "background"),
@@ -4000,9 +4053,10 @@ class TestGuiArguments(unittest.TestCase):
             detect.assert_not_called()
             self.assertEqual(
                 app.values["database"].get(), os.path.normpath(database))
-            self.assertIn(
-                "点击「解析数据库」",
+            self.assertEqual(
                 app.parse_detection_detail_label.cget("text"),
+                "已选择数据库；点击「解析数据库」读取类型、来源版本、"
+                "结构版本和数据模块。",
             )
             app._parse_database_focus_out(types.SimpleNamespace())
             detect.assert_not_called()
@@ -4024,6 +4078,19 @@ class TestGuiArguments(unittest.TestCase):
             gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
                 database_type="snapshot", source_version=None)),
             "快照版本 未知",
+        )
+        app = object.__new__(gui.DaisyApp)
+        inspection = types.SimpleNamespace(
+            descriptor=types.SimpleNamespace(
+                database_type="snapshot", source_version="1.4.1",
+                schema_version=3,
+            ),
+            module_state_counts={"available": 15},
+        )
+        self.assertEqual(
+            app._parse_database_detection_detail(inspection),
+            "已解析封存快照；快照版本 v1.4.1；数据库结构版本 3；"
+            "数据模块 15 项可用。输入文件变化后，请重新解析。",
         )
 
     def test_snapshot_parse_module_ui_titles_are_clear_and_bounded(self):
@@ -5498,7 +5565,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.4")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.5")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")

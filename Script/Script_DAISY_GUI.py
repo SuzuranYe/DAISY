@@ -1873,7 +1873,7 @@ TASKS = (
         "storage-list",
         "内部步骤：检测硬盘",
         "检测硬盘",
-        "读取本机硬盘、分区和卷，并标明可用的 SMART 读取目标。",
+        "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。",
         "管理员权限 · 只读检测 · 硬盘清单",
         (
             FieldSpec(
@@ -1901,8 +1901,8 @@ TASKS = (
             FieldSpec(
                 "disk_number", "硬盘选择", "--disk-number",
                 "disk_pool", required=True,
-                help="先点击「检测硬盘」，再选择要登记的联机硬盘；"
-                     "重新检测会清除旧选择。",
+                help="从检测结果中选择要登记的联机硬盘；"
+                     "重新检测会清除当前选择。",
                 section="采集目标",
             ),
             FieldSpec(
@@ -3143,7 +3143,7 @@ class AdminModeButton(tk.Frame):
             top_level, "_daisy_font_size_delta", 0))
         self._style = ttk.Style(self)
         common_style = {
-            "padding": _FILE_PICKER_BUTTON_PADDING,
+            "padding": _STANDARD_BUTTON_PADDING,
             "font": (
                 font_family, _UI_BODY_FONT_SIZE + font_size_delta),
         }
@@ -3185,7 +3185,7 @@ class AdminModeButton(tk.Frame):
             foreground=[("disabled", _MUTED)],
         )
         self.button = ttk.Button(
-            self, text="管理员模式", width=_PANEL_ACTION_BUTTON_WIDTH,
+            self, text="管理员模式", width=_FORM_ACTION_BUTTON_WIDTH,
             takefocus=True, command=self._activate,
         )
         self.button.pack()
@@ -4105,7 +4105,7 @@ class VerificationToolButtonGroup(tk.Frame):
         self.status_label.pack(side="left")
         self.status_detail_label = tk.Label(
             status_header,
-            text="检测前不能开始任务。",
+            text="完成环境检测后，才可选择并开始核验。",
             bg=_AMBER_SOFT,
             fg=_TEXT,
             anchor="w",
@@ -4373,7 +4373,7 @@ class ParseModulePool(tk.Frame):
         self.card_host.bind("<Configure>", self._layout_cards)
         self.set_inspection(
             inspection, preset=self.preset, initial=initial,
-            empty_text="请先选择并解析输入数据库。",
+            empty_text="请选择输入数据库，再点击「解析数据库」。",
         )
 
     def set_inspection(
@@ -4382,7 +4382,7 @@ class ParseModulePool(tk.Frame):
         *,
         preset: str,
         initial: object = "",
-        empty_text: str = "请先选择并解析输入数据库。",
+        empty_text: str = "请选择输入数据库，再点击「解析数据库」。",
     ) -> None:
         """原位更新识别结果，避免重建整张设置表单造成闪烁。"""
         self.inspection = inspection
@@ -6149,35 +6149,33 @@ class DaisyApp:
             command=lambda: self._set_result_directory_prompt(
                 self.result_directory_prompt_enabled_var.get()),
         )
-        self.task_toolbar_visible_var = tk.BooleanVar(value=True)
-        self.settings_visible_var = tk.BooleanVar(value=True)
-        self.progress_visible_var = tk.BooleanVar(value=False)
-        self.log_visible_var = tk.BooleanVar(value=False)
+        self.task_toolbar_visible_var = tk.BooleanVar(
+            value=getattr(self, "task_toolbar_expanded", True))
+        self.settings_visible_var = tk.BooleanVar(
+            value=getattr(self, "settings_expanded", True))
+        self.progress_visible_var = tk.BooleanVar(
+            value=getattr(self, "progress_expanded", False))
+        self.log_visible_var = tk.BooleanVar(
+            value=getattr(self, "log_expanded", False))
         view_menu = tk.Menu(menu, **base_menu_options)
         self.view_menu = view_menu
-        self.view_panel_menu_entries: dict[str, int] = {}
-        panel_states = {
-            "task_toolbar": getattr(self, "task_toolbar_expanded", True),
-            "settings": getattr(self, "settings_expanded", True),
-            "progress": getattr(self, "progress_expanded", False),
-            "log": getattr(self, "log_expanded", False),
-        }
-        for panel_key, panel_label, command in (
-            ("task_toolbar", "功能栏", self._toggle_task_toolbar),
-            ("settings", "设置区", self._toggle_settings_panel),
-            ("progress", "进度区", self._toggle_progress_panel),
-            ("log", "日志区", self._toggle_log_panel),
+        for panel_key, panel_label, variable, setter in (
+            ("task_toolbar", "功能栏", self.task_toolbar_visible_var,
+             self._set_task_toolbar_expanded),
+            ("settings", "设置区", self.settings_visible_var,
+             self._set_settings_expanded),
+            ("progress", "进度区", self.progress_visible_var,
+             self._set_progress_expanded),
+            ("log", "日志区", self.log_visible_var,
+             self._set_log_expanded),
         ):
-            view_menu.add_command(
-                label=(
-                    ("隐藏" if panel_states[panel_key] else "显示")
-                    + panel_label
-                ),
-                command=command,
+            view_menu.add_checkbutton(
+                label=panel_label,
+                variable=variable,
+                command=lambda state=variable, apply=setter:
+                apply(bool(state.get())),
+                selectcolor=_UNIFIED_ACTION_BACKGROUND,
             )
-            entry_index = view_menu.index("end")
-            if entry_index is not None:
-                self.view_panel_menu_entries[panel_key] = int(entry_index)
             if panel_key == "task_toolbar":
                 view_menu.add_separator()
         view_menu.add_separator()
@@ -6958,21 +6956,7 @@ class DaisyApp:
             self.root.minsize(*self._normal_minimum_size())
 
     def _refresh_view_menu_labels(self) -> None:
-        """让可折叠面板菜单显示下一步会执行的动作。"""
-        if not hasattr(self, "view_panel_menu_entries"):
-            return
-        states = {
-            "task_toolbar": (self.task_toolbar_expanded, "功能栏"),
-            "settings": (self.settings_expanded, "设置区"),
-            "progress": (self.progress_expanded, "进度区"),
-            "log": (self.log_expanded, "日志区"),
-        }
-        for panel_key, entry_index in self.view_panel_menu_entries.items():
-            expanded, label = states[panel_key]
-            self.view_menu.entryconfigure(
-                entry_index,
-                label=("隐藏" if expanded else "显示") + label,
-            )
+        """同步模式切换文字；面板勾选状态由 BooleanVar 直接驱动。"""
         if hasattr(self, "view_mini_mode_menu_index"):
             self.view_menu.entryconfigure(
                 self.view_mini_mode_menu_index,
@@ -7926,7 +7910,7 @@ class DaisyApp:
             padx=form_pad, pady=(5, 2),
         )
         header = tk.Frame(panel, bg=background)
-        header.pack(fill="x", padx=(12, 0), pady=(6, 2))
+        header.pack(fill="x", padx=12, pady=(6, 2))
         self.admin_requirement_label = tk.Label(
             header,
             text=("管理员权限已启用" if already_admin else
@@ -7934,21 +7918,16 @@ class DaisyApp:
             bg=background, fg=heading_colour,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         )
-        self.admin_requirement_label.pack(side="left")
-        admin_actions = tk.Frame(header, bg=background)
-        admin_actions.pack(side="right")
-        admin_actions.grid_columnconfigure(
-            1, minsize=_PANEL_ACTION_BUTTON_GAP)
-        admin_actions.grid_columnconfigure(
-            2, minsize=self.settings_toggle_button.winfo_reqwidth())
         self.admin_mode_button = AdminModeButton(
-            admin_actions,
+            header,
             value=already_admin,
             enabled=(os.name == "nt" and not already_admin),
             command=self._request_admin_mode,
             background=background,
         )
-        self.admin_mode_button.grid(row=0, column=0, sticky="ew")
+        self.admin_mode_button.pack(side="left")
+        self.admin_requirement_label.pack(
+            side="left", padx=(_SPACING_STANDARD, 0))
         admin_tooltip = (
             "当前已启用管理员权限。关闭 DAISY 后以普通方式重新打开，即可回到普通权限。"
             if already_admin else
@@ -7993,10 +7972,10 @@ class DaisyApp:
         detail = tk.Label(
             panel,
             text=(
-                f"检测到 {found_count} 块硬盘，其中 {selectable_count} 块"
-                "可登记；选择后可开始任务。"
+                f"已检测 {found_count} 块硬盘，其中 {selectable_count} 块"
+                "可登记；请在下方选择。"
                 if found_count else
-                "读取本机硬盘信息，再选择要登记的硬盘。"
+                "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。"
             ),
             bg=_SURFACE, fg=_TEXT,
             font=("Microsoft YaHei UI", 9), anchor="w",
@@ -8017,7 +7996,7 @@ class DaisyApp:
             padx=(0, _SPACING_STANDARD), pady=3)
         attach_tooltip(
             self.storage_detect_button,
-            "读取本机硬盘、分区和卷，识别可读取 SMART 信息的硬盘，并刷新下方清单。",
+            "读取硬盘、分区、卷与 SMART 信息，并刷新下方可登记硬盘清单。",
         )
         panel.bind(
             "<Configure>",
@@ -8048,7 +8027,11 @@ class DaisyApp:
         inspection = self._matching_parse_inspection(database)
         if inspection is None:
             detail_text = (
-                "选择数据库，再点击「解析数据库」查看可用的数据模块。"
+                "已选择数据库；点击「解析数据库」读取类型、来源版本、"
+                "结构版本和数据模块。"
+                if database.strip() else
+                "选择数据库后，点击「解析数据库」读取类型、来源版本、"
+                "结构版本和数据模块。"
             )
         else:
             detail_text = self._parse_database_detection_detail(inspection)
@@ -8071,7 +8054,7 @@ class DaisyApp:
         self.parse_detection_detail_label = detail
         attach_tooltip(
             self.parse_detect_button,
-            "只读识别数据库类型、结构版本和可用数据模块。",
+            "读取所选数据库的类型、来源版本、结构版本和数据模块。",
         )
         panel.bind(
             "<Configure>",
@@ -8618,7 +8601,7 @@ class DaisyApp:
             f"已解析{type_label}；"
             f"{self._parse_database_version_text(descriptor)}；"
             f"数据库结构版本 {descriptor.schema_version}；"
-            f"可用数据模块 {available} 项。数据库变化后请重新解析。"
+            f"数据模块 {available} 项可用。输入文件变化后，请重新解析。"
         )
 
     def _invalidate_parse_database_selection(self) -> None:
@@ -8640,9 +8623,11 @@ class DaisyApp:
         detail = getattr(self, "parse_detection_detail_label", None)
         if detail is not None:
             detail.configure(text=(
-                "已选择数据库；点击「解析数据库」后识别版本和数据模块。"
+                "已选择数据库；点击「解析数据库」读取类型、来源版本、"
+                "结构版本和数据模块。"
                 if raw else
-                "选择数据库，再点击「解析数据库」查看数据模块。"
+                "选择数据库后，点击「解析数据库」读取类型、来源版本、"
+                "结构版本和数据模块。"
             ))
         self._update_preview()
 
@@ -8694,7 +8679,7 @@ class DaisyApp:
         detail = getattr(self, "parse_detection_detail_label", None)
         if detail is not None:
             detail.configure(
-                text="正在解析数据库版本、结构和数据模块…",
+                text="正在解析数据库类型、来源版本、结构版本和数据模块…",
                 fg=_GREEN_DEEP,
             )
         self.run_button.configure(state="disabled")
@@ -8704,7 +8689,9 @@ class DaisyApp:
         self.progress_stage_label.configure(
             text="解析数据库 · 正在分析", fg=_GREEN_DARK)
         self.progress_detail_label.configure(
-            text="正在读取数据库类型、结构版本和可用数据模块…", fg=_MUTED)
+            text="正在读取数据库类型、来源版本、结构版本和数据模块…",
+            fg=_MUTED,
+        )
         self._set_work_indeterminate()
         self._set_status("正在解析数据库…")
         self._append_log(
@@ -8792,7 +8779,7 @@ class DaisyApp:
         summary = (
             f"{type_label}；{self._parse_database_version_text(descriptor)}；"
             f"数据库结构版本 {descriptor.schema_version}；"
-            f"可用数据模块 {counts.get('available', 0)} 项"
+            f"数据模块 {counts.get('available', 0)} 项可用"
         )
         self._set_work_fraction(100, style="Success")
         self.progress_stage_bar.configure(
