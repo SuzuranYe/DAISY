@@ -262,11 +262,18 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             fields,
             [
-                "output_dir", "exiftool_path", "ffprobe_path", "sevenzip_path",
+                "export_environment_report", "output_dir",
+                "exiftool_path", "ffprobe_path", "sevenzip_path",
                 "powershell_path", "smartctl_path",
             ],
         )
         args = gui.build_tool_args("env_check", {})
+        self.assertNotIn("--export-report", args)
+        self.assertNotIn("--output-dir", args)
+        export_args = gui.build_tool_args(
+            "env_check", {"export_environment_report": True})
+        self.assertIn("--export-report", export_args)
+        self.assertIn("--output-dir", export_args)
         for retired in ("--root", "--limit", "--et-sample", "--read-cap-gb"):
             self.assertNotIn(retired, args)
 
@@ -506,7 +513,8 @@ class TestGuiArguments(unittest.TestCase):
     def test_every_supported_cli_setting_has_a_gui_mapping(self):
         expected = {
             "env_check": {
-                "--output-dir", "--exiftool-path", "--ffprobe-path",
+                "--export-report", "--output-dir",
+                "--exiftool-path", "--ffprobe-path",
                 "--sevenzip-path", "--powershell-path", "--smartctl-path",
             },
             "full_scan": {
@@ -1121,10 +1129,13 @@ class TestGuiArguments(unittest.TestCase):
         app.environment_missing_names = ()
         app.environment_missing_reasons = {}
         app.missing_installable_tools = ()
+        app.runtime_capabilities = {}
         app.pending_install_version_report = gui.InstallVersionReport(
             "sevenzip", "7-Zip", "24.09", install_returncode=0)
         app._cache_detected_tools = lambda _payload: None
         app._refresh_tool_cache_labels = lambda: None
+        logs = []
+        app._append_log = lambda text, tag=None: logs.append((text, tag))
 
         app._apply_environment_inventory({
             "tools": {},
@@ -1138,6 +1149,14 @@ class TestGuiArguments(unittest.TestCase):
         report = app.pending_install_version_report
         self.assertEqual(report.after_version, "未检测到")
         self.assertTrue(report.inventory_received)
+
+        app._finish_install_version_report(
+            recheck_returncode=1, update_status=False)
+
+        self.assertIn(
+            "环境复检完成，仍缺失或不可用：7-Zip",
+            "".join(text for text, _tag in logs),
+        )
 
     def test_gui_rawpy_install_version_comes_from_isolated_inventory(self):
         payload = {
@@ -1269,7 +1288,7 @@ class TestGuiArguments(unittest.TestCase):
             "env_check", cache, path_exists=lambda _path: True)
         self.assertEqual(
             summary,
-            "本机版本：ExifTool 13.59、PowerShell 5.1.26100.1",
+            "本机版本：ExifTool 13.59、PowerShell 5.1",
         )
 
     def test_environment_success_status_displays_version_not_available(self):
@@ -1291,6 +1310,45 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(label, "Python\n3.14.2")
         self.assertNotIn("\n可用", label)
         self.assertIn("版本：3.14.2", detail)
+
+    def test_environment_inventory_caches_python_and_compacts_powershell(self):
+        app = object.__new__(gui.DaisyApp)
+        app.detected_tools = {}
+        app.process_task_key = "env_check"
+        app._refresh_tool_cache_labels = Mock()
+        app._update_preview = Mock()
+
+        app._cache_detected_tools({
+            "tools": {
+                "python": {
+                    "path": r"C:\Python314\python.exe",
+                    "version": "3.14.2",
+                    "verified": True,
+                },
+            },
+        })
+
+        self.assertEqual(
+            app.detected_tools["python"]["version"], "3.14.2")
+        self.assertEqual(
+            gui.compact_environment_version(
+                "powershell", "5.1.26100.7705"),
+            "5.1",
+        )
+
+    def test_environment_missing_summary_names_tools_and_rawpy(self):
+        capabilities = {
+            gui.envcap.RAW_CAPABILITY_ID: {
+                "state": "unavailable",
+                "available": False,
+                "reason": "rawpy 未安装",
+            },
+        }
+        self.assertEqual(
+            gui.environment_missing_labels(
+                ("ffprobe", "smartctl"), capabilities),
+            ("ffprobe", "smartctl", "rawpy/LibRaw"),
+        )
 
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
@@ -2019,14 +2077,25 @@ class TestGuiArguments(unittest.TestCase):
             shell_source.index("colour_strip ="),
         )
         self.assertEqual(
-            shell_source.count("padx=_PANEL_HEADER_ACTION_MARGIN"), 2)
+            shell_source.count("padx=_PANEL_HEADER_ACTION_MARGIN"), 3)
         self.assertEqual(
-            shell_source.count("pady=_PANEL_HEADER_ACTION_MARGIN"), 2)
+            shell_source.count("pady=_PANEL_HEADER_ACTION_MARGIN"), 3)
+        self.assertIn('text="恢复设置"', shell_source)
+        self.assertNotIn('text="恢复默认"', shell_source)
         toolbar_source = inspect.getsource(
             gui.DaisyApp._build_task_toolbar)
         self.assertNotIn('text="功能模块"', toolbar_source)
         self.assertIn(
-            "padx=_TASK_TOOLBAR_OUTER_MARGIN", toolbar_source)
+            'toolbar_row.bind("<Configure>", '
+            'self._fit_task_toolbar_buttons)',
+            toolbar_source,
+        )
+        self.assertIn("_TASK_TOOLBAR_OUTER_MARGIN,", toolbar_source)
+        self.assertIn(
+            "self.content_pad + _PANEL_HEADER_ACTION_MARGIN",
+            toolbar_source,
+        )
+        self.assertIn("+ _ENTRY_BORDER_WIDTH", toolbar_source)
         self.assertIn(
             "pady=_TASK_TOOLBAR_OUTER_MARGIN", toolbar_source)
 
@@ -2125,8 +2194,8 @@ class TestGuiArguments(unittest.TestCase):
             )
         expected_progress = {
             "Queue.Horizontal.TProgressbar": gui._RESEARCH_BLUE,
-            "Stage.Horizontal.TProgressbar": gui._SAGE,
-            "Work.Horizontal.TProgressbar": gui._SKY_BLUE,
+            "Stage.Horizontal.TProgressbar": gui._RESEARCH_BLUE,
+            "Work.Horizontal.TProgressbar": gui._RESEARCH_BLUE,
         }
         for name, colour in expected_progress.items():
             progress_style = style.configurations[name]
@@ -2769,7 +2838,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.task_toolbar_toggle_button.text, "收起模块")
         self.assertTrue(app.task_toolbar_visible_var.value)
 
-    def test_collapsed_settings_header_matches_panel_title_scale(self):
+    def test_collapsed_settings_header_keeps_title_scale_and_action_position(self):
         class BodyProbe:
             def __init__(self):
                 self.manager = "pack"
@@ -2790,17 +2859,9 @@ class TestGuiArguments(unittest.TestCase):
             def configure(self, **options):
                 self.options.update(options)
 
-        class RowProbe:
-            def __init__(self):
-                self.options = {}
-
-            def pack_configure(self, **options):
-                self.options.update(options)
-
         app = object.__new__(gui.DaisyApp)
         app.settings_body = BodyProbe()
         app.title_label = WidgetProbe()
-        app.settings_title_row = RowProbe()
         app.settings_toggle_button = WidgetProbe()
         app.settings_expanded = True
         app.settings_title_expanded_font = (
@@ -2817,24 +2878,14 @@ class TestGuiArguments(unittest.TestCase):
             app._font_tuple(9, "bold"),
         )
         self.assertEqual(
-            app.settings_title_row.options,
-            {
-                "padx": gui._SPACING_OUTER,
-                "pady": gui._COLLAPSED_SETTINGS_HEADER_PADY,
-            },
-        )
+            app.settings_toggle_button.options["text"], "展开设置")
         app._set_settings_expanded(True)
         self.assertEqual(
             app.title_label.options["font"],
             app.settings_title_expanded_font,
         )
         self.assertEqual(
-            app.settings_title_row.options,
-            {
-                "padx": gui._SPACING_OUTER,
-                "pady": (gui._SPACING_INLINE, gui._SPACING_COMPACT),
-            },
-        )
+            app.settings_toggle_button.options["text"], "收起设置")
 
     def test_top_task_toolbar_keeps_one_fixed_equal_row(self):
         class WidgetProbe:
@@ -2904,6 +2955,15 @@ class TestGuiArguments(unittest.TestCase):
             gui._TASK_ACTION_BUTTON_PADDING,
         )
         self.assertEqual(
+            gui._TASK_TOOLBAR_COMPACT_BUTTON_WIDTH,
+            gui._SIX_COLUMN_BUTTON_WIDTH,
+        )
+        self.assertLess(
+            gui._TASK_TOOLBAR_COMPACT_BUTTON_WIDTH,
+            gui._TASK_TOOLBAR_BUTTON_WIDTH,
+        )
+        self.assertEqual(gui._TASK_TOOLBAR_COMPACT_BREAKPOINT, 1500)
+        self.assertEqual(
             gui._ENVIRONMENT_BUTTON_WIDTH,
             gui._STANDARD_BUTTON_WIDTH,
         )
@@ -2961,6 +3021,69 @@ class TestGuiArguments(unittest.TestCase):
             forget_calls,
         )
 
+    def test_top_task_toolbar_compacts_before_covering_actions(self):
+        class RootProbe:
+            def __init__(self, width):
+                self.width = width
+
+            def winfo_width(self):
+                return self.width
+
+        class ActionProbe:
+            @staticmethod
+            def winfo_reqwidth():
+                return 292
+
+        class BodyProbe:
+            @staticmethod
+            def winfo_width():
+                return 1
+
+        class ButtonProbe:
+            def __init__(self):
+                self.width = gui._TASK_TOOLBAR_BUTTON_WIDTH
+                self.padx = gui._TASK_TOOLBAR_BUTTON_PADDING[0]
+
+            def cget(self, key):
+                return getattr(self, key)
+
+            def configure(self, **options):
+                for key, value in options.items():
+                    setattr(self, key, value)
+
+            def winfo_reqwidth(self):
+                return self.width * 8 + self.padx * 2
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe(1280)
+        app.task_toolbar_actions = ActionProbe()
+        app.task_toolbar_body = BodyProbe()
+        app.task_toolbar_buttons = {
+            key: ButtonProbe() for key in gui._TASK_TOOLBAR_KEYS
+        }
+        app._fit_task_toolbar_buttons()
+        buttons = tuple(app.task_toolbar_buttons.values())
+        self.assertEqual(
+            {button.width for button in buttons},
+            {gui._TASK_TOOLBAR_COMPACT_BUTTON_WIDTH},
+        )
+        available = (
+            app.root.width - gui._TASK_TOOLBAR_OUTER_MARGIN * 2
+            - gui._STANDARD_BUTTON_GAP
+            - app.task_toolbar_actions.winfo_reqwidth()
+        )
+        required = (
+            sum(button.winfo_reqwidth() for button in buttons)
+            + gui._STANDARD_BUTTON_GAP * (len(buttons) - 1)
+        )
+        self.assertLessEqual(required, available)
+        app.root.width = 1920
+        app._fit_task_toolbar_buttons()
+        self.assertEqual(
+            {button.width for button in buttons},
+            {gui._TASK_TOOLBAR_BUTTON_WIDTH},
+        )
+
     def test_queue_progress_is_persistent_for_single_and_multiple_jobs(self):
         class WidgetProbe:
             def __init__(self):
@@ -3009,6 +3132,60 @@ class TestGuiArguments(unittest.TestCase):
             app.progress_stage_percent_label.options["fg"],
             gui._PROGRESS_STAGE_FOREGROUND,
         )
+
+    def test_three_progress_rows_share_one_text_palette(self):
+        self.assertEqual(
+            {
+                gui._PROGRESS_QUEUE_FOREGROUND,
+                gui._PROGRESS_STAGE_FOREGROUND,
+                gui._PROGRESS_WORK_FOREGROUND,
+            },
+            {gui._PROGRESS_TEXT_FOREGROUND},
+        )
+
+    def test_unready_start_button_uses_disabled_grey_palette(self):
+        class ButtonProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        app = object.__new__(gui.DaisyApp)
+        app.run_button = ButtonProbe()
+        app._set_run_action_mode(False, state="disabled")
+        self.assertEqual(app.run_button.options["state"], "disabled")
+        self.assertEqual(app.run_button.options["bg"], gui._STONE_GRAY)
+        self.assertEqual(
+            app.run_button.options["disabledforeground"], gui._MUTED)
+
+    def test_staged_choice_skips_intermediate_button_repaint(self):
+        class VariableProbe:
+            def __init__(self):
+                self.value = "database"
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        group = object.__new__(gui.ChoiceButtonGroup)
+        group.variable = VariableProbe()
+        group._refresh = Mock()
+        group.on_change = Mock(return_value=True)
+
+        group._choose("direct")
+
+        self.assertEqual(group.variable.get(), "direct")
+        group.on_change.assert_called_once_with()
+        group._refresh.assert_not_called()
+
+    def test_parse_module_grid_uses_fixed_button_and_gap_columns(self):
+        source = inspect.getsource(gui.ParseModulePool._layout_cards)
+        self.assertIn('"parse_module_button"', source)
+        self.assertIn("column=column * 2", source)
+        self.assertNotIn("has_next_in_row", source)
 
 
     def test_parse_database_version_text_uses_descriptor_metadata(self):
@@ -3098,6 +3275,67 @@ class TestGuiArguments(unittest.TestCase):
             calls.index(("settings", False)), calls.index(("start", True)))
         self.assertLess(
             calls.index(("log", True)), calls.index(("start", True)))
+
+    def test_finished_task_collapses_only_progress_after_two_seconds(self):
+        class RootProbe:
+            def __init__(self):
+                self.delay = None
+                self.callback = None
+
+            def after(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                return "collapse-progress"
+
+            def after_cancel(self, _after_id):
+                pass
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.progress_collapse_after_id = None
+        app.process = None
+        app.worker_starting = False
+        app.run_jobs = []
+        app.mini_mode = False
+        app._set_progress_expanded = Mock()
+        app._set_log_expanded = Mock()
+
+        app._schedule_progress_auto_collapse()
+
+        self.assertEqual(app.root.delay, 2000)
+        app.root.callback()
+        app._set_progress_expanded.assert_called_once_with(False)
+        app._set_log_expanded.assert_called_once_with(True)
+
+        mini = object.__new__(gui.DaisyApp)
+        mini.root = RootProbe()
+        mini.progress_collapse_after_id = None
+        mini.process = None
+        mini.worker_starting = False
+        mini.run_jobs = []
+        mini.mini_mode = True
+        mini._mini_progress_was_expanded = True
+        mini._set_progress_expanded = Mock()
+        mini._set_log_expanded = Mock()
+
+        mini._schedule_progress_auto_collapse()
+        mini.root.callback()
+
+        self.assertFalse(mini._mini_progress_was_expanded)
+        mini._set_log_expanded.assert_not_called()
+
+    def test_settings_progress_and_log_default_to_collapsed(self):
+        source = inspect.getsource(gui.DaisyApp.__init__)
+        for attribute in (
+                "settings_expanded", "progress_expanded", "log_expanded"):
+            self.assertIn(f"self.{attribute} = False", source)
+        layout_source = inspect.getsource(
+            gui.DaisyApp._refresh_content_row_weights)
+        self.assertIn("self.progress_inner.winfo_reqheight()", layout_source)
+        self.assertIn("_SPACING_INLINE", layout_source)
+        self.assertIn("_SPACING_STANDARD", layout_source)
+        self.assertIn(
+            "base_log_height + progress_transfer_height", layout_source)
 
     def test_status_badge_uses_slate_or_semantic_colour(self):
         self.assertEqual(
@@ -3423,7 +3661,7 @@ class TestGuiArguments(unittest.TestCase):
                 for issue in gui.validate_values("verify", duplicate)
             ))
 
-    def test_parse_form_reveals_each_chapter_after_upstream_selection(self):
+    def test_parse_form_reveals_all_options_after_database_detection(self):
         task = gui.TASK_BY_KEY["parse_db"]
         for values in ({}, {"database": __file__}):
             self.assertEqual(
@@ -3439,7 +3677,10 @@ class TestGuiArguments(unittest.TestCase):
                     {"database": __file__},
                     parse_database_ready=True,
                 )),
-            ("database", "preset"),
+            (
+                "database", "preset", "parse_modules", "formats",
+                "output_dir",
+            ),
         )
         self.assertEqual(
             tuple(
@@ -3453,6 +3694,7 @@ class TestGuiArguments(unittest.TestCase):
                 )),
             (
                 "database", "preset", "parse_modules", "formats",
+                "output_dir",
             ),
         )
         custom = {
@@ -3463,14 +3705,22 @@ class TestGuiArguments(unittest.TestCase):
             tuple(
                 spec.key for spec in gui._visible_form_specs(
                     task, custom, parse_database_ready=True)),
-            ("database", "preset", "parse_modules"),
+            (
+                "database", "preset", "parse_modules", "formats",
+                "output_dir",
+            ),
         )
+        self.assertFalse(gui.workflow_inputs_ready(
+            "parse_db", custom, parse_database_ready=True))
         custom["parse_modules"] = "files"
         self.assertEqual(
             tuple(
                 spec.key for spec in gui._visible_form_specs(
                     task, custom, parse_database_ready=True)),
-            ("database", "preset", "parse_modules", "formats"),
+            (
+                "database", "preset", "parse_modules", "formats",
+                "output_dir",
+            ),
         )
         custom["formats"] = "html"
         self.assertEqual(
@@ -3489,15 +3739,15 @@ class TestGuiArguments(unittest.TestCase):
         diff = gui.TASK_BY_KEY["diff"]
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(diff, {})),
-            ("old", "new"),
+            ("old", "new", "diff_root_mode", "output_dir"),
         )
         snapshot_values = {"old": "old.sqlite", "new": "new.sqlite"}
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(
                 diff, snapshot_values)),
-            ("old", "new", "diff_root_mode"),
+            ("old", "new", "diff_root_mode", "output_dir"),
         )
-        self.assertFalse(gui.workflow_inputs_ready("diff", snapshot_values))
+        self.assertTrue(gui.workflow_inputs_ready("diff", snapshot_values))
         single = dict(snapshot_values, diff_root_mode="single")
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(diff, single)),
@@ -3532,16 +3782,24 @@ class TestGuiArguments(unittest.TestCase):
             storage_inventory_ready=True,
         ))
 
-    def test_scan_and_verify_keep_their_existing_selection_gates(self):
+    def test_scan_defaults_visible_while_verify_keeps_selection_gate(self):
         scan = gui.TASK_BY_KEY["scan"]
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(scan, {})),
-            ("scan_mode",),
+            (
+                "scan_mode", "start_mode", "roots", "root_batch_mode",
+                "output_dir", "metadata_storage", "collect_file_id",
+                "hash_mode",
+            ),
         )
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(
                 scan, {"scan_mode": "full"})),
-            ("scan_mode", "start_mode"),
+            (
+                "scan_mode", "start_mode", "roots", "root_batch_mode",
+                "output_dir", "metadata_storage", "collect_file_id",
+                "hash_mode",
+            ),
         )
         verify = gui.TASK_BY_KEY["verify"]
         self.assertEqual(
@@ -3553,6 +3811,20 @@ class TestGuiArguments(unittest.TestCase):
                 verify, {"verification_mode": "database"})),
             ("verification_mode", "verify_path_mode"),
         )
+
+    def test_verification_projects_default_on_except_rawpy(self):
+        defaults = {
+            spec.key: spec.default
+            for spec in gui.TASK_BY_KEY["verify"].fields
+            if spec.key in gui._VERIFICATION_CONTROL_KEYS
+        }
+        self.assertEqual(set(defaults), set(gui._VERIFICATION_CONTROL_KEYS))
+        self.assertFalse(defaults["raw_deep_validation"])
+        self.assertTrue(all(
+            value is True
+            for key, value in defaults.items()
+            if key != "raw_deep_validation"
+        ))
 
     def test_staged_form_section_heading_does_not_change_after_selection(self):
         verify = gui.TASK_BY_KEY["verify"]
@@ -3640,7 +3912,7 @@ class TestGuiArguments(unittest.TestCase):
 
         forwarded = app._schedule_staged_form_rebuild.call_args.kwargs[
             "values"]
-        self.assertEqual(forwarded["diff_root_mode"], "")
+        self.assertEqual(forwarded["diff_root_mode"], "single")
         self.assertNotIn("map_root", forwarded)
         self.assertEqual(forwarded["output_dir"], "Output")
         app._update_preview.assert_not_called()
@@ -5282,6 +5554,79 @@ class TestEnvironmentInventory(unittest.TestCase):
             result[envcheck.envcap.RAW_CAPABILITY_ID]["reason"],
         )
 
+    def test_missing_tool_is_completed_without_exporting_report_by_default(self):
+        tools = {
+            "python": {
+                "path": sys.executable,
+                "version": envcheck.platform.python_version(),
+                "resolution": "runtime",
+                "verified": True,
+            },
+        }
+        issues = [{
+            "name": "ffprobe",
+            "display": "ffprobe",
+            "installable": True,
+            "reason": "synthetic missing ffprobe",
+        }]
+        capabilities = {
+            envcheck.envcap.RAW_CAPABILITY_ID: {
+                "state": "available",
+                "available": True,
+                "version": "0.25.0",
+            },
+        }
+        with tempfile.TemporaryDirectory() as td, patch.object(
+                sys, "argv", ["env-check", "--output-dir", td]), \
+                patch.object(
+                    envcheck, "inspect_local_tools",
+                    return_value=(tools, issues)), \
+                patch.object(
+                    envcheck, "inspect_runtime_capabilities",
+                    return_value=capabilities), \
+                patch.object(sys, "stdout", io.StringIO()), \
+                patch.object(sys, "stderr", io.StringIO()) as stderr:
+            self.assertEqual(envcheck.main(), 1)
+            self.assertEqual(os.listdir(td), [])
+            self.assertIn("未就绪的工具", stderr.getvalue())
+
+    def test_requested_report_write_failure_is_a_real_task_failure(self):
+        tools = {
+            "python": {
+                "path": sys.executable,
+                "version": envcheck.platform.python_version(),
+                "resolution": "runtime",
+                "verified": True,
+            },
+        }
+        issues = [{
+            "name": "ffprobe",
+            "display": "ffprobe",
+            "installable": True,
+            "reason": "synthetic missing ffprobe",
+        }]
+        capabilities = {
+            envcheck.envcap.RAW_CAPABILITY_ID: {
+                "state": "available",
+                "available": True,
+                "version": "0.25.0",
+            },
+        }
+        argv = [
+            "env-check", "--export-report", "--output-dir", "ignored",
+        ]
+        with patch.object(sys, "argv", argv), patch.object(
+                envcheck, "inspect_local_tools",
+                return_value=(tools, issues)), patch.object(
+                envcheck, "inspect_runtime_capabilities",
+                return_value=capabilities), patch.object(
+                envcheck, "write_environment_report",
+                side_effect=OSError("synthetic read-only output")), patch.object(
+                sys, "stdout", io.StringIO()), patch.object(
+                sys, "stderr", io.StringIO()) as stderr:
+            self.assertEqual(envcheck.main(), 2)
+            self.assertIn("报告导出失败", stderr.getvalue())
+
     def test_gui_inventory_event_keeps_only_allowlisted_install_targets(self):
         app = object.__new__(gui.DaisyApp)
         app.detected_tools = {}
@@ -5779,7 +6124,9 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
             "verified": True,
         }
         with tempfile.TemporaryDirectory() as td:
-            argv = ["env-check", "--output-dir", td]
+            argv = [
+                "env-check", "--export-report", "--output-dir", td,
+            ]
             runtime_capabilities = {
                 envcheck.envcap.RAW_CAPABILITY_ID: {
                     "id": envcheck.envcap.RAW_CAPABILITY_ID,
@@ -5826,7 +6173,7 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
                                     with patch.object(sys, "stdout", io.StringIO()):
                                         with patch.object(
                                                 sys, "stderr", io.StringIO()):
-                                            self.assertEqual(envcheck.main(), 0)
+                                            self.assertEqual(envcheck.main(), 1)
             reports = [
                 os.path.join(td, name) for name in os.listdir(td)
                 if name.startswith("Env_Check_") and name.endswith(".json")

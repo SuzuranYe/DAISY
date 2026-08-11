@@ -129,7 +129,7 @@ def build_parser(*, database_mode: bool = False) -> argparse.ArgumentParser:
         action="append",
         default=None,
         metavar="MODULE[,MODULE...]",
-        help=("数据模块 ID；使用摘要或全部范围时追加，使用自定义"
+        help=("数据模块 ID；使用摘要或全量范围时追加，使用自定义"
               "范围时作为完整选择；可重复或用逗号分隔"),
     )
     parser.add_argument(

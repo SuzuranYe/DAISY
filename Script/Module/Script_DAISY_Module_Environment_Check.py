@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import sys
 import tempfile
 import time
@@ -109,6 +110,29 @@ def inspect_runtime_capabilities() -> dict[str, dict[str, object]]:
     }
 
 
+def compact_console_version(name: str, version: object) -> str:
+    """控制台清单中的 PowerShell 只显示易读的主次版本。"""
+    text = str(version or "版本未知").strip()
+    if name != "powershell":
+        return text
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    return match.group(0) if match else text
+
+
+def write_environment_report(
+    output_dir: str, report: dict[str, object],
+) -> str:
+    """按明确请求写出 UTF-8 JSON 环境报告。"""
+    os.makedirs(output_dir, exist_ok=True)
+    out = os.path.join(
+        output_dir,
+        f"Env_Check_{time.strftime('%Y-%m-%d_%H-%M-%S')}.json",
+    )
+    with open(out, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(report, handle, ensure_ascii=False, indent=2)
+    return out
+
+
 def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(
@@ -116,6 +140,9 @@ def main() -> int:
     ap.add_argument(
         "--output-dir", default="Output/Reports",
         help="环境报告输出目录；默认 Output/Reports")
+    ap.add_argument(
+        "--export-report", action="store_true",
+        help="导出 JSON 环境检测报告；默认不导出")
     ap.add_argument("--exiftool-path", help="ExifTool 可执行文件路径")
     ap.add_argument("--ffprobe-path", help="ffprobe 可执行文件路径")
     ap.add_argument("--sevenzip-path", help="7-Zip 可执行文件路径")
@@ -154,7 +181,8 @@ def main() -> int:
         if info:
             print(
                 f"  {_TOOL_DISPLAY_NAMES[name]:<10} "
-                f"{info['version']:<12} {info['path']}")
+                f"{compact_console_version(name, info['version']):<12} "
+                f"{info['path']}")
     print("可选运行能力：")
     for capability in runtime_capabilities.values():
         state = str(capability.get("state") or "unknown")
@@ -166,6 +194,57 @@ def main() -> int:
             f"{_CAPABILITY_STATE_LABELS.get(state, '未知')}"
             + (f" · {summary}" if summary else "")
         )
+    checks: dict[str, object] = {
+        "sha256_nist": "not_run",
+        "python_runtime": "passed",
+        "tool_smoke_readonly": "not_run",
+        "powershell_get_filehash": "not_run",
+        "smartctl_readonly_scan": "not_run",
+        "windows_storage_inventory": "not_run",
+        "rawpy_libraw": runtime_capabilities.get(
+            envcap.RAW_CAPABILITY_ID, {}).get("state", "unavailable"),
+    }
+
+    def finish_report(
+        detected_tools: dict[str, dict],
+        *,
+        check_issues: list[dict[str, object]],
+    ) -> str | None:
+        report = {
+            **core.report_metadata("运行环境检测"),
+            "generated_at_utc": core.now_utc_iso(),
+            "scanner_version": core.SCANNER_VERSION,
+            "tools": detected_tools,
+            "runtime_capabilities": runtime_capabilities,
+            "missing": issues,
+            "check_issues": check_issues,
+            "checks": checks,
+        }
+        if not args.export_report:
+            return None
+        return write_environment_report(args.output_dir, report)
+
+    def complete(
+        detail: str,
+        detected_tools: dict[str, dict],
+        *,
+        check_issues: list[dict[str, object]],
+        returncode: int,
+    ) -> int:
+        try:
+            out = finish_report(
+                detected_tools, check_issues=check_issues)
+        except OSError as exc:
+            prog.finish("环境检测完成；报告导出失败")
+            print(f"报告导出失败：{exc}", file=sys.stderr)
+            return 2
+        prog.finish(detail)
+        if out:
+            print(f"\n报告：{out}")
+        else:
+            print("\n检测报告：未导出")
+        return returncode
+
     if issues:
         print("未就绪的工具：", file=sys.stderr)
         for issue in issues:
@@ -173,7 +252,12 @@ def main() -> int:
                 f"  {issue['display']}：{issue['reason']}",
                 file=sys.stderr,
             )
-        return 2
+        return complete(
+            "环境检测完成；已列出缺失工具",
+            inventory,
+            check_issues=[],
+            returncode=1,
+        )
     try:
         tools = core.run_preflight(
             {"exiftool": args.exiftool_path, "ffprobe": args.ffprobe_path,
@@ -212,32 +296,49 @@ def main() -> int:
         core.emit_gui_event(
             "tools_detected", tools=tools)
     except (core.PreflightError, storage_core.DaisySmartError) as exc:
-        print(f"环境不就绪：\n{exc}", file=sys.stderr)
-        return 2
+        reason = str(exc)
+        print(f"部分功能检查未通过：\n{reason}", file=sys.stderr)
+        return complete(
+            "环境检测完成；部分功能检查未通过",
+            inventory,
+            check_issues=[{
+                "name": "readonly_smoke_checks",
+                "display": "只读功能检查",
+                "reason": reason,
+            }],
+            returncode=1,
+        )
     print("  Python、SHA-256 NIST 向量、五项工具功能与存储只读查询：通过")
-
-    report = {**core.report_metadata("运行环境检测"),
-              "generated_at_utc": core.now_utc_iso(),
-              "scanner_version": core.SCANNER_VERSION, "tools": tools,
-              "runtime_capabilities": runtime_capabilities,
-              "checks": {"sha256_nist": "passed",
-                         "python_runtime": "passed",
-                         "tool_smoke_readonly": "passed",
-                         "powershell_get_filehash": "passed",
-                         "smartctl_readonly_scan": "passed",
-                         "windows_storage_inventory": "passed",
-                         "rawpy_libraw": runtime_capabilities.get(
-                             envcap.RAW_CAPABILITY_ID, {}).get(
-                                 "state", "unavailable")}}
-    os.makedirs(args.output_dir, exist_ok=True)
-    out = os.path.join(
-        args.output_dir,
-        f"Env_Check_{time.strftime('%Y-%m-%d_%H-%M-%S')}.json")
-    with open(out, "w", encoding="utf-8", newline="\n") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-    prog.finish("Python 与五项工具版本、Windows 存储只读查询及 SHA-256 自检通过")
-    print(f"\n报告：{out}")
-    return 0
+    checks.update({
+        "sha256_nist": "passed",
+        "tool_smoke_readonly": "passed",
+        "powershell_get_filehash": "passed",
+        "smartctl_readonly_scan": "passed",
+        "windows_storage_inventory": "passed",
+    })
+    unavailable_capabilities = tuple(
+        str(capability.get("title") or capability.get("id") or key)
+        for key, capability in runtime_capabilities.items()
+        if str(capability.get("state") or "unavailable") != "available"
+    )
+    if unavailable_capabilities:
+        detail = (
+            "环境检测完成；不可用可选能力："
+            + "、".join(unavailable_capabilities)
+        )
+        returncode = 1
+    else:
+        detail = (
+            "Python 与五项工具版本、Windows 存储只读查询及 "
+            "SHA-256 自检通过"
+        )
+        returncode = 0
+    return complete(
+        detail,
+        tools,
+        check_issues=[],
+        returncode=returncode,
+    )
 
 
 if __name__ == "__main__":
