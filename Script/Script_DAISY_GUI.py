@@ -503,7 +503,7 @@ def save_gui_preferences(
     os.replace(temporary, path)
 
 # v1.6.8 配色锚点以《明日方舟_孤星_配色取样_修复版_v2.pptx》为准。
-# 交互所需的深色／浅色阶只从这些锚点延展，不再引入另一套基础色相。
+# 所有语义色只允许指向下列核心色或用户补充色，不保留表外旧色。
 _ARCHIVE_BLACK = "#131210"
 _SIGNAL_ORANGE = "#f06733"
 _PALE_YELLOW = "#dfd9a9"
@@ -531,18 +531,17 @@ _DARK_ORANGE = "#de5123"
 _BG = _WARM_WHITE
 _SURFACE = _LIGHT_TEXT
 _GREEN = _PIONEER_TEAL
-_GREEN_DARK = "#347a68"
-_GREEN_DEEP = "#245a4e"
-_GREEN_SOFT = "#dce9e1"
-_ACTION_GREEN = "#b7d5c9"
+_GREEN_DARK = _SAGE
+_GREEN_DEEP = _INK_TEAL
+_GREEN_SOFT = _SKY_BLUE
 _AMBER = _ENGINEERING_YELLOW
-_AMBER_DARK = "#9a6519"
-_AMBER_DEEP = "#70470f"
-_AMBER_SOFT = "#f1ddb2"
+_AMBER_DARK = _DARK_ORANGE
+_AMBER_DEEP = _ARCHIVE_BLACK
+_AMBER_SOFT = _PALE_YELLOW
 _RED = _ARCHIVE_RED
-_RED_DARK = "#7b2925"
-_RED_DEEP = "#5b1f1c"
-_RED_SOFT = "#e8ccc5"
+_RED_DARK = _ARCHIVE_RED
+_RED_DEEP = _ARCHIVE_BLACK
+_RED_SOFT = _DUSTY_PINK
 _ACCENT = _RESEARCH_BLUE
 _ACCENT_DARK = _SLATE
 _ACCENT_SOFT = _SKY_BLUE
@@ -1846,17 +1845,11 @@ TASKS = (
             ),
             FieldSpec(
                 "diff_root_mode", "目录数量", None, "choice_buttons",
-                "single",
+                "", required=True,
                 choices=(("单根目录", "single"),
                          ("多根目录", "multiple")),
                 help="单根目录由 DAISY 自动对应；只有多根目录才展开根目录名配对。",
                 section="对比输入",
-            ),
-            FieldSpec(
-                "output_dir", "对比结果目录", "--output-dir", "dir",
-                _DEFAULT_DIFFS_DIR,
-                help="默认保存到 Output\\Diffs；可改为其他目录。",
-                section="结果输出",
             ),
             FieldSpec(
                 "map_root", "根目录名配对", "--map-root", "root_label_map",
@@ -1866,6 +1859,12 @@ TASKS = (
                 ),
                 section="根目录名配对",
                 active_when=(("diff_root_mode", ("multiple",)),),
+            ),
+            FieldSpec(
+                "output_dir", "对比结果目录", "--output-dir", "dir",
+                _DEFAULT_DIFFS_DIR,
+                help="默认保存到 Output\\Diffs；可改为其他目录。",
+                section="结果输出",
             ),
             FieldSpec(
                 "force", "指纹降级", "--force",
@@ -2291,7 +2290,7 @@ TASKS = (*TASKS,
             ),
             FieldSpec(
                 "preset", "导出范围", "--preset", "choice_buttons",
-                "full-audit",
+                "", required=True,
                 choices=(("摘要", "human-summary"),
                          ("全部", "full-audit"),
                          ("自定义", "custom")),
@@ -2306,7 +2305,7 @@ TASKS = (*TASKS,
             ),
             FieldSpec(
                 "formats", "输出格式", "--format", "multi_choice",
-                "html\nxlsx\ncsv\njsonl", required=True,
+                "", required=True,
                 choices=(("HTML 阅读报告", "html"),
                          ("Excel 工作簿", "xlsx"),
                          ("CSV 数据表", "csv"),
@@ -2377,35 +2376,72 @@ def task_display_title(task_key: str) -> str:
 _STANDARD_BUTTON_WIDTH = 14
 _STANDARD_BUTTON_PADDING = (12, 6)
 _SIX_COLUMN_BUTTON_WIDTH = 12
-_PRIMARY_TASK_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
-_PRIMARY_TASK_BUTTON_PADDING = (12, 7)
+_WORKFLOW_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
+_WORKFLOW_ACTION_BUTTON_PADDING = _STANDARD_BUTTON_PADDING
+_WORKFLOW_ACTION_FONT_WEIGHT = "bold"
+_WORKFLOW_EXECUTION_BUTTON_STYLE = "DiscoveryAction.TButton"
+_WORKFLOW_INPUT_BUTTON_STYLE = "InputSelection.TButton"
+_NEUTRAL_BUTTON_STYLE = "FilePicker.TButton"
+_STANDARD_NEUTRAL_BUTTON_STYLE = "Secondary.TButton"
+_DANGER_BUTTON_STYLE = "Stop.TButton"
+_PRIMARY_TASK_BUTTON_WIDTH = 16
+_PRIMARY_TASK_BUTTON_PADDING = (16, 10)
 _PRIMARY_TASK_BUTTON_BORDER = _ARCHIVE_BLACK
 _BUTTON_BORDER_WIDTH = 0
 _TASK_TOOLBAR_PANEL_BORDER_WIDTH = 0
 _TASK_TOOLBAR_BUTTON_WIDTH = _PRIMARY_TASK_BUTTON_WIDTH
 _TASK_TOOLBAR_BUTTON_PADDING = _PRIMARY_TASK_BUTTON_PADDING
 _TASK_TOOLBAR_MINIMUM_WIDTH = 1180
-_TASK_TOOLBAR_LABEL_COLOUR = _INK_TEAL
 _TASK_TOOLBAR_BACKGROUND = _SKY_BLUE
 _TASK_TOOLBAR_HOVER = _RESEARCH_BLUE
 _TASK_TOOLBAR_SELECTED = _SLATE
 _TASK_TOOLBAR_SELECTED_HOVER = _INK_TEAL
 _TASK_TOOLBAR_FOREGROUND = _INK_TEAL
-_BLOCK_SELECTION_BACKGROUND = _GREEN
-_BLOCK_SELECTION_HOVER = _GREEN
-_BLOCK_SELECTION_FOREGROUND = _GREEN_DEEP
+_BLOCK_SELECTION_BACKGROUND = _SAGE
+_BLOCK_SELECTION_HOVER = _INK_TEAL
+_BLOCK_SELECTION_FOREGROUND = _LIGHT_TEXT
+_OPTION_IDLE_BACKGROUND = _WARM_WHITE
+_OPTION_IDLE_HOVER = _STONE_GRAY
+_OPTION_IDLE_FOREGROUND = _INK_TEAL
+_OPTION_INACTIVE_BACKGROUND = _GRAY_BROWN
+_OPTION_INACTIVE_HOVER = _STONE_GRAY
+_OPTION_INACTIVE_FOREGROUND = _INK_TEAL
+_OPTION_SELECTED_PALETTE = (
+    _BLOCK_SELECTION_BACKGROUND,
+    _BLOCK_SELECTION_FOREGROUND,
+    _BLOCK_SELECTION_HOVER,
+)
+_OPTION_IDLE_PALETTE = (
+    _OPTION_IDLE_BACKGROUND,
+    _OPTION_IDLE_FOREGROUND,
+    _OPTION_IDLE_HOVER,
+)
+_OPTION_INACTIVE_PALETTE = (
+    _OPTION_INACTIVE_BACKGROUND,
+    _OPTION_INACTIVE_FOREGROUND,
+    _OPTION_INACTIVE_HOVER,
+)
 _UNIFIED_ACTION_BACKGROUND = _RESEARCH_BLUE
 _UNIFIED_ACTION_FOREGROUND = _LIGHT_TEXT
 _RESULT_ACTION_BACKGROUND = _KHAKI
 _RESULT_ACTION_HOVER = _AMBER
 _RESULT_ACTION_FOREGROUND = _INK_TEAL
 _SECTION_HEADER_BACKGROUND = _GRAY_BROWN
-_SECTION_HEADER_FOREGROUND = _INK_TEAL
+_SETTINGS_HEADER_BACKGROUND = _SAGE
+_SETTINGS_HEADER_FOREGROUND = _LIGHT_TEXT
+_SETTINGS_DESCRIPTION_FOREGROUND = _WARM_WHITE
+_FORM_BORDER_COLOUR = _GRAY_BROWN
+_PROGRESS_HEADER_FOREGROUND = _WARM_WHITE
+_PROGRESS_TARGET_FOREGROUND = _INK_TEAL
+_PROGRESS_QUEUE_FOREGROUND = _SLATE
+_PROGRESS_STAGE_FOREGROUND = _SAGE
+_PROGRESS_WORK_FOREGROUND = _INK_TEAL
+_PROGRESS_TROUGH_COLOUR = _STONE_GRAY
 _METADATA_MODE_FONT_WEIGHT = "normal"
 _METADATA_MODE_PALETTES = {
-    "complete": (_SKY_BLUE, _INK_TEAL, _RESEARCH_BLUE),
-    "normalized": (_KHAKI, _INK_TEAL, _AMBER),
-    "off": (_DUSTY_PINK, _INK_TEAL, _DARK_ORANGE),
+    "complete": _OPTION_SELECTED_PALETTE,
+    "normalized": _OPTION_SELECTED_PALETTE,
+    "off": _OPTION_INACTIVE_PALETTE,
 }
 _RUN_BUTTON_TEXT = "开始"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
@@ -2417,6 +2453,8 @@ _SPACING_SECTION = 16
 _SPACING_OUTER = 24
 _PANEL_HEADER_PADX = _SPACING_SECTION
 _STANDARD_BUTTON_GAP = _SPACING_STANDARD
+_TASK_TOOLBAR_OUTER_MARGIN = _STANDARD_BUTTON_GAP
+_PANEL_HEADER_ACTION_MARGIN = _STANDARD_BUTTON_GAP
 _PANEL_ACTION_BUTTON_GAP = _STANDARD_BUTTON_GAP
 _PANEL_GAP = _SPACING_STANDARD
 _INLINE_CONTROL_GAP = _SPACING_INLINE
@@ -2425,7 +2463,7 @@ _LOG_BODY_HEIGHT_STANDARD = 160
 _FORM_FIELD_GAP = _SPACING_STANDARD
 _FORM_FIELD_PADY = _FORM_FIELD_GAP // 2
 _FORM_SECTION_PADY = (_SPACING_COMPACT, 0)
-_FORM_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
+_FORM_ACTION_BUTTON_WIDTH = _WORKFLOW_ACTION_BUTTON_WIDTH
 _FILE_PICKER_BUTTON_WIDTH = 12
 _FILE_PICKER_BUTTON_PADDING = (10, 8)
 _PANEL_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
@@ -2445,7 +2483,8 @@ _FORM_SINGLE_ROW_HEIGHT = 58
 _FORM_SCROLL_OVERFLOW_TOLERANCE = 2
 _VARIABLE_HEIGHT_FIELD_KINDS = frozenset((
     "disk_pool", "parse_modules",
-    "multidir", "multimapdir", "multiline", "root_label_map",
+    "multidir", "multimapdir", "multiline", "parse_database",
+    "root_label_map",
 ))
 _PERSISTABLE_TASK_OPTION_KINDS = frozenset((
     "bool", "inverse_bool", "choice", "choice_flag", "choice_buttons",
@@ -2454,10 +2493,20 @@ _PERSISTABLE_TASK_OPTION_KINDS = frozenset((
 ))
 _NONPERSISTENT_TASK_OPTION_KEYS = frozenset((
     "start_mode", "retry_mode", "verification_mode", "verify_path_mode",
+    "diff_root_mode", "preset", "formats",
 ))
 _PERSISTABLE_NUMERIC_OPTION_KEYS: frozenset[str] = frozenset()
 _STORAGE_DISK_CHECKBOX_SIZE = 20
 _COLLAPSED_SETTINGS_HEADER_PADY = (8, 8)
+
+
+def _option_value_is_inactive(value: object) -> bool:
+    """识别明确表示关闭／不采集的离散值，统一使用中性关闭态。"""
+    if value is False:
+        return True
+    return isinstance(value, str) and value.casefold() in {
+        "off", "none", "disabled",
+    }
 
 
 def _validated_manual_tool_paths(raw: object) -> dict[str, str]:
@@ -2606,6 +2655,58 @@ def _verification_selection_complete(values: dict[str, object]) -> bool:
     )
 
 
+_PARSE_PRESET_VALUES = frozenset((
+    "human-summary", "full-audit", "custom",
+))
+
+
+def _diff_input_selection_complete(values: dict[str, object]) -> bool:
+    """两份快照均已选择后，才进入快照对比的后续章节。"""
+    return all(str(values.get(key) or "").strip() for key in ("old", "new"))
+
+
+def _parse_content_selection_complete(values: dict[str, object]) -> bool:
+    """导出范围及其数据模块已经形成可执行选择。"""
+    preset = str(values.get("preset") or "").strip()
+    return preset in _PARSE_PRESET_VALUES and (
+        preset != "custom" or bool(_lines(values.get("parse_modules")))
+    )
+
+
+def _parse_format_selection_complete(values: dict[str, object]) -> bool:
+    """至少选择一种档案数据解析输出格式。"""
+    return bool(_lines(values.get("formats")))
+
+
+def workflow_inputs_ready(
+    task_key: str,
+    values: dict[str, object],
+    *,
+    parse_database_ready: bool = False,
+    storage_inventory_ready: bool = False,
+) -> bool:
+    """判断当前工作流是否已经自上而下完成必需输入。"""
+    task = TASK_BY_KEY[task_key]
+    merged = _task_values(task, values)
+    if task_key == "parse_db":
+        if not parse_database_ready:
+            return False
+        if not _parse_content_selection_complete(merged):
+            return False
+        if not _parse_format_selection_complete(merged):
+            return False
+        if not str(merged.get("output_dir") or "").strip():
+            return False
+    if task_key == "storage_collect" and not storage_inventory_ready:
+        return False
+    active_keys = active_field_keys(task_key, merged)
+    return all(
+        not spec.required or bool(_lines(merged.get(spec.key, spec.default)))
+        for spec in task.fields
+        if spec.key in active_keys
+    )
+
+
 def _field_active(
     spec: FieldSpec, values: dict[str, object], task_key: str | None = None,
 ) -> bool:
@@ -2640,6 +2741,63 @@ def active_field_keys(task_key: str,
         spec.key for spec in task.fields
         if _field_active(spec, merged, task_key)
     }
+
+
+def _visible_form_specs(
+    task: TaskSpec,
+    values: dict[str, object],
+    *,
+    parse_database_ready: bool = False,
+    storage_inventory_ready: bool = False,
+) -> tuple[FieldSpec, ...]:
+    """按章节依赖返回字段，未完成的下游设置不提前出现。"""
+    merged = _task_values(task, values)
+    visible: list[FieldSpec] = []
+    for spec in task.fields:
+        if spec.top_menu or not _field_active(spec, merged, task.key):
+            continue
+        if task.key == "parse_db":
+            if spec.key == "database":
+                visible.append(spec)
+                continue
+            if not parse_database_ready:
+                continue
+            if spec.key == "preset":
+                visible.append(spec)
+                continue
+            preset = str(merged.get("preset") or "").strip()
+            if preset not in _PARSE_PRESET_VALUES:
+                continue
+            if spec.key == "parse_modules":
+                visible.append(spec)
+                continue
+            if (spec.key == "formats"
+                    and _parse_content_selection_complete(merged)):
+                visible.append(spec)
+                continue
+            if (spec.key == "output_dir"
+                    and _parse_format_selection_complete(merged)):
+                visible.append(spec)
+            continue
+        if task.key == "diff":
+            if spec.key in ("old", "new"):
+                visible.append(spec)
+                continue
+            if not _diff_input_selection_complete(merged):
+                continue
+            if spec.key == "diff_root_mode":
+                visible.append(spec)
+                continue
+            if merged.get("diff_root_mode") not in ("single", "multiple"):
+                continue
+        if task.key == "storage_collect":
+            if not storage_inventory_ready:
+                continue
+            if spec.key != "disk_number" and not _lines(
+                    merged.get("disk_number")):
+                continue
+        visible.append(spec)
+    return tuple(visible)
 
 
 def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
@@ -3336,52 +3494,54 @@ class AdminModeButton(tk.Frame):
             top_level, "_daisy_font_size_delta", 0))
         self._style = ttk.Style(self)
         common_style = {
-            "padding": _STANDARD_BUTTON_PADDING,
+            "padding": _WORKFLOW_ACTION_BUTTON_PADDING,
             "borderwidth": _BUTTON_BORDER_WIDTH,
             "relief": "flat",
             "focusthickness": 0,
             "font": (
-                font_family, _UI_BODY_FONT_SIZE + font_size_delta),
+                font_family, _UI_BODY_FONT_SIZE + font_size_delta, "bold"),
         }
         self._style.configure(
             _ADMIN_MODE_PENDING_STYLE,
-            background=_AMBER, foreground=_AMBER_DEEP,
-            bordercolor=_AMBER, lightcolor=_AMBER, darkcolor=_AMBER,
+            background=_DARK_ORANGE, foreground=_LIGHT_TEXT,
+            bordercolor=_DARK_ORANGE,
+            lightcolor=_DARK_ORANGE, darkcolor=_DARK_ORANGE,
             **common_style,
         )
         self._style.map(
             _ADMIN_MODE_PENDING_STYLE,
-            background=[("active", _AMBER_SOFT)],
-            foreground=[("disabled", _MUTED)],
+            background=[("active", _SIGNAL_ORANGE)],
+            foreground=[("active", _LIGHT_TEXT), ("disabled", _MUTED)],
         )
         self._style.configure(
             _ADMIN_MODE_ACTIVE_STYLE,
-            background=_GREEN_DARK, foreground=_LIGHT_TEXT,
-            bordercolor=_GREEN_DARK,
-            lightcolor=_GREEN_DARK, darkcolor=_GREEN_DARK,
+            background=_SAGE, foreground=_LIGHT_TEXT,
+            bordercolor=_SAGE,
+            lightcolor=_SAGE, darkcolor=_SAGE,
             **common_style,
         )
         self._style.map(
             _ADMIN_MODE_ACTIVE_STYLE,
-            background=[("disabled", _GREEN_DARK)],
+            background=[("disabled", _SAGE)],
             foreground=[("disabled", _LIGHT_TEXT)],
-            bordercolor=[("disabled", _GREEN_DARK)],
-            lightcolor=[("disabled", _GREEN_DARK)],
-            darkcolor=[("disabled", _GREEN_DARK)],
+            bordercolor=[("disabled", _SAGE)],
+            lightcolor=[("disabled", _SAGE)],
+            darkcolor=[("disabled", _SAGE)],
         )
         self._style.configure(
             _ADMIN_MODE_DISABLED_STYLE,
-            background=_CONTROL, foreground=_MUTED,
-            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            background=_STONE_GRAY, foreground=_INK_TEAL,
+            bordercolor=_STONE_GRAY,
+            lightcolor=_STONE_GRAY, darkcolor=_STONE_GRAY,
             **common_style,
         )
         self._style.map(
             _ADMIN_MODE_DISABLED_STYLE,
-            background=[("disabled", _CONTROL)],
-            foreground=[("disabled", _MUTED)],
+            background=[("disabled", _STONE_GRAY)],
+            foreground=[("disabled", _INK_TEAL)],
         )
         self.button = ttk.Button(
-            self, text="管理员模式", width=_FORM_ACTION_BUTTON_WIDTH,
+            self, text="管理员模式", width=_WORKFLOW_ACTION_BUTTON_WIDTH,
             takefocus=True, command=self._activate,
         )
         self.button.pack()
@@ -3448,7 +3608,7 @@ class DirectoryListEditor(tk.Frame):
         actions.grid(row=0, column=0, sticky="ew")
         actions.grid_columnconfigure(1, weight=1)
         self.add_button = ttk.Button(
-            actions, text="添加", style="DiscoveryAction.TButton",
+            actions, text="添加", style=_WORKFLOW_EXECUTION_BUTTON_STYLE,
             width=_FORM_ACTION_BUTTON_WIDTH,
             command=self.add_directory,
         )
@@ -3467,7 +3627,8 @@ class DirectoryListEditor(tk.Frame):
 
         self.rows = tk.Frame(
             self, bg=_SURFACE,
-            highlightbackground=_TEXT, highlightthickness=1,
+            highlightbackground=_FORM_BORDER_COLOUR,
+            highlightthickness=_ENTRY_BORDER_WIDTH,
         )
         self.rows.grid(row=1, column=0, sticky="ew", pady=(5, 0))
         self.rows.grid_columnconfigure(0, weight=1)
@@ -3643,7 +3804,8 @@ class RootLabelMapEditor(tk.Frame):
         actions.grid(row=2, column=0, sticky="ew", pady=(5, 0))
         actions.grid_columnconfigure(1, weight=1)
         self.add_button = ttk.Button(
-            actions, text="添加配对", style="DiscoveryAction.TButton",
+            actions, text="添加配对",
+            style=_WORKFLOW_EXECUTION_BUTTON_STYLE,
             width=_FORM_ACTION_BUTTON_WIDTH, command=self.add_pair,
         )
         self.add_button.grid(row=0, column=0, sticky="w")
@@ -3659,7 +3821,8 @@ class RootLabelMapEditor(tk.Frame):
 
         self.rows = tk.Frame(
             self, bg=_SURFACE,
-            highlightbackground=_TEXT, highlightthickness=1,
+            highlightbackground=_FORM_BORDER_COLOUR,
+            highlightthickness=_ENTRY_BORDER_WIDTH,
         )
         self.rows.grid(row=3, column=0, sticky="ew", pady=(5, 0))
         self.rows.grid_columnconfigure(0, weight=1)
@@ -3823,7 +3986,9 @@ class StorageDiskPool(tk.Frame):
         """绘制 20 px 选择框，避免系统原生小指示器随主题缩得过小。"""
         size = _STORAGE_DISK_CHECKBOX_SIZE
         image = tk.PhotoImage(master=master, width=size + 6, height=size)
-        border = _MUTED if disabled else (_GREEN_DEEP if selected else _BORDER)
+        border = (
+            _MUTED if disabled else
+            _SAGE if selected else _FORM_BORDER_COLOUR)
         fill = _FIELD if disabled or not selected else _GREEN_DEEP
         image.put(border, to=(1, 1, size - 1, size - 1))
         image.put(fill, to=(3, 3, size - 3, size - 3))
@@ -3853,7 +4018,8 @@ class StorageDiskPool(tk.Frame):
 
         rows = tk.Frame(
             self, bg=_SURFACE,
-            highlightbackground=_TEXT, highlightthickness=1,
+            highlightbackground=_FORM_BORDER_COLOUR,
+            highlightthickness=_ENTRY_BORDER_WIDTH,
         )
         rows.grid(row=0, column=0, sticky="ew")
         rows.grid_columnconfigure(0, weight=1)
@@ -3879,7 +4045,8 @@ class StorageDiskPool(tk.Frame):
                 row_index, minsize=44, uniform="storage_disk_slot")
             row = tk.Frame(
                 rows, bg=_FIELD,
-                highlightbackground=_BORDER, highlightthickness=1,
+                highlightbackground=_FORM_BORDER_COLOUR,
+                highlightthickness=_ENTRY_BORDER_WIDTH,
             )
             row.grid(
                 row=row_index, column=0, sticky="nsew",
@@ -3987,19 +4154,23 @@ class ChoiceButtonGroup(tk.Frame):
         selected_value = self.variable.get()
         for value, button in self.buttons.items():
             selected = value == selected_value
-            background = _BLOCK_SELECTION_BACKGROUND if selected else _CONTROL
-            foreground = _BLOCK_SELECTION_FOREGROUND if selected else _TEXT
+            inactive = selected and _option_value_is_inactive(value)
+            if inactive:
+                background, foreground, active_background = (
+                    _OPTION_INACTIVE_PALETTE)
+            elif selected:
+                background, foreground, active_background = (
+                    _OPTION_SELECTED_PALETTE)
+            else:
+                background, foreground, active_background = (
+                    _OPTION_IDLE_PALETTE)
             button.configure(
                 bg=background,
                 fg=foreground,
-                activebackground=(
-                    _BLOCK_SELECTION_HOVER if selected else _CONTROL_HOVER),
-                activeforeground=(
-                    _BLOCK_SELECTION_FOREGROUND if selected else _TEXT),
-                highlightbackground=(
-                    _BLOCK_SELECTION_BACKGROUND if selected else _BORDER),
-                highlightcolor=(
-                    _BLOCK_SELECTION_BACKGROUND if selected else _BORDER),
+                activebackground=active_background,
+                activeforeground=foreground,
+                highlightbackground=background,
+                highlightcolor=background,
             )
 
     def get(self) -> str:
@@ -4051,13 +4222,15 @@ class BooleanToggleButton(tk.Frame):
     def _refresh(self) -> None:
         selected = bool(self.variable.get())
         if not self.enabled:
-            background, foreground = _CONTROL, _MUTED
+            background, foreground = _STONE_GRAY, _SAGE
             state = "disabled"
         elif selected:
-            background, foreground = _GREEN_DARK, _LIGHT_TEXT
+            background = _BLOCK_SELECTION_BACKGROUND
+            foreground = _BLOCK_SELECTION_FOREGROUND
             state = "normal"
         else:
-            background, foreground = _AMBER, _AMBER_DEEP
+            background = _OPTION_INACTIVE_BACKGROUND
+            foreground = _OPTION_INACTIVE_FOREGROUND
             state = "normal"
         self.button.configure(
             text=self.true_label if selected else self.false_label,
@@ -4065,7 +4238,8 @@ class BooleanToggleButton(tk.Frame):
             bg=background,
             fg=foreground,
             activebackground=(
-                _GREEN_DEEP if selected else _AMBER_SOFT),
+                _BLOCK_SELECTION_HOVER
+                if selected else _OPTION_INACTIVE_HOVER),
             activeforeground=foreground,
             disabledforeground=foreground,
             highlightbackground=background,
@@ -4122,12 +4296,18 @@ class ValueToggleButton(tk.Frame):
 
     def _refresh(self) -> None:
         selected = self.variable.get() == self.on_value
-        background = _GREEN_DARK if selected else _AMBER
-        foreground = _LIGHT_TEXT if selected else _AMBER_DEEP
+        background = (
+            _BLOCK_SELECTION_BACKGROUND
+            if selected else _OPTION_INACTIVE_BACKGROUND)
+        foreground = (
+            _BLOCK_SELECTION_FOREGROUND
+            if selected else _OPTION_INACTIVE_FOREGROUND)
         self.button.configure(
             text=self.on_label if selected else self.off_label,
             bg=background, fg=foreground,
-            activebackground=_GREEN_DEEP if selected else _AMBER_SOFT,
+            activebackground=(
+                _BLOCK_SELECTION_HOVER
+                if selected else _OPTION_INACTIVE_HOVER),
             activeforeground=foreground,
             disabledforeground=foreground,
             highlightbackground=background,
@@ -4482,12 +4662,17 @@ class MultiChoicePool(tk.Frame):
     def _refresh(self) -> None:
         for value, button in self.buttons.items():
             selected = bool(self.variables[value].get())
-            background = _GREEN_DARK if selected else _AMBER
-            foreground = _LIGHT_TEXT if selected else _AMBER_DEEP
+            background = (
+                _BLOCK_SELECTION_BACKGROUND
+                if selected else _OPTION_INACTIVE_BACKGROUND)
+            foreground = (
+                _BLOCK_SELECTION_FOREGROUND
+                if selected else _OPTION_INACTIVE_FOREGROUND)
             button.configure(
                 bg=background, fg=foreground,
                 activebackground=(
-                    _GREEN_DEEP if selected else _AMBER_SOFT),
+                    _BLOCK_SELECTION_HOVER
+                    if selected else _OPTION_INACTIVE_HOVER),
                 activeforeground=foreground,
                 highlightbackground=background,
                 highlightcolor=background,
@@ -4544,8 +4729,9 @@ class ParseModulePool(tk.Frame):
         on_change=None,
     ) -> None:
         super().__init__(
-            master, bg=_SURFACE, highlightbackground=_BORDER,
-            highlightthickness=1,
+            master, bg=_SURFACE,
+            highlightbackground=_FORM_BORDER_COLOUR,
+            highlightthickness=_ENTRY_BORDER_WIDTH,
         )
         self.inspection = inspection
         self.preset = str(preset or "full-audit")
@@ -4557,13 +4743,13 @@ class ParseModulePool(tk.Frame):
         self._layout_signature: tuple[int, int] | None = None
         self.actions = tk.Frame(self, bg=_SURFACE)
         all_button = ttk.Button(
-            self.actions, text="全选", style="FilePicker.TButton",
+            self.actions, text="全选", style=_NEUTRAL_BUTTON_STYLE,
             width=_FILE_PICKER_BUTTON_WIDTH, command=self.select_all,
         )
         all_button.pack(
             side="left", padx=(0, _STANDARD_BUTTON_GAP))
         clear_button = ttk.Button(
-            self.actions, text="取消选择", style="FilePicker.TButton",
+            self.actions, text="取消选择", style=_NEUTRAL_BUTTON_STYLE,
             width=_FILE_PICKER_BUTTON_WIDTH, command=self.clear_selection,
         )
         clear_button.pack(side="left")
@@ -4705,16 +4891,20 @@ class ParseModulePool(tk.Frame):
         button = self.buttons[module_id]
         selected = bool(self.variables[module_id].get())
         if not module.selectable:
-            background, foreground = _CONTROL, _MUTED
-            active_background, border = _CONTROL_HOVER, _BORDER
+            background, foreground = _STONE_GRAY, _SAGE
+            active_background, border = _STONE_GRAY, _STONE_GRAY
             state = "disabled"
         elif selected:
-            background, foreground = _GREEN_DARK, _LIGHT_TEXT
-            active_background, border = _GREEN_DEEP, _GREEN_DARK
+            background = _BLOCK_SELECTION_BACKGROUND
+            foreground = _BLOCK_SELECTION_FOREGROUND
+            active_background = _BLOCK_SELECTION_HOVER
+            border = _BLOCK_SELECTION_BACKGROUND
             state = "normal" if self.editable else "disabled"
         else:
-            background, foreground = _AMBER, _AMBER_DEEP
-            active_background, border = _AMBER_SOFT, _AMBER
+            background = _OPTION_INACTIVE_BACKGROUND
+            foreground = _OPTION_INACTIVE_FOREGROUND
+            active_background = _OPTION_INACTIVE_HOVER
+            border = _OPTION_INACTIVE_BACKGROUND
             state = "normal" if self.editable else "disabled"
         button.configure(
             state=state,
@@ -5142,6 +5332,7 @@ class DaisyApp:
         self.admin_requirement_label: tk.Label | None = None
         self.storage_disk_choices: tuple[tuple[str, str], ...] = ()
         self.storage_disk_options: tuple[StorageDiskOption, ...] = ()
+        self.storage_inventory_received = False
         self.parse_inspection: dbparse.ParseDatabaseInspection | None = None
         self.parse_inspection_path = ""
         self.parse_detection_generation = 0
@@ -5149,6 +5340,7 @@ class DaisyApp:
         self.parse_detect_button: ttk.Button | None = None
         self.parse_detection_detail_label: tk.Label | None = None
         self._work_progress_indeterminate = False
+        self.work_progress_value = 0.0
         self.current_stage_index = 0
         self.current_stage_total = 0
         self.mini_mode = False
@@ -5357,20 +5549,20 @@ class DaisyApp:
             "TEntry": (10, "normal"),
             "TCombobox": (10, "normal"),
             "Daisy.TCombobox": (10, "normal"),
-            "Browse.TButton": (10, "normal"),
-            "FormAction.TButton": (10, "normal"),
-            "DiscoveryAction.TButton": (10, "normal"),
-            "FilePicker.TButton": (10, "normal"),
-            _ADMIN_MODE_PENDING_STYLE: (10, "normal"),
-            _ADMIN_MODE_ACTIVE_STYLE: (10, "normal"),
-            _ADMIN_MODE_DISABLED_STYLE: (10, "normal"),
+            _WORKFLOW_EXECUTION_BUTTON_STYLE: (
+                10, _WORKFLOW_ACTION_FONT_WEIGHT),
+            _WORKFLOW_INPUT_BUTTON_STYLE: (
+                10, _WORKFLOW_ACTION_FONT_WEIGHT),
+            _NEUTRAL_BUTTON_STYLE: (10, "normal"),
+            _ADMIN_MODE_PENDING_STYLE: (
+                10, _WORKFLOW_ACTION_FONT_WEIGHT),
+            _ADMIN_MODE_ACTIVE_STYLE: (
+                10, _WORKFLOW_ACTION_FONT_WEIGHT),
+            _ADMIN_MODE_DISABLED_STYLE: (
+                10, _WORKFLOW_ACTION_FONT_WEIGHT),
             "Remove.TButton": (10, "normal"),
-            "Primary.TButton": (10, "normal"),
-            "Stop.TButton": (10, "normal"),
-            "Secondary.TButton": (10, "normal"),
-            "Mini.TButton": (10, "normal"),
-            "PanelHeader.TButton": (10, "normal"),
-            "MiniStop.TButton": (10, "normal"),
+            _DANGER_BUTTON_STYLE: (10, "normal"),
+            _STANDARD_NEUTRAL_BUTTON_STYLE: (10, "normal"),
         }
         for style_name, (size, weight) in style_specs.items():
             self.style.configure(
@@ -5713,6 +5905,7 @@ class DaisyApp:
         self.recovery_scans = []
         self.storage_disk_choices = ()
         self.storage_disk_options = ()
+        self.storage_inventory_received = False
         self.environment_missing_names = ()
         self.environment_missing_reasons = {}
         self.missing_installable_tools = ()
@@ -5817,14 +6010,18 @@ class DaisyApp:
         )
         style.configure(
             "TEntry", fieldbackground=_FIELD, foreground=_TEXT,
-            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            bordercolor=_FORM_BORDER_COLOUR,
+            lightcolor=_FORM_BORDER_COLOUR,
+            darkcolor=_FORM_BORDER_COLOUR,
             borderwidth=_ENTRY_BORDER_WIDTH, relief="solid",
             padding=(7, 4),
         )
         style.configure(
             "TCombobox", fieldbackground=_FIELD, background=_FIELD,
             foreground=_TEXT,
-            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            bordercolor=_FORM_BORDER_COLOUR,
+            lightcolor=_FORM_BORDER_COLOUR,
+            darkcolor=_FORM_BORDER_COLOUR,
             padding=(8, 4), relief="flat",
         )
         style.map(
@@ -5900,47 +6097,51 @@ class DaisyApp:
             ],
         )
         style.configure(
-            "Browse.TButton", background=_CONTROL, foreground=_TEXT,
-            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            _WORKFLOW_EXECUTION_BUTTON_STYLE,
+            background=_RESEARCH_BLUE, foreground=_LIGHT_TEXT,
+            bordercolor=_RESEARCH_BLUE,
+            lightcolor=_RESEARCH_BLUE, darkcolor=_RESEARCH_BLUE,
             borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", 10),
+            padding=_WORKFLOW_ACTION_BUTTON_PADDING,
+            font=(
+                "Microsoft YaHei UI", 10,
+                _WORKFLOW_ACTION_FONT_WEIGHT),
         )
         style.map(
-            "Browse.TButton", background=[("active", _CONTROL_HOVER)])
+            _WORKFLOW_EXECUTION_BUTTON_STYLE,
+            background=[
+                ("active", _SLATE), ("disabled", _STONE_GRAY)],
+            foreground=[
+                ("active", _LIGHT_TEXT), ("disabled", _SAGE)],
+        )
         style.configure(
-            "FormAction.TButton", background=_CONTROL, foreground=_TEXT,
-            bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            _WORKFLOW_INPUT_BUTTON_STYLE,
+            background=_SKY_BLUE, foreground=_INK_TEAL,
+            bordercolor=_SKY_BLUE,
+            lightcolor=_SKY_BLUE, darkcolor=_SKY_BLUE,
             borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", 10),
+            padding=_WORKFLOW_ACTION_BUTTON_PADDING,
+            font=(
+                "Microsoft YaHei UI", 10,
+                _WORKFLOW_ACTION_FONT_WEIGHT),
         )
         style.map(
-            "FormAction.TButton",
-            background=[("active", _CONTROL_HOVER)],
+            _WORKFLOW_INPUT_BUTTON_STYLE,
+            background=[
+                ("active", _SAGE), ("disabled", _STONE_GRAY)],
+            foreground=[
+                ("active", _LIGHT_TEXT), ("disabled", _SAGE)],
         )
         style.configure(
-            "DiscoveryAction.TButton",
-            background=_GREEN_SOFT, foreground=_GREEN_DEEP,
-            bordercolor=_GREEN, lightcolor=_GREEN, darkcolor=_GREEN,
-            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", 10),
-        )
-        style.map(
-            "DiscoveryAction.TButton",
-            background=[("active", _GREEN)],
-            foreground=[("disabled", _MUTED)],
-        )
-        style.configure(
-            "FilePicker.TButton", background=_CONTROL, foreground=_TEXT,
+            _NEUTRAL_BUTTON_STYLE,
+            background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
             borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
             padding=_FILE_PICKER_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 9),
         )
         style.map(
-            "FilePicker.TButton",
+            _NEUTRAL_BUTTON_STYLE,
             background=[("active", _CONTROL_HOVER)],
         )
         style.configure(
@@ -5955,22 +6156,8 @@ class DaisyApp:
             background=[("active", _CONTROL_HOVER)],
         )
         style.configure(
-            "Primary.TButton", background=_ACCENT,
-            foreground=_LIGHT_TEXT,
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
-            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_ACCENT_DARK,
-            lightcolor=_ACCENT, darkcolor=_ACCENT,
-            relief="flat",
-        )
-        style.map(
-            "Primary.TButton",
-            background=[
-                ("active", _ACCENT_DARK), ("disabled", _ACTION_GREEN)],
-            foreground=[("disabled", _MUTED)],
-        )
-        style.configure(
-            "Stop.TButton", background=_SIGNAL_ORANGE,
+            _DANGER_BUTTON_STYLE,
+            background=_SIGNAL_ORANGE,
             foreground=_ARCHIVE_BLACK,
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
@@ -5979,12 +6166,13 @@ class DaisyApp:
             relief="flat",
         )
         style.map(
-            "Stop.TButton",
+            _DANGER_BUTTON_STYLE,
             background=[("active", _DARK_ORANGE)],
             foreground=[("active", _LIGHT_TEXT)],
         )
         style.configure(
-            "Secondary.TButton", background=_CONTROL, foreground=_TEXT,
+            _STANDARD_NEUTRAL_BUTTON_STYLE,
+            background=_CONTROL, foreground=_TEXT,
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
             borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_BORDER,
@@ -5992,43 +6180,8 @@ class DaisyApp:
             relief="flat",
         )
         style.map(
-            "Secondary.TButton", background=[("active", _CONTROL_HOVER)])
-        style.configure(
-            "Mini.TButton", background=_CONTROL, foreground=_TEXT,
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", 10),
-            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_BORDER,
-            lightcolor=_BORDER, darkcolor=_BORDER,
-            relief="flat",
-        )
-        style.map(
-            "Mini.TButton", background=[("active", _CONTROL_HOVER)])
-        style.configure(
-            "PanelHeader.TButton", background=_CONTROL, foreground=_TEXT,
-            padding=_FILE_PICKER_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", 10),
-            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_BORDER,
-            lightcolor=_BORDER, darkcolor=_BORDER,
-            relief="flat",
-        )
-        style.map(
-            "PanelHeader.TButton",
-            background=[("active", _CONTROL_HOVER)],
-        )
-        style.configure(
-            "MiniStop.TButton", background=_SIGNAL_ORANGE,
-            foreground=_ARCHIVE_BLACK,
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
-            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_SIGNAL_ORANGE,
-            lightcolor=_SIGNAL_ORANGE, darkcolor=_SIGNAL_ORANGE,
-            relief="flat",
-        )
-        style.map(
-            "MiniStop.TButton",
-            background=[("active", _DARK_ORANGE)],
-            foreground=[("active", _LIGHT_TEXT)],
-        )
+            _STANDARD_NEUTRAL_BUTTON_STYLE,
+            background=[("active", _CONTROL_HOVER)])
         style.configure(
             "Daisy.Vertical.TScrollbar",
             background=_LOG_HEADER, troughcolor=_CONTROL,
@@ -6065,11 +6218,11 @@ class DaisyApp:
                 ("Danger", _RED)):
             style.configure(
                 f"{name}.Horizontal.TProgressbar",
-                troughcolor=_CONTROL,
+                troughcolor=_PROGRESS_TROUGH_COLOUR,
                 background=colour,
                 lightcolor=colour,
                 darkcolor=colour,
-                bordercolor=_BORDER,
+                bordercolor=_FORM_BORDER_COLOUR,
                 thickness=8,
             )
     def _build_menu(self) -> None:
@@ -6434,53 +6587,56 @@ class DaisyApp:
         self.task_toolbar_panel = panel
         panel.pack(fill="x", side="top")
 
-        header = tk.Frame(panel, bg=_SECTION_HEADER_BACKGROUND)
-        form_pad = (
-            _SPACING_SECTION if self.compact_layout else _SPACING_OUTER)
-        self.task_toolbar_header_horizontal_pad = self.content_pad + form_pad
-        self.task_toolbar_horizontal_pad = (
-            self.content_pad + form_pad + _SPACING_STANDARD + 1)
-        header.pack(
-            fill="x", padx=self.task_toolbar_header_horizontal_pad,
-            pady=(_SPACING_COMPACT, _SPACING_COMPACT),
+        toolbar_row = tk.Frame(panel, bg=_SECTION_HEADER_BACKGROUND)
+        self.task_toolbar_row = toolbar_row
+        toolbar_row.pack(
+            fill="x", padx=_TASK_TOOLBAR_OUTER_MARGIN,
+            pady=_TASK_TOOLBAR_OUTER_MARGIN,
         )
-        tk.Label(
-            header, text="功能模块", bg=_SECTION_HEADER_BACKGROUND,
-            fg=_TASK_TOOLBAR_LABEL_COLOUR,
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(side="left")
-        self.task_toolbar_toggle_button = ttk.Button(
-            header, text="收起模块", style="FilePicker.TButton",
-            width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._toggle_task_toolbar, takefocus=False,
-        )
-        self.task_toolbar_toggle_button.pack(side="right")
-        attach_tooltip(
-            self.task_toolbar_toggle_button,
-            "展开或收起顶部功能模块。",
-        )
-        self.clear_cache_button = ttk.Button(
-            header, text="重置软件", style="FilePicker.TButton",
-            width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._reset_software_settings,
-        )
-        self.clear_cache_button.pack(
-            side="right", padx=(0, _STANDARD_BUTTON_GAP))
-        attach_tooltip(
-            self.clear_cache_button,
-            "恢复软件默认设置，并清空会话数据与可重建缓存；不会删除任务产物。",
-        )
+        toolbar_row.grid_columnconfigure(0, weight=1)
+        toolbar_row.grid_columnconfigure(
+            1, minsize=_TASK_TOOLBAR_OUTER_MARGIN)
 
-        body = tk.Frame(panel, bg=_SECTION_HEADER_BACKGROUND)
+        body = tk.Frame(toolbar_row, bg=_SECTION_HEADER_BACKGROUND)
         self.task_toolbar_body = body
-        body.pack(
-            fill="x", padx=self.task_toolbar_horizontal_pad,
-            pady=(0, _SPACING_INLINE),
-        )
+        body.grid(row=0, column=0, sticky="ew")
         self.task_toolbar_section_labels: dict[str, tk.Label] = {}
         for column in range(len(_TASK_TOOLBAR_KEYS)):
             body.grid_columnconfigure(column, weight=0)
         body.grid_anchor("w")
+
+        toolbar_actions = tk.Frame(
+            toolbar_row, bg=_SECTION_HEADER_BACKGROUND)
+        self.task_toolbar_actions = toolbar_actions
+        toolbar_actions.grid(row=0, column=2, sticky="e")
+        toolbar_actions.grid_columnconfigure(
+            0, weight=1, uniform="toolbar_action")
+        toolbar_actions.grid_columnconfigure(
+            1, minsize=_STANDARD_BUTTON_GAP)
+        toolbar_actions.grid_columnconfigure(
+            2, weight=1, uniform="toolbar_action")
+        self.clear_cache_button = ttk.Button(
+            toolbar_actions, text="重置软件",
+            style=_NEUTRAL_BUTTON_STYLE,
+            width=_PANEL_ACTION_BUTTON_WIDTH,
+            command=self._reset_software_settings,
+        )
+        self.clear_cache_button.grid(row=0, column=0, sticky="ew")
+        attach_tooltip(
+            self.clear_cache_button,
+            "恢复软件默认设置，并清空会话数据与可重建缓存；不会删除任务产物。",
+        )
+        self.task_toolbar_toggle_button = ttk.Button(
+            toolbar_actions, text="收起模块",
+            style=_NEUTRAL_BUTTON_STYLE,
+            width=_PANEL_ACTION_BUTTON_WIDTH,
+            command=self._toggle_task_toolbar, takefocus=False,
+        )
+        self.task_toolbar_toggle_button.grid(row=0, column=2, sticky="ew")
+        attach_tooltip(
+            self.task_toolbar_toggle_button,
+            "展开或收起顶部功能模块。",
+        )
         for task_key in _TASK_TOOLBAR_KEYS:
             task = TASK_BY_KEY[task_key]
             button = tk.Button(
@@ -6564,6 +6720,8 @@ class DaisyApp:
             _SPACING_STANDARD if self.compact_layout else _SPACING_SECTION)
         self.content_pad = content_pad
 
+        self._build_task_toolbar()
+
         colour_strip = tk.Frame(
             self.root, bg=_BG, height=_COLOUR_STRIP_HEIGHT)
         self.colour_strip = colour_strip
@@ -6572,8 +6730,6 @@ class DaisyApp:
         for colour in (_GREEN, _AMBER, _RED):
             tk.Frame(colour_strip, bg=colour).pack(
                 side="left", fill="both", expand=True)
-
-        self._build_task_toolbar()
 
         body = tk.Frame(self.root, bg=_BG)
         self.body = body
@@ -6590,13 +6746,14 @@ class DaisyApp:
         content.grid_rowconfigure(2, weight=0)
 
         self.task_card = tk.Frame(
-            content, bg=_SURFACE, highlightbackground=_BORDER,
-            highlightthickness=1,
+            content, bg=_SETTINGS_HEADER_BACKGROUND,
+            highlightbackground=_FORM_BORDER_COLOUR,
+            highlightthickness=_ENTRY_BORDER_WIDTH,
         )
         self.task_card.grid(row=0, column=0, sticky="nsew")
 
         title_row = tk.Frame(
-            self.task_card, bg=_SECTION_HEADER_BACKGROUND)
+            self.task_card, bg=_SETTINGS_HEADER_BACKGROUND)
         self.settings_title_row = title_row
         title_row.pack(
             fill="x", padx=_SPACING_OUTER,
@@ -6608,13 +6765,13 @@ class DaisyApp:
             "bold",
         )
         self.title_label = tk.Label(
-            title_row, bg=_SECTION_HEADER_BACKGROUND,
-            fg=_SECTION_HEADER_FOREGROUND,
+            title_row, bg=_SETTINGS_HEADER_BACKGROUND,
+            fg=_SETTINGS_HEADER_FOREGROUND,
             font=self.settings_title_expanded_font, anchor="w",
         )
         self.title_label.pack(side="left")
         self.settings_actions = tk.Frame(
-            title_row, bg=_SECTION_HEADER_BACKGROUND)
+            title_row, bg=_SETTINGS_HEADER_BACKGROUND)
         self.settings_actions.pack(side="right")
         self.settings_actions.grid_columnconfigure(
             0, weight=1, uniform="settings_header_action")
@@ -6624,7 +6781,7 @@ class DaisyApp:
             2, weight=1, uniform="settings_header_action")
         self.reset_current_settings_button = ttk.Button(
             self.settings_actions, text="恢复默认",
-            style="FilePicker.TButton",
+            style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._reset_current_task_settings,
         )
@@ -6636,7 +6793,7 @@ class DaisyApp:
         )
         self.settings_toggle_button = ttk.Button(
             self.settings_actions, text="收起设置",
-            style="FilePicker.TButton",
+            style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_settings_panel, takefocus=False,
         )
@@ -6646,7 +6803,8 @@ class DaisyApp:
             "显示或隐藏当前功能的说明和设置。",
         )
 
-        self.recovery_host = tk.Frame(self.task_card, bg=_SURFACE)
+        self.recovery_host = tk.Frame(
+            self.task_card, bg=_SETTINGS_HEADER_BACKGROUND)
         self.recovery_host.pack(fill="x")
         self.recovery_card = tk.Frame(
             self.recovery_host, bg=_AMBER_SOFT,
@@ -6667,7 +6825,8 @@ class DaisyApp:
         self.recovery_path_tooltip = attach_tooltip(
             self.recovery_path_label, "")
         self.recovery_ignore_button = ttk.Button(
-            self.recovery_card, text="忽略", style="PanelHeader.TButton",
+            self.recovery_card, text="忽略",
+            style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._dismiss_latest_recovery,
         )
@@ -6679,7 +6838,7 @@ class DaisyApp:
         )
         self.recovery_use_button = ttk.Button(
             self.recovery_card, text="准备续传",
-            style="PanelHeader.TButton",
+            style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._prepare_latest_recovery,
         )
@@ -6690,10 +6849,12 @@ class DaisyApp:
             "打开扫描页并填入未完成快照；不会立即开始任务或读取源档案。",
         )
 
-        self.settings_body = tk.Frame(self.task_card, bg=_SURFACE)
+        self.settings_body = tk.Frame(
+            self.task_card, bg=_SETTINGS_HEADER_BACKGROUND)
         self.settings_body.pack(fill="both", expand=True)
         self.desc_label = tk.Label(
-            self.settings_body, bg=_SURFACE, fg=_GREEN_DEEP,
+            self.settings_body, bg=_SETTINGS_HEADER_BACKGROUND,
+            fg=_SETTINGS_DESCRIPTION_FOREGROUND,
             font=("Microsoft YaHei UI", 9), anchor="w", justify="left",
             wraplength=820,
         )
@@ -6707,7 +6868,9 @@ class DaisyApp:
                 wraplength=max(420, e.width - 44)),
         )
 
-        separator = tk.Frame(self.settings_body, bg=_BORDER, height=1)
+        separator = tk.Frame(
+            self.settings_body, bg=_FORM_BORDER_COLOUR,
+            height=_ENTRY_BORDER_WIDTH)
         separator.pack(fill="x")
 
         form_host = tk.Frame(self.settings_body, bg=_SURFACE)
@@ -6751,7 +6914,7 @@ class DaisyApp:
         progress_header.pack(fill="x")
         self.progress_title_label = tk.Label(
             progress_header, text="运行进度", bg=_LOG_HEADER,
-            fg=_PALE_YELLOW,
+            fg=_PROGRESS_HEADER_FOREGROUND,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         )
         self.progress_title_label.pack(
@@ -6759,7 +6922,8 @@ class DaisyApp:
             pady=_SPACING_INLINE)
         progress_actions = tk.Frame(progress_header, bg=_LOG_HEADER)
         progress_actions.pack(
-            side="right", padx=_PANEL_HEADER_PADX, pady=5)
+            side="right", padx=_PANEL_HEADER_ACTION_MARGIN,
+            pady=_PANEL_HEADER_ACTION_MARGIN)
         progress_actions.grid_columnconfigure(
             0, weight=1, uniform="panel_header_action")
         progress_actions.grid_columnconfigure(
@@ -6767,7 +6931,8 @@ class DaisyApp:
         progress_actions.grid_columnconfigure(
             2, weight=1, uniform="panel_header_action")
         self.mini_mode_button = ttk.Button(
-            progress_actions, text="小窗模式", style="FilePicker.TButton",
+            progress_actions, text="小窗模式",
+            style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_mini_mode, state="normal",
         )
@@ -6777,7 +6942,8 @@ class DaisyApp:
             "进入只显示进度和运行控制的小窗。",
         )
         self.progress_toggle_button = ttk.Button(
-            progress_actions, text="收起进度", style="FilePicker.TButton",
+            progress_actions, text="收起进度",
+            style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_progress_panel, takefocus=False,
         )
@@ -6787,7 +6953,7 @@ class DaisyApp:
             "显示或隐藏任务队列和进度。",
         )
         self.mini_stop_button = ttk.Button(
-            progress_header, text="停止", style="MiniStop.TButton",
+            progress_header, text="停止", style=_DANGER_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._stop, state="disabled",
         )
@@ -6796,7 +6962,8 @@ class DaisyApp:
             "停止当前任务，并取消队列中尚未开始的任务项。",
         )
         self.mini_save_button = ttk.Button(
-            progress_header, text="保存并退出", style="Mini.TButton",
+            progress_header, text="保存并退出",
+            style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._save_scan_progress, state="disabled",
         )
@@ -6805,7 +6972,8 @@ class DaisyApp:
             "安全保存已完成进度并结束当前扫描；下次启动时显示续传提示。",
         )
         self.mini_pause_button = ttk.Button(
-            progress_header, text="暂停", style="Mini.TButton",
+            progress_header, text="暂停",
+            style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._pause_or_continue_scan, state="disabled",
         )
@@ -6830,7 +6998,8 @@ class DaisyApp:
         progress_body.grid_columnconfigure(1, weight=1)
 
         tk.Label(
-            progress_body, text="当前目标", bg=_LOG_BG, fg=_GREEN_DARK,
+            progress_body, text="当前目标", bg=_LOG_BG,
+            fg=_PROGRESS_TARGET_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="nw",
         ).grid(
             row=0, column=0, sticky="nw",
@@ -6852,7 +7021,8 @@ class DaisyApp:
         )
 
         self.current_file_title_label = tk.Label(
-            progress_body, text="当前文件", bg=_LOG_BG, fg=_GREEN_DARK,
+            progress_body, text="当前文件", bg=_LOG_BG,
+            fg=_PROGRESS_TARGET_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         )
         self.current_file_label = tk.Label(
@@ -6863,7 +7033,8 @@ class DaisyApp:
             self.current_file_label, "")
 
         self.queue_title_label = tk.Label(
-            progress_body, text="任务队列", bg=_LOG_BG, fg=_GREEN_DEEP,
+            progress_body, text="任务队列", bg=_LOG_BG,
+            fg=_PROGRESS_QUEUE_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         )
         self.queue_title_label.grid(
@@ -6875,7 +7046,8 @@ class DaisyApp:
         )
         self.queue_detail_label.grid(row=2, column=1, sticky="ew")
         self.queue_percent_label = tk.Label(
-            progress_body, text="0%", bg=_LOG_BG, fg=_GREEN_DEEP,
+            progress_body, text="0%", bg=_LOG_BG,
+            fg=_PROGRESS_QUEUE_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
         )
         self.queue_percent_label.grid(row=2, column=2, sticky="e")
@@ -6888,7 +7060,8 @@ class DaisyApp:
             pady=(_SPACING_COMPACT, _SPACING_INLINE))
 
         tk.Label(
-            progress_body, text="任务阶段", bg=_LOG_BG, fg=_GREEN_DARK,
+            progress_body, text="任务阶段", bg=_LOG_BG,
+            fg=_PROGRESS_STAGE_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         ).grid(
             row=4, column=0, sticky="w",
@@ -6898,7 +7071,14 @@ class DaisyApp:
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
         self.progress_stage_label.grid(
-            row=4, column=1, columnspan=2, sticky="ew")
+            row=4, column=1, sticky="ew")
+        self.progress_stage_percent_label = tk.Label(
+            progress_body, text="0%", bg=_LOG_BG,
+            fg=_PROGRESS_STAGE_FOREGROUND,
+            font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
+        )
+        self.progress_stage_percent_label.grid(
+            row=4, column=2, sticky="e")
         self.progress_stage_bar = ttk.Progressbar(
             progress_body, mode="determinate", maximum=100, value=0,
             style="Stage.Horizontal.TProgressbar",
@@ -6908,7 +7088,8 @@ class DaisyApp:
             pady=(_SPACING_COMPACT, _SPACING_INLINE))
 
         tk.Label(
-            progress_body, text="本阶段", bg=_LOG_BG, fg=_GREEN_DARK,
+            progress_body, text="本阶段", bg=_LOG_BG,
+            fg=_PROGRESS_WORK_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="w",
         ).grid(
             row=6, column=0, sticky="w",
@@ -6919,7 +7100,8 @@ class DaisyApp:
         )
         self.progress_detail_label.grid(row=6, column=1, sticky="ew")
         self.progress_percent_label = tk.Label(
-            progress_body, text="0%", bg=_LOG_BG, fg=_GREEN_DARK,
+            progress_body, text="0%", bg=_LOG_BG,
+            fg=_PROGRESS_WORK_FOREGROUND,
             font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
         )
         self.progress_percent_label.grid(row=6, column=2, sticky="e")
@@ -6943,7 +7125,7 @@ class DaisyApp:
         log_header.pack(fill="x")
         self.log_title_label = tk.Label(
             log_header, text="运行日志", bg=_LOG_HEADER,
-            fg=_PALE_YELLOW,
+            fg=_WARM_WHITE,
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         self.log_title_label.pack(
@@ -6951,7 +7133,8 @@ class DaisyApp:
             pady=_SPACING_INLINE)
         log_actions = tk.Frame(log_header, bg=_LOG_HEADER)
         log_actions.pack(
-            side="right", padx=_PANEL_HEADER_PADX, pady=5)
+            side="right", padx=_PANEL_HEADER_ACTION_MARGIN,
+            pady=_PANEL_HEADER_ACTION_MARGIN)
         log_actions.grid_columnconfigure(
             0, weight=1, uniform="panel_header_action")
         log_actions.grid_columnconfigure(
@@ -6963,7 +7146,7 @@ class DaisyApp:
         log_actions.grid_columnconfigure(
             4, weight=1, uniform="panel_header_action")
         self.clear_log_button = ttk.Button(
-            log_actions, text="清空日志", style="FilePicker.TButton",
+            log_actions, text="清空日志", style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._clear_log,
         )
@@ -6973,7 +7156,7 @@ class DaisyApp:
             "清空主界面与独立窗口中的运行日志。",
         )
         self.open_log_window_button = ttk.Button(
-            log_actions, text="独立窗口", style="FilePicker.TButton",
+            log_actions, text="独立窗口", style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._open_log_window,
         )
@@ -6983,7 +7166,7 @@ class DaisyApp:
             "在独立窗口中打开并实时同步运行日志。",
         )
         self.log_toggle_button = ttk.Button(
-            log_actions, text="收起日志", style="FilePicker.TButton",
+            log_actions, text="收起日志", style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._toggle_log_panel, takefocus=False,
         )
@@ -7036,7 +7219,8 @@ class DaisyApp:
         )
         preview_entry.pack(side="left", fill="x", expand=True)
         self.copy_button = ttk.Button(
-            preview_row, text="复制", style="FormAction.TButton",
+            preview_row, text="复制",
+            style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._copy_command,
         )
@@ -7136,10 +7320,17 @@ class DaisyApp:
         except tk.TclError:
             return
         if available <= 1:
+            action_width = 0
+            try:
+                action_width = self.task_toolbar_actions.winfo_reqwidth()
+            except (AttributeError, tk.TclError):
+                pass
             available = max(
                 1,
                 self.root.winfo_width()
-                - self.task_toolbar_horizontal_pad * 2,
+                - _TASK_TOOLBAR_OUTER_MARGIN * 2
+                - _STANDARD_BUTTON_GAP
+                - action_width,
             )
         per_button = max(
             1,
@@ -7193,12 +7384,10 @@ class DaisyApp:
         self.task_toolbar_expanded = expanded
         if expanded:
             if not self.task_toolbar_body.winfo_manager():
-                self.task_toolbar_body.pack(
-                    fill="x", padx=self.task_toolbar_horizontal_pad,
-                    pady=(0, _SPACING_INLINE))
+                self.task_toolbar_body.grid()
                 self.root.after_idle(self._layout_task_toolbar)
         else:
-            self.task_toolbar_body.pack_forget()
+            self.task_toolbar_body.grid_remove()
         self.task_toolbar_toggle_button.configure(
             text="收起模块" if expanded else "展开模块")
         if hasattr(self, "task_toolbar_visible_var"):
@@ -7529,9 +7718,9 @@ class DaisyApp:
         self.command_panel.grid()
         self.content.pack_configure(
             padx=self.content_pad, pady=self.content_pad)
-        self.colour_strip.pack(fill="x", side="top", before=self.body)
         self.task_toolbar_panel.pack(
             fill="x", side="top", before=self.body)
+        self.colour_strip.pack(fill="x", side="top", before=self.body)
         self.mini_mode = False
         self._set_settings_expanded(self.settings_expanded)
         self._set_progress_expanded(self._mini_progress_was_expanded)
@@ -7897,9 +8086,14 @@ class DaisyApp:
             project_self_test_missing_files()
             if task_key == _PROJECT_SELF_TEST_KEY else ()
         )
+        workflow_ready = self._current_workflow_ready(
+            self._collect_values())
         self._set_run_action_mode(
             False,
-            state="disabled" if missing_tests or active else "normal",
+            state=(
+                "disabled"
+                if missing_tests or active or not workflow_ready
+                else "normal"),
         )
         self._layout_action_buttons()
         self._refresh_scan_controls()
@@ -8188,19 +8382,19 @@ class DaisyApp:
         self, row: int, form_pad: int,
     ) -> int:
         already_admin = bool(self.is_administrator)
-        background = _GREEN_SOFT if already_admin else _AMBER_SOFT
-        border = _GREEN if already_admin else _AMBER
-        heading_colour = _GREEN_DEEP if already_admin else _AMBER_DEEP
-        panel = tk.Frame(
-            self.form_inner, bg=background,
-            highlightbackground=border, highlightthickness=1,
-        )
+        background = _PIONEER_TEAL if already_admin else _PALE_YELLOW
+        accent = _SAGE if already_admin else _DARK_ORANGE
+        heading_colour = _INK_TEAL
+        panel = tk.Frame(self.form_inner, bg=background)
         panel.grid(
             row=row, column=0, columnspan=2, sticky="ew",
             padx=form_pad, pady=(5, 2),
         )
+        tk.Frame(
+            panel, bg=accent, height=_COLOUR_STRIP_HEIGHT,
+        ).pack(fill="x")
         header = tk.Frame(panel, bg=background)
-        header.pack(fill="x", padx=12, pady=(6, 2))
+        header.pack(fill="x", padx=_SPACING_STANDARD, pady=(8, 3))
         self.admin_requirement_label = tk.Label(
             header,
             text=("管理员权限已启用" if already_admin else
@@ -8232,11 +8426,13 @@ class DaisyApp:
                 if already_admin else
                 "未启用时，部分 Windows 存储或 SMART 信息可能无法读取。"
             ),
-            bg=background, fg=_TEXT,
+            bg=background, fg=_INK_TEAL,
             font=("Microsoft YaHei UI", 9), anchor="w",
             justify="left", wraplength=720,
         )
-        detail.pack(fill="x", padx=12, pady=(0, 7))
+        detail.pack(
+            fill="x", padx=_SPACING_STANDARD,
+            pady=(0, _SPACING_INLINE))
         panel.bind(
             "<Configure>",
             lambda event, label=detail: label.configure(
@@ -8256,12 +8452,16 @@ class DaisyApp:
         found_count = len(self.storage_disk_options)
         selectable_count = sum(
             option.selectable for option in self.storage_disk_options)
+        inventory_received = bool(getattr(
+            self, "storage_inventory_received", False))
         detail = tk.Label(
             panel,
             text=(
                 f"已检测 {found_count} 块硬盘，其中 {selectable_count} 块"
                 "可登记；请在下方选择。"
-                if found_count else
+                if inventory_received and found_count else
+                "已完成检测，但没有找到可登记硬盘；可重新检测。"
+                if inventory_received else
                 "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。"
             ),
             bg=_SURFACE, fg=_TEXT,
@@ -8270,8 +8470,8 @@ class DaisyApp:
         )
         self.storage_detect_button = ttk.Button(
             panel,
-            text="重新检测硬盘" if found_count else "检测硬盘",
-            style="DiscoveryAction.TButton",
+            text="重新检测硬盘" if inventory_received else "检测硬盘",
+            style=_WORKFLOW_EXECUTION_BUTTON_STYLE,
             width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._run_storage_inventory,
         )
@@ -8302,11 +8502,10 @@ class DaisyApp:
         """在数据库路径下方建立独立的只读解析操作行。"""
         panel = tk.Frame(
             self.form_inner, bg=_SURFACE,
-            highlightbackground=_BORDER, highlightthickness=1,
         )
         panel.grid(
-            row=row, column=0, columnspan=2, sticky="ew",
-            padx=form_pad, pady=(3, 1),
+            row=row, column=1, sticky="ew",
+            padx=(0, form_pad), pady=(3, 1),
         )
         panel.grid_columnconfigure(1, weight=1)
         source = self.values.get("database")
@@ -8323,13 +8522,14 @@ class DaisyApp:
         else:
             detail_text = self._parse_database_detection_detail(inspection)
         self.parse_detect_button = ttk.Button(
-            panel, text="解析数据库", style="DiscoveryAction.TButton",
+            panel, text="解析数据库",
+            style=_WORKFLOW_EXECUTION_BUTTON_STYLE,
             width=_FORM_ACTION_BUTTON_WIDTH,
             command=self._detect_parse_database,
         )
         self.parse_detect_button.grid(
             row=0, column=0, sticky="w",
-            padx=(_SPACING_STANDARD, _SPACING_STANDARD), pady=3)
+            padx=(0, _SPACING_STANDARD), pady=3)
         detail = tk.Label(
             panel, text=detail_text, bg=_SURFACE, fg=_TEXT,
             font=("Microsoft YaHei UI", 9), anchor="w",
@@ -8337,7 +8537,7 @@ class DaisyApp:
         )
         detail.grid(
             row=0, column=1, sticky="ew",
-            padx=(0, _SPACING_STANDARD), pady=3)
+            padx=0, pady=3)
         self.parse_detection_detail_label = detail
         attach_tooltip(
             self.parse_detect_button,
@@ -8406,10 +8606,19 @@ class DaisyApp:
             if self.compact_layout else _SPACING_SECTION)
         saved = _task_values(
             self.task, self.saved_values.get(self.task.key, {}))
-        active_specs = [
-            spec for spec in self.task.fields
-            if _field_active(spec, saved, self.task.key) and not spec.top_menu
-        ]
+        parse_database_ready = (
+            self.task.key == "parse_db"
+            and self._matching_parse_inspection(
+                saved.get("database")) is not None
+        )
+        storage_inventory_ready = bool(getattr(
+            self, "storage_inventory_received", False))
+        active_specs = list(_visible_form_specs(
+            self.task,
+            saved,
+            parse_database_ready=parse_database_ready,
+            storage_inventory_ready=storage_inventory_ready,
+        ))
         section_field_counts: dict[str, int] = {}
         for spec in active_specs:
             section_field_counts[spec.section] = (
@@ -8519,7 +8728,7 @@ class DaisyApp:
             if spec.kind == "disk_pool":
                 widget = StorageDiskPool(
                     cell, options=self.storage_disk_options,
-                    initial=current, on_change=self._update_preview,
+                    initial=current, on_change=self._staged_pool_changed,
                 )
                 widget.grid(row=0, column=0, columnspan=2, sticky="ew")
                 self.values[spec.key] = widget
@@ -8528,16 +8737,19 @@ class DaisyApp:
                     cell,
                     inspection=self._matching_parse_inspection(
                         saved.get("database")),
-                    preset=str(saved.get("preset") or "full-audit"),
+                    preset=str(saved.get("preset") or ""),
                     initial=current,
-                    on_change=self._update_preview,
+                    on_change=self._staged_pool_changed,
                 )
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
             elif spec.kind == "multi_choice":
                 widget = MultiChoicePool(
                     cell, choices=spec.choices, initial=current,
-                    on_change=self._update_preview,
+                    on_change=(
+                        self._staged_pool_changed
+                        if self.task.key == "parse_db"
+                        else self._update_preview),
                 )
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
                 self.values[spec.key] = widget
@@ -8661,11 +8873,18 @@ class DaisyApp:
                 widget = ttk.Entry(cell, textvariable=var)
                 has_action = spec.kind in (
                     "dir", "file", "save", "parse_database")
-                entry_column = 1 if has_action else 0
-                if has_action:
-                    cell.grid_columnconfigure(0, weight=0)
-                    cell.grid_columnconfigure(entry_column, weight=1)
-                widget.grid(row=0, column=entry_column, sticky="ew")
+                if spec.kind == "parse_database":
+                    cell.grid_columnconfigure(0, weight=1)
+                    widget.grid(
+                        row=1, column=0, columnspan=2, sticky="ew",
+                        pady=(_INLINE_CONTROL_GAP, 0),
+                    )
+                else:
+                    entry_column = 1 if has_action else 0
+                    if has_action:
+                        cell.grid_columnconfigure(0, weight=0)
+                        cell.grid_columnconfigure(entry_column, weight=1)
+                    widget.grid(row=0, column=entry_column, sticky="ew")
                 self.values[spec.key] = var
                 if spec.kind == "dir":
                     widget.bind(
@@ -8676,6 +8895,8 @@ class DaisyApp:
                 if spec.kind == "parse_database":
                     widget.bind(
                         "<FocusOut>", self._parse_database_focus_out)
+                elif self.task.key == "diff" and spec.kind == "file":
+                    widget.bind("<FocusOut>", self._staged_file_focus_out)
                 if spec.kind in ("dir", "file", "save", "parse_database"):
                     primary_input = (
                         spec.kind in ("file", "parse_database")
@@ -8694,16 +8915,23 @@ class DaisyApp:
                             else "浏览"
                         ),
                         style=(
-                            "DiscoveryAction.TButton"
-                            if primary_input else "FilePicker.TButton"),
+                            _WORKFLOW_INPUT_BUTTON_STYLE
+                            if spec.kind == "parse_database" else
+                            _WORKFLOW_EXECUTION_BUTTON_STYLE
+                            if primary_input else _NEUTRAL_BUTTON_STYLE),
                         width=(
                             _FORM_ACTION_BUTTON_WIDTH
-                            if primary_input else _FILE_PICKER_BUTTON_WIDTH),
+                            if primary_input or spec.kind == "parse_database"
+                            else _FILE_PICKER_BUTTON_WIDTH),
                         command=lambda s=spec, v=var: self._browse(s, v),
                     )
                     browse_button.grid(
                         row=0, column=0, sticky="w",
-                        padx=(0, _INLINE_CONTROL_GAP))
+                        padx=(
+                            0
+                            if spec.kind == "parse_database"
+                            else (0, _INLINE_CONTROL_GAP)
+                        ))
                     attach_tooltip(
                         browse_button,
                         (
@@ -8722,7 +8950,12 @@ class DaisyApp:
                         attach_tooltip(target, field_help)
             row += 1
             if self.task.key == "parse_db" and spec.kind == "parse_database":
-                row = self._build_parse_database_detection(row, form_pad)
+                source = self.values.get("database")
+                database = (
+                    str(source.get() or "").strip()
+                    if source is not None else "")
+                if database:
+                    row = self._build_parse_database_detection(row, form_pad)
 
         self._apply_font_to_tree(self.form_inner)
         self.form_inner.update_idletasks()
@@ -8762,12 +8995,7 @@ class DaisyApp:
         self.saved_values[task_key] = collected
         field_key = getattr(source, "_daisy_field_key", None)
         if task_key == "parse_db" and field_key == "preset":
-            module_pool = self.values.get("parse_modules")
-            if isinstance(module_pool, ParseModulePool):
-                module_pool.set_preset(
-                    source.get(), initial=collected.get("parse_modules"))
-                self.saved_values[task_key] = self._collect_values()
-            self._update_preview()
+            self._schedule_staged_form_rebuild(scroll_fraction)
             return
         layout_controllers = {
             dependency_key
@@ -8779,10 +9007,61 @@ class DaisyApp:
             self._refresh_scan_advanced_values()
             self._update_preview()
             return
-        self.root.after_idle(
-            lambda key=task_key, fraction=scroll_fraction:
-            self._build_form(fraction) if self.task.key == key else None
+        self._schedule_staged_form_rebuild(scroll_fraction)
+
+    def _schedule_staged_form_rebuild(
+        self,
+        scroll_fraction: float | None = None,
+        values: dict[str, object] | None = None,
+    ) -> None:
+        """合并同一轮变化，并在空闲时重建当前分阶段表单。"""
+        task_key = self.task.key
+        if scroll_fraction is None:
+            scroll_fraction = self.form_canvas.yview()[0]
+        self.saved_values[task_key] = (
+            values if values is not None
+            else self._collect_persistable_values()
         )
+        generation = int(getattr(
+            self, "_staged_form_rebuild_generation", 0)) + 1
+        self._staged_form_rebuild_generation = generation
+        self.root.after_idle(
+            lambda key=task_key, fraction=scroll_fraction, token=generation:
+            self._build_form(fraction)
+            if self.task.key == key
+            and self._staged_form_rebuild_generation == token else None
+        )
+
+    def _staged_pool_changed(self) -> None:
+        """硬盘、解析模块或格式变化后刷新下一章节。"""
+        self._schedule_staged_form_rebuild()
+
+    def _staged_file_focus_out(self, _event: tk.Event) -> None:
+        """手动输入快照路径后，按两份输入是否齐全推进快照对比。"""
+        if self.task.key == "diff":
+            self._invalidate_diff_snapshot_selection()
+
+    def _invalidate_diff_snapshot_selection(self) -> None:
+        """任一快照变化后清除依赖其身份的目录选择和配对。"""
+        if self.task.key != "diff":
+            return
+        values = self._collect_persistable_values()
+        previous = self.saved_values.get("diff", {})
+
+        def comparable(value: object) -> str:
+            raw = str(value or "").strip()
+            return os.path.normcase(os.path.normpath(raw)) if raw else ""
+
+        changed = any(
+            comparable(values.get(key)) != comparable(previous.get(key))
+            for key in ("old", "new")
+        )
+        if not changed:
+            self._update_preview()
+            return
+        values["diff_root_mode"] = ""
+        values.pop("map_root", None)
+        self._schedule_staged_form_rebuild(values=values)
 
     def _text_changed(self, event: tk.Event) -> None:
         widget = event.widget
@@ -8851,8 +9130,11 @@ class DaisyApp:
         if self._matching_parse_inspection(raw) is not None:
             return
         values = self._collect_values()
+        values["preset"] = ""
+        values["formats"] = ""
         values.pop("parse_modules", None)
         self.saved_values["parse_db"] = values
+        scroll_fraction = self.form_canvas.yview()[0]
         self.parse_inspection = None
         self.parse_inspection_path = ""
         module_pool = self.values.get("parse_modules")
@@ -8867,7 +9149,12 @@ class DaisyApp:
                 "选择数据库后，点击「解析数据库」读取类型、来源版本、"
                 "结构版本和数据模块。"
             ))
-        self._update_preview()
+        self.root.after_idle(
+            lambda fraction=scroll_fraction:
+            self._build_form(fraction)
+            if self.task.key == "parse_db"
+            and not self.parse_detection_active else None
+        )
 
     def _parse_database_focus_out(self, _event: tk.Event) -> None:
         self._invalidate_parse_database_selection()
@@ -8894,24 +9181,18 @@ class DaisyApp:
 
         previous_path = str(getattr(self, "parse_inspection_path", ""))
         self.saved_values["parse_db"] = values
-        module_pool = self.values.get("parse_modules")
         if (previous_path and os.path.normcase(previous_path)
                 != os.path.normcase(database)):
+            self.saved_values["parse_db"]["preset"] = ""
+            self.saved_values["parse_db"]["formats"] = ""
             self.saved_values["parse_db"].pop("parse_modules", None)
-            if isinstance(module_pool, ParseModulePool):
-                module_pool.invalidate()
-        if (isinstance(module_pool, ParseModulePool)
-                and module_pool.inspection is None):
-            module_pool.set_inspection(
-                None,
-                preset=str(values.get("preset") or "full-audit"),
-                empty_text="正在解析数据库…",
-            )
         self.parse_inspection = None
         self.parse_inspection_path = ""
         self.parse_detection_generation += 1
         generation = self.parse_detection_generation
         self.parse_detection_active = True
+        scroll_fraction = self.form_canvas.yview()[0]
+        self._build_form(scroll_fraction)
         if self.parse_detect_button is not None:
             self.parse_detect_button.configure(state="disabled")
         detail = getattr(self, "parse_detection_detail_label", None)
@@ -8923,9 +9204,11 @@ class DaisyApp:
         self.run_button.configure(state="disabled")
         self._set_task_navigation_state("disabled")
         self._reset_progress("解析数据库")
-        self.progress_target_label.configure(text=database, fg=_TEXT)
+        self.progress_target_label.configure(
+            text=database, fg=_PROGRESS_TARGET_FOREGROUND)
         self.progress_stage_label.configure(
-            text="解析数据库 · 正在分析", fg=_GREEN_DARK)
+            text="解析数据库 · 正在分析",
+            fg=_PROGRESS_STAGE_FOREGROUND)
         self.progress_detail_label.configure(
             text="正在读取数据库类型、来源版本、结构版本和数据模块…",
             fg=_MUTED,
@@ -8971,8 +9254,7 @@ class DaisyApp:
             self.parse_inspection = None
             self.parse_inspection_path = ""
             self._set_work_fraction(100, style="Danger")
-            self.progress_stage_bar.configure(
-                value=100, style="Danger.Horizontal.TProgressbar")
+            self._set_stage_fraction(100, style="Danger")
             self.progress_stage_label.configure(
                 text="解析数据库失败", fg=_DANGER)
             self.progress_detail_label.configure(
@@ -8988,7 +9270,7 @@ class DaisyApp:
                         None,
                         preset=str(
                             self.saved_values.get("parse_db", {}).get(
-                                "preset") or "full-audit"),
+                                "preset") or ""),
                         empty_text="解析失败；请检查日志后重试。",
                     )
                 detail = getattr(
@@ -8999,7 +9281,7 @@ class DaisyApp:
                         fg=_DANGER,
                     )
             self._set_status("解析数据库失败；请检查文件与日志。", _DANGER)
-            self.run_button.configure(state="normal")
+            self.run_button.configure(state="disabled")
             if self.parse_detect_button is not None:
                 self.parse_detect_button.configure(state="normal")
             messagebox.showerror(
@@ -9020,18 +9302,19 @@ class DaisyApp:
             f"数据模块 {counts.get('available', 0)} 项可用"
         )
         self._set_work_fraction(100, style="Success")
-        self.progress_stage_bar.configure(
-            value=100, style="Success.Horizontal.TProgressbar")
+        self._set_stage_fraction(100, style="Success")
         self.progress_stage_label.configure(text="数据库已解析", fg=_SUCCESS)
         self.progress_detail_label.configure(text=summary, fg=_SUCCESS)
         self._append_log(f"数据库已解析：{summary}\n", "success")
         if self.task.key == "parse_db":
+            scroll_fraction = self.form_canvas.yview()[0]
+            self._build_form(scroll_fraction)
             saved = self.saved_values.get("parse_db", {})
             module_pool = self.values.get("parse_modules")
             if isinstance(module_pool, ParseModulePool):
                 module_pool.set_inspection(
                     inspection,
-                    preset=str(saved.get("preset") or "full-audit"),
+                    preset=str(saved.get("preset") or ""),
                     initial=saved.get("parse_modules", ""),
                 )
                 self._apply_font_to_tree(module_pool)
@@ -9044,10 +9327,9 @@ class DaisyApp:
             self.form_inner.update_idletasks()
             self._schedule_form_scroll_sync()
         self._set_status(
-            f"已解析{summary}；可调整导出范围、数据模块和输出格式。",
+            f"已解析{summary}；请继续选择导出范围。",
             _SUCCESS,
         )
-        self.run_button.configure(state="normal")
         if self.parse_detect_button is not None:
             self.parse_detect_button.configure(state="normal")
         self._update_preview()
@@ -9080,6 +9362,9 @@ class DaisyApp:
             if (self.task.key == "parse_db"
                     and spec.kind == "parse_database"):
                 self._invalidate_parse_database_selection()
+            elif (self.task.key == "diff"
+                    and spec.key in ("old", "new")):
+                self._invalidate_diff_snapshot_selection()
 
     def _collect_values(self) -> dict[str, object]:
         result = _task_values(
@@ -9132,11 +9417,37 @@ class DaisyApp:
         if not self.values:
             return
         try:
-            effective, _sources = self._effective_values()
+            raw = self._collect_values()
+            effective, _sources = self._effective_values(raw)
             self.preview_var.set(
                 preview_command(self.task.key, effective))
         except (KeyError, tk.TclError):
-            pass
+            return
+        if hasattr(self, "run_button") and not self._task_is_active():
+            self.run_button.configure(
+                state=(
+                    "normal"
+                    if self._current_workflow_ready(raw)
+                    else "disabled"
+                ))
+
+    def _current_workflow_ready(
+        self, values: dict[str, object] | None = None,
+    ) -> bool:
+        """把纯工作流门控与当前窗口的识别状态组合起来。"""
+        current = values if values is not None else self._collect_values()
+        parse_ready = (
+            self.task.key == "parse_db"
+            and self._matching_parse_inspection(
+                current.get("database")) is not None
+        )
+        return workflow_inputs_ready(
+            self.task.key,
+            current,
+            parse_database_ready=parse_ready,
+            storage_inventory_ready=bool(getattr(
+                self, "storage_inventory_received", False)),
+        )
 
     def _copy_command(self) -> None:
         if self.task.key == _PROJECT_SELF_TEST_KEY:
@@ -9483,7 +9794,7 @@ class DaisyApp:
             side="left", padx=_PANEL_HEADER_PADX,
             pady=_SPACING_INLINE)
         ttk.Button(
-            header, text="关闭", style="PanelHeader.TButton",
+            header, text="关闭", style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._close_log_window,
         ).pack(
@@ -9492,7 +9803,8 @@ class DaisyApp:
             pady=_SPACING_INLINE,
         )
         ttk.Button(
-            header, text="清空日志", style="PanelHeader.TButton",
+            header, text="清空日志",
+            style=_STANDARD_NEUTRAL_BUTTON_STYLE,
             width=_STANDARD_BUTTON_WIDTH,
             command=self._clear_log,
         ).pack(side="right", pady=_SPACING_INLINE)
@@ -9690,6 +10002,7 @@ class DaisyApp:
             self.saved_values["storage_collect"] = self._collect_values()
         self.storage_disk_options = storage_disk_options(
             payload.get("targets"))
+        self.storage_inventory_received = True
         self.storage_disk_choices = tuple(
             (option.display, option.value)
             for option in self.storage_disk_options
@@ -9713,7 +10026,7 @@ class DaisyApp:
             title = "硬盘检测完成"
             message = (
                 f"检测到 {found_count} 块硬盘，其中 {selectable_count} 块"
-                "可登记。\n\n展开设置区后可选择硬盘，然后点击「开始任务」。"
+                "可登记。\n\n请在下方选择硬盘，然后点击「开始任务」。"
             )
             show_dialog = messagebox.showinfo
         else:
@@ -9722,7 +10035,7 @@ class DaisyApp:
             title = "没有可登记的硬盘"
             message = (
                 f"检测到 {found_count} 块硬盘，但没有硬盘同时满足联机"
-                "且登记信息完整的条件。\n\n展开设置区可查看"
+                "且登记信息完整的条件。\n\n可在下方查看"
                 "硬盘清单中的具体原因或重新检测。"
             )
             show_dialog = messagebox.showwarning
@@ -9768,29 +10081,60 @@ class DaisyApp:
             self.progress_work_bar.stop()
             self._work_progress_indeterminate = False
 
+    @staticmethod
+    def _progress_foreground(style: str, default: str) -> str:
+        return {
+            "Success": _SUCCESS,
+            "Warning": _WARNING,
+            "Danger": _DANGER,
+        }.get(style, default)
+
+    def _set_stage_fraction(
+        self, value: float, *, style: str = "Stage",
+    ) -> None:
+        value = max(0.0, min(100.0, float(value)))
+        self.progress_stage_bar.configure(
+            mode="determinate", maximum=100, value=value,
+            style=f"{style}.Horizontal.TProgressbar",
+        )
+        self.progress_stage_percent_label.configure(
+            text=f"{value:.0f}%",
+            fg=self._progress_foreground(
+                style, _PROGRESS_STAGE_FOREGROUND),
+        )
+
     def _set_work_indeterminate(self) -> None:
         self._stop_work_progress()
+        self.work_progress_value = 0.0
         self.progress_work_bar.configure(
             mode="indeterminate", maximum=100, value=0,
             style="Work.Horizontal.TProgressbar",
         )
         self.progress_work_bar.start(12)
         self._work_progress_indeterminate = True
-        self.progress_percent_label.configure(text="…", fg=_GREEN_DARK)
+        self.progress_percent_label.configure(
+            text="计算中", fg=_PROGRESS_WORK_FOREGROUND)
 
     def _set_work_fraction(self, value: float, *,
                            style: str = "Work") -> None:
         self._stop_work_progress()
         value = max(0.0, min(100.0, float(value)))
+        self.work_progress_value = value
         self.progress_work_bar.configure(
             mode="determinate", maximum=100, value=value,
             style=f"{style}.Horizontal.TProgressbar",
         )
         self.progress_percent_label.configure(
             text=f"{value:.0f}%",
-            fg=_DANGER if style == "Danger" else
-            _WARNING if style == "Warning" else _GREEN_DARK,
+            fg=self._progress_foreground(
+                style, _PROGRESS_WORK_FOREGROUND),
         )
+
+    def _show_recorded_work_fraction(self, colour: str) -> None:
+        value = max(0.0, min(
+            100.0, float(getattr(self, "work_progress_value", 0.0))))
+        self.progress_percent_label.configure(
+            text=f"{value:.0f}%", fg=colour)
 
     def _reset_progress(self, task_title: str) -> None:
         self._stop_work_progress()
@@ -9802,19 +10146,19 @@ class DaisyApp:
             style="Queue.Horizontal.TProgressbar",
         )
         self.queue_detail_label.configure(text="等待队列", fg=_MUTED)
-        self.queue_percent_label.configure(text="0%", fg=_GREEN_DEEP)
-        self.progress_stage_bar.configure(
-            mode="determinate", maximum=100, value=0,
-            style="Stage.Horizontal.TProgressbar",
-        )
+        self.queue_percent_label.configure(
+            text="0%", fg=_PROGRESS_QUEUE_FOREGROUND)
+        self._set_stage_fraction(0)
         self.progress_work_bar.configure(
             mode="determinate", maximum=100, value=0,
             style="Work.Horizontal.TProgressbar",
         )
+        self.work_progress_value = 0.0
         self.progress_stage_label.configure(
             text=f"{task_title} · 等待开始", fg=_MUTED)
         self.progress_detail_label.configure(text="尚未运行", fg=_MUTED)
-        self.progress_percent_label.configure(text="0%", fg=_GREEN_DARK)
+        self.progress_percent_label.configure(
+            text="0%", fg=_PROGRESS_WORK_FOREGROUND)
 
     def _queue_prefix(self) -> str:
         total = len(self.run_jobs)
@@ -9833,7 +10177,8 @@ class DaisyApp:
             text=f"0/{max(1, total)} · 队列已准备",
             fg=_MUTED,
         )
-        self.queue_percent_label.configure(text="0%", fg=_GREEN_DEEP)
+        self.queue_percent_label.configure(
+            text="0%", fg=_PROGRESS_QUEUE_FOREGROUND)
 
     def _update_queue_progress(
         self, current_fraction: float = 0.0, detail: str | None = None,
@@ -9855,9 +10200,10 @@ class DaisyApp:
             mode="determinate", maximum=100, value=value,
             style="Queue.Horizontal.TProgressbar",
         )
-        self.queue_detail_label.configure(text=detail, fg=_TEXT)
+        self.queue_detail_label.configure(
+            text=detail, fg=_PROGRESS_QUEUE_FOREGROUND)
         self.queue_percent_label.configure(
-            text=f"{value:.0f}%", fg=_GREEN_DEEP)
+            text=f"{value:.0f}%", fg=_PROGRESS_QUEUE_FOREGROUND)
 
     def _begin_progress(self) -> None:
         self.current_stage_index = 0
@@ -9875,14 +10221,11 @@ class DaisyApp:
             "检测硬盘" if detecting_storage else
             task_display_title(self.task.key)
         )
-        self.progress_stage_bar.configure(
-            mode="determinate", maximum=100, value=0,
-            style="Stage.Horizontal.TProgressbar",
-        )
+        self._set_stage_fraction(0)
         self._update_queue_progress(0.0)
         self.progress_stage_label.configure(
             text=f"{title} · 正在启动",
-            fg=_GREEN_DARK,
+            fg=_PROGRESS_STAGE_FOREGROUND,
         )
         self.progress_detail_label.configure(
             text=(
@@ -10111,8 +10454,10 @@ class DaisyApp:
         for index, (button_text, decision) in enumerate(button_specs):
             ttk.Button(
                 actions, text=button_text,
-                style=("Stop.TButton" if decision == "stop_and_resume"
-                       else "Secondary.TButton"),
+                style=(
+                    _DANGER_BUTTON_STYLE
+                    if decision == "stop_and_resume"
+                    else _STANDARD_NEUTRAL_BUTTON_STYLE),
                 width=_STANDARD_BUTTON_WIDTH,
                 command=lambda value=decision:
                 self._resolve_timeout_dialog(value),
@@ -10286,15 +10631,11 @@ class DaisyApp:
             self.current_stage_total = stage_total
             name = self._short_progress_text(payload.get("name") or "处理中")
             task_fraction = (stage_idx - 1) / stage_total
-            self.progress_stage_bar.configure(
-                mode="determinate", maximum=100,
-                value=task_fraction * 100,
-                style="Stage.Horizontal.TProgressbar",
-            )
+            self._set_stage_fraction(task_fraction * 100)
             self._update_queue_progress(task_fraction)
             self.progress_stage_label.configure(
                 text=f"阶段 {stage_idx}/{stage_total} · {name}",
-                fg=_GREEN_DARK,
+                fg=_PROGRESS_STAGE_FOREGROUND,
             )
             self.progress_detail_label.configure(text="正在处理…", fg=_MUTED)
             self._set_work_indeterminate()
@@ -10302,7 +10643,8 @@ class DaisyApp:
         if event_name == "progress_update":
             detail, fraction = progress_detail(payload)
             self.progress_detail_label.configure(
-                text=self._short_progress_text(detail), fg=_TEXT)
+                text=self._short_progress_text(detail),
+                fg=_PROGRESS_WORK_FOREGROUND)
             if fraction is None:
                 if not self._work_progress_indeterminate:
                     self._set_work_indeterminate()
@@ -10328,14 +10670,9 @@ class DaisyApp:
                 ) / stage_total
             else:
                 task_fraction = stage_idx / stage_total
-            self.progress_stage_bar.configure(
-                mode="determinate", maximum=100,
-                value=task_fraction * 100,
-                style=(
-                    "Danger.Horizontal.TProgressbar"
-                    if event_name == "progress_fail" else
-                    "Stage.Horizontal.TProgressbar"
-                ),
+            self._set_stage_fraction(
+                task_fraction * 100,
+                style="Danger" if event_name == "progress_fail" else "Stage",
             )
             self._update_queue_progress(task_fraction)
             if event_name == "progress_skip":
@@ -10349,11 +10686,15 @@ class DaisyApp:
                     detail += f" · 用时 {_format_duration(elapsed)}"
             self.progress_stage_label.configure(
                 text=f"阶段 {stage_idx}/{stage_total} · {name}",
-                fg=_DANGER if event_name == "progress_fail" else _GREEN_DARK,
+                fg=(
+                    _DANGER if event_name == "progress_fail" else
+                    _PROGRESS_STAGE_FOREGROUND),
             )
             self.progress_detail_label.configure(
                 text=self._short_progress_text(detail),
-                fg=_DANGER if event_name == "progress_fail" else _TEXT)
+                fg=(
+                    _DANGER if event_name == "progress_fail" else
+                    _PROGRESS_WORK_FOREGROUND))
             self._set_work_fraction(
                 stage_fraction if event_name == "progress_fail" else 100,
                 style="Danger" if event_name == "progress_fail" else "Work",
@@ -10371,7 +10712,7 @@ class DaisyApp:
                 f"进度已保存，可在下次启动后续传 · {_format_duration(elapsed)}")
             self.progress_work_bar.configure(
                 style=f"{style}.Horizontal.TProgressbar")
-            self.progress_percent_label.configure(text="已保存", fg=colour)
+            self._show_recorded_work_fraction(colour)
         elif returncode == 0 and not self.stop_requested:
             style, colour, detail = (
                 "Success", _SUCCESS,
@@ -10384,17 +10725,15 @@ class DaisyApp:
                     if installing else
                     f"任务完成 · 总用时 {_format_duration(elapsed)}"
                 ))
-            self.progress_stage_bar.configure(value=100)
+            self._set_stage_fraction(100, style=style)
             self._set_work_fraction(100, style=style)
-            self.progress_percent_label.configure(text="完成", fg=colour)
         elif (returncode == 1 and not self.stop_requested
               and not self_test and not checking_version and not installing):
             style, colour, detail = (
                 "Warning", _WARNING,
                 f"任务完成，但结果需要检查 · {_format_duration(elapsed)}")
-            self.progress_stage_bar.configure(value=100)
+            self._set_stage_fraction(100, style=style)
             self._set_work_fraction(100, style=style)
-            self.progress_percent_label.configure(text="需检查", fg=colour)
         elif self.stop_requested:
             style, colour, detail = (
                 "Warning", _WARNING,
@@ -10405,7 +10744,7 @@ class DaisyApp:
                 ))
             self.progress_work_bar.configure(
                 style=f"{style}.Horizontal.TProgressbar")
-            self.progress_percent_label.configure(text="停止", fg=colour)
+            self._show_recorded_work_fraction(colour)
         else:
             style, colour, detail = (
                 "Danger", _DANGER,
@@ -10416,9 +10755,10 @@ class DaisyApp:
                 ))
             self.progress_work_bar.configure(
                 style=f"{style}.Horizontal.TProgressbar")
-            self.progress_percent_label.configure(text="失败", fg=colour)
+            self._show_recorded_work_fraction(colour)
         self.progress_stage_bar.configure(
             style=f"{style}.Horizontal.TProgressbar")
+        self.progress_stage_percent_label.configure(fg=colour)
         self.progress_stage_label.configure(text=detail, fg=colour)
         self.progress_detail_label.configure(text=detail, fg=colour)
 
@@ -10526,6 +10866,7 @@ class DaisyApp:
         if task_key == "storage_list":
             self.storage_disk_choices = ()
             self.storage_disk_options = ()
+            self.storage_inventory_received = False
             self.saved_values.setdefault("storage_collect", {}).pop(
                 "disk_number", None)
         self.process_task_key = task_key
@@ -10609,6 +10950,7 @@ class DaisyApp:
         self._save_current_values()
         self.storage_disk_choices = ()
         self.storage_disk_options = ()
+        self.storage_inventory_received = False
         self.saved_values.setdefault("storage_collect", {}).pop(
             "disk_number", None)
         self._build_form()
@@ -10979,7 +11321,8 @@ class DaisyApp:
         job = self.run_jobs[next_index]
         task_key = self.process_task_key or self.task.key
         self.progress_target_label.configure(
-            text=run_job_target_text(task_key, job), fg=_TEXT)
+            text=run_job_target_text(task_key, job),
+            fg=_PROGRESS_TARGET_FOREGROUND)
         self._hide_current_file()
         self._close_timeout_dialog()
         self.scan_control_sequence = 0
@@ -11239,14 +11582,11 @@ class DaisyApp:
         self.progress_work_bar.configure(
             style=f"{style}.Horizontal.TProgressbar")
         if not self.stop_requested and not self.save_exit_requested:
-            self.progress_stage_bar.configure(value=100)
+            self._set_stage_fraction(100, style=style)
             self._set_work_fraction(100, style=style)
-        self.progress_percent_label.configure(
-            text="已保存" if self.save_exit_requested else
-            "停止" if self.stop_requested else
-            "需检查" if failures else "完成",
-            fg=colour,
-        )
+        else:
+            self._show_recorded_work_fraction(colour)
+        self.progress_stage_percent_label.configure(fg=colour)
         self.progress_stage_label.configure(text=detail, fg=colour)
         self.progress_detail_label.configure(text=detail, fg=colour)
 
@@ -11412,6 +11752,7 @@ class DaisyApp:
             "disabled"
             if (self.task.key == _PROJECT_SELF_TEST_KEY
                 and project_self_test_missing_files())
+            or not self._current_workflow_ready()
             else "normal"
         )
         self._set_stop_state("disabled")

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import os
 import re
@@ -1777,17 +1778,225 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(gui._LOG_BG, gui._WARM_WHITE)
         self.assertEqual(gui._LOG_TEXT, gui._INK_TEAL)
         self.assertEqual(gui._LOG_SELECT, gui._SKY_BLUE)
+        approved_colours = {
+            "#131210", "#f06733", "#dfd9a9", "#88c1b0", "#ecaa3c",
+            "#9a2d28", "#11110f", "#171614", "#fff9ef", "#6a6257",
+            "#f0e7e2", "#5e8cc0", "#647b75", "#a89f98", "#2c3240",
+            "#d3998b", "#1f272a", "#80afc3", "#c5b778", "#a9a397",
+            "#de5123",
+        }
+        gui_colour_values = {
+            value.casefold()
+            for name, value in vars(gui).items()
+            if name.startswith("_")
+            and isinstance(value, str)
+            and re.fullmatch(r"#[0-9a-fA-F]{6}", value)
+        }
+        self.assertLessEqual(gui_colour_values, approved_colours)
+        source_colour_values = {
+            value.casefold()
+            for value in re.findall(
+                r"#[0-9a-fA-F]{6}", inspect.getsource(gui))
+        }
+        self.assertLessEqual(source_colour_values, approved_colours)
+        production_colour_values: dict[str, set[str]] = {}
+        test_prefix = os.path.normcase(_TEST_DIR + os.sep)
+        for directory, _subdirectories, filenames in os.walk(_SCRIPT):
+            if os.path.normcase(directory + os.sep).startswith(test_prefix):
+                continue
+            for filename in filenames:
+                if not filename.endswith(".py"):
+                    continue
+                path = os.path.join(directory, filename)
+                with open(path, "r", encoding="utf-8", newline="") as handle:
+                    colours = {
+                        value.casefold()
+                        for value in re.findall(
+                            r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b",
+                            handle.read(),
+                        )
+                    }
+                unapproved = colours - approved_colours
+                if unapproved:
+                    production_colour_values[
+                        os.path.relpath(path, _REPO_ROOT)
+                    ] = unapproved
+        self.assertEqual(production_colour_values, {})
+        self.assertEqual(gui._SETTINGS_HEADER_BACKGROUND, gui._SAGE)
+        self.assertNotEqual(
+            gui._SETTINGS_HEADER_BACKGROUND,
+            gui._SECTION_HEADER_BACKGROUND,
+        )
+        self.assertNotEqual(
+            gui._SETTINGS_HEADER_BACKGROUND, gui._SURFACE)
+        self.assertEqual(
+            gui._WORKFLOW_ACTION_BUTTON_WIDTH,
+            gui._STANDARD_BUTTON_WIDTH,
+        )
+        self.assertEqual(
+            gui._WORKFLOW_ACTION_BUTTON_PADDING,
+            gui._STANDARD_BUTTON_PADDING,
+        )
+        self.assertGreater(
+            gui._TASK_TOOLBAR_BUTTON_WIDTH,
+            gui._WORKFLOW_ACTION_BUTTON_WIDTH,
+        )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_BUTTON_WIDTH,
+            gui._TASK_ACTION_BUTTON_WIDTH,
+        )
+        self.assertEqual(
+            gui._FORM_ACTION_BUTTON_WIDTH,
+            gui._WORKFLOW_ACTION_BUTTON_WIDTH,
+        )
         self.assertEqual(gui._METADATA_MODE_FONT_WEIGHT, "normal")
+        self.assertEqual(
+            gui._OPTION_SELECTED_PALETTE,
+            (
+                gui._SAGE,
+                gui._LIGHT_TEXT,
+                gui._INK_TEAL,
+            ),
+        )
+        self.assertEqual(
+            gui._OPTION_IDLE_PALETTE,
+            (
+                gui._WARM_WHITE,
+                gui._INK_TEAL,
+                gui._STONE_GRAY,
+            ),
+        )
+        self.assertEqual(
+            gui._OPTION_INACTIVE_PALETTE,
+            (
+                gui._GRAY_BROWN,
+                gui._INK_TEAL,
+                gui._STONE_GRAY,
+            ),
+        )
+        for inactive_value in (False, "off", "none", "disabled"):
+            self.assertTrue(gui._option_value_is_inactive(inactive_value))
+        for active_value in (True, "full", "normalized", "html"):
+            self.assertFalse(gui._option_value_is_inactive(active_value))
         self.assertEqual(
             gui._METADATA_MODE_PALETTES,
             {
-                "complete": (
-                    gui._SKY_BLUE, gui._INK_TEAL, gui._RESEARCH_BLUE),
-                "normalized": (gui._KHAKI, gui._INK_TEAL, gui._AMBER),
-                "off": (
-                    gui._DUSTY_PINK, gui._INK_TEAL, gui._DARK_ORANGE),
+                "complete": gui._OPTION_SELECTED_PALETTE,
+                "normalized": gui._OPTION_SELECTED_PALETTE,
+                "off": gui._OPTION_INACTIVE_PALETTE,
             },
         )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_OUTER_MARGIN,
+            gui._STANDARD_BUTTON_GAP,
+        )
+        self.assertEqual(
+            gui._PANEL_HEADER_ACTION_MARGIN,
+            gui._STANDARD_BUTTON_GAP,
+        )
+
+    def test_button_roles_share_geometry_and_use_distinct_semantics(self):
+        self.assertEqual(
+            gui._WORKFLOW_EXECUTION_BUTTON_STYLE,
+            "DiscoveryAction.TButton",
+        )
+        self.assertEqual(
+            gui._WORKFLOW_INPUT_BUTTON_STYLE,
+            "InputSelection.TButton",
+        )
+        self.assertEqual(
+            gui._NEUTRAL_BUTTON_STYLE,
+            "FilePicker.TButton",
+        )
+        self.assertEqual(
+            gui._STANDARD_NEUTRAL_BUTTON_STYLE,
+            "Secondary.TButton",
+        )
+        self.assertEqual(gui._DANGER_BUTTON_STYLE, "Stop.TButton")
+        self.assertEqual(
+            gui._WORKFLOW_ACTION_BUTTON_WIDTH,
+            gui._STANDARD_BUTTON_WIDTH,
+        )
+        self.assertEqual(
+            gui._WORKFLOW_ACTION_BUTTON_PADDING,
+            gui._STANDARD_BUTTON_PADDING,
+        )
+        self.assertEqual(gui._WORKFLOW_ACTION_FONT_WEIGHT, "bold")
+        self.assertNotEqual(
+            gui._WORKFLOW_EXECUTION_BUTTON_STYLE,
+            gui._WORKFLOW_INPUT_BUTTON_STYLE,
+        )
+
+        execution_owners = (
+            gui.DirectoryListEditor.__init__,
+            gui.RootLabelMapEditor.__init__,
+            gui.DaisyApp._build_storage_detection,
+            gui.DaisyApp._build_parse_database_detection,
+        )
+        for owner in execution_owners:
+            self.assertIn(
+                "_WORKFLOW_EXECUTION_BUTTON_STYLE",
+                inspect.getsource(owner),
+            )
+        build_form_source = inspect.getsource(gui.DaisyApp._build_form)
+        self.assertIn("_WORKFLOW_INPUT_BUTTON_STYLE", build_form_source)
+        self.assertIn("_WORKFLOW_EXECUTION_BUTTON_STYLE", build_form_source)
+        self.assertIn("_NEUTRAL_BUTTON_STYLE", build_form_source)
+        self.assertIn("parse_database", gui._VARIABLE_HEIGHT_FIELD_KINDS)
+        self.assertIn(
+            'if spec.kind == "parse_database":', build_form_source)
+        self.assertIn(
+            'row=1, column=0, columnspan=2', build_form_source)
+        self.assertIn(
+            'if primary_input or spec.kind == "parse_database"',
+            build_form_source,
+        )
+
+        for owner in (
+                gui.BooleanToggleButton._refresh,
+                gui.ValueToggleButton._refresh,
+                gui.MultiChoicePool._refresh,
+                gui.ParseModulePool._refresh_module_button):
+            self.assertIn(
+                "_OPTION_INACTIVE_", inspect.getsource(owner))
+        self.assertEqual(
+            gui._METADATA_MODE_PALETTES["off"],
+            gui._OPTION_INACTIVE_PALETTE,
+        )
+
+        gui_source = inspect.getsource(gui)
+        for retired_style in (
+                "Browse.TButton", "Primary.TButton",
+                "FormAction.TButton", "Mini.TButton",
+                "PanelHeader.TButton", "MiniStop.TButton"):
+            self.assertNotIn(retired_style, gui_source)
+
+    def test_font_preference_refresh_preserves_button_role_weight(self):
+        class StyleProbe:
+            def __init__(self):
+                self.fonts = {}
+
+            def configure(self, name, **options):
+                self.fonts[name] = options["font"]
+
+        app = object.__new__(gui.DaisyApp)
+        app.style = StyleProbe()
+        app._font_tuple = lambda size, weight="normal": (size, weight)
+        app._apply_style_fonts()
+        expected = (10, gui._WORKFLOW_ACTION_FONT_WEIGHT)
+        self.assertEqual(
+            app.style.fonts[gui._WORKFLOW_EXECUTION_BUTTON_STYLE],
+            expected,
+        )
+        self.assertEqual(
+            app.style.fonts[gui._WORKFLOW_INPUT_BUTTON_STYLE],
+            expected,
+        )
+        for name in (
+                gui._ADMIN_MODE_PENDING_STYLE,
+                gui._ADMIN_MODE_ACTIVE_STYLE,
+                gui._ADMIN_MODE_DISABLED_STYLE):
+            self.assertEqual(app.style.fonts[name], expected)
 
     def test_run_button_label_is_unified(self):
         self.assertEqual(gui._RUN_BUTTON_TEXT, "开始")
@@ -1803,7 +2012,25 @@ class TestGuiArguments(unittest.TestCase):
         self.assertNotEqual(
             gui._TASK_TOOLBAR_BACKGROUND, gui._TASK_TOOLBAR_SELECTED)
 
-    def test_primary_and_stop_button_styles_are_stable(self):
+    def test_colour_strip_and_panel_action_margins_follow_layout_contract(self):
+        shell_source = inspect.getsource(gui.DaisyApp._build_shell)
+        self.assertLess(
+            shell_source.index("self._build_task_toolbar()"),
+            shell_source.index("colour_strip ="),
+        )
+        self.assertEqual(
+            shell_source.count("padx=_PANEL_HEADER_ACTION_MARGIN"), 2)
+        self.assertEqual(
+            shell_source.count("pady=_PANEL_HEADER_ACTION_MARGIN"), 2)
+        toolbar_source = inspect.getsource(
+            gui.DaisyApp._build_task_toolbar)
+        self.assertNotIn('text="功能模块"', toolbar_source)
+        self.assertIn(
+            "padx=_TASK_TOOLBAR_OUTER_MARGIN", toolbar_source)
+        self.assertIn(
+            "pady=_TASK_TOOLBAR_OUTER_MARGIN", toolbar_source)
+
+    def test_button_role_styles_are_stable(self):
         class StyleProbe:
             def __init__(self):
                 self.configurations = {}
@@ -1840,30 +2067,48 @@ class TestGuiArguments(unittest.TestCase):
                 gui, "_create_combobox_chevron", return_value=object()),
         ):
             app._configure_styles()
-        primary = style.configurations["Primary.TButton"]
-        self.assertEqual(
-            primary["background"], gui._UNIFIED_ACTION_BACKGROUND)
-        self.assertEqual(
-            primary["foreground"], gui._UNIFIED_ACTION_FOREGROUND)
-        self.assertEqual(primary["borderwidth"], 0)
         self.assertEqual(
             style.configurations["TEntry"]["borderwidth"], 1)
+        self.assertEqual(
+            style.configurations["TEntry"]["bordercolor"],
+            gui._FORM_BORDER_COLOUR,
+        )
+        discovery = style.configurations["DiscoveryAction.TButton"]
+        self.assertEqual(discovery["background"], gui._RESEARCH_BLUE)
+        self.assertEqual(discovery["foreground"], gui._LIGHT_TEXT)
+        self.assertEqual(
+            discovery["font"][-1], gui._WORKFLOW_ACTION_FONT_WEIGHT)
+        self.assertEqual(
+            discovery["padding"], gui._WORKFLOW_ACTION_BUTTON_PADDING)
+        input_selection = style.configurations["InputSelection.TButton"]
+        self.assertEqual(input_selection["background"], gui._SKY_BLUE)
+        self.assertEqual(input_selection["foreground"], gui._INK_TEAL)
+        self.assertEqual(
+            input_selection["font"][-1],
+            gui._WORKFLOW_ACTION_FONT_WEIGHT,
+        )
+        self.assertEqual(
+            input_selection["padding"],
+            gui._WORKFLOW_ACTION_BUTTON_PADDING,
+        )
+        self.assertNotEqual(
+            input_selection["background"], discovery["background"])
         self.assertEqual(
             style.configurations["FilePicker.TButton"]["padding"],
             gui._FILE_PICKER_BUTTON_PADDING,
         )
         self.assertEqual(
-            style.configurations["PanelHeader.TButton"]["padding"],
-            gui._FILE_PICKER_BUTTON_PADDING,
+            style.configurations["Secondary.TButton"]["padding"],
+            gui._STANDARD_BUTTON_PADDING,
         )
         for name in (
-                "TButton", "Browse.TButton", "FormAction.TButton",
-                "DiscoveryAction.TButton", "FilePicker.TButton",
-                "Remove.TButton", "Primary.TButton", "Stop.TButton",
-                "Secondary.TButton", "Mini.TButton",
-                "PanelHeader.TButton", "MiniStop.TButton"):
+                "TButton",
+                "DiscoveryAction.TButton", "InputSelection.TButton",
+                "FilePicker.TButton",
+                "Remove.TButton", "Stop.TButton",
+                "Secondary.TButton"):
             self.assertEqual(style.configurations[name]["borderwidth"], 0)
-        for name in ("Stop.TButton", "MiniStop.TButton"):
+        for name in ("Stop.TButton",):
             stop = style.configurations[name]
             self.assertEqual(stop["background"], gui._SIGNAL_ORANGE)
             self.assertEqual(stop["foreground"], gui._ARCHIVE_BLACK)
@@ -1878,6 +2123,20 @@ class TestGuiArguments(unittest.TestCase):
                 style.mappings[name]["foreground"],
                 [("active", gui._LIGHT_TEXT)],
             )
+        expected_progress = {
+            "Queue.Horizontal.TProgressbar": gui._RESEARCH_BLUE,
+            "Stage.Horizontal.TProgressbar": gui._SAGE,
+            "Work.Horizontal.TProgressbar": gui._SKY_BLUE,
+        }
+        for name, colour in expected_progress.items():
+            progress_style = style.configurations[name]
+            self.assertEqual(progress_style["background"], colour)
+            self.assertEqual(
+                progress_style["troughcolor"],
+                gui._PROGRESS_TROUGH_COLOUR,
+            )
+            self.assertEqual(
+                progress_style["bordercolor"], gui._FORM_BORDER_COLOUR)
 
     def test_toolbar_selection_clears_button_focus(self):
         class RootProbe:
@@ -2469,17 +2728,17 @@ class TestGuiArguments(unittest.TestCase):
     def test_top_task_toolbar_collapses_without_changing_selection(self):
         class BodyProbe:
             def __init__(self):
-                self.manager = "pack"
+                self.manager = "grid"
                 self.options = {}
 
             def winfo_manager(self):
                 return self.manager
 
-            def pack(self, **options):
-                self.manager = "pack"
+            def grid(self, **options):
+                self.manager = "grid"
                 self.options = options
 
-            def pack_forget(self):
+            def grid_remove(self):
                 self.manager = ""
 
         class ValueProbe:
@@ -2497,7 +2756,6 @@ class TestGuiArguments(unittest.TestCase):
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.task_toolbar_expanded = True
-        app.task_toolbar_horizontal_pad = 32
         app.task_toolbar_body = BodyProbe()
         app.task_toolbar_toggle_button = ButtonProbe()
         app.task_toolbar_visible_var = ValueProbe()
@@ -2506,11 +2764,8 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.task_toolbar_toggle_button.text, "展开模块")
         self.assertFalse(app.task_toolbar_visible_var.value)
         app._set_task_toolbar_expanded(True)
-        self.assertEqual(app.task_toolbar_body.manager, "pack")
-        self.assertEqual(
-            app.task_toolbar_body.options,
-            {"fill": "x", "padx": 32, "pady": (0, 8)},
-        )
+        self.assertEqual(app.task_toolbar_body.manager, "grid")
+        self.assertEqual(app.task_toolbar_body.options, {})
         self.assertEqual(app.task_toolbar_toggle_button.text, "收起模块")
         self.assertTrue(app.task_toolbar_visible_var.value)
 
@@ -2649,13 +2904,20 @@ class TestGuiArguments(unittest.TestCase):
             gui._TASK_ACTION_BUTTON_PADDING,
         )
         self.assertEqual(
+            gui._ENVIRONMENT_BUTTON_WIDTH,
+            gui._STANDARD_BUTTON_WIDTH,
+        )
+        self.assertGreater(
             gui._TASK_TOOLBAR_BUTTON_WIDTH,
             gui._ENVIRONMENT_BUTTON_WIDTH,
         )
         self.assertEqual(gui._BUTTON_BORDER_WIDTH, 0)
         self.assertEqual(gui._TASK_TOOLBAR_PANEL_BORDER_WIDTH, 0)
         self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1180)
-        self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._INK_TEAL)
+        self.assertNotIn(
+            'text="功能模块"',
+            inspect.getsource(gui.DaisyApp._build_task_toolbar),
+        )
         self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
         with patch.object(
                 gui.DaisyApp, "_fit_task_toolbar_buttons") as fit, \
@@ -2727,6 +2989,26 @@ class TestGuiArguments(unittest.TestCase):
         app._prepare_queue_progress()
         self.assertEqual(
             app.queue_detail_label.options["text"], "0/3 · 队列已准备")
+
+    def test_stage_progress_always_has_a_numeric_percentage(self):
+        class WidgetProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        app = object.__new__(gui.DaisyApp)
+        app.progress_stage_bar = WidgetProbe()
+        app.progress_stage_percent_label = WidgetProbe()
+        app._set_stage_fraction(37.5)
+        self.assertEqual(app.progress_stage_bar.options["value"], 37.5)
+        self.assertEqual(
+            app.progress_stage_percent_label.options["text"], "38%")
+        self.assertEqual(
+            app.progress_stage_percent_label.options["fg"],
+            gui._PROGRESS_STAGE_FOREGROUND,
+        )
 
 
     def test_parse_database_version_text_uses_descriptor_metadata(self):
@@ -3141,6 +3423,176 @@ class TestGuiArguments(unittest.TestCase):
                 for issue in gui.validate_values("verify", duplicate)
             ))
 
+    def test_parse_form_reveals_each_chapter_after_upstream_selection(self):
+        task = gui.TASK_BY_KEY["parse_db"]
+        for values in ({}, {"database": __file__}):
+            self.assertEqual(
+                tuple(
+                    spec.key for spec in gui._visible_form_specs(
+                        task, values, parse_database_ready=False)),
+                ("database",),
+            )
+        self.assertEqual(
+            tuple(
+                spec.key for spec in gui._visible_form_specs(
+                    task,
+                    {"database": __file__},
+                    parse_database_ready=True,
+                )),
+            ("database", "preset"),
+        )
+        self.assertEqual(
+            tuple(
+                spec.key for spec in gui._visible_form_specs(
+                    task,
+                    {
+                        "database": __file__,
+                        "preset": "full-audit",
+                    },
+                    parse_database_ready=True,
+                )),
+            (
+                "database", "preset", "parse_modules", "formats",
+            ),
+        )
+        custom = {
+            "database": __file__,
+            "preset": "custom",
+        }
+        self.assertEqual(
+            tuple(
+                spec.key for spec in gui._visible_form_specs(
+                    task, custom, parse_database_ready=True)),
+            ("database", "preset", "parse_modules"),
+        )
+        custom["parse_modules"] = "files"
+        self.assertEqual(
+            tuple(
+                spec.key for spec in gui._visible_form_specs(
+                    task, custom, parse_database_ready=True)),
+            ("database", "preset", "parse_modules", "formats"),
+        )
+        custom["formats"] = "html"
+        self.assertEqual(
+            tuple(
+                spec.key for spec in gui._visible_form_specs(
+                    task, custom, parse_database_ready=True)),
+            (
+                "database", "preset", "parse_modules", "formats",
+                "output_dir",
+            ),
+        )
+        self.assertTrue(gui.workflow_inputs_ready(
+            "parse_db", custom, parse_database_ready=True))
+
+    def test_diff_and_storage_forms_reveal_chapters_top_down(self):
+        diff = gui.TASK_BY_KEY["diff"]
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(diff, {})),
+            ("old", "new"),
+        )
+        snapshot_values = {"old": "old.sqlite", "new": "new.sqlite"}
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                diff, snapshot_values)),
+            ("old", "new", "diff_root_mode"),
+        )
+        self.assertFalse(gui.workflow_inputs_ready("diff", snapshot_values))
+        single = dict(snapshot_values, diff_root_mode="single")
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(diff, single)),
+            ("old", "new", "diff_root_mode", "output_dir"),
+        )
+        self.assertTrue(gui.workflow_inputs_ready("diff", single))
+        multiple = dict(snapshot_values, diff_root_mode="multiple")
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                diff, multiple)),
+            (
+                "old", "new", "diff_root_mode", "map_root",
+                "output_dir",
+            ),
+        )
+
+        storage = gui.TASK_BY_KEY["storage_collect"]
+        self.assertEqual(gui._visible_form_specs(storage, {}), ())
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                storage, {}, storage_inventory_ready=True)),
+            ("disk_number",),
+        )
+        selected_disk = {"disk_number": "1"}
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                storage, selected_disk, storage_inventory_ready=True)),
+            ("disk_number", "output_dir", "summary_txt"),
+        )
+        self.assertTrue(gui.workflow_inputs_ready(
+            "storage_collect", selected_disk,
+            storage_inventory_ready=True,
+        ))
+
+    def test_scan_and_verify_keep_their_existing_selection_gates(self):
+        scan = gui.TASK_BY_KEY["scan"]
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(scan, {})),
+            ("scan_mode",),
+        )
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                scan, {"scan_mode": "full"})),
+            ("scan_mode", "start_mode"),
+        )
+        verify = gui.TASK_BY_KEY["verify"]
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(verify, {})),
+            ("verification_mode",),
+        )
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                verify, {"verification_mode": "database"})),
+            ("verification_mode", "verify_path_mode"),
+        )
+
+    def test_failed_parse_keeps_start_disabled_and_retry_available(self):
+        class WidgetProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        app.task = gui.TASK_BY_KEY["parse_db"]
+        app.parse_detection_generation = 7
+        app.parse_detection_active = True
+        app.parse_inspection = object()
+        app.parse_inspection_path = __file__
+        app.values = {}
+        app.saved_values = {"parse_db": {"database": __file__}}
+        app.progress_stage_label = WidgetProbe()
+        app.progress_detail_label = WidgetProbe()
+        app.run_button = WidgetProbe()
+        app.parse_detect_button = WidgetProbe()
+        app._stop_work_progress = Mock()
+        app._set_task_navigation_state = Mock()
+        app._set_work_fraction = Mock()
+        app._set_stage_fraction = Mock()
+        app._append_log = Mock()
+        app._set_status = Mock()
+
+        with patch.object(gui.messagebox, "showerror") as showerror:
+            app._finish_parse_database_detection(
+                7, __file__, None, "数据库无法识别")
+
+        self.assertEqual(app.run_button.options["state"], "disabled")
+        self.assertEqual(
+            app.parse_detect_button.options["state"], "normal")
+        self.assertIsNone(app.parse_inspection)
+        self.assertEqual(app.parse_inspection_path, "")
+        showerror.assert_called_once()
+
     def test_diff_root_pairing_only_activates_for_multiple_roots(self):
         single = gui.active_field_keys(
             "diff", {"diff_root_mode": "single"})
@@ -3148,6 +3600,37 @@ class TestGuiArguments(unittest.TestCase):
             "diff", {"diff_root_mode": "multiple"})
         self.assertNotIn("map_root", single)
         self.assertIn("map_root", multiple)
+
+    def test_changed_diff_snapshot_invalidates_dependent_root_selection(self):
+        app = object.__new__(gui.DaisyApp)
+        app.task = gui.TASK_BY_KEY["diff"]
+        app.saved_values = {
+            "diff": {
+                "old": "old-a.sqlite",
+                "new": "new.sqlite",
+                "diff_root_mode": "multiple",
+                "map_root": "A=B",
+                "output_dir": "Output",
+            },
+        }
+        app._collect_persistable_values = Mock(return_value={
+            "old": "old-b.sqlite",
+            "new": "new.sqlite",
+            "diff_root_mode": "multiple",
+            "map_root": "A=B",
+            "output_dir": "Output",
+        })
+        app._schedule_staged_form_rebuild = Mock()
+        app._update_preview = Mock()
+
+        app._invalidate_diff_snapshot_selection()
+
+        forwarded = app._schedule_staged_form_rebuild.call_args.kwargs[
+            "values"]
+        self.assertEqual(forwarded["diff_root_mode"], "")
+        self.assertNotIn("map_root", forwarded)
+        self.assertEqual(forwarded["output_dir"], "Output")
+        app._update_preview.assert_not_called()
 
     def test_validation_task_args_include_current_root(self):
         with tempfile.TemporaryDirectory() as current_root:
