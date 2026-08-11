@@ -76,7 +76,8 @@ def open_resume(partial: str) -> tuple[sqlite3.Connection, list]:
 def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(
-        description="完整档案扫描：档案 → 不可变快照库")
+        description=(
+            "兼容完整扫描入口：登记文件树、元数据与哈希，生成封存快照"))
     ap.add_argument("--root", action="append", default=[],
                     help="档案根文件夹，可重复；语法 label=路径 或 路径")
     ap.add_argument("--output-dir", default="Output/Snapshots")

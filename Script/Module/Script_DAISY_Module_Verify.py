@@ -250,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "档案数据核验：核对全部文件状态，并可选复检哈希、格式、容器结构与 RAW 解码；"
-            "已有快照只读，也支持无数据库直接核验"
+            "封存快照保持只读，也支持无数据库直接核验"
         ),
     )
     input_group = parser.add_mutually_exclusive_group(required=True)

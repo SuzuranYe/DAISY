@@ -30,7 +30,7 @@ _COLLECTION_STATUS_LABELS = {
 
 def _list_disks(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="检测硬盘：只读列出硬盘，并标明可用的 SMART 读取目标")
+        description="检测硬盘：只读列出 Windows 硬盘，并匹配 SMART 读取目标")
     parser.add_argument("--smartctl-path", help="smartctl 可执行文件路径")
     parser.add_argument("--powershell-path", help="PowerShell 可执行文件路径")
     parser.add_argument(

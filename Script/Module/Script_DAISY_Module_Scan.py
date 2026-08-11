@@ -264,8 +264,8 @@ class ScanReporter:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "档案扫描建库：选择完整或快速模式，创建可暂停并可跨重启续传的"
-            "数据库结构版本 4 快照"
+            "档案扫描建库：以完整或快速模式创建数据库结构版本 4 封存快照；"
+            "任务可暂停并可跨重启续传"
         ),
     )
     parser.add_argument(

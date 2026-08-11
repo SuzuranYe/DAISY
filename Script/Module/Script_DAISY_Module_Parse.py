@@ -181,7 +181,7 @@ def _run_parse(args: argparse.Namespace) -> int:
     )
     print(
         "数据模块状态："
-        f"可导出 {counts.get('available', 0)} · "
+        f"可选择 {counts.get('available', 0)} · "
         f"0 条记录 {counts.get('empty', 0)} · "
         f"无可用记录 {counts.get('unavailable', 0)} · "
         f"版本不兼容 {counts.get('incompatible', 0)} · "

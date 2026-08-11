@@ -706,7 +706,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual([option.disk_number for option in options], [3, 4])
         self.assertTrue(options[0].selectable)
         self.assertFalse(options[1].selectable)
-        self.assertEqual(options[1].reason, "无法读取 SMART 信息")
+        self.assertEqual(options[1].reason, "未匹配 SMART 读取目标")
 
         app = object.__new__(gui.DaisyApp)
         app.storage_disk_choices = ()
@@ -1679,6 +1679,10 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("当前只读取硬盘归档 schema 3", spec)
         self.assertIn("不兼容\n早期协议", spec)
         self.assertIn("不提供按 mtime 静默跳过", spec)
+        self.assertIn(
+            "| 档案数据解析范围 | 全量、摘要、自定义 |", spec)
+        self.assertIn("检测状态 → 安装与更新", spec)
+        self.assertIn("未匹配 SMART 读取目标", spec)
         self.assertIn("暂停只在当前任务进程内生效", spec)
         self.assertIn("`resume_hint=suggest`", spec)
         self.assertIn("`resume_hint=manual_only`", spec)
@@ -3192,17 +3196,17 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
                 database_type="snapshot", source_version="1.4.1")),
-            "快照版本 v1.4.1",
+            "数据库生成程序版本 v1.4.1",
         )
         self.assertEqual(
             gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
                 database_type="diff", source_version="v1.6.3")),
-            "Diff 版本 v1.6.3",
+            "数据库生成程序版本 v1.6.3",
         )
         self.assertEqual(
             gui.DaisyApp._parse_database_version_text(types.SimpleNamespace(
                 database_type="snapshot", source_version=None)),
-            "快照版本 未知",
+            "数据库生成程序版本 未记录",
         )
         app = object.__new__(gui.DaisyApp)
         inspection = types.SimpleNamespace(
@@ -3214,9 +3218,12 @@ class TestGuiArguments(unittest.TestCase):
         )
         self.assertEqual(
             app._parse_database_detection_detail(inspection),
-            "已解析封存快照；快照版本 v1.4.1；数据库结构版本 3；"
-            "数据模块 15 项可用。输入文件变化后，请重新解析。",
+            "已解析封存快照；数据库生成程序版本 v1.4.1；"
+            "数据库结构版本 3；数据模块 15 项可选择。"
+            "输入文件变化后，请重新解析。",
         )
+        self.assertEqual(
+            gui.dbparse.PARSE_MODULE_STATE_LABELS["available"], "可选择")
 
     def test_snapshot_parse_module_ui_titles_are_clear_and_bounded(self):
         specs = gui.dbparse.parse_modules("snapshot")
@@ -3492,6 +3499,56 @@ class TestGuiArguments(unittest.TestCase):
             gui.task_display_title(gui._PROJECT_SELF_TEST_KEY),
             "DAISY 功能自检",
         )
+
+    def test_function_descriptions_match_current_workflow_boundaries(self):
+        expected = {
+            "scan": (
+                "扫描档案目录，建立可供对比的封存快照；任务支持暂停和续传。",
+                "完整／快速 · 文件清单 · 封存快照",
+            ),
+            "diff": (
+                "比较两份封存快照，记录文件增删、变化、移动与复制。",
+                "快照对比 · 变化分类 · Diff 数据库",
+            ),
+            "verify": (
+                "按封存快照复核档案，或无数据库直接检查格式、容器与 RAW 解码。",
+                "文件状态 · 哈希与格式 · 问题报告",
+            ),
+            "parse_db": (
+                "只读解析封存快照或 Diff 数据库，按所选数据模块和格式导出。",
+                "数据模块 · 四种格式 · 只读导出",
+            ),
+            "storage_collect": (
+                "只读采集硬盘、分区、卷与 SMART 信息，生成硬盘档案。",
+                "只读采集 · 分区与卷 · SMART 信息",
+            ),
+            "env_check": (
+                "检测 Python、外部工具和可选运行能力。",
+                "Python 与工具 · 版本信息 · 安装与更新",
+            ),
+        }
+        for task_key, (description, badge) in expected.items():
+            task = gui.TASK_BY_KEY[task_key]
+            self.assertEqual(task.description, description)
+            self.assertEqual(task.badge, badge)
+
+        expected_cli = {
+            "env-check": "运行环境检测：检测 Python、外部工具和 RAW 解码能力",
+            "scan": "档案扫描建库：建立完整或快速封存快照；任务支持暂停和续传",
+            "diff": "档案快照对比：比较两份封存快照，记录增删、变化、移动与复制",
+            "verify": "档案数据核验：按封存快照复核，或无数据库直接检查文件",
+            "parse-db": "档案数据解析：只读解析数据库并按所选模块与格式导出",
+            "storage-list": "检测硬盘：列出 Windows 硬盘并匹配 SMART 读取目标",
+            "storage-collect": "硬盘信息登记：只读采集并生成 ZIP",
+        }
+        for command, description in expected_cli.items():
+            self.assertEqual(entry.COMMANDS[command][1], description)
+
+        installation_source = inspect.getsource(
+            gui.DaisyApp._build_environment_installation)
+        self.assertIn('text="安装与更新"', installation_source)
+        self.assertIn('"手动管理"', installation_source)
+        self.assertNotIn('"系统提供"', installation_source)
 
     def test_final_task_numbering_and_menu_order(self):
         self.assertEqual(
@@ -3992,13 +4049,13 @@ class TestGuiArguments(unittest.TestCase):
         about = gui.about_message()
         for token in (
                 "环境：", "档案：", "硬盘：",
-                f"统一扫描数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
-                f"旧版兼容快照结构版本：{core.SCHEMA_VERSION}",
+                f"当前扫描输出数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
+                f"兼容读取快照数据库结构版本：{core.SCHEMA_VERSION}",
                 f"元数据配置版本：{gui.metadata.PROFILE_VERSION}",
                 f"硬盘归档结构版本：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
                 f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}",
-                "统一扫描续传：按数据库结构版本 4 的续传规则检查",
-                "旧版兼容入口：仅续传数据库生成程序版本相同的结构版本 3 未完成快照",
+                "当前扫描续传：按数据库结构版本 4 的续传规则检查",
+                "旧版兼容入口：仅续传数据库生成程序版本相同的数据库结构版本 3 未完成快照",
                 "快照数据库与硬盘档案彼此独立"):
             self.assertIn(token, about)
         self.assertIn(gui._PROJECT_CONTACT, about)

@@ -670,7 +670,7 @@ class ParseModuleStatus:
 
 
 PARSE_MODULE_STATE_LABELS = {
-    "available": "可导出",
+    "available": "可选择",
     "empty": "0 条记录",
     "unavailable": "无可用记录",
     "incompatible": "版本不兼容",

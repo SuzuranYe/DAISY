@@ -151,6 +151,10 @@ class TestParseHuman(unittest.TestCase):
                 self.assertEqual(human._human_row_value(row, "value"), expected)
         self.assertEqual(
             human._human_row_value({"forced": False}, "forced"), "否")
+        self.assertEqual(
+            human._human_row_value({"state": "available"}, "state"),
+            "可选择",
+        )
 
     def test_human_rows_translate_issue_and_run_codes(self) -> None:
         cases = (

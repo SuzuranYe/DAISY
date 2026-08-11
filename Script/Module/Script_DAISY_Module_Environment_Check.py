@@ -136,7 +136,7 @@ def write_environment_report(
 def main() -> int:
     core.force_utf8_io()
     ap = argparse.ArgumentParser(
-        description="运行环境检测：检测工具版本、可用性和 RAW 解码能力")
+        description="运行环境检测：检测 Python、外部工具和 RAW 解码能力")
     ap.add_argument(
         "--output-dir", default="Output/Reports",
         help="环境报告输出目录；默认 Output/Reports")

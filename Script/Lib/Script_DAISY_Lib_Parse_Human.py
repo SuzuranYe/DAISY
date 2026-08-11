@@ -97,7 +97,7 @@ _FIELD_VALUE_NAMES = {
         "runtime": "运行与证据问题",
     },
     "state": {
-        "available": "可导出",
+        "available": "可选择",
         "empty": "0 条记录",
         "unavailable": "无可用记录",
         "incompatible": "版本不兼容",
@@ -742,7 +742,7 @@ def _write_html(
             body_rows.append("<tr>" + "".join(cells) + "</tr>")
         compatibility = record.get("compatibility_notes") or []
         state_labels = {
-            "available": "可导出",
+            "available": "可选择",
             "empty": "0 条记录",
             "unavailable": "无可用记录",
             "incompatible": "版本不兼容",

@@ -825,7 +825,7 @@ def storage_disk_options(raw_targets: object) -> tuple[StorageDiskOption, ...]:
         elif not online:
             reason = "已脱机"
         elif not smart_available:
-            reason = "无法读取 SMART 信息"
+            reason = "未匹配 SMART 读取目标"
         else:
             reason = "联机 · 可登记"
         options.append(StorageDiskOption(
@@ -1428,8 +1428,8 @@ TASKS = (
         "env-check",
         "运行环境检测",
         "运行环境检测",
-        "检测各功能所需工具和可选能力。",
-        "工具状态 · 版本信息 · 安装与更新",
+        "检测 Python、外部工具和可选运行能力。",
+        "Python 与工具 · 版本信息 · 安装与更新",
         (
             FieldSpec(
                 "export_environment_report", "检测报告",
@@ -1488,7 +1488,7 @@ TASKS = (
         "scan",
         "完整档案扫描",
         "完整档案扫描",
-        "登记目录、元数据与 SHA-256，生成可续传的封存快照。",
+        "登记目录、元数据与 SHA-256，生成封存快照；任务支持暂停和续传。",
         "档案只读 · 长时任务 · 生成快照",
         (
             FieldSpec(
@@ -1878,7 +1878,7 @@ TASKS = (
         "diff",
         "档案快照对比",
         "档案快照对比",
-        "比较两份快照，记录文件增删、变化、移动与复制。",
+        "比较两份封存快照，记录文件增删、变化、移动与复制。",
         "快照对比 · 变化分类 · Diff 数据库",
         (
             FieldSpec(
@@ -1902,8 +1902,8 @@ TASKS = (
             FieldSpec(
                 "map_root", "根目录名配对", "--map-root", "root_label_map",
                 help=(
-                    "将基准快照与对比快照的根目录名配对；"
-                    "单根目录通常会自动对应。"
+                    "逐项配对基准快照与对比快照中记录的根目录名；"
+                    "每个基准根目录名只能添加一次。"
                 ),
                 section="根目录名配对",
                 active_when=(("diff_root_mode", ("multiple",)),),
@@ -1963,7 +1963,7 @@ TASKS = (
         "storage-list",
         "内部步骤：检测硬盘",
         "检测硬盘",
-        "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。",
+        "读取 Windows 硬盘清单，并匹配 SMART 读取目标。",
         "管理员权限 · 只读检测 · 硬盘清单",
         (
             FieldSpec(
@@ -1985,7 +1985,7 @@ TASKS = (
         "storage-collect",
         "硬盘信息登记",
         "硬盘信息登记",
-        "采集硬盘、分区、卷与 SMART 信息，生成硬盘档案。",
+        "只读采集硬盘、分区、卷与 SMART 信息，生成硬盘档案。",
         "只读采集 · 分区与卷 · SMART 信息",
         (
             FieldSpec(
@@ -2179,14 +2179,14 @@ _VERIFY_HASH_ENABLED = (
 TASKS = (*TASKS,
     TaskSpec(
         "scan", "scan", "档案扫描建库", "档案扫描建库",
-        "扫描档案目录，生成可对比、可续传的快照。",
-        "完整／快速 · 文件清单 · 快照数据库",
+        "扫描档案目录，建立可供对比的封存快照；任务支持暂停和续传。",
+        "完整／快速 · 文件清单 · 封存快照",
         _unified_scan_fields(),
     ),
     TaskSpec(
         "verify", "verify", "档案数据核验", "档案数据核验",
-        "按快照复核档案，或直接检查文件格式、容器与 RAW 解码。",
-        "文件状态 · 格式与容器 · 问题报告",
+        "按封存快照复核档案，或无数据库直接检查格式、容器与 RAW 解码。",
+        "文件状态 · 哈希与格式 · 问题报告",
         (
             FieldSpec(
                 "verification_mode", "核验方式", None, "choice_buttons",
@@ -2201,13 +2201,13 @@ TASKS = (*TASKS,
                 "", required=True,
                 choices=(("路径未变", "unchanged"),
                          ("路径变化", "changed")),
-                help="盘符和目录未变化时直接使用快照记录的原路径；只有变化时才需重新映射。",
+                help="快照记录的原路径仍有效时可直接使用；只有原路径失效时才需重新映射。",
                 section="核验输入", active_when=_VERIFY_DATABASE_MODE,
             ),
             FieldSpec(
                 "snapshot", "封存快照", "--snapshot", "file",
                 required=True, filetypes=_SQLITE_TYPES, section="核验输入",
-                help="选择提供文件清单和原始文件属性的封存快照。",
+                help="选择提供文件清单、原始属性和可用哈希基准的封存快照。",
                 active_when=_VERIFY_DATABASE_MODE,
             ),
             FieldSpec(
@@ -2327,8 +2327,8 @@ TASKS = (*TASKS,
     ),
     TaskSpec(
         "parse_db", "parse-db", "档案数据解析", "档案数据解析",
-        "解析快照或 Diff，按所选数据模块和格式导出。",
-        "数据模块 · 四种格式 · 独立导出",
+        "只读解析封存快照或 Diff 数据库，按所选数据模块和格式导出。",
+        "数据模块 · 四种格式 · 只读导出",
         (
             FieldSpec(
                 "database", "输入数据库", "--database", "parse_database",
@@ -2342,13 +2342,13 @@ TASKS = (*TASKS,
                 choices=(("全量", "full-audit"),
                          ("摘要", "human-summary"),
                          ("自定义", "custom")),
-                help="全量选择所有可用的数据模块；摘要仅选择概览和关键证据；"
+                help="全量选择所有可选择的数据模块；摘要仅选择概览和关键证据；"
                      "自定义可逐项调整。",
                 section="导出内容",
             ),
             FieldSpec(
                 "parse_modules", "数据模块", "--include", "parse_modules",
-                help="列出当前数据库的数据模块；不可用的数据模块会说明原因。",
+                help="列出当前数据库的数据模块；不可选择的项目会说明原因。",
                 section="导出内容",
             ),
             FieldSpec(
@@ -3760,7 +3760,7 @@ class DirectoryListEditor(tk.Frame):
         if any(self._canonical_path(item) == canonical
                for item in self._items):
             messagebox.showinfo(
-                "目录已经添加", f"该目录已在列表中：\n{value}",
+                "目录已添加", f"该目录已在列表中：\n{value}",
                 parent=self.winfo_toplevel())
             return False
         self._items.append(value)
@@ -3811,8 +3811,8 @@ class RootLabelMapEditor(tk.Frame):
         self.hint_label = tk.Label(
             self,
             text=(
-                "填写快照中记录的根目录名。通常是建库时所选文件夹名；"
-                "如曾自定义，则填写自定义名称。单根快照通常无需设置。"
+                "填写两份快照中记录的根目录名。通常是建库时所选文件夹名；"
+                "如曾自定义，则填写自定义名称。"
             ),
             bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 9), anchor="w",
@@ -3992,7 +3992,7 @@ class RootLabelMapEditor(tk.Frame):
         if any(old_label == existing_old
                for existing_old, _existing_new in self._items):
             messagebox.showinfo(
-                "基准根目录已经添加",
+                "基准根目录名已添加",
                 f"该基准根目录名已在配对列表中：\n{old_label}",
                 parent=self.winfo_toplevel(),
             )
@@ -5239,20 +5239,20 @@ def about_message() -> str:
         f"{core.PROJECT_FULL_NAME}\n"
         f"作者：{core.PROJECT_AUTHOR}\n"
         f"联系：{_PROJECT_CONTACT}\n\n"
-        "环境：检测运行所需工具和可选能力。\n"
-        "档案：建立与对比快照，按快照核验源文件并解析数据库。\n"
+        "环境：检测 Python、外部工具和可选运行能力。\n"
+        "档案：建立与对比封存快照，按快照或无数据库核验档案，并只读解析数据库。\n"
         "硬盘：只读登记硬盘、分区、卷与 SMART 信息并生成独立 ZIP。\n\n"
         "数据库与归档格式\n"
-        f"统一扫描数据库结构版本：{dbstate.SCHEMA_VERSION}\n"
-        f"旧版兼容快照结构版本：{core.SCHEMA_VERSION}\n"
+        f"当前扫描输出数据库结构版本：{dbstate.SCHEMA_VERSION}\n"
+        f"兼容读取快照数据库结构版本：{core.SCHEMA_VERSION}\n"
         f"元数据配置版本：{metadata.PROFILE_VERSION}\n"
         f"快照文件名布局：{core.FILENAME_LAYOUT_VERSION}\n"
         f"硬盘归档结构版本：{storage_core.ARCHIVE_SCHEMA_VERSION}\n"
         f"硬盘归档文件名布局：{storage_core.FILENAME_LAYOUT_VERSION}\n\n"
         "兼容性\n"
         f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}\n"
-        "统一扫描续传：按数据库结构版本 4 的续传规则检查\n"
-        "旧版兼容入口：仅续传数据库生成程序版本相同的结构版本 3 未完成快照\n\n"
+        "当前扫描续传：按数据库结构版本 4 的续传规则检查\n"
+        "旧版兼容入口：仅续传数据库生成程序版本相同的数据库结构版本 3 未完成快照\n\n"
         "快照数据库与硬盘档案彼此独立。业务数据留在本机；源档案和硬盘"
         "保持只读。"
     )
@@ -8248,7 +8248,7 @@ class DaisyApp:
     def _build_environment_installation(
         self, row: int, form_pad: int,
     ) -> int:
-        """在运行环境检测设置页建立独立的软件安装区。"""
+        """在运行环境检测设置页建立独立的安装与更新区。"""
         panel = tk.Frame(
             self.form_inner, bg=_SURFACE,
             highlightbackground=_BORDER, highlightthickness=1,
@@ -8264,7 +8264,7 @@ class DaisyApp:
         tk.Frame(header, bg=_GREEN_DARK, width=4, height=18).pack(
             side="left", fill="y")
         tk.Label(
-            header, text="软件安装", bg=_SURFACE, fg=_GREEN_DEEP,
+            header, text="安装与更新", bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         ).pack(side="left", padx=(8, 0))
 
@@ -8315,7 +8315,7 @@ class DaisyApp:
                     button_grid,
                     text=(
                         f"{_ENVIRONMENT_BUTTON_LABELS[dependency_name]}\n"
-                        "系统提供"
+                        "手动管理"
                     ),
                     state="disabled",
                     **button_options,
@@ -8328,7 +8328,8 @@ class DaisyApp:
                 self.environment_install_buttons[dependency_name] = button
                 attach_tooltip(
                     button,
-                    "PowerShell 由 Windows 系统提供。",
+                    "DAISY 不安装或更新 PowerShell；可使用 Windows "
+                    "PowerShell 5.1，或自行安装 PowerShell 7.x。",
                 )
                 continue
             display_name, installer = install_entries[dependency_name]
@@ -8610,7 +8611,8 @@ class DaisyApp:
                 if inventory_received and found_count else
                 "已完成检测，但没有找到可登记硬盘；可重新检测。"
                 if inventory_received else
-                "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。"
+                "读取 Windows 硬盘清单并匹配 SMART 读取目标，"
+                "生成可登记硬盘列表。"
             ),
             bg=_SURFACE, fg=_TEXT,
             font=("Microsoft YaHei UI", 9), anchor="w",
@@ -8631,7 +8633,8 @@ class DaisyApp:
             padx=0, pady=0)
         attach_tooltip(
             self.storage_detect_button,
-            "读取硬盘、分区、卷与 SMART 信息，并刷新下方可登记硬盘清单。",
+            "读取 Windows 硬盘清单并匹配 SMART 读取目标，"
+            "随后刷新下方硬盘列表。",
         )
         panel.bind(
             "<Configure>",
@@ -8661,11 +8664,11 @@ class DaisyApp:
         inspection = self._matching_parse_inspection(database)
         if inspection is None:
             detail_text = (
-                "已选择数据库；点击「解析数据库」读取类型、来源版本、"
-                "结构版本和数据模块。"
+                "已选择数据库；点击「解析数据库」读取数据库类型、"
+                "数据库生成程序版本、数据库结构版本和数据模块。"
                 if database.strip() else
-                "选择数据库后，点击「解析数据库」读取类型、来源版本、"
-                "结构版本和数据模块。"
+                "选择数据库后，点击「解析数据库」读取数据库类型、"
+                "数据库生成程序版本、数据库结构版本和数据模块。"
             )
         else:
             detail_text = self._parse_database_detection_detail(inspection)
@@ -8689,7 +8692,8 @@ class DaisyApp:
         self.parse_detection_detail_label = detail
         attach_tooltip(
             self.parse_detect_button,
-            "读取所选数据库的类型、来源版本、结构版本和数据模块。",
+            "读取所选数据库的类型、数据库生成程序版本、"
+            "数据库结构版本和数据模块。",
         )
         panel.bind(
             "<Configure>",
@@ -8786,8 +8790,8 @@ class DaisyApp:
             info_text = tk.Label(
                 info,
                 text=(
-                    "将运行 Script\\Test 中默认安全的自动化测试，并在系统"
-                    "临时目录创建测试夹具；界面视觉验收按需手动进行。"
+                    "将运行 Script\\Test 中默认安全的自动化测试；测试夹具只在"
+                    "工作区测试目录或系统临时目录中创建并清理。"
                 ),
                 bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9), anchor="w",
@@ -9252,18 +9256,13 @@ class DaisyApp:
 
     @staticmethod
     def _parse_database_version_text(descriptor) -> str:
-        """返回明确的快照／Diff 来源版本，不从文件名猜测。"""
+        """返回数据库记录的生成程序版本，不从文件名猜测。"""
         raw = str(getattr(descriptor, "source_version", None) or "").strip()
         if not raw or raw.casefold() in {"unknown", "none", "null", "未知"}:
-            display = "未知"
+            display = "未记录"
         else:
             display = raw if raw.casefold().startswith("v") else f"v{raw}"
-        label = (
-            "快照版本"
-            if getattr(descriptor, "database_type", None) == "snapshot"
-            else "Diff 版本"
-        )
-        return f"{label} {display}"
+        return f"数据库生成程序版本 {display}"
 
     def _parse_database_detection_detail(
         self, inspection: dbparse.ParseDatabaseInspection,
@@ -9279,7 +9278,7 @@ class DaisyApp:
             f"已解析{type_label}；"
             f"{self._parse_database_version_text(descriptor)}；"
             f"数据库结构版本 {descriptor.schema_version}；"
-            f"数据模块 {available} 项可用。输入文件变化后，请重新解析。"
+            f"数据模块 {available} 项可选择。输入文件变化后，请重新解析。"
         )
 
     def _invalidate_parse_database_selection(self) -> None:
@@ -9304,11 +9303,11 @@ class DaisyApp:
         detail = getattr(self, "parse_detection_detail_label", None)
         if detail is not None:
             detail.configure(text=(
-                "已选择数据库；点击「解析数据库」读取类型、来源版本、"
-                "结构版本和数据模块。"
+                "已选择数据库；点击「解析数据库」读取数据库类型、"
+                "数据库生成程序版本、数据库结构版本和数据模块。"
                 if raw else
-                "选择数据库后，点击「解析数据库」读取类型、来源版本、"
-                "结构版本和数据模块。"
+                "选择数据库后，点击「解析数据库」读取数据库类型、"
+                "数据库生成程序版本、数据库结构版本和数据模块。"
             ))
         self.root.after_idle(
             lambda fraction=scroll_fraction:
@@ -9361,7 +9360,10 @@ class DaisyApp:
         detail = getattr(self, "parse_detection_detail_label", None)
         if detail is not None:
             detail.configure(
-                text="正在解析数据库类型、来源版本、结构版本和数据模块…",
+                text=(
+                    "正在解析数据库类型、数据库生成程序版本、"
+                    "数据库结构版本和数据模块…"
+                ),
                 fg=_GREEN_DEEP,
             )
         self._set_run_action_mode(False, state="disabled")
@@ -9373,7 +9375,10 @@ class DaisyApp:
             text="解析数据库 · 正在分析",
             fg=_PROGRESS_STAGE_FOREGROUND)
         self.progress_detail_label.configure(
-            text="正在读取数据库类型、来源版本、结构版本和数据模块…",
+            text=(
+                "正在读取数据库类型、数据库生成程序版本、"
+                "数据库结构版本和数据模块…"
+            ),
             fg=_PROGRESS_WORK_FOREGROUND,
         )
         self._set_work_indeterminate()
@@ -9462,7 +9467,7 @@ class DaisyApp:
         summary = (
             f"{type_label}；{self._parse_database_version_text(descriptor)}；"
             f"数据库结构版本 {descriptor.schema_version}；"
-            f"数据模块 {counts.get('available', 0)} 项可用"
+            f"数据模块 {counts.get('available', 0)} 项可选择"
         )
         self._set_work_fraction(100, style="Success")
         self._set_stage_fraction(100, style="Success")
@@ -11137,8 +11142,7 @@ class DaisyApp:
             "\n\n"
             "测试不会读取 GUI 表单中的档案目录；测试夹具在工作区测试目录或"
             "系统临时目录中创建并清理，也不会访问真实硬盘。部分集成测试会调用 ExifTool、"
-            "ffprobe 与 7-Zip。自动化套件不包含真实 Tk 窗口测试；界面视觉"
-            "验收由 AI 按需手动打开软件完成。"
+            "ffprobe 与 7-Zip。"
             "\n\n"
             "建议先运行「运行环境检测」。\n\n确定继续吗？",
             icon="question", parent=self.root,
