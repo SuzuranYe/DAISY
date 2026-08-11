@@ -68,6 +68,7 @@ class _Fixture(unittest.TestCase):
         *,
         hash_coverage: str = "full",
         name: str = "fixture.sqlite",
+        recorded_path: str | None = None,
     ) -> str:
         fixed_ns = 1_700_000_000_123_456_700
         for relative, (payload, _kind) in files.items():
@@ -103,7 +104,9 @@ class _Fixture(unittest.TestCase):
             connection.execute(
                 "INSERT INTO roots"
                 " (root_id,root_path,root_label,enum_status)"
-                " VALUES (1,'X:/Recorded','夹具','ok')")
+                " VALUES (1,?,'夹具','ok')",
+                (recorded_path or "X:/Recorded",),
+            )
             connection.execute(
                 "INSERT INTO dirs"
                 " (dir_id,root_id,rel_path,path_key,enum_status,observed_at_utc)"

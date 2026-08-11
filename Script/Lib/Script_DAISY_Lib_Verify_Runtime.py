@@ -13,6 +13,7 @@ import json
 import math
 import multiprocessing
 import os
+import stat as statlib
 import threading
 import time
 import uuid
@@ -400,6 +401,123 @@ def _load_entries(
     if before != after_load:
         raise core.PreflightError("核验准入期间输入快照发生变化，已拒绝继续")
     return snapshot, entries, before
+
+
+def _load_direct_entries(
+    root_specs: list[str],
+) -> tuple[dict[str, object], list[_Entry], dict[str, object]]:
+    """枚举无数据库直接核验输入，不跟随目录链接或联接点。"""
+    if not root_specs:
+        raise core.PreflightError("无数据库直接核验必须至少指定一个 --root")
+    roots: list[tuple[int, str, str]] = []
+    seen_labels: set[str] = set()
+    seen_paths: set[str] = set()
+    for root_id, raw_spec in enumerate(root_specs, start=1):
+        label, root_path = core.parse_root_spec(str(raw_spec))
+        core.validate_root(root_path)
+        canonical = os.path.normcase(os.path.realpath(root_path))
+        if canonical in seen_paths:
+            raise core.PreflightError(f"直接核验目录重复：{root_path}")
+        if label in seen_labels:
+            raise core.PreflightError(
+                f"直接核验根目录名重复：{label}；请使用「根目录名=路径」区分")
+        roots.append((root_id, label, os.path.abspath(root_path)))
+        seen_labels.add(label)
+        seen_paths.add(canonical)
+
+    entries: list[_Entry] = []
+    next_entry_id = 1
+    is_junction = getattr(os.path, "isjunction", lambda _path: False)
+
+    def walk_error(exc: OSError) -> None:
+        raise core.PreflightError(f"无法枚举直接核验目录：{exc}") from exc
+
+    for root_id, label, root_path in roots:
+        for current, dirnames, filenames in os.walk(
+                root_path, topdown=True, onerror=walk_error,
+                followlinks=False):
+            dirnames[:] = sorted(
+                name for name in dirnames
+                if not os.path.islink(os.path.join(current, name))
+                and not is_junction(os.path.join(current, name))
+            )
+            for filename in sorted(filenames):
+                physical_path = os.path.join(current, filename)
+                if os.path.islink(physical_path):
+                    continue
+                try:
+                    file_stat = os.stat(
+                        physical_path, follow_symlinks=False)
+                except OSError as exc:
+                    raise core.PreflightError(
+                        f"无法读取直接核验文件属性：{physical_path}：{exc}") \
+                        from exc
+                if not statlib.S_ISREG(file_stat.st_mode):
+                    continue
+                rel_path = os.path.relpath(
+                    physical_path, root_path).replace("\\", "/")
+                extension = core.extension_of(filename)
+                entries.append(_Entry(
+                    entry_id=next_entry_id,
+                    root_id=root_id,
+                    rel_path=rel_path,
+                    logical_path=f"{label}/{rel_path}",
+                    physical_path=os.path.abspath(physical_path),
+                    extension=extension,
+                    media_kind=core.media_kind_for(extension),
+                    size_bytes=int(file_stat.st_size),
+                    modified_at_utc=core.ns_to_utc_iso(
+                        int(file_stat.st_mtime_ns)),
+                    baseline_hash=None,
+                ))
+                next_entry_id += 1
+
+    root_identity = [
+        {"root_id": root_id, "root_label": label, "root_path": root_path}
+        for root_id, label, root_path in roots
+    ]
+    identity_seed = json.dumps(
+        root_identity, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    )
+    direct_id = "direct-" + hashlib.sha256(
+        identity_seed.encode("utf-8")).hexdigest()[:16]
+    unavailable_hash = {
+        "state": "unavailable",
+        "reason": "无数据库直接核验没有可比较的哈希基准",
+    }
+    snapshot = {
+        "path": None,
+        "filename": "无数据库直接核验",
+        "snapshot_uuid": direct_id,
+        "hash_coverage": "none",
+        "root_labels": [label for _root_id, label, _path in roots],
+        "roots": root_identity,
+        "input_mode": "direct",
+        "database": {
+            "database_type": None,
+            "schema_version": None,
+            "source_version": None,
+            "lifecycle": None,
+            "status": None,
+            "database_integrity": None,
+            "sqlite_integrity": None,
+            "data_contract": None,
+            "min_reader_version": None,
+            "capabilities": {
+                "files": {"state": "available"},
+                "hashes": unavailable_hash,
+                "format_checks": {"state": "available"},
+            },
+            "warnings": [],
+        },
+    }
+    input_identity = {
+        "mode": "direct",
+        "roots": root_identity,
+        "enumerated_files": len(entries),
+    }
+    return snapshot, entries, input_identity
 
 
 def _choose_entries(
@@ -2055,7 +2173,7 @@ def _conclusion(report: dict[str, object]) -> str:
 
 
 def run_unified_verification(
-    snapshot_path: str,
+    snapshot_path: str | None,
     root_specs: list[str],
     *,
     options: VerificationOptions | None = None,
@@ -2074,6 +2192,12 @@ def run_unified_verification(
 ) -> dict[str, object]:
     """执行档案数据核验并返回报告模型；此函数本身不写报告文件。"""
     selected_options = options or VerificationOptions()
+    direct_mode = snapshot_path is None
+    if direct_mode and selected_options.hash_mode != "off":
+        raise core.PreflightError(
+            "无数据库直接核验没有可比较的哈希基准；必须使用 --hash off")
+    if direct_mode and force:
+        raise core.PreflightError("无数据库直接核验不能使用 --force")
     raw_capability = None
     if selected_options.raw_deep_validation:
         raw_capability = _raw_capability_payload(_raw_capability_probe)
@@ -2086,14 +2210,24 @@ def run_unified_verification(
     supplied = dict(tools or {})
     started = time.monotonic()
     checked_at = core.now_utc_iso()
-    snapshot, entries, input_identity = _load_entries(
-        snapshot_path, root_specs, force=force)
-    _emit(
-        on_event,
-        "database_detected",
-        database=snapshot["database"],
-        snapshot_uuid=snapshot["snapshot_uuid"],
-    )
+    if direct_mode:
+        snapshot, entries, input_identity = _load_direct_entries(root_specs)
+        _emit(
+            on_event,
+            "direct_roots_detected",
+            roots=snapshot["roots"],
+            files=len(entries),
+        )
+    else:
+        assert snapshot_path is not None
+        snapshot, entries, input_identity = _load_entries(
+            snapshot_path, root_specs, force=force)
+        _emit(
+            on_event,
+            "database_detected",
+            database=snapshot["database"],
+            snapshot_uuid=snapshot["snapshot_uuid"],
+        )
 
     stat, initial_stats, state = _run_stat_stage(
         entries, selected_options, owned_control, on_progress, on_event)
@@ -2153,10 +2287,14 @@ def run_unified_verification(
             _raw_runner,
         )
 
-    after = _file_identity(os.path.abspath(snapshot_path))
-    if after != input_identity:
-        owned_control.finish()
-        raise core.PreflightError("核验期间输入快照发生变化，拒绝发布报告")
+    input_unchanged: bool | None = None
+    if not direct_mode:
+        assert snapshot_path is not None
+        after = _file_identity(os.path.abspath(snapshot_path))
+        if after != input_identity:
+            owned_control.finish()
+            raise core.PreflightError("核验期间输入快照发生变化，拒绝发布报告")
+        input_unchanged = True
     report: dict[str, object] = {
         "contract": VERIFICATION_CONTRACT,
         "report_metadata": core.report_metadata("档案数据核验"),
@@ -2167,7 +2305,7 @@ def run_unified_verification(
         }.get(state, "failed"),
         "snapshot": snapshot,
         "input_identity": input_identity,
-        "input_unchanged": True,
+        "input_unchanged": input_unchanged,
         "options": selected_options.as_dict(),
         "checked_at_utc": checked_at,
         "elapsed_s": round(time.monotonic() - started, 3),
@@ -2276,17 +2414,33 @@ def render_verification_markdown(report: Mapping[str, object]) -> str:
         "stopped": "任务已停止；以下仅代表停止前已完成的范围。",
         "failed": "外部工具连续故障，核验已停止；未处理范围不作结论。",
     }.get(str(report.get("conclusion")), "结论不可用。")
+    if snapshot.get("input_mode") == "direct":
+        root_paths = [
+            str(item.get("root_path") or "")
+            for item in snapshot.get("roots", [])
+            if isinstance(item, Mapping)
+        ]
+        input_lines = [
+            "- 核验方式：**无数据库直接核验**",
+            "- 核验根目录：" + "；".join(
+                f"`{core.markdown_cell(path)}`" for path in root_paths),
+            "- 基准限制：没有数据库哈希基准；本报告不宣称文件哈希一致。",
+        ]
+    else:
+        input_lines = [
+            f"- 快照：`{core.markdown_cell(snapshot['filename'])}`",
+            f"- 快照 UUID：`{core.markdown_cell(snapshot['snapshot_uuid'] or '未记录')}`",
+            f"- 数据库结构版本：{database['schema_version']}；"
+            f"数据库生成程序版本：{database.get('source_version') or '未记录'}；"
+            "输入数据库：未修改",
+        ]
     lines = [
         "# DAISY 档案数据核验报告",
         "",
         *core.report_markdown_lines("档案数据核验"),
         "",
         f"- 结论：**{conclusion_text}**",
-        f"- 快照：`{core.markdown_cell(snapshot['filename'])}`",
-        f"- 快照 UUID：`{core.markdown_cell(snapshot['snapshot_uuid'] or '未记录')}`",
-        f"- 数据库结构版本：{database['schema_version']}；"
-        f"数据库生成程序版本：{database.get('source_version') or '未记录'}；"
-        "输入数据库：未修改",
+        *input_lines,
         f"- 核验时间 (UTC)：`{report['checked_at_utc']}`；用时 {report['elapsed_s']} 秒",
         "",
         "## 板块状态",

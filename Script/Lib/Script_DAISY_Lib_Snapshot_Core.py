@@ -21,7 +21,7 @@ PROJECT_NAME = "DAISY"
 PROJECT_FULL_NAME = "Database for Archive Integrity by Suzuran Ye"
 PROJECT_AUTHOR = "Suzuran Ye"
 PROJECT_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
-SCANNER_VERSION = "1.6.7"      # 包版本
+SCANNER_VERSION = "1.6.8"      # 包版本
 SCHEMA_VERSION = 3
 READABLE_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
 MIN_READER_VERSION = "1.4.1"
@@ -1577,7 +1577,7 @@ def markdown_cell(value, max_chars: int = 500) -> str:
     """把数据库文本安全压平为 Markdown 表格单元格。"""
     if value is None:
         return ""
-    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = str(value).replace("\n", "\n").replace("\n", "\n")
     text = text.replace("\n", "<br>").replace("|", "\\|")
     if len(text) > max_chars:
         text = text[:max_chars - 1] + "…"
@@ -1593,7 +1593,7 @@ def _write_text_exclusive(path: str, content: str) -> None:
         created = True
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             fd = None
-            handle.write(content.replace("\r\n", "\n").replace("\r", "\n"))
+            handle.write(content.replace("\n", "\n").replace("\n", "\n"))
     except Exception:
         if fd is not None:
             os.close(fd)
@@ -1946,7 +1946,7 @@ def build_tiny_png() -> bytes:
 
     ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
     idat = _z.compress(b"\x00\x80")
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+    return (b"\x89PNG\n\x1a\n" + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
 
 
@@ -2200,7 +2200,7 @@ class Progress:
         )
         if self.quiet or gui_events_enabled():
             return
-        print("\r" + " | ".join(parts) + "    ", end="", flush=True)
+        print("\n" + " | ".join(parts) + "    ", end="", flush=True)
 
     def finish(self, summary: str) -> None:
         elapsed = time.monotonic() - self.t0
@@ -2213,5 +2213,5 @@ class Progress:
             elapsed=elapsed,
         )
         if not self.quiet:
-            print(f"\r{self.prefix} 完成：{summary}（{elapsed:.1f} 秒）" + " " * 20,
+            print(f"\n{self.prefix} 完成：{summary}（{elapsed:.1f} 秒）" + " " * 20,
                   flush=True)

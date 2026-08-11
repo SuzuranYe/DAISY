@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import unittest
+import zipfile
 
 
 _TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +70,15 @@ class TestVerificationCLIOptions(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 with self.assertRaises(core.PreflightError):
                     verifycli.verification_options(self._args(*arguments))
+
+    def test_direct_mode_defaults_hash_off_and_requires_no_snapshot(self) -> None:
+        args = verifycli.build_parser().parse_args([
+            "--direct", "--root", "Current",
+        ])
+        options = verifycli.verification_options(args)
+        self.assertTrue(args.direct)
+        self.assertIsNone(args.snapshot)
+        self.assertEqual(options.hash_mode, "off")
 
 
 class TestVerificationCLIControl(unittest.TestCase):
@@ -199,6 +209,67 @@ class TestVerificationCLIEndToEnd(unified_fixture._Fixture):
         self.assertEqual(report["conclusion"], "issues_found")
         self.assertEqual(report["sections"]["stat"]["counts"]["missing"], 1)
         self.assertIn("发现需要处理或复核的问题", stderr.getvalue())
+
+    def test_database_unchanged_path_uses_recorded_root_without_mapping(
+        self,
+    ) -> None:
+        snapshot = self.snapshot(
+            {"原路径.txt": (b"plain", "other")},
+            recorded_path=self.current,
+        )
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return_code = verifycli.main([
+                "--snapshot", snapshot,
+                "--hash", "off",
+                "--format", "off",
+                "--report-dir", self.reports,
+                "--force",
+                "--quiet",
+            ])
+        self.assertEqual(return_code, 0)
+        with open(self._published_json(), encoding="utf-8") as handle:
+            report = json.load(handle)
+        self.assertEqual(report["conclusion"], "passed")
+        self.assertTrue(report["input_unchanged"])
+
+    def test_direct_mode_checks_current_files_without_database(self) -> None:
+        archive = os.path.join(self.current, "可读.zip")
+        with zipfile.ZipFile(archive, "w") as handle:
+            handle.writestr("内容.txt", "hello")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            return_code = verifycli.main([
+                "--direct",
+                "--root", self.current,
+                "--format", "all",
+                "--format-tool", "builtin",
+                "--report-dir", self.reports,
+                "--quiet",
+            ])
+        self.assertEqual(
+            return_code, 0,
+            msg=f"stdout={stdout.getvalue()}\nstderr={stderr.getvalue()}",
+        )
+        with open(self._published_json(), encoding="utf-8") as handle:
+            report = json.load(handle)
+        self.assertEqual(report["snapshot"]["input_mode"], "direct")
+        self.assertEqual(report["input_identity"]["enumerated_files"], 1)
+        self.assertIsNone(report["input_unchanged"])
+        self.assertEqual(report["sections"]["hash"]["state"], "NULL")
+        self.assertEqual(report["sections"]["format"]["valid"], 1)
+        self.assertEqual(report["conclusion"], "passed")
+        markdown = next(
+            os.path.join(self.reports, name)
+            for name in os.listdir(self.reports)
+            if name.endswith(".md")
+        )
+        with open(markdown, encoding="utf-8") as handle:
+            report_text = handle.read()
+        self.assertIn("无数据库直接核验", report_text)
+        self.assertIn("本报告不宣称文件哈希一致", report_text)
 
     def test_snapshot_without_hash_evidence_is_incomplete(self) -> None:
         snapshot = self.snapshot(

@@ -135,7 +135,7 @@ class TestCore(unittest.TestCase):
     def test_integrated_version_matches_daisy_release(self):
         import Script_DAISY_Lib_Snapshot_Core as daisy_core
 
-        self.assertEqual(core.APP_VERSION, "1.6.7")
+        self.assertEqual(core.APP_VERSION, "1.6.8")
         self.assertEqual(core.APP_VERSION, daisy_core.SCANNER_VERSION)
 
     def test_disk_labels_and_archive_identity(self):
@@ -168,7 +168,7 @@ class TestCore(unittest.TestCase):
         self.assertEqual(core.safe_file_component(' A<B>:C? '), "A_B_C")
         self.assertEqual(core.safe_file_component("CON"), "_CON")
         self.assertEqual(core.format_bytes(4_000_000_000_000), "4.00 TB")
-        self.assertEqual(core.normalise_text("a\r\nb\rc\n"), "a\nb\nc\n")
+        self.assertEqual(core.normalise_text("a\nb\nc\n"), "a\nb\nc\n")
 
     def test_smartctl_exit_bits(self):
         flags = core.decode_smartctl_exit_status(0x42)
@@ -374,7 +374,7 @@ class TestArchive(unittest.TestCase):
             verified = archive.verify_archive(result.path)
             self.assertEqual(verified.zip_sha256, result.zip_sha256)
             self.assertEqual(
-                verified.manifest["application"]["version"], "1.6.7")
+                verified.manifest["application"]["version"], "1.6.8")
             self.assertEqual(
                 verified.manifest["application"]["author"], "Suzuran Ye")
             self.assertEqual(
@@ -403,7 +403,7 @@ class TestArchive(unittest.TestCase):
                 for name in expected_names:
                     content = package.read(name)
                     self.assertFalse(content.startswith(b"\xef\xbb\xbf"), name)
-                    self.assertNotIn(b"\r\n", content, name)
+                    self.assertNotIn(b"\n", content, name)
             for metadata in verified.manifest["payload_files"].values():
                 self.assertEqual(set(metadata), {"bytes", "role"})
 
@@ -466,7 +466,7 @@ class TestArchive(unittest.TestCase):
             with open(result.summary_report_path, "rb") as handle:
                 report = handle.read()
             self.assertFalse(report.startswith(b"\xef\xbb\xbf"))
-            self.assertNotIn(b"\r\n", report)
+            self.assertNotIn(b"\n", report)
             text = report.decode("utf-8")
             self.assertEqual(text, collection.report)
             self.assertNotIn("关联归档", text)

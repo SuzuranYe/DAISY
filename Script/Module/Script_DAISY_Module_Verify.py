@@ -1,7 +1,8 @@
 r"""档案数据核验：文件状态、哈希与格式校验的只读编排入口。
 
 旧 ``check-hash``/``check-format`` 命令继续保持 v1.5.1 参数和输出；本入口只读
-消费 schema 3/4 封存快照，并发布一份 Markdown 阅读报告和一份 JSON 技术证据。
+可只读消费 schema 3/4 封存快照，也可直接枚举用户指定目录，并发布一份
+Markdown 阅读报告和一份 JSON 技术证据。
 档案数据核验支持进程内暂停／继续／停止，但不提供跨重启续传，因而明确拒绝
 ``save_exit`` 控制动作。
 """
@@ -249,18 +250,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "档案数据核验：核对全部文件状态，并可选复检哈希、格式、容器结构与 RAW 解码；"
-            "输入快照只读"
+            "已有快照只读，也支持无数据库直接核验"
+        ),
+    )
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--snapshot", help="作为核验基准的封存快照")
+    input_group.add_argument(
+        "--direct", action="store_true",
+        help="无数据库直接核验；只检查当前文件，不宣称哈希一致",
+    )
+    parser.add_argument(
+        "--root", action="append",
+        help=(
+            "当前根目录；快照原路径未变时可省略，路径变化或直接核验时可重复指定"
         ),
     )
     parser.add_argument(
-        "--snapshot", required=True, help="作为核验基准的封存快照")
-    parser.add_argument(
-        "--root", action="append", required=True,
-        help="当前根目录；单根可直接给路径，多根逐项使用「根目录名=路径」",
-    )
-    parser.add_argument(
-        "--hash", choices=("off", "sample", "all"), default="sample",
-        help="哈希复检范围；默认抽样",
+        "--hash", choices=("off", "sample", "all"),
+        help="哈希复检范围；数据库模式默认抽样，直接模式固定关闭",
     )
     parser.add_argument(
         "--hash-sample-percent", type=float, help="哈希复检抽样比例")
@@ -317,15 +325,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def verification_options(args: argparse.Namespace) \
         -> verifyrun.VerificationOptions:
+    hash_mode = args.hash or ("off" if args.direct else "sample")
     selected_format_tools = tuple(
         args.format_tool or verifyrun.FORMAT_TOOL_IDS)
-    if args.hash != "sample" and args.hash_sample_percent is not None:
+    if hash_mode != "sample" and args.hash_sample_percent is not None:
         raise core.PreflightError(
             "--hash-sample-percent 仅用于 --hash sample")
     if args.format != "sample" and args.format_sample_percent is not None:
         raise core.PreflightError(
             "--format-sample-percent 仅用于 --format sample")
-    if args.hash == "off" and (
+    if hash_mode == "off" and (
             args.powershell_path or args.hash_timeout_seconds is not None):
         raise core.PreflightError(
             "哈希复检关闭时不能指定 PowerShell 路径或哈希超时阈值")
@@ -349,14 +358,14 @@ def verification_options(args: argparse.Namespace) \
         if path and tool_id not in selected_set:
             raise core.PreflightError(
                 f"未选择 {tool_id} 时不能指定对应工具路径")
-    if args.hash == "off" and args.format == "off" \
+    if hash_mode == "off" and args.format == "off" \
             and not args.raw_deep_validation \
             and args.timeout_action is not None:
         raise core.PreflightError(
             "仅核对文件状态时不能指定超时处置")
     try:
         return verifyrun.VerificationOptions(
-            hash_mode=args.hash,
+            hash_mode=hash_mode,
             hash_sample_percent=(
                 1.0 if args.hash_sample_percent is None
                 else args.hash_sample_percent
@@ -449,6 +458,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.direct and not args.root:
+            raise core.PreflightError(
+                "无数据库直接核验必须至少指定一个 --root")
+        if args.direct and args.hash not in (None, "off"):
+            raise core.PreflightError(
+                "无数据库直接核验没有可比较的哈希基准；只能使用 --hash off")
+        if args.direct and args.force:
+            raise core.PreflightError("无数据库直接核验不能使用 --force")
         options = verification_options(args)
     except core.PreflightError as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
@@ -477,8 +494,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         report = verifyrun.run_unified_verification(
-            args.snapshot,
-            list(args.root),
+            None if args.direct else args.snapshot,
+            list(args.root or ()),
             options=options,
             force=args.force,
             tools=_tool_overrides(args),

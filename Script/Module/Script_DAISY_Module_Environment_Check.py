@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import sys
 import tempfile
 import time
@@ -24,6 +25,7 @@ import Script_DAISY_Lib_Storage_Smartctl as smartctl
 
 
 _TOOL_DISPLAY_NAMES = {
+    "python": "Python",
     "exiftool": "ExifTool",
     "ffprobe": "ffprobe",
     "sevenzip": "7-Zip",
@@ -45,7 +47,12 @@ def inspect_local_tools(
     explicit: dict[str, str | None],
 ) -> tuple[dict[str, dict], list[dict[str, object]]]:
     """独立检查每项工具，使 GUI 能一次列全本机版本与缺失项。"""
-    tools: dict[str, dict] = {}
+    tools: dict[str, dict] = {
+        "python": core.resolved_tool_info(
+            "python", sys.executable, explicit=False,
+            version=platform.python_version(),
+        ),
+    }
     issues: list[dict[str, object]] = []
     for name in ("exiftool", "ffprobe", "sevenzip"):
         try:
@@ -141,7 +148,8 @@ def main() -> int:
         core.emit_gui_event("tools_detected", tools=inventory)
     print("本机工具版本：")
     for name in (
-            "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl"):
+            "python", "exiftool", "ffprobe", "sevenzip", "powershell",
+            "smartctl"):
         info = inventory.get(name)
         if info:
             print(
@@ -170,6 +178,7 @@ def main() -> int:
         tools = core.run_preflight(
             {"exiftool": args.exiftool_path, "ffprobe": args.ffprobe_path,
              "sevenzip": args.sevenzip_path}, output_dir=None)
+        tools["python"] = inventory["python"]
         ps_path, ps_version = dbh.discover_powershell(args.powershell_path)
         tools["powershell"] = core.resolved_tool_info(
             "powershell", ps_path, explicit=bool(args.powershell_path),
@@ -205,13 +214,14 @@ def main() -> int:
     except (core.PreflightError, storage_core.DaisySmartError) as exc:
         print(f"环境不就绪：\n{exc}", file=sys.stderr)
         return 2
-    print("  SHA-256 NIST 向量、五项工具功能与存储只读查询：通过")
+    print("  Python、SHA-256 NIST 向量、五项工具功能与存储只读查询：通过")
 
     report = {**core.report_metadata("运行环境检测"),
               "generated_at_utc": core.now_utc_iso(),
               "scanner_version": core.SCANNER_VERSION, "tools": tools,
               "runtime_capabilities": runtime_capabilities,
               "checks": {"sha256_nist": "passed",
+                         "python_runtime": "passed",
                          "tool_smoke_readonly": "passed",
                          "powershell_get_filehash": "passed",
                          "smartctl_readonly_scan": "passed",
@@ -225,7 +235,7 @@ def main() -> int:
         f"Env_Check_{time.strftime('%Y-%m-%d_%H-%M-%S')}.json")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
-    prog.finish("五项工具、版本、Windows 存储只读查询与 SHA-256 自检通过")
+    prog.finish("Python 与五项工具版本、Windows 存储只读查询及 SHA-256 自检通过")
     print(f"\n报告：{out}")
     return 0
 

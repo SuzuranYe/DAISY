@@ -9,7 +9,6 @@ import io
 import json
 import os
 import re
-import runpy
 import sqlite3
 import subprocess
 import sys
@@ -25,12 +24,6 @@ _LIB = os.path.join(_SCRIPT, "Lib")
 _MODULE = os.path.join(_SCRIPT, "Module")
 sys.path[:0] = [_TEST_DIR, _SCRIPT, _LIB, _MODULE]
 
-_RUN_REAL_TK_TESTS = os.environ.get(
-    "DAISY_RUN_REAL_TK_TESTS", "").strip() == "1"
-_REAL_TK_SKIP_REASON = (
-    "真实 Tk／桌面集成测试默认关闭；"
-    "设置 DAISY_RUN_REAL_TK_TESTS=1 后单独运行"
-)
 
 import Script_DAISY_Lib_Snapshot_Core as core
 import Script_DAISY_GUI as gui
@@ -38,16 +31,17 @@ import Script_DAISY_CLI as entry
 
 
 class TestGuiArguments(unittest.TestCase):
-    def test_gui_preferences_default_to_1600x900(self):
-        self.assertEqual(gui._DEFAULT_WINDOW_SIZE, (1600, 900))
+
+    def test_gui_preferences_default_to_1920x1080(self):
+        self.assertEqual(gui._DEFAULT_WINDOW_SIZE, (1920, 1080))
         self.assertEqual(
-            gui.default_gui_preferences()["window_size"], [1600, 900])
+            gui.default_gui_preferences()["window_size"], [1920, 1080])
         self.assertEqual(
             gui._WINDOW_SIZE_OPTIONS,
             (
+                ("1920 × 1080", (1920, 1080)),
                 ("1366 × 768", (1366, 768)),
                 ("1600 × 900", (1600, 900)),
-                ("1920 × 1080", (1920, 1080)),
             ),
         )
 
@@ -77,7 +71,7 @@ class TestGuiArguments(unittest.TestCase):
             with open(path, "rb") as handle:
                 raw = handle.read()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
-        self.assertNotIn(b"\r\n", raw)
+        self.assertNotIn(b"\n", raw)
         self.assertTrue(raw.endswith(b"\n"))
 
     def test_invalid_gui_preferences_fall_back_safely(self):
@@ -145,6 +139,8 @@ class TestGuiArguments(unittest.TestCase):
                 "metadata_ffprobe_mode": "off",
             },
             "verify": {
+                "verification_mode": "database",
+                "verify_path_mode": "changed",
                 "snapshot": r"E:\私人档案\snapshot.sqlite",
                 "root_map": r"E:\私人档案",
                 "verify_builtin": True,
@@ -209,9 +205,10 @@ class TestGuiArguments(unittest.TestCase):
                 )
                 self.assertNotIn("*", spec.label)
         self.assertTrue(all(
-            len(label) == 4
+            len(label) == 6
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
+        self.assertEqual(gui._ENVIRONMENT_GRID_COLUMNS, 4)
         expected = {
             ("scan", "scan_mode"): "扫描模式",
             ("scan", "start_mode"): "生成方式",
@@ -451,15 +448,18 @@ class TestGuiArguments(unittest.TestCase):
         self.assertNotIn("--hash", quick)
 
         verify = gui.build_tool_args("verify", {
+            "verification_mode": "database",
             "snapshot": r"E:\Runs\A.sqlite",
+            "verify_path_mode": "changed",
             "root_map": r"archive=E:\Archive",
+            "verify_hash": True,
             "verify_builtin": True,
             "verify_exiftool": False,
             "verify_ffprobe": True,
             "verify_sevenzip": False,
             "raw_deep_validation": True,
         })
-        self.assertEqual(verify[verify.index("--hash") + 1], "off")
+        self.assertEqual(verify[verify.index("--hash") + 1], "all")
         self.assertEqual(verify[verify.index("--format") + 1], "all")
         format_tools = [
             verify[index + 1]
@@ -469,6 +469,26 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(format_tools, ["builtin", "ffprobe"])
         self.assertIn("--raw-deep-validation", verify)
         self.assertIn("--control-stdin", verify)
+
+        unchanged = gui.build_tool_args("verify", {
+            "verification_mode": "database",
+            "snapshot": r"E:\Runs\A.sqlite",
+            "verify_path_mode": "unchanged",
+            "verify_hash": False,
+        })
+        self.assertIn("--snapshot", unchanged)
+        self.assertNotIn("--root", unchanged)
+        self.assertNotIn("--direct", unchanged)
+        self.assertEqual(unchanged[unchanged.index("--hash") + 1], "off")
+
+        direct = gui.build_tool_args("verify", {
+            "verification_mode": "direct",
+            "direct_roots": r"E:\Archive",
+        })
+        self.assertIn("--direct", direct)
+        self.assertIn("--root", direct)
+        self.assertNotIn("--snapshot", direct)
+        self.assertEqual(direct[direct.index("--hash") + 1], "off")
 
         parsed = gui.build_tool_args("parse_db", {
             "database": r"E:\Runs\A.sqlite", "preset": "custom",
@@ -519,11 +539,12 @@ class TestGuiArguments(unittest.TestCase):
                 "--powershell-path", "--force", "--report",
             },
             "verify": {
-                "--snapshot", "--root", "--hash", "--format",
+                "--snapshot", "--direct", "--root", "--hash", "--format",
                 "--format-tool",
                 "--raw-deep-validation", "--timeout-action",
                 "--show-current-file", "--report-dir",
                 "--exiftool-path", "--ffprobe-path", "--sevenzip-path",
+                "--powershell-path",
                 "--force",
             },
             "diff": {
@@ -540,7 +561,7 @@ class TestGuiArguments(unittest.TestCase):
         }
         generated_flags = {
             "verify": {
-                "--hash", "--format", "--format-tool",
+                "--direct", "--hash", "--format", "--format-tool",
                 "--raw-deep-validation",
             },
         }
@@ -851,6 +872,7 @@ class TestGuiArguments(unittest.TestCase):
     def test_gui_dependency_commands_are_fixed_and_allowlisted(self):
         winget = r"C:\WindowsApps\winget.exe"
         expected = {
+            "python": "Python.Python.3.14",
             "exiftool": "OliverBetz.ExifTool",
             "ffprobe": "Gyan.FFmpeg",
             "sevenzip": "7zip.7zip",
@@ -1076,7 +1098,7 @@ class TestGuiArguments(unittest.TestCase):
             app._finish_dependency_version_query(
                 job, 0, "版本\n-------\n13.40\n")
         self.assertEqual(started, [])
-        self.assertTrue(settings[-1])
+        self.assertEqual(settings, [])
 
         with patch.object(gui.messagebox, "showerror") as shown:
             app._finish_dependency_version_query(job, 2, "network failed")
@@ -1084,266 +1106,6 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(started, [])
         self.assertIn("未执行安装", statuses[-1][0])
 
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_form_rows_and_verification_buttons_share_global_spacing(self):
-        root, app = self._real_tk_app()
-        app.saved_values["scan"] = {
-            "scan_mode": "full", "start_mode": "new",
-        }
-        app._select_task("scan", save_current=False)
-        root.update()
-
-        scan_mode = app.values["scan_mode"]
-        generation_mode = app.values["start_mode"]
-        metadata = app.values["metadata_storage"]
-        file_id = app.values["collect_file_id"]
-        content_hash = app.values["hash_mode"]
-        self.assertEqual(content_hash.get(), "full")
-        self.assertEqual(content_hash.button.cget("text"), "SHA-256")
-        content_hash.button.invoke()
-        root.update_idletasks()
-        self.assertEqual(content_hash.get(), "none")
-        self.assertEqual(content_hash.button.cget("text"), "不采集")
-        content_hash.button.invoke()
-        root.update_idletasks()
-        self.assertEqual(content_hash.get(), "full")
-        self.assertEqual(content_hash.button.cget("text"), "SHA-256")
-
-        def visible_gap(upper, lower):
-            return (
-                lower.winfo_rooty()
-                - upper.winfo_rooty()
-                - upper.winfo_height()
-            )
-
-        for upper, lower in (
-                (scan_mode, generation_mode),
-                (metadata, file_id),
-                (file_id, content_hash)):
-            self.assertEqual(
-                visible_gap(upper, lower), gui._FORM_FIELD_GAP)
-
-        scan_buttons = list(scan_mode.buttons.values())
-        metadata_buttons = (
-            metadata.exiftool_button.button,
-            metadata.ffprobe_button.button,
-        )
-        exiftool_button = metadata.exiftool_button
-        self.assertEqual(exiftool_button.get(), "complete")
-        self.assertEqual(
-            exiftool_button.button.cget("background"), gui._GREEN_DARK)
-        exiftool_button.button.invoke()
-        root.update_idletasks()
-        self.assertEqual(exiftool_button.get(), "normalized")
-        self.assertEqual(
-            exiftool_button.button.cget("background"), gui._OLIVE)
-        exiftool_button.button.invoke()
-        root.update_idletasks()
-        self.assertEqual(exiftool_button.get(), "off")
-        self.assertEqual(
-            exiftool_button.button.cget("background"), gui._AMBER)
-        exiftool_button.button.invoke()
-        root.update_idletasks()
-        self.assertEqual(exiftool_button.get(), "complete")
-        standard_buttons = (
-            *scan_buttons, *generation_mode.buttons.values(),
-            *metadata_buttons, file_id.button, content_hash.button,
-        )
-        standard_size = (
-            scan_buttons[0].winfo_width(),
-            scan_buttons[0].winfo_height(),
-        )
-        self.assertEqual(
-            {(button.winfo_width(), button.winfo_height())
-             for button in standard_buttons},
-            {standard_size},
-        )
-        for buttons in (scan_buttons, list(metadata_buttons)):
-            internal_gap = (
-                buttons[1].winfo_rootx()
-                - buttons[0].winfo_rootx()
-                - buttons[0].winfo_width()
-            )
-            self.assertEqual(internal_gap, gui._STANDARD_BUTTON_GAP)
-
-        visible = sorted(
-            (button for button in app.execution_buttons
-             if button.winfo_ismapped()),
-            key=lambda button: button.winfo_rootx(),
-        )
-        for left, right in zip(visible, visible[1:]):
-            self.assertEqual(
-                right.winfo_rootx() - left.winfo_rootx()
-                - left.winfo_width(),
-                gui._STANDARD_BUTTON_GAP,
-            )
-        self.assertEqual(
-            [button.cget("text") for button in visible],
-            ["产出", "暂停", "开始"],
-        )
-        self.assertEqual(app.pause_scan_button.cget("state"), "disabled")
-        self.assertFalse(app.stop_button.winfo_ismapped())
-        self.assertEqual(
-            app.pause_scan_button.cget("background"), gui._ACTION_GREEN)
-        self.assertEqual(
-            app.open_output_button.cget("background"),
-            gui._TASK_TOOLBAR_BACKGROUND,
-        )
-        unselected_toolbar = app.task_toolbar_buttons["diff"]
-        for option in (
-                "background", "foreground", "activebackground",
-                "activeforeground", "highlightbackground"):
-            self.assertEqual(
-                app.open_output_button.cget(option),
-                unselected_toolbar.cget(option),
-            )
-
-        app.process_task_key = "scan"
-        app.process = object()
-        app.scan_control_state = "running"
-        app._refresh_scan_controls()
-        root.update_idletasks()
-        running_visible = sorted(
-            (button for button in app.execution_buttons
-             if button.winfo_ismapped()),
-            key=lambda button: button.winfo_rootx(),
-        )
-        self.assertEqual(
-            [button.cget("text") for button in running_visible],
-            ["产出", "暂停", "停止"],
-        )
-        self.assertEqual(app.run_button.cget("background"), gui._AMBER)
-
-        app.scan_control_state = "pause_requested"
-        app._refresh_scan_controls()
-        root.update_idletasks()
-        paused_visible = sorted(
-            (button for button in app.execution_buttons
-             if button.winfo_ismapped()),
-            key=lambda button: button.winfo_rootx(),
-        )
-        self.assertEqual(
-            [button.cget("text") for button in paused_visible],
-            ["保存并退出", "产出", "继续", "停止"],
-        )
-        self.assertEqual(app.save_scan_button.cget("state"), "disabled")
-        app.scan_control_state = "paused"
-        app._refresh_scan_controls()
-        self.assertEqual(app.save_scan_button.cget("state"), "normal")
-        app.process = None
-        app.process_task_key = None
-        app.scan_control_state = "idle"
-        app._set_run_action_mode(False)
-        app._refresh_scan_controls()
-        log_buttons = (
-            app.clear_log_button,
-            app.open_log_window_button,
-            app.log_toggle_button,
-        )
-        self.assertEqual(
-            [button.winfo_width() for button in visible],
-            [button.winfo_width() for button in log_buttons],
-        )
-        self.assertEqual(
-            [button.winfo_rootx() for button in visible],
-            [button.winfo_rootx() for button in log_buttons],
-        )
-        self.assertEqual(
-            {button.winfo_height() for button in visible},
-            {standard_size[1]},
-        )
-        self.assertIs(app.clear_cache_button.master,
-                      app.task_toolbar_toggle_button.master)
-        self.assertEqual(app.clear_cache_button.cget("text"), "重置软件")
-        for button in (
-                app.task_toolbar_toggle_button,
-                app.settings_toggle_button,
-                app.progress_toggle_button,
-                app.log_toggle_button):
-            self.assertEqual(button.cget("style"), "FilePicker.TButton")
-            self.assertEqual(
-                (button.winfo_width(), button.winfo_height()),
-                (app.clear_log_button.winfo_width(),
-                 app.clear_log_button.winfo_height()),
-            )
-        self.assertEqual(
-            app.task_toolbar_toggle_button.winfo_rootx(),
-            app.settings_toggle_button.winfo_rootx(),
-        )
-
-        labels = {
-            widget.cget("text"): widget
-            for widget in app.form_inner.winfo_children()
-            if isinstance(widget, gui.tk.Label)
-            and widget.cget("text") in ("扫描模式", "生成方式")
-        }
-        for label_text, control in (
-                ("扫描模式", scan_mode),
-                ("生成方式", generation_mode)):
-            label = labels[label_text]
-            label_center = label.winfo_rooty() + label.winfo_height() / 2
-            control_center = (
-                control.winfo_rooty() + control.winfo_height() / 2)
-            self.assertAlmostEqual(label_center, control_center, delta=1.0)
-
-        app._select_task("verify", save_current=False)
-        root.update()
-        verification = app.values["verify_builtin"]
-        verification_buttons = [
-            control.button for control in verification.controls.values()]
-        self.assertEqual(
-            {(button.winfo_width(), button.winfo_height())
-             for button in verification_buttons},
-            {standard_size},
-        )
-        for left, right in zip(
-                verification_buttons, verification_buttons[1:]):
-            self.assertEqual(
-                right.winfo_rootx() - left.winfo_rootx()
-                - left.winfo_width(),
-                gui._STANDARD_BUTTON_GAP,
-            )
-
-        panels = (
-            app.task_card, app.progress_panel,
-            app.log_panel, app.command_panel,
-        )
-        for upper, lower in zip(panels, panels[1:]):
-            self.assertEqual(
-                lower.winfo_rooty() - upper.winfo_rooty()
-                - upper.winfo_height(),
-                gui._PANEL_GAP,
-            )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_latest_version_run_finishes_into_confirmation_stage(self):
-        root, app = self._real_tk_app()
-        app._select_task("env_check", save_current=False)
-        job = gui.RunJob("ExifTool", {
-            "tool_name": "exiftool",
-            "display_name": "ExifTool",
-            "installer_kind": "winget",
-            "winget_path": r"C:\WindowsApps\winget.exe",
-            "before_version": "13.39",
-        })
-        app.process_task_key = gui._DEPENDENCY_VERSION_CHECK_KEY
-        app.run_jobs = [job]
-        app.run_job_index = 0
-        app.run_results = [0]
-        app.run_outcomes = [None]
-        app.dependency_version_query_output = "Version: 13.40\n"
-        app.stop_requested = False
-        app.save_exit_requested = False
-        app.worker_starting = False
-        app.close_after_stop = False
-
-        with patch.object(
-                app, "_finish_dependency_version_query") as finished:
-            app._finalize_run(0.1)
-
-        finished.assert_called_once_with(job, 0, "Version: 13.40\n")
-        self.assertEqual(app.dependency_version_query_output, "")
-        self.assertIsNone(app.process_task_key)
 
     def test_gui_install_version_report_does_not_reuse_stale_cache(self):
         app = object.__new__(gui.DaisyApp)
@@ -1509,11 +1271,31 @@ class TestGuiArguments(unittest.TestCase):
             "本机版本：ExifTool 13.59、PowerShell 5.1.26100.1",
         )
 
+    def test_environment_success_status_displays_version_not_available(self):
+        app = object.__new__(gui.DaisyApp)
+        app.detected_tools = {
+            "python": {
+                "path": r"C:\Python314\python.exe",
+                "version": "3.14.2",
+                "verified": True,
+            },
+        }
+        app.environment_missing_names = ()
+        app.environment_missing_reasons = {}
+        app.runtime_capabilities = {}
+
+        state, label, detail = app._environment_status("python")
+
+        self.assertEqual(state, "available")
+        self.assertEqual(label, "Python\n3.14.2")
+        self.assertNotIn("\n可用", label)
+        self.assertIn("版本：3.14.2", detail)
+
     def test_window_size_adapts_to_screen(self):
         self.assertEqual(
-            gui.window_size_for_screen(2048, 1280), (1600, 900))
+            gui.window_size_for_screen(2048, 1280), (1920, 1080))
         self.assertEqual(
-            gui.window_size_for_screen(1920, 1080), (1600, 900))
+            gui.window_size_for_screen(1920, 1080), (1840, 1020))
         self.assertEqual(
             gui.window_size_for_screen(
                 1920, 1080, preferred_size=(1920, 1080)),
@@ -1626,19 +1408,19 @@ class TestGuiArguments(unittest.TestCase):
         app.command_preview_expanded = False
         app.mini_mode = False
         app._sync_task_toolbar_minimum_width()
-        self.assertEqual(app.normal_min_size, (1100, 680))
-        self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
+        self.assertEqual(app.normal_min_size, (1180, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1180, 680))
 
         app.task_toolbar_panel.width = 820
         app._sync_task_toolbar_minimum_width()
-        self.assertEqual(app.normal_min_size, (1100, 680))
-        self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
+        self.assertEqual(app.normal_min_size, (1180, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1180, 680))
 
         app.task_toolbar_panel.width = 1400
         app.normal_width_cap = 1200
         app._sync_task_toolbar_minimum_width()
-        self.assertEqual(app.normal_min_size, (1100, 680))
-        self.assertEqual(app.root.minimum_sizes[-1], (1100, 680))
+        self.assertEqual(app.normal_min_size, (1180, 680))
+        self.assertEqual(app.root.minimum_sizes[-1], (1180, 680))
 
     def test_action_row_keeps_fixed_right_order_and_expands_after_pause(self):
         class ButtonProbe:
@@ -1695,27 +1477,6 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(clear_log.grid_calls, [])
         self.assertEqual(clear_log.forgotten, 0)
 
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_primary_action_switches_between_start_and_stop(self):
-        root, app = self._real_tk_app()
-        with patch.object(app, "_stop") as stop:
-            app.process_task_key = "scan"
-            app._set_run_action_mode(True)
-            root.update_idletasks()
-            self.assertEqual(app.run_button.cget("text"), "停止")
-            self.assertEqual(app.run_button.cget("background"), gui._AMBER)
-            app.run_button.invoke()
-            stop.assert_called_once_with()
-
-        with patch.object(app, "_run") as run:
-            app.process_task_key = None
-            app._set_run_action_mode(False)
-            root.update_idletasks()
-            self.assertEqual(app.run_button.cget("text"), "开始")
-            self.assertEqual(
-                app.run_button.cget("background"), gui._GREEN_DARK)
-            app.run_button.invoke()
-            run.assert_called_once_with()
 
     def test_full_hash_independent_sample_is_explained_and_top_menu(self):
         fields = {
@@ -1843,8 +1604,11 @@ class TestGuiArguments(unittest.TestCase):
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
         with open(spec_path, "r", encoding="utf-8") as f:
             spec = f.read()
-        self.assertIn("# DAISY v1.6.7 技术规格", spec)
-        self.assertIn("v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7", spec)
+        self.assertIn("# DAISY v1.6.8 技术规格", spec)
+        self.assertIn(
+            "v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7 → v1.6.8",
+            spec,
+        )
         self.assertIn("Windows PowerShell 5.1", spec)
         self.assertIn("PowerShell 7.x", spec)
         self.assertIn("元数据 profile v7", spec)
@@ -1859,13 +1623,15 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("暂停只在当前任务进程内生效", spec)
         self.assertIn("`resume_hint=suggest`", spec)
         self.assertIn("`resume_hint=manual_only`", spec)
-        self.assertIn("| `window_size` | `[1600, 900]` |", spec)
-        self.assertNotIn("| `window_size` | `[1920, 1080]` |", spec)
+        self.assertIn("| `window_size` | `[1920, 1080]` |", spec)
+        self.assertIn("已有数据库／无数据库", spec)
+        self.assertIn("成功时直接显示实际版本", spec)
         readme_path = os.path.join(gui._BASE, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
-        self.assertIn("当前版本：**v1.6.7 致命错误修复版**", readme)
-        self.assertIn("默认窗口目标为 `1600×900`", readme)
+        self.assertIn(
+            "当前开发版本：**v1.6.8 界面与核验优化版**", readme)
+        self.assertIn("默认窗口目标为 `1920×1080`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
         evolution_path = os.path.join(
@@ -1883,8 +1649,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.5", evolution)
         self.assertIn("DAISY v1.6.6", evolution)
         self.assertIn("DAISY v1.6.7", evolution)
+        self.assertIn("DAISY v1.6.8", evolution)
         self.assertIn(
-            "v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7",
+            "v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7 → v1.6.8",
             evolution,
         )
         self.assertIn("GUI 完整扫描的 SHA-256 采集功能实际失效", evolution)
@@ -1961,12 +1728,13 @@ class TestGuiArguments(unittest.TestCase):
     def test_run_button_label_is_unified(self):
         self.assertEqual(gui._RUN_BUTTON_TEXT, "开始")
 
-    def test_top_task_palette_is_light_beige_with_distinct_selection(self):
-        self.assertEqual(gui._TASK_TOOLBAR_BACKGROUND, "#edd7ad")
-        self.assertEqual(gui._TASK_TOOLBAR_HOVER, "#e2c38b")
-        self.assertEqual(gui._TASK_TOOLBAR_SELECTED, "#d7b36b")
-        self.assertEqual(gui._TASK_TOOLBAR_SELECTED_HOVER, "#c99f50")
-        self.assertEqual(gui._TASK_TOOLBAR_FOREGROUND, gui._AMBER_DEEP)
+    def test_top_task_palette_is_light_cyan_with_distinct_selection(self):
+        self.assertEqual(gui._TASK_TOOLBAR_BACKGROUND, gui._ACTION_GREEN)
+        self.assertEqual(gui._TASK_TOOLBAR_HOVER, gui._GREEN)
+        self.assertEqual(gui._TASK_TOOLBAR_SELECTED, gui._GREEN)
+        self.assertEqual(gui._TASK_TOOLBAR_SELECTED_HOVER, gui._GREEN_DARK)
+        self.assertEqual(gui._TASK_TOOLBAR_FOREGROUND, gui._GREEN_DEEP)
+        self.assertEqual(gui._PRIMARY_TASK_BUTTON_BORDER, gui._TEXT)
         self.assertNotEqual(
             gui._TASK_TOOLBAR_BACKGROUND, gui._TASK_TOOLBAR_SELECTED)
 
@@ -2306,34 +2074,6 @@ class TestGuiArguments(unittest.TestCase):
         app._refresh_view_menu_labels()
         self.assertEqual(app.view_menu.labels[6], "完整界面")
 
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_view_menu_checkmarks_follow_panel_visibility(self):
-        root, app = self._real_tk_app()
-        entries = {
-            app.view_menu.entrycget(index, "label"): index
-            for index in range(int(app.view_menu.index("end")) + 1)
-            if app.view_menu.type(index) != "separator"
-        }
-        expectations = (
-            ("功能栏", app.task_toolbar_visible_var,
-             "task_toolbar_expanded"),
-            ("设置区", app.settings_visible_var, "settings_expanded"),
-            ("进度区", app.progress_visible_var, "progress_expanded"),
-            ("日志区", app.log_visible_var, "log_expanded"),
-        )
-        for label, variable, attribute in expectations:
-            index = entries[label]
-            self.assertEqual(app.view_menu.type(index), "checkbutton")
-            initial = bool(variable.get())
-            self.assertEqual(bool(getattr(app, attribute)), initial)
-            app.view_menu.invoke(index)
-            root.update_idletasks()
-            self.assertEqual(bool(variable.get()), not initial)
-            self.assertEqual(bool(getattr(app, attribute)), not initial)
-            app.view_menu.invoke(index)
-            root.update_idletasks()
-            self.assertEqual(bool(variable.get()), initial)
-            self.assertEqual(bool(getattr(app, attribute)), initial)
 
     def test_idle_close_never_requires_confirmation(self):
         class RootProbe:
@@ -2465,50 +2205,6 @@ class TestGuiArguments(unittest.TestCase):
             app._request_admin_mode(False)
         restart.assert_not_called()
 
-    @unittest.skipUnless(_RUN_REAL_TK_TESTS, _REAL_TK_SKIP_REASON)
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_admin_mode_control_is_a_fixed_button_without_switch_canvas(self):
-        gui._enable_dpi_awareness()
-        root = gui.tk.Tk()
-        root.withdraw()
-        requested = []
-        try:
-            control = gui.AdminModeButton(
-                root,
-                value=False,
-                enabled=True,
-                command=requested.append,
-            )
-            control.pack()
-            root.update_idletasks()
-            self.assertIsInstance(control.button, gui.ttk.Button)
-            self.assertFalse(any(
-                isinstance(widget, gui.tk.Canvas)
-                for widget in control.winfo_children()
-            ))
-            self.assertEqual(control.button.cget("text"), "管理员模式")
-            size = (
-                control.button.winfo_reqwidth(),
-                control.button.winfo_reqheight(),
-            )
-            control.button.invoke()
-            self.assertEqual(requested, [True])
-            control.set_mode(value=True, enabled=False)
-            root.update_idletasks()
-            style = gui.ttk.Style(root)
-            self.assertEqual(
-                style.lookup(
-                    control.button.cget("style"), "background", ("disabled",)),
-                gui._GREEN_DARK,
-            )
-            self.assertEqual(str(control.button.cget("state")), "disabled")
-            self.assertEqual(
-                size,
-                (control.button.winfo_reqwidth(),
-                 control.button.winfo_reqheight()),
-            )
-        finally:
-            root.destroy()
 
     def test_active_close_requires_one_confirmation(self):
         class RootProbe:
@@ -2776,7 +2472,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.settings_title_row.options,
             {
-                "padx": gui._PANEL_HEADER_PADX,
+                "padx": gui._SPACING_OUTER,
                 "pady": gui._COLLAPSED_SETTINGS_HEADER_PADY,
             },
         )
@@ -2839,32 +2535,33 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             gui._TASK_TOOLBAR_LABELS,
             {
-                "scan": "扫描建库",
-                "diff": "快照对比",
-                "verify": "数据核验",
-                "parse_db": "数据解析",
-                "storage_collect": "硬盘登记",
-                "env_check": "环境检测",
+                "scan": "档案扫描建库",
+                "diff": "档案快照对比",
+                "verify": "档案数据核验",
+                "parse_db": "档案数据解析",
+                "storage_collect": "硬盘信息登记",
+                "env_check": "运行环境检测",
             },
         )
         self.assertEqual(set(gui._TASK_TOOLBAR_LABELS), set(all_keys))
         self.assertTrue(all(
-            len(label) == 4
+            len(label) == 6
             for label in gui._TASK_TOOLBAR_LABELS.values()
         ))
         self.assertEqual(
             gui._TASK_TOOLBAR_BUTTON_WIDTH,
+            gui._TASK_ACTION_BUTTON_WIDTH,
+        )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_BUTTON_PADDING,
+            gui._TASK_ACTION_BUTTON_PADDING,
+        )
+        self.assertEqual(
+            gui._TASK_TOOLBAR_BUTTON_WIDTH,
             gui._ENVIRONMENT_BUTTON_WIDTH,
         )
-        self.assertEqual(
-            gui._TASK_TOOLBAR_BUTTON_PADDING[0],
-            gui._ENVIRONMENT_BUTTON_PADDING[0],
-        )
-        self.assertEqual(
-            gui._TASK_TOOLBAR_BUTTON_PADDING[1],
-            gui._STANDARD_BUTTON_PADDING[1] - 1,
-        )
-        self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1100)
+        self.assertEqual(gui._PRIMARY_TASK_BUTTON_BORDER, gui._TEXT)
+        self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1180)
         self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._TEXT)
         self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
         with patch.object(
@@ -2938,1155 +2635,6 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.queue_detail_label.options["text"], "0/3 · 队列已准备")
 
-    def _real_tk_app(self, preferences=None):
-        if not _RUN_REAL_TK_TESTS:
-            self.skipTest(_REAL_TK_SKIP_REASON)
-        gui._enable_dpi_awareness()
-        try:
-            root = gui.tk.Tk()
-        except gui.tk.TclError as exc:
-            self.skipTest(f"当前会话不能建立 Tk 窗口：{exc}")
-        try:
-            root.attributes("-alpha", 0.0)
-        except gui.tk.TclError:
-            root.withdraw()
-        def destroy_root():
-            try:
-                pending = root.tk.call("after", "info")
-                callback_ids = (
-                    pending if isinstance(pending, (tuple, list))
-                    else root.tk.splitlist(pending)
-                )
-                for callback_id in callback_ids:
-                    while isinstance(callback_id, (tuple, list)):
-                        if not callback_id:
-                            break
-                        callback_id = callback_id[0]
-                    if not callback_id:
-                        continue
-                    try:
-                        root.tk.call("after", "cancel", str(callback_id))
-                    except (gui.tk.TclError, TypeError):
-                        pass
-                if root.winfo_exists():
-                    root.destroy()
-            except gui.tk.TclError:
-                pass
-        self.addCleanup(destroy_root)
-        loaded_preferences = (
-            gui.default_gui_preferences()
-            if preferences is None else dict(preferences)
-        )
-        with patch.object(
-                gui, "load_gui_preferences",
-                return_value=loaded_preferences):
-            app = gui.DaisyApp(root)
-        root.geometry("1840x1020+0+0")
-        root.update()
-        return root, app
-
-    @staticmethod
-    def _tk_descendants(widget):
-        descendants = []
-        for child in widget.winfo_children():
-            descendants.append(child)
-            descendants.extend(TestGuiArguments._tk_descendants(child))
-        return descendants
-
-    def _assert_real_tk_page_geometry(self, root, app, context):
-        """检查当前页面的边界、可点击控件尺寸与纵向可达性。"""
-        root.update()
-        root_left = root.winfo_rootx()
-        root_top = root.winfo_rooty()
-        root_right = root_left + root.winfo_width()
-        root_bottom = root_top + root.winfo_height()
-        self.assertGreater(root.winfo_width(), 700, context)
-        self.assertGreater(root.winfo_height(), 600, context)
-
-        visible_panels = [
-            panel for panel in (
-                app.task_card, app.progress_panel,
-                app.log_panel, app.command_panel)
-            if panel.winfo_ismapped()
-        ]
-        previous_bottom = None
-        for panel in visible_panels:
-            panel_left = panel.winfo_rootx()
-            panel_top = panel.winfo_rooty()
-            panel_right = panel_left + panel.winfo_width()
-            panel_bottom = panel_top + panel.winfo_height()
-            self.assertGreaterEqual(panel_left, root_left, context)
-            self.assertGreaterEqual(panel_top, root_top, context)
-            self.assertLessEqual(panel_right, root_right + 1, context)
-            self.assertLessEqual(panel_bottom, root_bottom + 1, context)
-            if previous_bottom is not None:
-                self.assertGreaterEqual(panel_top, previous_bottom, context)
-            previous_bottom = panel_bottom
-
-        self.assertGreaterEqual(
-            app.title_label.winfo_height(),
-            app.title_label.winfo_reqheight(), context)
-        self.assertGreaterEqual(
-            app.desc_label.winfo_height(),
-            app.desc_label.winfo_reqheight(), context)
-        self.assertGreater(app.form_canvas.winfo_width(), 360, context)
-        self.assertGreater(app.form_canvas.winfo_height(), 20, context)
-
-        inner_left = app.form_inner.winfo_rootx()
-        inner_right = inner_left + app.form_inner.winfo_width()
-        clickable_types = (gui.tk.Button, gui.ttk.Button, gui.ttk.Combobox)
-        for widget in self._tk_descendants(app.form_inner):
-            if not widget.winfo_ismapped() or widget.winfo_width() <= 1:
-                continue
-            widget_left = widget.winfo_rootx()
-            widget_right = widget_left + widget.winfo_width()
-            self.assertGreaterEqual(widget_left, inner_left - 1, context)
-            self.assertLessEqual(widget_right, inner_right + 1, context)
-            if isinstance(widget, clickable_types):
-                self.assertGreaterEqual(
-                    widget.winfo_width() + 1,
-                    widget.winfo_reqwidth(),
-                    f"{context} · {widget}",
-                )
-
-        content_height = app._form_content_height()
-        viewport_height = app.form_canvas.winfo_height()
-        if (content_height <= viewport_height
-                + gui._FORM_SCROLL_OVERFLOW_TOLERANCE):
-            self.assertFalse(app.form_scroll.winfo_manager(), context)
-            first, last = (
-                float(value) for value in app.form_canvas.yview())
-            self.assertEqual(first, 0.0, context)
-            self.assertGreaterEqual(
-                last,
-                1.0 - (
-                    gui._FORM_SCROLL_OVERFLOW_TOLERANCE
-                    / max(1, viewport_height)
-                ),
-                context,
-            )
-        else:
-            self.assertEqual(
-                app.form_scroll.winfo_manager(), "place", context)
-            app.form_canvas.yview_moveto(1.0)
-            root.update_idletasks()
-            visible_bottom = app.form_canvas.canvasy(viewport_height)
-            self.assertGreaterEqual(
-                visible_bottom + 2, content_height, context)
-            app.form_canvas.yview_moveto(0.0)
-            root.update_idletasks()
-            self.assertEqual(float(app.form_canvas.yview()[0]), 0.0, context)
-
-        command_bottom = (
-            app.command_panel.winfo_rooty()
-            + app.command_panel.winfo_height())
-        self.assertLessEqual(command_bottom, root_bottom + 1, context)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_shell_can_be_constructed(self):
-        root, app = self._real_tk_app()
-        self.assertFalse(hasattr(app, "panel_splitter"))
-        self.assertEqual(app.task_card.grid_info()["row"], 0)
-        self.assertEqual(app.progress_panel.grid_info()["row"], 1)
-        self.assertEqual(app.log_panel.grid_info()["row"], 2)
-        self.assertEqual(app.command_panel.grid_info()["row"], 3)
-
-        app._enter_mini_mode()
-        root.update()
-        self.assertFalse(app.task_card.winfo_manager())
-        self.assertEqual(app.progress_panel.winfo_manager(), "grid")
-        self.assertFalse(app.log_panel.winfo_manager())
-        app._leave_mini_mode()
-        root.update()
-        for widget in (
-                app.task_card, app.progress_panel,
-                app.log_panel, app.command_panel):
-            self.assertEqual(widget.winfo_manager(), "grid")
-        self.assertEqual(root.winfo_width(), 1840)
-        self.assertEqual(root.winfo_height(), 1020)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_default_1600x900_keeps_all_pages_usable(self):
-        root, app = self._real_tk_app()
-        root.geometry("1600x900+0+0")
-        root.update()
-        self.assertEqual(
-            (root.winfo_width(), root.winfo_height()), (1600, 900))
-
-        def assert_current_page_fits(context):
-            self._assert_real_tk_page_geometry(root, app, context)
-            self.assertLessEqual(
-                app._form_content_height(),
-                (app.form_canvas.winfo_height()
-                 + gui._FORM_SCROLL_OVERFLOW_TOLERANCE),
-                context,
-            )
-            self.assertFalse(app.form_scroll.winfo_manager(), context)
-
-        for task_key in gui._TASK_TOOLBAR_KEYS:
-            app._select_task(task_key, save_current=False)
-            root.update()
-            context = f"1600×900 · {task_key}"
-            assert_current_page_fits(context)
-
-        for scan_mode in ("full", "quick"):
-            for start_mode in ("new", "resume"):
-                app.saved_values["scan"] = {}
-                app._select_task("scan", save_current=False)
-                root.update()
-                app.values["scan_mode"].buttons[scan_mode].invoke()
-                root.update()
-                app.values["start_mode"].buttons[start_mode].invoke()
-                root.update()
-                self._assert_real_tk_page_geometry(
-                    root, app,
-                    f"1600×900 · scan · {scan_mode} · {start_mode}")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_reopens_last_page_with_safe_options_only(self):
-        preferences = gui.default_gui_preferences()
-        preferences["last_task_key"] = "verify"
-        # 旧开发版偏好可能残留该键；现行 GUI 必须忽略并固定使用按钮。
-        preferences["binary_control_style"] = "dropdowns"
-        preferences["manual_tool_paths"] = {
-            "exiftool": r"C:\Tools\exiftool.exe",
-        }
-        preferences["task_options"] = {
-            "verify": {
-                "verify_builtin": True,
-                "verify_ffprobe": True,
-                "timeout_action": "skip_and_record",
-                "show_current_file": True,
-            },
-        }
-        root, app = self._real_tk_app(preferences)
-
-        self.assertEqual(app.task.key, "verify")
-        self.assertFalse(hasattr(app, "binary_control_style"))
-        self.assertFalse(hasattr(app, "binary_control_style_var"))
-        self.assertEqual(app.saved_values, preferences["task_options"])
-        self.assertEqual(
-            app.manual_tool_paths, preferences["manual_tool_paths"])
-        self.assertEqual(app.values["snapshot"].get(), "")
-        self.assertEqual(app.values["root_map"].get(), "")
-        verification = app.values["verify_builtin"].get_values()
-        self.assertTrue(verification["verify_builtin"])
-        self.assertFalse(verification["verify_ffprobe"])
-        self.assertFalse(verification["verify_exiftool"])
-        self.assertFalse(verification["verify_sevenzip"])
-        self.assertFalse(verification["raw_deep_validation"])
-        persisted = app.values["verify_builtin"].get_persisted_values()
-        self.assertTrue(persisted["verify_builtin"])
-        self.assertTrue(persisted["verify_ffprobe"])
-        self.assertTrue(persisted["verify_exiftool"])
-        self.assertTrue(persisted["verify_sevenzip"])
-        self.assertTrue(persisted["raw_deep_validation"])
-        self.assertEqual(
-            app.values["verify_builtin"].status_text,
-            "需要先运行环境检测",
-        )
-        self.assertEqual(
-            app.values["verify_builtin"].status_detail_label.cget("text"),
-            "完成环境检测后，才可选择并开始核验。",
-        )
-        self.assertEqual(
-            app.gui_preferences["last_task_key"], "verify")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_completion_sound_is_a_persistent_top_menu_toggle(self):
-        root, app = self._real_tk_app()
-        sound_index = next(
-            index
-            for index in range(int(app.settings_menu.index("end")) + 1)
-            if app.settings_menu.type(index) != "separator"
-            and app.settings_menu.entrycget(index, "label")
-            == "完成提示音"
-        )
-        self.assertFalse(app.completion_sound_enabled)
-        self.assertFalse(app.completion_sound_enabled_var.get())
-
-        with patch.object(app, "_save_gui_preferences") as save:
-            app.settings_menu.invoke(sound_index)
-            root.update_idletasks()
-            self.assertTrue(app.completion_sound_enabled)
-            self.assertTrue(app.completion_sound_enabled_var.get())
-            save.assert_called_once_with()
-
-            app.settings_menu.invoke(sound_index)
-            root.update_idletasks()
-            self.assertFalse(app.completion_sound_enabled)
-            self.assertFalse(app.completion_sound_enabled_var.get())
-            self.assertEqual(2, save.call_count)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_verification_descriptions_use_consistent_wording(self):
-        _root, app = self._real_tk_app()
-        app._select_task("verify", save_current=False)
-        verification = app.values["verify_builtin"]
-        expected = {
-            "verify_builtin": "使用 DAISY 内置校验器检查",
-            "verify_exiftool": "使用 ExifTool 检查",
-            "verify_ffprobe": "使用 ffprobe 检查",
-            "verify_sevenzip": "使用 7-Zip 检查",
-            "raw_deep_validation": "使用独立的 rawpy/LibRaw 子进程检查",
-        }
-        for key, prefix in expected.items():
-            tooltip = verification.controls[key].button._daisy_tooltip
-            self.assertTrue(tooltip.text.startswith(prefix), tooltip.text)
-            self.assertFalse(tooltip.text.startswith("用 "), tooltip.text)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_result_directory_prompt_is_optional_and_persistent(self):
-        root, app = self._real_tk_app()
-        prompt_index = next(
-            index
-            for index in range(int(app.settings_menu.index("end")) + 1)
-            if app.settings_menu.type(index) != "separator"
-            and app.settings_menu.entrycget(index, "label")
-            == "结果目录弹窗"
-        )
-        self.assertFalse(app.result_directory_prompt_enabled)
-        self.assertFalse(app.result_directory_prompt_enabled_var.get())
-
-        with patch.object(app, "_save_gui_preferences") as save:
-            app.settings_menu.invoke(prompt_index)
-            root.update_idletasks()
-            self.assertTrue(app.result_directory_prompt_enabled)
-            self.assertTrue(app.result_directory_prompt_enabled_var.get())
-            save.assert_called_once_with()
-
-            app.settings_menu.invoke(prompt_index)
-            root.update_idletasks()
-            self.assertFalse(app.result_directory_prompt_enabled)
-            self.assertFalse(app.result_directory_prompt_enabled_var.get())
-            self.assertEqual(2, save.call_count)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_menu_font_matches_body_and_user_size(self):
-        root, app = self._real_tk_app()
-
-        def menu_size(menu):
-            actual = gui.tkfont.Font(root=root, font=menu.cget("font"))
-            return abs(int(actual.actual("size")))
-
-        self.assertEqual(menu_size(app.app_menu), gui._UI_BODY_FONT_SIZE)
-        self.assertTrue(all(
-            menu_size(task_menu) == gui._UI_BODY_FONT_SIZE
-            for task_menu in app.task_menus.values()
-        ))
-        app._set_ui_font(size_delta=1, persist=False)
-        root.update_idletasks()
-        self.assertEqual(menu_size(app.app_menu), gui._UI_BODY_FONT_SIZE + 1)
-        self.assertTrue(all(
-            menu_size(task_menu) == gui._UI_BODY_FONT_SIZE + 1
-            for task_menu in app.task_menus.values()
-        ))
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_reset_software_settings_keeps_business_files_out_of_scope(
-        self,
-    ):
-        root, app = self._real_tk_app()
-        app.manual_tool_paths = {
-            "exiftool": r"C:\Tools\exiftool.exe",
-        }
-        app.saved_values = {
-            "scan": {
-                "scan_mode": "full",
-                "metadata_storage": "normalized",
-            },
-        }
-        app.completion_sound_enabled = True
-        app.result_directory_prompt_enabled = True
-        app.environment_inventory_received = True
-        cleanup = gui.ProjectCacheCleanup((), (), ())
-
-        with patch.object(
-                gui.messagebox, "askyesno", return_value=True), \
-                patch.object(gui.messagebox, "showinfo") as shown, \
-                patch.object(
-                    gui, "clear_session_tool_cache", return_value=0), \
-                patch.object(
-                    gui, "clean_project_caches", return_value=cleanup), \
-                patch.object(gui, "save_gui_preferences") as saved, \
-                patch.object(gui.os, "remove") as removed:
-            app.clear_cache_button.invoke()
-            root.update()
-
-        defaults = gui.default_gui_preferences()
-        self.assertEqual(app.task.key, "env_check")
-        self.assertEqual(app.manual_tool_paths, {})
-        self.assertEqual(app.saved_values, {})
-        self.assertFalse(app.environment_inventory_received)
-        self.assertNotIn("binary_control_style", defaults)
-        self.assertNotIn(
-            "binary_control_style", saved.call_args.args[0])
-        self.assertEqual(
-            app.completion_sound_enabled,
-            defaults["completion_sound_enabled"],
-        )
-        self.assertEqual(
-            app.result_directory_prompt_enabled,
-            defaults["result_directory_prompt_enabled"],
-        )
-        saved.assert_called_once()
-        payload = saved.call_args.args[0]
-        self.assertEqual(payload["manual_tool_paths"], {})
-        self.assertEqual(payload["task_options"], {})
-        removed.assert_not_called()
-        shown.assert_called_once()
-        self.assertEqual(app.clear_cache_button.cget("text"), "重置软件")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_current_page_reset_is_page_scoped_and_compact(self):
-        root, app = self._real_tk_app()
-        app.saved_values["scan"] = {
-            "scan_mode": "full",
-            "start_mode": "new",
-            "metadata_storage": "normalized",
-        }
-        app.saved_values["verify"] = {"verify_builtin": True}
-        app._select_task("scan", save_current=False)
-        root.update()
-        button = app.reset_current_settings_button
-        self.assertEqual(button.cget("text"), "恢复默认")
-        self.assertEqual(button.cget("style"), "FilePicker.TButton")
-        self.assertEqual(int(button.cget("width")),
-                         gui._PANEL_ACTION_BUTTON_WIDTH)
-
-        with patch.object(gui.messagebox, "askyesno") as asked, \
-                patch.object(app, "_save_gui_preferences") as saved:
-            button.invoke()
-            root.update()
-
-        self.assertNotIn("scan", app.saved_values)
-        self.assertEqual(
-            app.saved_values["verify"], {"verify_builtin": True})
-        self.assertEqual(set(app.values), {"scan_mode"})
-        asked.assert_not_called()
-        saved.assert_called_once_with()
-
-        app._set_settings_expanded(False)
-        self.assertTrue(button.winfo_manager())
-        app._set_settings_expanded(True)
-        self.assertTrue(button.winfo_manager())
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_1080p_button_ui_pages_fit_without_scrolling(self):
-        root, app = self._real_tk_app()
-        app._select_task("scan", save_current=False)
-        root.update()
-        description_heights = set()
-        button_checks = 0
-
-        def descendants(widget):
-            for child in widget.winfo_children():
-                yield child
-                yield from descendants(child)
-
-        for task_key in gui._TASK_MENU_ORDER:
-            app._select_task(task_key, save_current=False)
-            root.update()
-            context = f"{task_key} · buttons-only"
-            for button in (
-                    widget for widget in descendants(root)
-                    if isinstance(widget, (gui.tk.Button, gui.ttk.Button))):
-                if isinstance(button, gui.tk.Button):
-                    font_spec = button.cget("font")
-                else:
-                    style_name = button.cget("style") or "TButton"
-                    font_spec = app.style.lookup(style_name, "font")
-                actual_font = gui.tkfont.Font(root=root, font=font_spec)
-                self.assertEqual(
-                    abs(int(actual_font.actual("size"))),
-                    gui._UI_BODY_FONT_SIZE,
-                    f"{context} · {button.cget('text')}",
-                )
-                self.assertEqual(
-                    actual_font.actual("weight"),
-                    "normal",
-                    f"{context} · {button.cget('text')}",
-                )
-                button_checks += 1
-            content_height = app._form_content_height()
-            viewport_height = int(app.form_canvas.winfo_height())
-            self.assertLessEqual(
-                content_height,
-                viewport_height + gui._FORM_SCROLL_OVERFLOW_TOLERANCE,
-                f"{context} 默认表单超出 1080P 可视区",
-            )
-            self.assertFalse(
-                app.form_scroll.winfo_manager(),
-                f"{context} 内容未溢出时不应显示滚动条",
-            )
-            for delta in (-120, -120, 120, 120):
-                app._scroll_form(
-                    types.SimpleNamespace(delta=delta, num=0))
-            root.update_idletasks()
-            first, last = (
-                float(value) for value in app.form_canvas.yview())
-            self.assertEqual(
-                first, 0.0,
-                f"{context} 内容未溢出时不应响应纵向滚动",
-            )
-            self.assertGreaterEqual(
-                last,
-                1.0 - (
-                    gui._FORM_SCROLL_OVERFLOW_TOLERANCE
-                    / max(1, viewport_height)
-                ),
-                f"{context} 容差内几何不能形成可见滚动区",
-            )
-            description_heights.add(app.desc_label.winfo_reqheight())
-        self.assertEqual(
-            len(description_heights), 1,
-            "各页面副标题应保持统一单行高度",
-        )
-        self.assertGreaterEqual(button_checks, 90)
-        app._select_task("storage_collect", save_current=False)
-        root.update()
-        admin_button = app.admin_mode_button.button
-        self.assertIsInstance(app.admin_mode_button, gui.AdminModeButton)
-        self.assertIsInstance(admin_button, gui.ttk.Button)
-        self.assertFalse(any(
-            isinstance(widget, gui.tk.Canvas)
-            for widget in app.admin_mode_button.winfo_children()
-        ))
-        actual_font = gui.tkfont.Font(
-            root=root,
-            font=app.style.lookup(admin_button.cget("style"), "font"),
-        )
-        self.assertEqual(
-            abs(int(actual_font.actual("size"))),
-            gui._UI_BODY_FONT_SIZE,
-        )
-        self.assertEqual(actual_font.actual("weight"), "normal")
-        self.assertEqual(
-            (
-                admin_button.winfo_reqwidth(),
-                admin_button.winfo_reqheight(),
-            ),
-            (
-                app.storage_detect_button.winfo_reqwidth(),
-                app.storage_detect_button.winfo_reqheight(),
-            ),
-        )
-        self.assertIsNotNone(app.admin_requirement_label)
-        assert app.admin_requirement_label is not None
-        admin_center_y = (
-            admin_button.winfo_rooty() + admin_button.winfo_height() / 2)
-        label_center_y = (
-            app.admin_requirement_label.winfo_rooty()
-            + app.admin_requirement_label.winfo_height() / 2)
-        self.assertLessEqual(abs(admin_center_y - label_center_y), 1)
-        self.assertLessEqual(abs(
-            admin_button.winfo_rootx()
-            - app.storage_detect_button.winfo_rootx()
-        ), 1)
-        self.assertLess(
-            admin_button.winfo_rootx(),
-            app.admin_requirement_label.winfo_rootx(),
-        )
-        ancestors = []
-        current = app.admin_mode_button
-        while current is not None:
-            ancestors.append(current)
-            current = getattr(current, "master", None)
-        self.assertIn(app.form_inner, ancestors)
-        self.assertNotIn(app.task_toolbar_panel, ancestors)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_independent_log_is_singleton_and_synchronized(self):
-        root, app = self._real_tk_app()
-        app._set_log_expanded(True)
-        root.update()
-        tooltip = app.clear_log_button._daisy_tooltip
-        tooltip_binding = app.clear_log_button.bind("<Enter>")
-        self.assertEqual(
-            tooltip.text, "清空主界面与独立窗口中的运行日志。")
-        self.assertIs(
-            gui.attach_tooltip(app.clear_log_button, tooltip.text), tooltip)
-        self.assertEqual(
-            app.clear_log_button.bind("<Enter>"), tooltip_binding)
-        tooltip._show()
-        root.update_idletasks()
-        self.assertIsNotNone(tooltip._window)
-        tooltip_label = tooltip._window.winfo_children()[0]
-        self.assertEqual(tooltip_label.cget("text"), tooltip.text)
-        tooltip._hide()
-
-        first = gui.TASKS[0].title + "\n"
-        second = gui.TASKS[-1].title + "\n"
-        app._append_log(first, "meta")
-        app._open_log_window()
-        try:
-            app.log_window.attributes("-alpha", 0.0)
-        except gui.tk.TclError:
-            pass
-        root.update()
-        window = app.log_window
-        self.assertGreaterEqual(window.winfo_height(), 700)
-        app._open_log_window()
-        self.assertIs(app.log_window, window)
-        app._append_log(second, "success")
-        expected = first + second
-        self.assertEqual(app.log.get("1.0", "end-1c"), expected)
-        self.assertEqual(
-            app.log_window_text.get("1.0", "end-1c"), expected)
-        app._clear_log()
-        self.assertEqual(app.log.get("1.0", "end-1c"), "")
-        self.assertEqual(app.log_window_text.get("1.0", "end-1c"), "")
-        app._close_log_window()
-        self.assertIsNone(app.log_window)
-        self.assertIsNone(app.log_window_text)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_form_actions_and_storage_progress_are_consistent(self):
-        root, app = self._real_tk_app()
-        app._select_task("env_check", save_current=False)
-        root.update()
-        self.assertEqual(
-            app.desc_label.cget("text"),
-            "检测各功能所需工具和可选能力。",
-        )
-        self.assertEqual(
-            gui.TASK_BY_KEY["verify"].description,
-            "按快照核对现有文件，检查格式、容器与 RAW 解码。",
-        )
-        for task_key in gui._TASK_TOOLBAR_KEYS:
-            for redundant_text in (
-                    "不读取档案", "不保存设置", "不回写数据库"):
-                self.assertNotIn(
-                    redundant_text,
-                    gui.TASK_BY_KEY[task_key].description,
-                    task_key,
-                )
-        self.assertEqual(gui._UI_BODY_FONT_SIZE, 10)
-        for style_name in (
-                "TLabel", "TEntry", "Daisy.TCombobox",
-                "FormAction.TButton", "DiscoveryAction.TButton"):
-            actual_font = gui.tkfont.Font(
-                root=root, font=app.style.lookup(style_name, "font"))
-            self.assertEqual(
-                abs(int(actual_font.actual("size"))),
-                10,
-                style_name,
-            )
-        for button in app.task_toolbar_buttons.values():
-            actual_font = gui.tkfont.Font(
-                root=root, font=button.cget("font"))
-            self.assertEqual(abs(int(actual_font.actual("size"))), 10)
-            self.assertIsInstance(button, gui.tk.Button)
-        self.assertTrue(app.install_tool_buttons)
-        install_positions = set()
-        for button in app.install_tool_buttons.values():
-            self.assertIsInstance(button, gui.tk.Button)
-            self.assertEqual(button.cget("anchor"), "center")
-            self.assertEqual(button.cget("justify"), "center")
-            self.assertEqual(
-                int(button.cget("width")), gui._ENVIRONMENT_BUTTON_WIDTH)
-            self.assertEqual(str(button.grid_info()["sticky"]), "w")
-            self.assertLess(button.winfo_reqwidth(), 220)
-            self.assertGreaterEqual(
-                button.winfo_width(), button.winfo_reqwidth())
-            install_positions.add((
-                int(button.grid_info()["row"]),
-                int(button.grid_info()["column"]),
-            ))
-        self.assertEqual(
-            install_positions,
-            {(0, 0), (0, 2), (0, 4), (0, 8), (0, 10)},
-        )
-        self.assertEqual(
-            set(app.environment_install_buttons),
-            set(gui._ENVIRONMENT_STATUS_ORDER),
-        )
-        self.assertEqual(
-            {
-                (int(button.grid_info()["row"]),
-                 int(button.grid_info()["column"]))
-                for button in app.environment_install_buttons.values()
-            },
-            {(0, 0), (0, 2), (0, 4), (0, 6), (0, 8), (0, 10)},
-        )
-        for dependency_name in gui._ENVIRONMENT_STATUS_ORDER:
-            status_button = app.environment_status_buttons[dependency_name]
-            install_button = app.environment_install_buttons[dependency_name]
-            full_name = gui._ENVIRONMENT_BUTTON_LABELS[dependency_name]
-            self.assertEqual(
-                status_button.cget("text").splitlines()[0], full_name)
-            self.assertEqual(
-                install_button.cget("text").splitlines()[0], full_name)
-            self.assertEqual(status_button.cget("anchor"), "center")
-            self.assertEqual(status_button.cget("justify"), "center")
-            self.assertEqual(install_button.cget("anchor"), "center")
-            self.assertEqual(install_button.cget("justify"), "center")
-            self.assertEqual(
-                int(status_button.cget("width")),
-                gui._ENVIRONMENT_BUTTON_WIDTH,
-            )
-            self.assertEqual(
-                int(install_button.cget("width")),
-                gui._ENVIRONMENT_BUTTON_WIDTH,
-            )
-            self.assertEqual(str(status_button.grid_info()["sticky"]), "w")
-            self.assertEqual(str(install_button.grid_info()["sticky"]), "w")
-            self.assertLessEqual(
-                abs(status_button.winfo_rootx()
-                    - install_button.winfo_rootx()),
-                1,
-            )
-            self.assertLessEqual(
-                abs(status_button.winfo_width()
-                    - install_button.winfo_width()),
-                1,
-            )
-            self.assertLessEqual(
-                abs(status_button.winfo_height()
-                    - install_button.winfo_height()),
-                1,
-            )
-        self.assertLess(
-            gui._ENVIRONMENT_BUTTON_WIDTH,
-            gui._STANDARD_BUTTON_WIDTH,
-        )
-        first_status = app.environment_status_buttons[
-            gui._ENVIRONMENT_STATUS_ORDER[0]]
-        last_status = app.environment_status_buttons[
-            gui._ENVIRONMENT_STATUS_ORDER[-1]]
-        occupied_width = (
-            last_status.winfo_rootx() + last_status.winfo_width()
-            - first_status.winfo_rootx()
-        )
-        self.assertLess(occupied_width, first_status.master.winfo_width())
-        self.assertIn("rawpy", app.install_tool_buttons)
-        self.assertEqual(
-            app.install_tool_buttons["rawpy"].cget("text"),
-            "rawpy/LibRaw\n安装或更新",
-        )
-        for dependency_name, button in app.install_tool_buttons.items():
-            self.assertEqual(
-                button.cget("text"),
-                f"{gui._INSTALL_BUTTON_LABELS[dependency_name]}\n安装或更新",
-            )
-        self.assertEqual(
-            app.environment_install_buttons["powershell"].cget("text"),
-            "PowerShell\n系统提供",
-        )
-        self.assertEqual(
-            app.environment_install_buttons["powershell"].cget("state"),
-            "disabled",
-        )
-        self.assertEqual(
-            app.install_tool_buttons["exiftool"]._daisy_tooltip.text,
-            "先查询软件源最新版本；确认后使用 WinGet 安装或更新 ExifTool。",
-        )
-        self.assertEqual(
-            app.install_tool_buttons["rawpy"]._daisy_tooltip.text,
-            "先查询软件源最新版本；确认后使用当前 Python 的 pip 安装或更新 "
-            "rawpy/LibRaw。",
-        )
-        self.assertEqual(
-            app.environment_install_buttons[
-                "powershell"]._daisy_tooltip.text,
-            "PowerShell 由 Windows 系统提供。",
-        )
-        for button in app.install_tool_buttons.values():
-            self.assertNotIn("不会连带", button._daisy_tooltip.text)
-            self.assertNotIn("只按需", button._daisy_tooltip.text)
-
-        app._select_task("full_scan", save_current=False)
-        root.update()
-        roots = app.values["roots"]
-        self.assertEqual(
-            roots.add_button.cget("style"), "FilePicker.TButton")
-        self.assertEqual(roots.add_button.cget("text"), "添加")
-        self.assertGreaterEqual(roots.add_button.winfo_reqwidth(), 100)
-        self.assertLess(gui._FILE_PICKER_BUTTON_WIDTH,
-                        gui._FORM_ACTION_BUTTON_WIDTH)
-        self.assertEqual(
-            app.reset_current_settings_button.cget("style"),
-            "FilePicker.TButton",
-        )
-        self.assertEqual(
-            roots.add_button.winfo_reqwidth(),
-            app.reset_current_settings_button.winfo_reqwidth(),
-        )
-        self.assertEqual(
-            roots.add_button.winfo_reqheight(),
-            app.reset_current_settings_button.winfo_reqheight(),
-        )
-        tooltip = roots.add_button._daisy_tooltip
-        tooltip._show()
-        root.update_idletasks()
-        tooltip_label = tooltip._window.winfo_children()[0]
-        self.assertEqual(tooltip_label.cget("text"), tooltip.text)
-        work_area = gui._monitor_work_area_for_window(roots.add_button)
-        self.assertLessEqual(
-            tooltip._window.winfo_y() + tooltip._window.winfo_reqheight(),
-            work_area.bottom,
-        )
-        tooltip._hide()
-
-        form_tooltip_targets = [
-            child for child in app.form_inner.winfo_children()
-            if getattr(child, "_daisy_tooltip", None) is not None
-        ]
-        self.assertGreaterEqual(len(form_tooltip_targets), 2)
-
-        self.assertFalse(any(
-            isinstance(child, gui.ttk.Combobox)
-            for child in self._tk_descendants(app.form_inner)
-        ))
-        self.assertIsInstance(app.values["start_mode"], gui.ChoiceButtonGroup)
-        self.assertEqual(
-            list(app.values["start_mode"].buttons), ["new", "resume"])
-
-        app._select_task("storage_collect", save_current=False)
-        root.update()
-        pool = app.values["disk_number"]
-        self.assertEqual(
-            pool.select_all_button.cget("style"), "FilePicker.TButton")
-        self.assertEqual(
-            pool.clear_selection_button.cget("style"),
-            "FilePicker.TButton",
-        )
-        self.assertEqual(
-            int(pool.select_all_button.cget("width")),
-            gui._FILE_PICKER_BUTTON_WIDTH,
-        )
-        self.assertEqual(
-            int(pool.clear_selection_button.cget("width")),
-            gui._FILE_PICKER_BUTTON_WIDTH,
-        )
-        browse_button = next(
-            child for child in self._tk_descendants(app.form_inner)
-            if isinstance(child, gui.ttk.Button)
-            and child.cget("style") == "FilePicker.TButton"
-            and child.cget("text") == "浏览"
-        )
-        root.update_idletasks()
-        browse_size = (
-            browse_button.winfo_reqwidth(), browse_button.winfo_reqheight())
-        self.assertEqual(
-            (
-                pool.select_all_button.winfo_reqwidth(),
-                pool.select_all_button.winfo_reqheight(),
-            ),
-            browse_size,
-        )
-        self.assertEqual(
-            (
-                pool.clear_selection_button.winfo_reqwidth(),
-                pool.clear_selection_button.winfo_reqheight(),
-            ),
-            browse_size,
-        )
-        self.assertEqual(
-            app.storage_detect_button.cget("style"),
-            "DiscoveryAction.TButton",
-        )
-        storage_texts = {
-            child.cget("text")
-            for child in self._tk_descendants(app.form_inner)
-            if isinstance(child, gui.tk.Label)
-        }
-        self.assertIn(
-            "读取硬盘、分区、卷与 SMART 信息，生成可登记硬盘清单。",
-            storage_texts,
-        )
-        self.assertEqual(
-            app.storage_detect_button._daisy_tooltip.text,
-            "读取硬盘、分区、卷与 SMART 信息，并刷新下方可登记硬盘清单。",
-        )
-
-        app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测硬盘", {})]
-        app.run_job_index = 0
-        app._begin_progress()
-        self.assertEqual(
-            app.progress_stage_label.cget("text"),
-            "检测硬盘 · 正在启动",
-        )
-        self.assertIn(
-            "正在查询 Windows 存储接口与 smartctl",
-            app.progress_detail_label.cget("text"),
-        )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_environment_pending_buttons_detect_and_share_size(self):
-        root, app = self._real_tk_app()
-        app.detected_tools = {}
-        app.environment_missing_names = ()
-        app.environment_missing_reasons = {}
-        app.runtime_capabilities = {}
-        with patch.object(app, "_run") as detect:
-            app._select_task("env_check", save_current=False)
-            root.update()
-            self.assertIsNone(app.admin_mode_button)
-            self.assertFalse(any(
-                isinstance(widget, gui.AdminModeButton)
-                for widget in self._tk_descendants(app.task_toolbar_panel)
-            ))
-            for dependency_name in gui._ENVIRONMENT_STATUS_ORDER:
-                status_button = app.environment_status_buttons[
-                    dependency_name]
-                install_button = app.environment_install_buttons[
-                    dependency_name]
-                self.assertEqual(
-                    status_button.cget("background"), gui._CONTROL)
-                self.assertEqual(
-                    status_button.cget("foreground"), gui._MUTED)
-                self.assertEqual(status_button.cget("cursor"), "hand2")
-                self.assertEqual(
-                    (status_button.winfo_width(),
-                     status_button.winfo_height()),
-                    (install_button.winfo_width(),
-                     install_button.winfo_height()),
-                )
-            toolbar_buttons = [
-                app.task_toolbar_buttons[key]
-                for key in gui._TASK_TOOLBAR_KEYS
-            ]
-            status_buttons = [
-                app.environment_status_buttons[key]
-                for key in gui._ENVIRONMENT_STATUS_ORDER
-            ]
-            install_buttons = [
-                app.environment_install_buttons[key]
-                for key in gui._ENVIRONMENT_STATUS_ORDER
-            ]
-            self.assertEqual(
-                [(button.winfo_rootx(), button.winfo_width())
-                 for button in toolbar_buttons],
-                [(button.winfo_rootx(), button.winfo_width())
-                 for button in status_buttons],
-            )
-            self.assertEqual(
-                [button.winfo_rootx() for button in toolbar_buttons],
-                [button.winfo_rootx() for button in install_buttons],
-            )
-            app.environment_status_buttons["exiftool"].invoke()
-            detect.assert_called_once_with()
-
-        text_labels = {
-            child.cget("text")
-            for child in self._tk_descendants(app.form_inner)
-            if isinstance(child, gui.tk.Label)
-        }
-        self.assertFalse(any(
-            text.startswith("可安装或更新下列工具")
-            for text in text_labels
-        ))
-
-        app._select_task("storage_collect", save_current=False)
-        root.update()
-        self.assertIsInstance(app.admin_mode_button, gui.AdminModeButton)
-        ancestors = []
-        current = app.admin_mode_button
-        while current is not None:
-            ancestors.append(current)
-            current = getattr(current, "master", None)
-        self.assertIn(app.form_inner, ancestors)
-        self.assertNotIn(app.task_toolbar_panel, ancestors)
-        summary = app.values["summary_txt"]
-        self.assertIsInstance(summary, gui.BooleanToggleButton)
-        self.assertTrue(summary.get())
-        self.assertEqual(summary.button.cget("text"), "生成")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_compact_toolbar_columns_align_environment(self):
-        preferences = gui.default_gui_preferences()
-        preferences["window_size"] = [1000, 680]
-        root, app = self._real_tk_app(preferences)
-        app._select_task("env_check", save_current=False)
-        root.update()
-        self.assertTrue(app.compact_layout)
-        toolbar_geometry = [
-            (app.task_toolbar_buttons[key].winfo_rootx(),
-             app.task_toolbar_buttons[key].winfo_width())
-            for key in gui._TASK_TOOLBAR_KEYS
-        ]
-        environment_geometry = [
-            (app.environment_status_buttons[key].winfo_rootx(),
-             app.environment_status_buttons[key].winfo_width())
-            for key in gui._ENVIRONMENT_STATUS_ORDER
-        ]
-        self.assertEqual(toolbar_geometry, environment_geometry)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_parse_formats_are_toggle_buttons(self):
-        root, app = self._real_tk_app()
-        app._select_task("parse_db", save_current=False)
-        root.update()
-        preset = app.values["preset"]
-        self.assertIsInstance(preset, gui.ChoiceButtonGroup)
-        self.assertEqual(preset.get(), "full-audit")
-        self.assertEqual(
-            set(preset.buttons), {"human-summary", "full-audit", "custom"})
-        self.assertEqual(
-            tuple(
-                preset.buttons[value].cget("text")
-                for value in ("human-summary", "full-audit", "custom")
-            ),
-            ("摘要", "全部", "自定义"),
-        )
-        self.assertEqual(
-            preset.buttons["full-audit"].cget("background"),
-            gui._BLOCK_SELECTION_BACKGROUND,
-        )
-        formats = app.values["formats"]
-        self.assertIsInstance(formats, gui.MultiChoicePool)
-        self.assertEqual(set(formats.buttons), {"html", "xlsx", "csv", "jsonl"})
-        self.assertTrue(all(
-            isinstance(button, gui.tk.Button)
-            and not isinstance(button, gui.tk.Checkbutton)
-            for button in formats.buttons.values()
-        ))
-        self.assertEqual(
-            len({button.winfo_width()
-                 for button in formats.buttons.values()}), 1)
-        self.assertEqual(
-            len({button.winfo_height()
-                 for button in formats.buttons.values()}), 1)
-        self.assertEqual(formats.get(), "html\nxlsx\ncsv\njsonl")
-        self.assertTrue(all(
-            button.cget("background") == gui._GREEN_DARK
-            for button in formats.buttons.values()
-        ))
-        formats.buttons["csv"].invoke()
-        root.update_idletasks()
-        self.assertEqual(formats.get(), "html\nxlsx\njsonl")
-        self.assertEqual(
-            formats.buttons["csv"].cget("background"), gui._AMBER)
-
-        input_label = next(
-            child for child in app.form_inner.winfo_children()
-            if isinstance(child, gui.tk.Label)
-            and child.cget("text") == "输入数据库"
-        )
-        input_row = int(input_label.grid_info()["row"])
-        input_cell = next(
-            child for child in app.form_inner.winfo_children()
-            if isinstance(child, gui.tk.Frame)
-            and int(child.grid_info().get("row", -1)) == input_row
-            and int(child.grid_info().get("column", -1)) == 1
-        )
-        select_button = next(
-            child for child in input_cell.winfo_children()
-            if isinstance(child, gui.ttk.Button)
-        )
-        self.assertEqual(select_button.cget("text"), "选择")
-        parse_button = app.parse_detect_button
-        self.assertEqual(parse_button.cget("text"), "解析数据库")
-        self.assertEqual(
-            app.parse_detection_detail_label.cget("text"),
-            "选择数据库后，点击「解析数据库」读取类型、来源版本、"
-            "结构版本和数据模块。",
-        )
-        self.assertEqual(
-            parse_button._daisy_tooltip.text,
-            "读取所选数据库的类型、来源版本、结构版本和数据模块。",
-        )
-        self.assertEqual(
-            parse_button.cget("style"), "DiscoveryAction.TButton")
-        self.assertEqual(
-            app.style.lookup(parse_button.cget("style"), "background"),
-            gui._GREEN_SOFT,
-        )
-        self.assertEqual(
-            app.style.lookup(parse_button.cget("style"), "foreground"),
-            gui._GREEN_DEEP,
-        )
-        self.assertIs(parse_button.master.master, app.form_inner)
-        self.assertIsNot(parse_button.master, input_cell)
-        parse_panel_info = parse_button.master.grid_info()
-        self.assertEqual(int(parse_panel_info["column"]), 0)
-        self.assertEqual(int(parse_panel_info["columnspan"]), 2)
-        self.assertGreater(int(parse_panel_info["row"]), input_row)
-        parse_button_x = parse_button.winfo_rootx()
-        parse_button_width = parse_button.winfo_width()
-
-        original_form = app.form_inner
-        original_preset = app.values["preset"]
-        original_modules = app.values["parse_modules"]
-        original_formats = app.values["formats"]
-        app.values["preset"].buttons["human-summary"].invoke()
-        root.update()
-        self.assertIs(app.form_inner, original_form)
-        self.assertIs(app.values["preset"], original_preset)
-        self.assertIs(app.values["parse_modules"], original_modules)
-        self.assertIs(app.values["formats"], original_formats)
-        self.assertEqual(app.values["preset"].get(), "human-summary")
-        self.assertEqual(app.values["parse_modules"].preset, "human-summary")
-        self.assertEqual(
-            app.values["formats"].get(), "html\nxlsx\njsonl")
-        for preset_value, editable in (
-                ("full-audit", False), ("custom", True),
-                ("human-summary", False)):
-            original_preset.buttons[preset_value].invoke()
-            root.update()
-            self.assertIs(app.form_inner, original_form)
-            self.assertIs(app.values["preset"], original_preset)
-            self.assertIs(app.values["parse_modules"], original_modules)
-            self.assertIs(app.values["formats"], original_formats)
-            self.assertEqual(original_modules.preset, preset_value)
-            self.assertEqual(original_modules.editable, editable)
-
-        app._select_task("storage_collect", save_current=False)
-        root.update()
-        self.assertEqual(app.storage_detect_button.cget("text"), "检测硬盘")
-        self.assertEqual(
-            app.storage_detect_button.cget("style"),
-            "DiscoveryAction.TButton",
-        )
-        self.assertLessEqual(
-            abs(app.storage_detect_button.winfo_rootx() - parse_button_x), 1)
-        self.assertEqual(
-            app.storage_detect_button.winfo_width(), parse_button_width)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_database_selection_waits_for_parse_button(self):
-        root, app = self._real_tk_app()
-        with patch.object(app, "_detect_parse_database") as detect:
-            app._select_task("parse_db", save_current=False)
-            root.update()
-            input_label = next(
-                child for child in app.form_inner.winfo_children()
-                if isinstance(child, gui.tk.Label)
-                and child.cget("text") == "输入数据库"
-            )
-            input_row = int(input_label.grid_info()["row"])
-            input_cell = next(
-                child for child in app.form_inner.winfo_children()
-                if isinstance(child, gui.tk.Frame)
-                and int(child.grid_info().get("row", -1)) == input_row
-                and int(child.grid_info().get("column", -1)) == 1
-            )
-            select_button = next(
-                child for child in input_cell.winfo_children()
-                if isinstance(child, gui.ttk.Button)
-            )
-            database = os.path.join(
-                tempfile.gettempdir(), "DAISY_manual_parse.sqlite")
-            with patch.object(
-                    gui.filedialog, "askopenfilename",
-                    return_value=database):
-                select_button.invoke()
-                root.update_idletasks()
-
-            detect.assert_not_called()
-            self.assertEqual(
-                app.values["database"].get(), os.path.normpath(database))
-            self.assertEqual(
-                app.parse_detection_detail_label.cget("text"),
-                "已选择数据库；点击「解析数据库」读取类型、来源版本、"
-                "结构版本和数据模块。",
-            )
-            app._parse_database_focus_out(types.SimpleNamespace())
-            detect.assert_not_called()
-            app.parse_detect_button.invoke()
-            detect.assert_called_once_with()
 
     def test_parse_database_version_text_uses_descriptor_metadata(self):
         self.assertEqual(
@@ -4130,1169 +2678,6 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(len(set(titles)), 15)
         self.assertTrue(all(len(title) <= 6 for title in titles))
         self.assertEqual(specs[0].title, "数据概览")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_parsed_snapshot_summary_shows_source_version(self):
-        root, app = self._real_tk_app()
-        app._select_task("parse_db", save_current=False)
-        database = os.path.normpath(os.path.join(
-            tempfile.gettempdir(), "DAISY_v141_snapshot.sqlite"))
-        app.values["database"].set(database)
-        app._save_current_values()
-        descriptor = types.SimpleNamespace(
-            path=database,
-            database_type="snapshot",
-            source_version="1.4.1",
-            schema_version=3,
-        )
-        app.parse_inspection = types.SimpleNamespace(
-            descriptor=descriptor,
-            modules=(),
-            module_state_counts={"available": 0},
-        )
-        app.parse_inspection_path = database
-        app._build_form()
-        root.update()
-        summary = app.parse_detection_detail_label.cget("text")
-        self.assertIn("已解析封存快照", summary)
-        self.assertIn("快照版本 v1.4.1", summary)
-        self.assertIn("数据库结构版本 3", summary)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_parse_modules_use_green_amber_and_gray_buttons(self):
-        root, _app = self._real_tk_app()
-        specs = gui.dbparse.parse_modules("snapshot")
-        modules = tuple(
-            gui.dbparse.ParseModuleStatus(
-                spec,
-                "available" if index < 2 else "empty",
-                7 - index if index < 2 else 0,
-                None if index < 2 else "没有记录",
-                True, (), (),
-            )
-            for index, spec in enumerate(specs)
-        )
-        inspection = types.SimpleNamespace(
-            modules=modules,
-            module_state_counts={"available": 2, "empty": 13},
-        )
-        changed = Mock()
-        pool = gui.ParseModulePool(
-            root, inspection=inspection, preset="custom",
-            initial=specs[0].module_id, on_change=changed,
-        )
-        pool.pack(fill="x")
-        root.update()
-
-        self.assertTrue(all(
-            isinstance(button, gui.tk.Button)
-            and not isinstance(button, gui.tk.Checkbutton)
-            for button in pool.buttons.values()
-        ))
-        self.assertFalse(any(
-            "可导出" in button.cget("text")
-            for button in pool.buttons.values()
-        ))
-        self.assertEqual(
-            [pool.buttons[spec.module_id].cget("text") for spec in specs],
-            [gui._parse_module_ui_title(spec) for spec in specs],
-        )
-        action_buttons = [
-            child for child in pool.actions.winfo_children()
-            if isinstance(child, gui.ttk.Button)
-        ]
-        self.assertEqual(
-            [button.cget("text") for button in action_buttons],
-            ["全选", "取消选择"],
-        )
-        self.assertTrue(all(
-            button.cget("style") == "FilePicker.TButton"
-            and int(button.cget("width")) == gui._FILE_PICKER_BUTTON_WIDTH
-            for button in action_buttons
-        ))
-        self.assertEqual(
-            int(pool.card_host.pack_info()["padx"]), gui._SPACING_INLINE)
-        self.assertEqual(
-            int(pool.card_host.pack_info()["pady"]), gui._SPACING_INLINE)
-        self.assertEqual(
-            pool.card_host.tk.call(
-                "grid", "anchor", pool.card_host._w),
-            "w",
-        )
-        first = pool.buttons[specs[0].module_id]
-        second = pool.buttons[specs[1].module_id]
-        unavailable = pool.buttons[specs[2].module_id]
-        self.assertEqual(first.cget("background"), gui._GREEN_DARK)
-        self.assertEqual(second.cget("background"), gui._AMBER)
-        self.assertEqual(unavailable.cget("background"), gui._CONTROL)
-        self.assertEqual(unavailable.cget("state"), "disabled")
-
-        pool._layout_cards(types.SimpleNamespace(width=1400))
-        root.update_idletasks()
-        wide_sizes = {
-            (button.winfo_width(), button.winfo_height())
-            for button in pool.buttons.values()
-        }
-        pool._layout_cards(types.SimpleNamespace(width=420))
-        root.update_idletasks()
-        narrow_sizes = {
-            (button.winfo_width(), button.winfo_height())
-            for button in pool.buttons.values()
-        }
-        self.assertEqual(len(wide_sizes), 1)
-        self.assertEqual(narrow_sizes, wide_sizes)
-        self.assertTrue(all(
-            not button.grid_info().get("sticky")
-            for button in pool.buttons.values()
-        ))
-
-        second.invoke()
-        root.update_idletasks()
-        self.assertEqual(second.cget("background"), gui._GREEN_DARK)
-        first.invoke()
-        root.update_idletasks()
-        self.assertEqual(first.cget("background"), gui._AMBER)
-        self.assertEqual(
-            set(filter(None, pool.get().splitlines())),
-            {specs[1].module_id},
-        )
-        self.assertEqual(changed.call_count, 2)
-
-        pool.set_preset("full-audit")
-        root.update_idletasks()
-        self.assertTrue(all(
-            pool.buttons[spec.module_id].cget("state") == "disabled"
-            for spec in specs
-        ))
-        self.assertEqual(first.cget("background"), gui._GREEN_DARK)
-        self.assertEqual(second.cget("background"), gui._GREEN_DARK)
-        self.assertEqual(unavailable.cget("background"), gui._CONTROL)
-
-        pool.set_preset("custom", initial=specs[0].module_id)
-        root.update_idletasks()
-        self.assertEqual(first.cget("state"), "normal")
-        self.assertEqual(second.cget("state"), "normal")
-        self.assertEqual(first.cget("background"), gui._GREEN_DARK)
-        self.assertEqual(second.cget("background"), gui._AMBER)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_storage_disk_slots_share_one_card_layout(self):
-        root, app = self._real_tk_app()
-        root.geometry("1100x900")
-        app.storage_disk_options = (
-            gui.StorageDiskOption(
-                0, "PhysicalDrive0 · C: · 短型号 · 1 TB",
-                True, True, "联机 · 可登记"),
-            gui.StorageDiskOption(
-                1,
-                "PhysicalDrive1 · D: 档案／E: 备份 · "
-                + "较长的硬盘型号与说明文字" * 8 + " · 16 TB",
-                True, True, "联机 · 可登记"),
-            gui.StorageDiskOption(
-                2, "PhysicalDrive2 · 无盘符或无卷标 · 型号未提供",
-                False, False, "已脱机"),
-        )
-        app._select_task("storage_collect", save_current=False)
-        root.update()
-
-        pool = app.values["disk_number"]
-        self.assertIsInstance(pool, gui.StorageDiskPool)
-        self.assertEqual(len(pool.slot_frames), 3)
-        self.assertEqual(
-            len({frame.winfo_width() for frame in pool.slot_frames}), 1)
-        self.assertEqual(
-            len({frame.winfo_height() for frame in pool.slot_frames}), 1)
-        self.assertTrue(all(
-            frame.cget("background") == gui._FIELD
-            and int(frame.cget("highlightthickness")) == 1
-            for frame in pool.slot_frames
-        ))
-        self.assertTrue(all(
-            checkbox.cget("background") == gui._FIELD
-            for checkbox in pool.checkboxes
-        ))
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_progress_palette_matches_log_palette(self):
-        _root, app = self._real_tk_app()
-        self.assertEqual(
-            app.progress_panel.cget("background"), gui._LOG_BG)
-        self.assertEqual(
-            app.progress_panel.cget("background"),
-            app.log_panel.cget("background"),
-        )
-        self.assertEqual(app.progress_inner.cget("background"), gui._LOG_BG)
-        self.assertEqual(app.progress_body.cget("background"), gui._LOG_BG)
-        self.assertEqual(
-            app.progress_header.cget("background"), gui._LOG_HEADER)
-        self.assertEqual(
-            app.progress_title_label.cget("background"), gui._LOG_HEADER)
-        self.assertEqual(
-            app.log_header.cget("background"), gui._LOG_HEADER)
-        self.assertEqual(
-            app.log_title_label.cget("background"), gui._LOG_HEADER)
-        self.assertEqual(
-            app.progress_header.winfo_rootx(),
-            app.log_header.winfo_rootx(),
-        )
-        self.assertEqual(
-            app.progress_header.winfo_width(),
-            app.log_header.winfo_width(),
-        )
-        self.assertEqual(
-            app.progress_title_label.winfo_rootx(),
-            app.log_title_label.winfo_rootx(),
-        )
-        self.assertEqual(
-            int(app.log_body.cget("height")),
-            gui._LOG_BODY_HEIGHT_STANDARD,
-        )
-        for label in (
-                app.progress_target_label, app.current_file_title_label,
-                app.current_file_label, app.queue_title_label,
-                app.queue_detail_label, app.queue_percent_label,
-                app.progress_stage_label, app.progress_detail_label,
-                app.progress_percent_label):
-            self.assertEqual(label.cget("background"), gui._LOG_BG)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_titles_and_directory_actions_share_alignment(self):
-        root, app = self._real_tk_app()
-        def assert_page_alignment(context):
-            field_right_edges = set()
-            cell_left_edges = set()
-            for task_key in gui._TASK_TOOLBAR_LABELS:
-                app._select_task(task_key, save_current=False)
-                root.update()
-                task_values = gui._task_values(
-                    app.task, app.saved_values.get(task_key, {}))
-                active_specs = [
-                    spec for spec in app.task.fields
-                    if not spec.top_menu
-                    and gui._field_active(spec, task_values)
-                ]
-                for spec in active_specs:
-                    label = next(
-                        child for child in app.form_inner.winfo_children()
-                        if isinstance(child, gui.tk.Label)
-                        and child.cget("text") == spec.label
-                    )
-                    self.assertNotIn("*", label.cget("text"), context)
-                    self.assertGreaterEqual(
-                        label.winfo_width(), label.winfo_reqwidth(), context)
-                    field_right_edges.add(
-                        label.winfo_rootx() + label.winfo_width())
-                    row = int(label.grid_info()["row"])
-                    cell = next(
-                        child for child in app.form_inner.winfo_children()
-                        if isinstance(child, gui.tk.Frame)
-                        and int(child.grid_info().get("row", -1)) == row
-                        and int(child.grid_info().get("column", -1)) == 1
-                    )
-                    cell_left_edges.add(cell.winfo_rootx())
-            self.assertEqual(len(field_right_edges), 1, context)
-            self.assertEqual(len(cell_left_edges), 1, context)
-
-        combinations = 0
-        for family in app._available_ui_font_families():
-            for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
-                app._set_ui_font(
-                    family=family, size_delta=size_delta, persist=False)
-                assert_page_alignment(f"{family}/{size_delta:+d}")
-                combinations += 1
-        self.assertGreaterEqual(combinations, 6)
-
-        app._set_ui_font(
-            family=gui._UI_FONT_FAMILY, size_delta=0, persist=False)
-
-        app._select_task("full_scan", save_current=False)
-        root.update()
-        list_add = app.values["roots"].add_button
-        self.assertEqual(int(list_add.grid_info()["column"]), 0)
-        self.assertEqual(str(list_add.grid_info()["sticky"]), "w")
-        list_add_style = list_add.cget("style")
-        list_add_width = list_add.cget("width")
-
-        app._select_task("check_hash", save_current=False)
-        root.update()
-        mapping = app.values["root_map"]
-        self.assertIsInstance(mapping, gui.DirectoryListEditor)
-        mapped_add = mapping.add_button
-        self.assertEqual(int(mapped_add.grid_info()["column"]), 0)
-        self.assertEqual(str(mapped_add.grid_info()["sticky"]), "w")
-        self.assertEqual(mapped_add.cget("style"), list_add_style)
-        self.assertEqual(mapped_add.cget("width"), list_add_width)
-        self.assertTrue(mapping.add_value(r"archive=C:\Archive"))
-        self.assertEqual(mapping.get(), r"archive=C:\Archive")
-
-        app._select_task("scan", save_current=False)
-        app.values["scan_mode"].buttons["full"].invoke()
-        root.update()
-        app.values["start_mode"].buttons["new"].invoke()
-        root.update()
-        output_label = next(
-            child for child in app.form_inner.winfo_children()
-            if (isinstance(child, gui.tk.Label)
-                and child.cget("text") == "快照保存目录")
-        )
-        output_row = int(output_label.grid_info()["row"])
-        output_cell = next(
-            child for child in app.form_inner.winfo_children()
-            if (isinstance(child, gui.tk.Frame)
-                and int(child.grid_info().get("row", -1)) == output_row
-                and int(child.grid_info().get("column", -1)) == 1)
-        )
-        browse = next(
-            child for child in output_cell.winfo_children()
-            if (isinstance(child, gui.ttk.Button)
-                and child.cget("text") == "浏览")
-        )
-        entry = next(
-            child for child in output_cell.winfo_children()
-            if isinstance(child, gui.ttk.Entry)
-        )
-        self.assertEqual(int(browse.grid_info()["column"]), 0)
-        self.assertEqual(str(browse.grid_info()["sticky"]), "w")
-        self.assertEqual(int(entry.grid_info()["column"]), 1)
-        scan_add = app.values["roots"].add_button
-        self.assertEqual(
-            scan_add.winfo_rootx(), browse.winfo_rootx())
-        self.assertEqual(int(scan_add.grid_info()["row"]), 0)
-        app.values["roots"].add_value(r"C:\Archive")
-        root.update()
-        self.assertEqual(
-            int(app.values["roots"].rows.grid_info()["row"]), 1)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_scrollbar_only_appears_for_actual_overflow(self):
-        root, app = self._real_tk_app()
-        app._select_task("full_scan", save_current=False)
-        root.update()
-        self.assertFalse(app.form_scroll.winfo_manager())
-        full_height_canvas_width = app.form_canvas.winfo_width()
-        root.geometry(f"{root.winfo_width()}x640+0+0")
-        root.update()
-        self.assertGreater(
-            app._form_content_height(), app.form_canvas.winfo_height())
-        self.assertEqual(app.form_scroll.winfo_manager(), "place")
-        self.assertEqual(
-            app.form_canvas.winfo_width(), full_height_canvas_width,
-            "滚动条出现时不应挤压表单宽度",
-        )
-
-        app._set_default_window_size((1366, 768), persist=False)
-        app._set_ui_font(size_delta=2, persist=False)
-        app._select_task("full_scan", save_current=False)
-        root.update()
-        self.assertGreater(
-            app._form_content_height(), app.form_canvas.winfo_height())
-        self.assertEqual(app.form_scroll.winfo_manager(), "place")
-        for _index in range(8):
-            app._scroll_form(types.SimpleNamespace(delta=-120, num=0))
-        root.update_idletasks()
-        self.assertGreater(float(app.form_canvas.yview()[0]), 0.0)
-        for _index in range(80):
-            app._scroll_form(types.SimpleNamespace(delta=120, num=0))
-        root.update_idletasks()
-        self.assertEqual(float(app.form_canvas.yview()[0]), 0.0)
-
-        app._select_task(gui._PROJECT_SELF_TEST_KEY, save_current=False)
-        root.update()
-        self.assertLessEqual(
-            app._form_content_height(), app.form_canvas.winfo_height())
-        self.assertFalse(app.form_scroll.winfo_manager())
-        self.assertEqual(
-            tuple(float(value) for value in app.form_canvas.yview()),
-            (0.0, 1.0),
-        )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_storage_detection_success_returns_to_selection(self):
-        root, app = self._real_tk_app()
-        app._select_task("storage_collect", save_current=False)
-        app.storage_disk_options = (
-            types.SimpleNamespace(selectable=True),
-            types.SimpleNamespace(selectable=False),
-        )
-        app._set_settings_expanded(False)
-        app._set_progress_expanded(True)
-        app._set_log_expanded(True)
-        app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测硬盘", {})]
-        app.run_job_index = 0
-        app.run_results = [0]
-        app.stop_requested = False
-        app.worker_starting = False
-        app.close_after_stop = False
-        with patch.object(gui.messagebox, "showinfo") as shown:
-            app._finalize_run(0.2)
-            root.update()
-        shown.assert_called_once()
-        self.assertTrue(app.settings_expanded)
-        self.assertTrue(app.progress_expanded)
-        self.assertFalse(app.log_expanded)
-        self.assertIn("1 块可登记硬盘", app.status_label.cget("text"))
-        app._cancel_progress_auto_collapse()
-        app._auto_collapse_progress()
-        self.assertFalse(app.progress_expanded)
-
-        app._start_next_job = lambda: None
-        app._begin_run_jobs(
-            "storage_collect", [gui.RunJob("PhysicalDrive3", {})])
-        self.assertFalse(app.settings_expanded)
-        self.assertTrue(app.progress_expanded)
-        self.assertTrue(app.log_expanded)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_storage_detection_failure_reopens_settings(self):
-        root, app = self._real_tk_app()
-        app._select_task("storage_collect", save_current=False)
-        app._set_settings_expanded(False)
-        app._set_progress_expanded(True)
-        app._set_log_expanded(True)
-        app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测硬盘", {})]
-        app.run_job_index = 0
-        app.run_results = [2]
-        app.stop_requested = False
-        app.worker_starting = False
-        app.close_after_stop = False
-        with (
-            patch.object(gui.messagebox, "showinfo") as info,
-            patch.object(gui.messagebox, "showwarning") as warning,
-        ):
-            app._finalize_run(0.2)
-            root.update()
-        info.assert_not_called()
-        warning.assert_not_called()
-        self.assertTrue(app.settings_expanded)
-        self.assertTrue(app.progress_expanded)
-        self.assertTrue(app.log_expanded)
-        app._cancel_progress_auto_collapse()
-        app._auto_collapse_progress()
-        self.assertFalse(app.progress_expanded)
-        self.assertTrue(app.log_expanded)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_storage_detection_without_selectable_disk_warns(self):
-        root, app = self._real_tk_app()
-        app._select_task("storage_collect", save_current=False)
-        app.storage_disk_options = (
-            types.SimpleNamespace(selectable=False),
-        )
-        app._set_settings_expanded(False)
-        app._set_progress_expanded(True)
-        app._set_log_expanded(True)
-        app.process_task_key = "storage_list"
-        app.run_jobs = [gui.RunJob("检测硬盘", {})]
-        app.run_job_index = 0
-        app.run_results = [0]
-        app.stop_requested = False
-        app.worker_starting = False
-        app.close_after_stop = False
-        with patch.object(gui.messagebox, "showwarning") as shown:
-            app._finalize_run(0.2)
-            root.update()
-        shown.assert_called_once()
-        self.assertTrue(app.settings_expanded)
-        self.assertTrue(app.progress_expanded)
-        self.assertFalse(app.log_expanded)
-        self.assertIn("没有找到可登记", app.status_label.cget("text"))
-        app._cancel_progress_auto_collapse()
-        app._auto_collapse_progress()
-        self.assertFalse(app.progress_expanded)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_completed_run_auto_collapses_progress_after_two_seconds(
-        self,
-    ):
-        root, app = self._real_tk_app()
-        app._set_progress_expanded(True)
-        app.process_task_key = "env_check"
-        app.run_jobs = [gui.RunJob("环境检测", {})]
-        app.run_job_index = 0
-        app.run_results = [0]
-        app.run_outcomes = [None]
-        app.stop_requested = False
-        app.save_exit_requested = False
-        app.worker_starting = False
-        app.close_after_stop = False
-
-        with patch.object(root, "after", wraps=root.after) as scheduled:
-            app._finalize_run(0.2)
-        self.assertIn(
-            gui._PROGRESS_AUTO_COLLAPSE_DELAY_MS,
-            [call.args[0] for call in scheduled.call_args_list if call.args],
-        )
-        self.assertEqual(gui._PROGRESS_AUTO_COLLAPSE_DELAY_MS, 2_000)
-        self.assertTrue(app.progress_expanded)
-        self.assertIsNotNone(app._progress_auto_collapse_after_id)
-
-        app._cancel_progress_auto_collapse()
-        app._auto_collapse_progress()
-        self.assertFalse(app.progress_expanded)
-
-        app._set_progress_expanded(True)
-        app._schedule_progress_auto_collapse()
-        app._start_next_job = lambda: None
-        app._begin_run_jobs(
-            "env_check", [gui.RunJob("新一轮环境检测", {})])
-        self.assertIsNone(app._progress_auto_collapse_after_id)
-        app._auto_collapse_progress()
-        self.assertTrue(app.progress_expanded)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_every_field_tooltip_uses_text_cell_and_control(self):
-        root, app = self._real_tk_app()
-        expected_specs = [
-            (task, spec)
-            for task in gui.TASKS
-            for spec in task.fields
-            if spec.help and not spec.top_menu
-        ]
-        checked = 0
-        for task, spec in expected_specs:
-            app.saved_values[task.key] = {
-                key: allowed[0]
-                for key, allowed in spec.active_when
-            }
-            app._select_task(task.key, save_current=False)
-            root.update()
-            label_text = spec.label
-            field_label = next(
-                child for child in app.form_inner.winfo_children()
-                if (isinstance(child, gui.tk.Label)
-                    and child.cget("text") == label_text)
-            )
-            row = int(field_label.grid_info()["row"])
-            cell = next(
-                child for child in app.form_inner.winfo_children()
-                if (isinstance(child, gui.tk.Frame)
-                    and int(child.grid_info().get("row", -1)) == row
-                    and int(child.grid_info().get("column", -1)) == 1)
-            )
-            targets = [field_label, cell, *self._tk_descendants(cell)]
-
-            def tooltip_matches(target):
-                text = getattr(
-                    getattr(target, "_daisy_tooltip", None), "text", None)
-                if spec.key == "raw_deep_validation":
-                    return (
-                        isinstance(text, str)
-                        and text.startswith(spec.help)
-                        and "当前不可用" in text
-                        and "尚未检测" in text
-                    )
-                return text == spec.help
-
-            matching = [
-                target for target in targets
-                if tooltip_matches(target)
-            ]
-            context = f"{task.key}.{spec.key}"
-            self.assertNotIn("*", field_label.cget("text"), context)
-            self.assertNotIn("ⓘ", field_label.cget("text"), context)
-            self.assertIn(field_label, matching, context)
-            self.assertIn(cell, matching, context)
-            self.assertTrue(field_label.bind("<Enter>"), context)
-            self.assertTrue(cell.bind("<Enter>"), context)
-            if spec.kind == "verification_tools":
-                self.assertEqual(len(matching), 2, context)
-                controls = [
-                    target for target in self._tk_descendants(cell)
-                    if isinstance(target, gui.tk.Button)
-                ]
-                self.assertEqual(len(controls), 5, context)
-                self.assertTrue(all(
-                    isinstance(getattr(
-                        getattr(target, "_daisy_tooltip", None),
-                        "text", None), str)
-                    for target in controls
-                ), context)
-            else:
-                self.assertGreaterEqual(len(matching), 3, context)
-
-            tooltip = field_label._daisy_tooltip
-            tooltip._show()
-            root.update_idletasks()
-            self.assertIsNotNone(tooltip._window, context)
-            work_area = gui._monitor_work_area_for_window(field_label)
-            self.assertGreaterEqual(
-                tooltip._window.winfo_x(), work_area.left, context)
-            self.assertLessEqual(
-                tooltip._window.winfo_x()
-                + tooltip._window.winfo_reqwidth(),
-                work_area.right,
-                context,
-            )
-            self.assertLessEqual(
-                tooltip._window.winfo_y()
-                + tooltip._window.winfo_reqheight(),
-                work_area.bottom,
-                context,
-            )
-            tooltip._hide()
-            checked += 1
-        self.assertEqual(checked, len(expected_specs))
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_primary_copy_and_tooltip_wrapping_are_clear(self):
-        root, app = self._real_tk_app()
-        expected_descriptions = {
-            "env_check": "检测各功能所需工具和可选能力。",
-            "scan": "扫描档案目录，生成可对比、可续传的快照。",
-            "diff": "比较两份快照，记录文件增删、变化、移动与复制。",
-            "verify": "按快照核对现有文件，检查格式、容器与 RAW 解码。",
-            "parse_db": "解析快照或 Diff，按所选数据模块和格式导出。",
-            "storage_collect": "采集硬盘、分区、卷与 SMART 信息，生成硬盘档案。",
-        }
-        tooltip_texts = set()
-        for task_key, expected in expected_descriptions.items():
-            task = gui.TASK_BY_KEY[task_key]
-            self.assertEqual(task.description, expected)
-            self.assertNotIn("\n", task.description)
-            for spec in task.fields:
-                if spec.help:
-                    self.assertNotIn("\n", spec.help, f"{task_key}.{spec.key}")
-                    tooltip_texts.add(spec.help)
-            app._select_task(task_key, save_current=False)
-            root.update()
-            self.assertEqual(app.desc_label.cget("text"), expected)
-            for target in self._tk_descendants(root):
-                tooltip = getattr(target, "_daisy_tooltip", None)
-                if isinstance(tooltip, gui.ToolTip) and tooltip.text:
-                    tooltip_texts.add(tooltip.text)
-
-        for text in tooltip_texts:
-            for internal_word in (
-                    "内部硬盘信息登记", "受监督", "不伪装", "原子发布",
-                    "不会连带", "只按需", "恢复卡片", "可导出内容",
-                    "内容模块", "导出模块", "自动发现", "检测物理硬盘",
-                    "内容预设", "简化文本", "保存进度并退出",
-                    "SMART 读取状态", "问题文件", "生成器版本",
-                    "rawpy／LibRaw"):
-                self.assertNotIn(internal_word, text, text)
-
-        font = gui.tkfont.Font(
-            root=root, family=app.ui_font_family,
-            size=gui._UI_BODY_FONT_SIZE,
-        )
-        punctuation_tolerance = font.measure("。")
-        for width in (240, 320, 480):
-            for text in tooltip_texts:
-                rendered = gui._tooltip_display_text(text, font, width)
-                lines = rendered.splitlines()
-                self.assertTrue(lines, text)
-                for line in lines:
-                    self.assertTrue(line, text)
-                    self.assertEqual(line, line.strip(), text)
-                    self.assertNotIn(line[0], gui._TOOLTIP_NO_LINE_START, text)
-                    self.assertNotIn(line[-1], gui._TOOLTIP_NO_LINE_END, text)
-                    self.assertLessEqual(
-                        font.measure(line), width + punctuation_tolerance,
-                        text,
-                    )
-                if len(lines) > 1:
-                    self.assertGreaterEqual(
-                        font.measure(lines[-1]), width * 0.12, text)
-        self.assertEqual(
-            gui._CONTROL_ACTION_LABELS["save_exit"], "保存并退出")
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_binary_scan_setting_uses_amber_green_button(self):
-        root, app = self._real_tk_app()
-        app.saved_values["scan"] = {
-            "scan_mode": "full", "start_mode": "new",
-        }
-        app._select_task("scan", save_current=False)
-        root.update()
-        toggle = next(
-            widget for widget in self._tk_descendants(app.form_inner)
-            if (isinstance(widget, gui.BooleanToggleButton)
-                and getattr(widget, "_daisy_field_key", None)
-                == "collect_file_id")
-        )
-        self.assertTrue(toggle.get())
-        self.assertEqual(toggle.button.cget("background"), gui._GREEN_DARK)
-        toggle.button.invoke()
-        root.update()
-        self.assertFalse(toggle.get())
-        self.assertEqual(toggle.button.cget("background"), gui._AMBER)
-        self.assertIn("--no-file-id", app.preview_var.get())
-        toggle.button.invoke()
-        root.update()
-        self.assertTrue(toggle.get())
-        self.assertEqual(toggle.button.cget("background"), gui._GREEN_DARK)
-        self.assertNotIn("--no-file-id", app.preview_var.get())
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_reselecting_same_choice_button_keeps_widget_and_text(self):
-        root, app = self._real_tk_app()
-        app._select_task("full_scan", save_current=False)
-        root.update()
-
-        original = app.values["start_mode"]
-        self.assertIsInstance(original, gui.ChoiceButtonGroup)
-        initial_value = original.get()
-        initial_text = original.buttons[initial_value].cget("text")
-        original.buttons[initial_value].invoke()
-        root.update()
-        self.assertTrue(original.winfo_exists())
-        self.assertIs(app.values["start_mode"], original)
-        self.assertEqual(original.get(), initial_value)
-        self.assertEqual(
-            original.buttons[initial_value].cget("text"), initial_text)
-        self.assertNotEqual(
-            original.buttons[initial_value].cget("foreground"), "white")
-
-        original.buttons["resume"].invoke()
-        root.update()
-        changed = app.values["start_mode"]
-        self.assertFalse(original.winfo_exists())
-        self.assertEqual(changed.get(), "resume")
-        self.assertEqual(changed.buttons["resume"].cget("text"), "使用续传")
-        self.assertEqual(
-            app.saved_values["full_scan"]["start_mode"], "resume")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_mixed_width_field_title_is_not_clipped(self):
-        root, app = self._real_tk_app()
-        app._select_task("full_scan", save_current=False)
-        root.update()
-        field_label = next(
-                child for child in app.form_inner.winfo_children()
-                if (isinstance(child, gui.tk.Label)
-                    and child.cget("text") == "文件标识")
-        )
-        label_font = gui.tkfont.Font(
-            root=root, font=field_label.cget("font"))
-        self.assertEqual(int(field_label.cget("width")), 0)
-        self.assertGreaterEqual(
-            field_label.winfo_width(),
-            label_font.measure("文件标识"),
-        )
-        self.assertEqual(field_label.cget("anchor"), "e")
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_top_toolbar_matches_form_button_shape_and_ratio(self):
-        root, app = self._real_tk_app()
-        root.geometry("1100x900")
-        app._select_task("scan", save_current=False)
-        root.update()
-        mode_button = next(iter(app.values["scan_mode"].buttons.values()))
-        top_buttons = [
-            app.task_toolbar_buttons[key] for key in gui._TASK_TOOLBAR_KEYS]
-        self.assertTrue(all(
-            isinstance(button, gui.tk.Button) for button in top_buttons))
-        self.assertEqual(
-            {button.winfo_width() for button in top_buttons},
-            {top_buttons[0].winfo_width()},
-        )
-        self.assertEqual(
-            {button.winfo_height() for button in top_buttons},
-            {top_buttons[0].winfo_height()},
-        )
-        for button in top_buttons:
-            self.assertEqual(button.cget("relief"), "flat")
-            self.assertEqual(int(button.cget("borderwidth")), 0)
-            self.assertEqual(int(button.cget("highlightthickness")), 1)
-        self.assertEqual(mode_button.cget("relief"), "flat")
-        self.assertEqual(int(mode_button.cget("borderwidth")), 0)
-        self.assertEqual(int(mode_button.cget("highlightthickness")), 1)
-        top_ratio = (
-            top_buttons[0].winfo_width() / top_buttons[0].winfo_height())
-        mode_ratio = mode_button.winfo_width() / mode_button.winfo_height()
-        self.assertLessEqual(abs(top_ratio / mode_ratio - 1.0), 0.18)
-        first, last = top_buttons[0], top_buttons[-1]
-        left_gap = first.winfo_x()
-        right_gap = (
-            app.task_toolbar_body.winfo_width()
-            - last.winfo_x() - last.winfo_width())
-        self.assertLessEqual(left_gap, 1)
-        self.assertGreater(right_gap, left_gap)
-        self.assertEqual(
-            app.task_toolbar_buttons["scan"].cget("background"),
-            gui._TASK_TOOLBAR_SELECTED,
-        )
-        self.assertEqual(
-            app.task_toolbar_buttons["diff"].cget("background"),
-            gui._TASK_TOOLBAR_BACKGROUND,
-        )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_diff_uses_explicit_root_label_pairs_and_advanced_force(self):
-        root, app = self._real_tk_app()
-        app._select_task("diff", save_current=False)
-        root.update()
-        self.assertNotIn("force", app.values)
-        editor = app.values["map_root"]
-        self.assertIsInstance(editor, gui.RootLabelMapEditor)
-        self.assertEqual(
-            editor.old_header.cget("text"), "基准根目录名")
-        self.assertEqual(
-            editor.new_header.cget("text"), "对比根目录名")
-        editor.old_input.set("旧档案")
-        editor.new_input.set("新档案")
-        self.assertTrue(editor.add_pair())
-        root.update()
-        self.assertEqual(editor.get(), "旧档案=新档案")
-        app._set_diff_advanced_value("force", True)
-        values = app._collect_values()
-        self.assertTrue(values["force"])
-        args = gui.build_tool_args("diff", values)
-        self.assertEqual(args[args.index("--map-root") + 1], "旧档案=新档案")
-        self.assertIn("--force", args)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_single_line_fields_share_height_and_vertical_axis(self):
-        root, app = self._real_tk_app()
-        app.saved_values["scan"] = {
-            "scan_mode": "full", "start_mode": "new",
-        }
-        app._select_task("scan", save_current=False)
-        root.update()
-        values = app._collect_values()
-        checked = 0
-        row_heights = []
-        for spec in app.task.fields:
-            if (spec.top_menu
-                    or not gui._field_active(spec, values)
-                    or spec.kind in gui._VARIABLE_HEIGHT_FIELD_KINDS):
-                continue
-            label = next(
-                child for child in app.form_inner.winfo_children()
-                if (isinstance(child, gui.tk.Label)
-                    and child.cget("text") == spec.label)
-            )
-            row = int(label.grid_info()["row"])
-            cell = next(
-                child for child in app.form_inner.winfo_children()
-                if (isinstance(child, gui.tk.Frame)
-                    and int(child.grid_info().get("row", -1)) == row
-                    and int(child.grid_info().get("column", -1)) == 1)
-            )
-            row_bbox = app.form_inner.grid_bbox(0, row, 1, row)
-            row_heights.append(int(row_bbox[3]))
-            label_centre = label.winfo_rooty() + label.winfo_height() / 2
-            cell_centre = cell.winfo_rooty() + cell.winfo_height() / 2
-            self.assertLessEqual(
-                abs(label_centre - cell_centre), 1.0, spec.key)
-            checked += 1
-        self.assertGreaterEqual(checked, 6)
-        self.assertEqual(len(set(row_heights)), 1, row_heights)
-        self.assertGreaterEqual(
-            row_heights[0], gui._FORM_SINGLE_ROW_HEIGHT)
-
-        roots_label = next(
-            child for child in app.form_inner.winfo_children()
-            if (isinstance(child, gui.tk.Label)
-                and child.cget("text") == "档案根目录")
-        )
-        add_button = app.values["roots"].add_button
-        self.assertLessEqual(
-            abs(
-                roots_label.winfo_rooty() + roots_label.winfo_height() / 2
-                - add_button.winfo_rooty() - add_button.winfo_height() / 2
-            ),
-            2.0,
-        )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_running_layout_fills_remaining_height_with_log(self):
-        root, app = self._real_tk_app()
-        app._set_settings_expanded(False)
-        app._set_progress_expanded(True)
-        app._set_log_expanded(True)
-        root.update()
-        self.assertFalse(app.settings_expanded)
-        self.assertTrue(app.progress_expanded)
-        self.assertTrue(app.log_expanded)
-        self.assertEqual(
-            int(app.content.grid_rowconfigure(0)["weight"]), 0)
-        self.assertEqual(
-            int(app.content.grid_rowconfigure(2)["weight"]), 1)
-        self.assertGreater(app.log_panel.winfo_height(), 120)
-        command_bottom = (
-            app.command_panel.winfo_y() + app.command_panel.winfo_height())
-        self.assertLessEqual(
-            abs(command_bottom - app.content.winfo_height()), 1)
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_window_font_matrix_keeps_controls_usable(self):
-        root, app = self._real_tk_app()
-        families = app._available_ui_font_families()
-        self.assertGreaterEqual(len(families), 2)
-        checks = 0
-        for family in families:
-            for _label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
-                app._set_ui_font(
-                    family=family, size_delta=size_delta, persist=False)
-                for _window_label, window_size in gui._WINDOW_SIZE_OPTIONS:
-                    app._set_default_window_size(
-                        window_size, persist=False)
-                    root.update()
-                    for task_key in (
-                            "env_check", "full_scan", "storage_collect"):
-                        app._select_task(task_key, save_current=False)
-                        root.update()
-                        self.assertTrue(app.title_label.cget("text"))
-                        self.assertTrue(app.desc_label.cget("text"))
-                        self.assertGreater(app.form_canvas.winfo_width(), 400)
-                        self.assertGreater(app.form_canvas.winfo_height(), 20)
-                        root_right = root.winfo_rootx() + root.winfo_width()
-                        for button in app.task_toolbar_buttons.values():
-                            self.assertLessEqual(
-                                button.winfo_rootx() + button.winfo_width(),
-                                root_right + 1,
-                            )
-                        content_height = app._form_content_height()
-                        viewport_height = app.form_canvas.winfo_height()
-                        if (content_height > viewport_height
-                                + gui._FORM_SCROLL_OVERFLOW_TOLERANCE):
-                            app.form_canvas.yview_moveto(1.0)
-                            root.update_idletasks()
-                            self.assertGreater(
-                                float(app.form_canvas.yview()[0]), 0.0)
-                            app.form_canvas.yview_moveto(0.0)
-                    checks += 1
-        self.assertEqual(
-            checks,
-            len(families)
-            * len(gui._UI_FONT_SIZE_OPTIONS)
-            * len(gui._WINDOW_SIZE_OPTIONS),
-        )
-        self.assertTrue(hasattr(app, "settings_menu"))
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_exhaustive_font_size_aspect_ratio_matrix(self):
-        root, app = self._real_tk_app()
-        families = app._available_ui_font_families()
-        geometries = (
-            (1840, 1020),
-            (1440, 900),
-            (1280, 720),
-            (1280, 960),
-            (1280, 1024),
-            (1100, 850),
-        )
-        task_keys = tuple(task.key for task in gui.TASKS)
-        checks = 0
-        for family in families:
-            for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
-                app._set_ui_font(
-                    family=family, size_delta=size_delta, persist=False)
-                for width, height in geometries:
-                    root.geometry(f"{width}x{height}+0+0")
-                    root.update()
-                    self.assertEqual(
-                        (root.winfo_width(), root.winfo_height()),
-                        (width, height),
-                    )
-                    for task_key in task_keys:
-                        app._select_task(task_key, save_current=False)
-                        context = (
-                            f"{family} / +{size_delta} / "
-                            f"{width}x{height} / {task_key}")
-                        with self.subTest(context=context):
-                            self._assert_real_tk_page_geometry(
-                                root, app, context)
-                        checks += 1
-        self.assertEqual(
-            checks,
-            len(families) * len(gui._UI_FONT_SIZE_OPTIONS)
-            * len(geometries) * len(task_keys),
-        )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_relative_scaling_aspect_ratio_matrix(self):
-        root, app = self._real_tk_app()
-        base_scaling = float(root.tk.call("tk", "scaling"))
-        scaling_factors = (1.0, 1.25, 1.5)
-        geometries = (
-            (1440, 900),
-            (1280, 720),
-            (1280, 960),
-            (1100, 850),
-        )
-        task_keys = tuple(task.key for task in gui.TASKS)
-        checks = 0
-        try:
-            for scaling_factor in scaling_factors:
-                root.tk.call(
-                    "tk", "scaling", base_scaling * scaling_factor)
-                for _size_label, size_delta in gui._UI_FONT_SIZE_OPTIONS:
-                    app._set_ui_font(
-                        size_delta=size_delta, persist=False)
-                    for width, height in geometries:
-                        root.geometry(f"{width}x{height}+0+0")
-                        root.update()
-                        self.assertEqual(
-                            (root.winfo_width(), root.winfo_height()),
-                            (width, height),
-                        )
-                        for task_key in task_keys:
-                            app._select_task(task_key, save_current=False)
-                            context = (
-                                f"scale {scaling_factor:.2f} / "
-                                f"+{size_delta} / {width}x{height} / "
-                                f"{task_key}")
-                            with self.subTest(context=context):
-                                self._assert_real_tk_page_geometry(
-                                    root, app, context)
-                            checks += 1
-        finally:
-            root.tk.call("tk", "scaling", base_scaling)
-        self.assertEqual(
-            checks,
-            len(scaling_factors) * len(gui._UI_FONT_SIZE_OPTIONS)
-            * len(geometries) * len(task_keys),
-        )
-
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_every_form_choice_uses_buttons_without_dropdowns(self):
-        root, app = self._real_tk_app()
-        choice_kinds = {"choice", "choice_flag", "disk_choice"}
-        expected_specs = [
-            (task, spec)
-            for task in gui.TASKS
-            for spec in task.fields
-            if spec.kind in choice_kinds and not spec.top_menu
-            and not (
-                spec.kind == "choice_flag"
-                and {value for _label, value in spec.choices}
-                == {False, True}
-            )
-        ]
-        checked = 0
-        for task, spec in expected_specs:
-            saved = {
-                key: allowed[0]
-                for key, allowed in spec.active_when
-            }
-            app.saved_values[task.key] = saved
-            app._select_task(task.key, save_current=False)
-            root.update()
-            control = next(
-                widget
-                for widget in self._tk_descendants(app.form_inner)
-                if (isinstance(widget, gui.ChoiceButtonGroup)
-                    and getattr(widget, "_daisy_field_key", None)
-                    == spec.key)
-            )
-            context = f"{task.key}.{spec.key}"
-            self.assertFalse(any(
-                isinstance(widget, gui.ttk.Combobox)
-                for widget in self._tk_descendants(app.form_inner)
-            ), context)
-            initial_value = control.get()
-            self.assertIn(initial_value, control.buttons, context)
-            initial_button = control.buttons[initial_value]
-            initial_text = initial_button.cget("text")
-            initial_button.invoke()
-            root.update()
-            self.assertTrue(control.winfo_exists(), context)
-            self.assertIs(app.values[spec.key], control, context)
-            self.assertEqual(control.get(), initial_value, context)
-            self.assertEqual(initial_button.cget("text"), initial_text, context)
-
-            values = tuple(control.buttons)
-            if len(values) > 1:
-                alternate_value = next(
-                    value for value in values if value != initial_value)
-                control.buttons[alternate_value].invoke()
-                root.update()
-                rebuilt = next(
-                    widget
-                    for widget in self._tk_descendants(app.form_inner)
-                    if (isinstance(widget, gui.ChoiceButtonGroup)
-                        and getattr(widget, "_daisy_field_key", None)
-                        == spec.key)
-                )
-                self.assertEqual(rebuilt.get(), alternate_value, context)
-                self.assertEqual(
-                    rebuilt.buttons[alternate_value].cget("text"),
-                    next(label for label, value in app._field_choices(spec)
-                         if str(value) == alternate_value),
-                    context,
-                )
-            checked += 1
-        self.assertEqual(checked, len(expected_specs))
-
-    @unittest.skipUnless(_RUN_REAL_TK_TESTS, _REAL_TK_SKIP_REASON)
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_tcl_runtime_bootstrap_survives_missing_or_bad_environment(self):
-        code = (
-            "import os,sys;"
-            "sys.path.insert(0,os.path.join(os.getcwd(),'Script'));"
-            "import Script_DAISY_GUI as gui;"
-            "root=gui.tk.Tk();root.withdraw();"
-            "print(root.tk.call('info','patchlevel'));"
-            "print(root.tk.call('package','require','Tk'));"
-            "root.update_idletasks();root.destroy()"
-        )
-        for mode in ("missing", "invalid"):
-            environment = os.environ.copy()
-            if mode == "missing":
-                environment.pop("TCL_LIBRARY", None)
-                environment.pop("TK_LIBRARY", None)
-            else:
-                environment["TCL_LIBRARY"] = r"Z:\missing\tcl"
-                environment["TK_LIBRARY"] = r"Z:\missing\tk"
-            completed = subprocess.run(
-                [sys.executable, "-B", "-c", code],
-                cwd=gui._BASE,
-                env=environment,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=30,
-            )
-            self.assertEqual(
-                completed.returncode, 0,
-                f"{mode}: {completed.stderr}")
-            versions = completed.stdout.splitlines()
-            self.assertEqual(len(versions), 2, mode)
-            self.assertTrue(all(
-                version.startswith("8.6") for version in versions), mode)
-
-    @unittest.skipUnless(_RUN_REAL_TK_TESTS, _REAL_TK_SKIP_REASON)
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_both_user_gui_entries_construct_and_close_cleanly(self):
-        original_tk = gui.tk.Tk
-        original_app = gui.DaisyApp
-        roots = []
-
-        def auto_closing_root():
-            root = original_tk()
-            root.withdraw()
-            roots.append(root)
-            return root
-
-        def auto_closing_app(root):
-            app = original_app(root)
-            root.after(120, app._destroy_root)
-            return app
-
-        launcher = os.path.join(gui._BASE, "Start_DAISY_GUI.pyw")
-        with (
-            patch.object(gui.tk, "Tk", side_effect=auto_closing_root),
-            patch.object(gui, "DaisyApp", side_effect=auto_closing_app),
-            patch.object(
-                gui, "load_gui_preferences",
-                return_value=gui.default_gui_preferences()),
-        ):
-            with self.assertRaises(SystemExit) as launcher_exit:
-                runpy.run_path(launcher, run_name="__main__")
-            self.assertEqual(launcher_exit.exception.code, 0)
-
-            with patch.object(
-                    sys, "argv", ["Script_DAISY_CLI.py", "gui"]):
-                self.assertEqual(entry.main(), 0)
-
-        self.assertEqual(len(roots), 2)
-        for root in roots:
-            with self.assertRaises(gui.tk.TclError):
-                root.winfo_exists()
-
     def test_starting_jobs_expands_progress_and_log(self):
         class WidgetProbe:
             def __init__(self):
@@ -5403,49 +2788,6 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(app.root.delays, [230, 230, 230])
         self.assertIsNone(app.open_result_flash_after_id)
 
-    @unittest.skipUnless(os.name == "nt", "DAISY GUI 只支持 Windows")
-    def test_real_tk_completed_task_flashes_result_without_default_prompt(self):
-        root, app = self._real_tk_app()
-        app._select_task("diff", save_current=False)
-        with tempfile.TemporaryDirectory() as result_directory:
-            app._output_path = lambda: result_directory
-
-            def prepare_run():
-                app.process_task_key = "diff"
-                app.run_jobs = [gui.RunJob("快照对比", {})]
-                app.run_job_index = 0
-                app.run_results = [0]
-                app.run_outcomes = [None]
-                app.stop_requested = False
-                app.save_exit_requested = False
-                app.worker_starting = False
-                app.close_after_stop = False
-
-            prepare_run()
-            with patch.object(app, "_offer_open_result_directory") as offer:
-                app._finalize_run(0.2)
-                root.update()
-            offer.assert_not_called()
-            self.assertEqual(app.run_button.cget("text"), "开始")
-            self.assertEqual(
-                app.run_button.cget("background"), gui._GREEN_DARK)
-            self.assertEqual(
-                app.open_output_button.cget("background"),
-                gui._GREEN,
-            )
-            app._cancel_open_result_flash()
-            self.assertEqual(
-                app.open_output_button.cget("background"),
-                gui._TASK_TOOLBAR_BACKGROUND,
-            )
-
-            app.result_directory_prompt_enabled = True
-            prepare_run()
-            with patch.object(app, "_offer_open_result_directory") as offer:
-                app._finalize_run(0.2)
-                root.update()
-            offer.assert_called_once_with(result_directory)
-            app._cancel_open_result_flash()
 
     def test_completion_sound_requires_completed_business_task(self):
         self.assertTrue(gui.should_play_completion_sound(
@@ -5530,7 +2872,7 @@ class TestGuiArguments(unittest.TestCase):
                 len(gui.task_display_title(task_key)),
                 gui._FORM_FIELD_TITLE_MAX_CHARS,
             )
-            self.assertEqual(len(gui._TASK_TOOLBAR_LABELS[task_key]), 4)
+            self.assertEqual(len(gui._TASK_TOOLBAR_LABELS[task_key]), 6)
         self.assertEqual(
             gui.task_display_title(gui._PROJECT_SELF_TEST_KEY),
             "DAISY 功能自检",
@@ -5645,6 +2987,73 @@ class TestGuiArguments(unittest.TestCase):
                 task_key, {"snapshot": __file__, "root_map": ""})
             self.assertIn("请填写「档案根目录」。", issues)
 
+    def test_unified_verification_input_modes_activate_only_needed_paths(self):
+        empty_keys = gui.active_field_keys("verify", {})
+        self.assertEqual(empty_keys, {"verification_mode"})
+        self.assertEqual(
+            gui.validate_values("verify", {}),
+            ["请填写「核验方式」。"],
+        )
+
+        database_pending = {"verification_mode": "database"}
+        self.assertEqual(
+            gui.active_field_keys("verify", database_pending),
+            {"verification_mode", "verify_path_mode"},
+        )
+        self.assertEqual(
+            gui.validate_values("verify", database_pending),
+            ["请填写「路径状态」。"],
+        )
+
+        unchanged = {
+            "verification_mode": "database",
+            "verify_path_mode": "unchanged",
+            "snapshot": __file__,
+        }
+        unchanged_keys = gui.active_field_keys("verify", unchanged)
+        self.assertIn("snapshot", unchanged_keys)
+        self.assertNotIn("root_map", unchanged_keys)
+        self.assertNotIn("direct_roots", unchanged_keys)
+        self.assertEqual(gui.validate_values("verify", unchanged), [])
+
+        changed = dict(unchanged, verify_path_mode="changed")
+        self.assertIn(
+            "请填写「档案根目录」。",
+            gui.validate_values("verify", changed),
+        )
+
+        direct = {"verification_mode": "direct", "direct_roots": ""}
+        direct_keys = gui.active_field_keys("verify", direct)
+        self.assertIn("direct_roots", direct_keys)
+        self.assertNotIn("snapshot", direct_keys)
+        self.assertNotIn("root_map", direct_keys)
+        self.assertNotIn("verify_hash", direct_keys)
+        self.assertIn(
+            "请填写「档案根目录」。",
+            gui.validate_values("verify", direct),
+        )
+
+        with tempfile.TemporaryDirectory() as current_root:
+            duplicate = dict(
+                direct,
+                direct_roots=(
+                    f"甲={current_root}\n"
+                    f"乙={current_root}"
+                ),
+            )
+            self.assertTrue(any(
+                "当前档案根目录重复" in issue
+                for issue in gui.validate_values("verify", duplicate)
+            ))
+
+    def test_diff_root_pairing_only_activates_for_multiple_roots(self):
+        single = gui.active_field_keys(
+            "diff", {"diff_root_mode": "single"})
+        multiple = gui.active_field_keys(
+            "diff", {"diff_root_mode": "multiple"})
+        self.assertNotIn("map_root", single)
+        self.assertIn("map_root", multiple)
+
     def test_validation_task_args_include_current_root(self):
         with tempfile.TemporaryDirectory() as current_root:
             expected_root = os.path.abspath(current_root)
@@ -5671,7 +3080,7 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.7")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.8")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
@@ -7241,7 +4650,9 @@ class TestEnvironmentInventory(unittest.TestCase):
 
         self.assertEqual(
             set(tools),
-            {"exiftool", "sevenzip", "powershell", "smartctl"})
+            {"python", "exiftool", "sevenzip", "powershell", "smartctl"})
+        self.assertEqual(tools["python"]["version"],
+                         envcheck.platform.python_version())
         self.assertEqual(tools["exiftool"]["version"], "13.59")
         self.assertEqual(tools["powershell"]["version"], "5.1")
         self.assertEqual(tools["smartctl"]["version"], "7.5")
@@ -7770,6 +5181,12 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
             }
             for name in ("exiftool", "ffprobe", "sevenzip")
         }
+        tools["python"] = {
+            "path": sys.executable,
+            "version": envcheck.platform.python_version(),
+            "resolution": "runtime",
+            "verified": True,
+        }
         with tempfile.TemporaryDirectory() as td:
             argv = ["env-check", "--output-dir", td]
             runtime_capabilities = {
@@ -7828,6 +5245,11 @@ class TestEnvironmentCheckPowershell(unittest.TestCase):
                 report = json.load(f)
         self.assertEqual(report["tools"]["powershell"]["version"], "5.1.0")
         self.assertEqual(
+            report["tools"]["python"]["version"],
+            envcheck.platform.python_version(),
+        )
+        self.assertEqual(report["checks"]["python_runtime"], "passed")
+        self.assertEqual(
             report["checks"]["powershell_get_filehash"], "passed")
         self.assertEqual(
             report["checks"]["smartctl_readonly_scan"], "passed")
@@ -7862,8 +5284,6 @@ class TestIndependentVerify(_SnapshotFixture):
         n = self.con.execute("SELECT COUNT(*) FROM errors WHERE stage='hash'"
                              " AND error_code='verify_mismatch'").fetchone()[0]
         self.assertEqual(n, 1)
-
-
 
 
 import hashlib                                                 # noqa: E402

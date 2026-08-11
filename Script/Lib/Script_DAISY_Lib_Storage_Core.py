@@ -18,7 +18,7 @@ from typing import Any, Iterable
 
 APP_NAME = "DAISY"
 APP_TITLE = "DAISY 硬盘信息登记"
-APP_VERSION = "1.6.7"
+APP_VERSION = "1.6.8"
 APP_AUTHOR = "Suzuran Ye"
 APP_CONTACT = "151104858+SuzuranYe@users.noreply.github.com"
 ARCHIVE_SCHEMA_VERSION = 3
@@ -380,7 +380,7 @@ def classify_collection_status(
 
 
 def normalise_text(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
+    return value.replace("\n", "\n").replace("\n", "\n")
 
 
 def clean_text(value: Any) -> str:

@@ -205,7 +205,7 @@ _LEGACY_TASK_PAGE_MAP = {
 }
 _ROOT_BATCH_SEPARATE = "separate"
 _ROOT_BATCH_COMBINED = "combined"
-_DEFAULT_WINDOW_SIZE = (1600, 900)
+_DEFAULT_WINDOW_SIZE = (1920, 1080)
 _WINDOW_WORK_MARGIN = (32, 40)
 _UI_FONT_FAMILY = "Microsoft YaHei UI"
 _UI_BODY_FONT_SIZE = 10
@@ -217,9 +217,9 @@ _UI_FONT_SIZE_OPTIONS = (
     ("标准", 0), ("较大", 1), ("特大", 2),
 )
 _WINDOW_SIZE_OPTIONS = (
+    ("1920 × 1080", (1920, 1080)),
     ("1366 × 768", (1366, 768)),
     ("1600 × 900", (1600, 900)),
-    ("1920 × 1080", (1920, 1080)),
 )
 _COLOUR_STRIP_HEIGHT = 4
 
@@ -231,6 +231,7 @@ _TOOL_FIELD_BY_NAME = {
     "smartctl": "smartctl_path",
 }
 _TOOL_DISPLAY_NAMES = {
+    "python": "Python",
     "exiftool": "ExifTool",
     "ffprobe": "ffprobe",
     "sevenzip": "7-Zip",
@@ -241,6 +242,7 @@ _TOOL_PATH_MENU_ORDER = (
     "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl",
 )
 _INSTALLABLE_TOOL_PACKAGES = {
+    "python": ("Python 3.14", "Python.Python.3.14"),
     "exiftool": ("ExifTool", "OliverBetz.ExifTool"),
     "ffprobe": ("ffprobe (FFmpeg)", "Gyan.FFmpeg"),
     "sevenzip": ("7-Zip", "7zip.7zip"),
@@ -250,6 +252,7 @@ _INSTALLABLE_PYTHON_CAPABILITIES = {
     "rawpy": ("rawpy/LibRaw", "rawpy"),
 }
 _INSTALL_BUTTON_LABELS = {
+    "python": "Python",
     "exiftool": "ExifTool",
     "ffprobe": "ffprobe",
     "sevenzip": "7-Zip",
@@ -257,6 +260,7 @@ _INSTALL_BUTTON_LABELS = {
     "rawpy": "rawpy/LibRaw",
 }
 _ENVIRONMENT_BUTTON_LABELS = {
+    "python": "Python",
     "exiftool": "ExifTool",
     "ffprobe": "ffprobe",
     "sevenzip": "7-Zip",
@@ -265,9 +269,10 @@ _ENVIRONMENT_BUTTON_LABELS = {
     "rawpy": "rawpy/LibRaw",
 }
 _ENVIRONMENT_STATUS_ORDER = (
-    "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl", "rawpy",
+    "python", "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl",
+    "rawpy",
 )
-_ENVIRONMENT_COLUMN_COUNT = len(_ENVIRONMENT_STATUS_ORDER)
+_ENVIRONMENT_GRID_COLUMNS = 4
 _TASK_TOOL_NAMES = {
     "env_check": (
         "exiftool", "ffprobe", "sevenzip", "powershell", "smartctl"),
@@ -275,17 +280,18 @@ _TASK_TOOL_NAMES = {
     "scan": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "check_format": ("exiftool", "ffprobe", "sevenzip"),
     "check_hash": ("powershell",),
-    "verify": ("exiftool", "ffprobe", "sevenzip"),
+    "verify": ("exiftool", "ffprobe", "sevenzip", "powershell"),
     "storage_list": ("smartctl", "powershell"),
     "storage_collect": ("smartctl", "powershell"),
 }
 _VERIFICATION_EXTERNAL_TOOLS = (
+    ("verify_hash", "powershell"),
     ("verify_exiftool", "exiftool"),
     ("verify_ffprobe", "ffprobe"),
     ("verify_sevenzip", "sevenzip"),
 )
 _VERIFICATION_CONTROL_KEYS = (
-    "verify_builtin", "verify_exiftool", "verify_ffprobe",
+    "verify_hash", "verify_builtin", "verify_exiftool", "verify_ffprobe",
     "verify_sevenzip", "raw_deep_validation",
 )
 _RESULT_DIRECTORY_TASKS = frozenset((
@@ -621,7 +627,7 @@ def parse_gui_stream(
     parsed: list[tuple[str, object]] = []
 
     def consume(line: str, newline: bool) -> None:
-        candidate = line.lstrip("\r")
+        candidate = line.lstrip("\n")
         if candidate.startswith(_GUI_EVENT_PREFIX):
             try:
                 payload = json.loads(candidate[len(_GUI_EVENT_PREFIX):])
@@ -1116,7 +1122,7 @@ def parse_winget_latest_version(output: object) -> str | None:
         r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(output or ""))
     lines = [
         line.replace("\b", "").strip()
-        for line in text.replace("\r", "\n").split("\n")
+        for line in text.replace("\n", "\n").split("\n")
     ]
     for line in lines:
         match = re.match(
@@ -1242,15 +1248,20 @@ class InstallVersionReport:
 
 def run_job_target_text(task_key: str, job: RunJob) -> str:
     """返回进度区使用的完整当前目标；目录任务不缩写路径。"""
-    field_key = {
-        "full_scan": "roots",
-        "quick_scan": "roots",
-        "scan": "roots",
-        "check_hash": "root_map",
-        "check_format": "root_map",
-        "verify": "root_map",
-        "diff": "map_root",
-    }.get(task_key)
+    field_key = (
+        "direct_roots"
+        if task_key == "verify"
+        and job.values.get("verification_mode") == "direct"
+        else {
+            "full_scan": "roots",
+            "quick_scan": "roots",
+            "scan": "roots",
+            "check_hash": "root_map",
+            "check_format": "root_map",
+            "verify": "root_map",
+            "diff": "map_root",
+        }.get(task_key)
+    )
     if field_key:
         paths: list[str] = []
         for root_spec in _lines(job.values.get(field_key)):
@@ -1811,6 +1822,14 @@ TASKS = (
                 help="选择要与基准快照比较的封存快照。",
             ),
             FieldSpec(
+                "diff_root_mode", "目录数量", None, "choice_buttons",
+                "single",
+                choices=(("单根目录", "single"),
+                         ("多根目录", "multiple")),
+                help="单根目录由 DAISY 自动对应；只有多根目录才展开根目录名配对。",
+                section="对比输入",
+            ),
+            FieldSpec(
                 "output_dir", "对比结果目录", "--output-dir", "dir",
                 _DEFAULT_DIFFS_DIR,
                 help="默认保存到 Output\\Diffs；可改为其他目录。",
@@ -1823,6 +1842,7 @@ TASKS = (
                     "单根目录通常会自动对应。"
                 ),
                 section="根目录名配对",
+                active_when=(("diff_root_mode", ("multiple",)),),
             ),
             FieldSpec(
                 "force", "指纹降级", "--force",
@@ -2067,6 +2087,23 @@ def _unified_scan_fields() -> tuple[FieldSpec, ...]:
 _VERIFY_EXIFTOOL_ENABLED = (("verify_exiftool", (True,)),)
 _VERIFY_FFPROBE_ENABLED = (("verify_ffprobe", (True,)),)
 _VERIFY_SEVENZIP_ENABLED = (("verify_sevenzip", (True,)),)
+_VERIFY_DATABASE_MODE = (("verification_mode", ("database",)),)
+_VERIFY_DIRECT_MODE = (("verification_mode", ("direct",)),)
+_VERIFY_CHANGED_ROOTS = (
+    ("verification_mode", ("database",)),
+    ("verify_path_mode", ("changed",)),
+)
+_VERIFY_READY_FIELD_KEYS = frozenset((
+    "snapshot", "root_map", "direct_roots", "verify_builtin", "verify_hash",
+    "verify_exiftool", "verify_ffprobe", "verify_sevenzip",
+    "raw_deep_validation", "timeout_action", "show_current_file",
+    "report_dir", "exiftool_path", "ffprobe_path", "sevenzip_path",
+    "powershell_path", "force",
+))
+_VERIFY_HASH_ENABLED = (
+    ("verification_mode", ("database",)),
+    ("verify_hash", (True,)),
+)
 
 
 TASKS = (*TASKS,
@@ -2078,20 +2115,44 @@ TASKS = (*TASKS,
     ),
     TaskSpec(
         "verify", "verify", "档案数据核验", "档案数据核验",
-        "按快照核对现有文件，检查格式、容器与 RAW 解码。",
+        "按快照复核档案，或直接检查文件格式、容器与 RAW 解码。",
         "文件状态 · 格式与容器 · 问题报告",
         (
+            FieldSpec(
+                "verification_mode", "核验方式", None, "choice_buttons",
+                "", required=True,
+                choices=(("已有数据库", "database"),
+                         ("无数据库", "direct")),
+                help="先选择是否使用封存快照作为核验基准。",
+                section="核验输入",
+            ),
+            FieldSpec(
+                "verify_path_mode", "路径状态", None, "choice_buttons",
+                "", required=True,
+                choices=(("路径未变", "unchanged"),
+                         ("路径变化", "changed")),
+                help="盘符和目录未变化时直接使用快照记录的原路径；只有变化时才需重新映射。",
+                section="核验输入", active_when=_VERIFY_DATABASE_MODE,
+            ),
             FieldSpec(
                 "snapshot", "封存快照", "--snapshot", "file",
                 required=True, filetypes=_SQLITE_TYPES, section="核验输入",
                 help="选择提供文件清单和原始文件属性的封存快照。",
+                active_when=_VERIFY_DATABASE_MODE,
             ),
             FieldSpec(
                 "root_map", "档案根目录", "--root", "multimapdir",
                 required=True,
-                help="必须指定。单根快照可直接添加当前档案目录；多根快照需逐项填写"
+                help="路径发生变化时添加当前档案目录；多根快照需逐项填写"
                      "「根目录名=当前路径」。",
                 section="核验输入",
+                active_when=_VERIFY_CHANGED_ROOTS,
+            ),
+            FieldSpec(
+                "direct_roots", "档案根目录", "--root", "multidir",
+                required=True,
+                help="无数据库直接核验时，添加一个或多个只读检查目录。",
+                section="核验输入", active_when=_VERIFY_DIRECT_MODE,
             ),
             FieldSpec(
                 "verify_builtin", "核验项目", None,
@@ -2103,6 +2164,12 @@ TASKS = (*TASKS,
                     "不支持的文件类型只计入汇总，不列为问题。"
                 ),
                 section="数据核验",
+            ),
+            FieldSpec(
+                "verify_hash", "哈希复核", None, "choice_flag", True,
+                choices=(("关闭", False), ("开启", True)),
+                section="数据核验", top_menu=True,
+                active_when=_VERIFY_DATABASE_MODE,
             ),
             FieldSpec(
                 "verify_exiftool", "ExifTool", None, "choice_flag", True,
@@ -2173,11 +2240,18 @@ TASKS = (*TASKS,
                 active_when=_VERIFY_SEVENZIP_ENABLED,
             ),
             FieldSpec(
+                "powershell_path", "PowerShell", "--powershell-path", "file",
+                help=_TOOL_PATH_HELP,
+                filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
+                active_when=_VERIFY_HASH_ENABLED,
+            ),
+            FieldSpec(
                 "force", "指纹降级", "--force", "choice_flag", False,
                 choices=(("不启用", False), ("启用", True)),
                 flag_value=True,
                 help="仅允许缺少文件名指纹的旧库继续核验；指纹不一致仍拒绝。",
                 section="高级设置", top_menu=True,
+                active_when=_VERIFY_DATABASE_MODE,
             ),
         ),
     ),
@@ -2255,12 +2329,12 @@ _TASK_TOOLBAR_KEYS = (
     "scan", "diff", "verify", "parse_db", "storage_collect", "env_check",
 )
 _TASK_TOOLBAR_LABELS = {
-    "scan": "扫描建库",
-    "diff": "快照对比",
-    "verify": "数据核验",
-    "parse_db": "数据解析",
-    "storage_collect": "硬盘登记",
-    "env_check": "环境检测",
+    "scan": "档案扫描建库",
+    "diff": "档案快照对比",
+    "verify": "档案数据核验",
+    "parse_db": "档案数据解析",
+    "storage_collect": "硬盘信息登记",
+    "env_check": "运行环境检测",
 }
 _TASK_DISPLAY_TITLES = {
     "env_check": "运行环境检测",
@@ -2280,15 +2354,18 @@ def task_display_title(task_key: str) -> str:
 _STANDARD_BUTTON_WIDTH = 14
 _STANDARD_BUTTON_PADDING = (12, 6)
 _SIX_COLUMN_BUTTON_WIDTH = 12
-_TASK_TOOLBAR_BUTTON_WIDTH = _SIX_COLUMN_BUTTON_WIDTH
-_TASK_TOOLBAR_BUTTON_PADDING = (4, 5)
-_TASK_TOOLBAR_MINIMUM_WIDTH = 1100
+_PRIMARY_TASK_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
+_PRIMARY_TASK_BUTTON_PADDING = (12, 7)
+_PRIMARY_TASK_BUTTON_BORDER = _TEXT
+_TASK_TOOLBAR_BUTTON_WIDTH = _PRIMARY_TASK_BUTTON_WIDTH
+_TASK_TOOLBAR_BUTTON_PADDING = _PRIMARY_TASK_BUTTON_PADDING
+_TASK_TOOLBAR_MINIMUM_WIDTH = 1180
 _TASK_TOOLBAR_LABEL_COLOUR = _TEXT
-_TASK_TOOLBAR_BACKGROUND = "#edd7ad"
-_TASK_TOOLBAR_HOVER = "#e2c38b"
-_TASK_TOOLBAR_SELECTED = "#d7b36b"
-_TASK_TOOLBAR_SELECTED_HOVER = "#c99f50"
-_TASK_TOOLBAR_FOREGROUND = _AMBER_DEEP
+_TASK_TOOLBAR_BACKGROUND = _ACTION_GREEN
+_TASK_TOOLBAR_HOVER = _GREEN
+_TASK_TOOLBAR_SELECTED = _GREEN
+_TASK_TOOLBAR_SELECTED_HOVER = _GREEN_DARK
+_TASK_TOOLBAR_FOREGROUND = _GREEN_DEEP
 _BLOCK_SELECTION_BACKGROUND = _GREEN
 _BLOCK_SELECTION_HOVER = _GREEN
 _BLOCK_SELECTION_FOREGROUND = _GREEN_DEEP
@@ -2307,7 +2384,6 @@ _STANDARD_BUTTON_GAP = _SPACING_STANDARD
 _PANEL_ACTION_BUTTON_GAP = _STANDARD_BUTTON_GAP
 _PANEL_GAP = _SPACING_STANDARD
 _INLINE_CONTROL_GAP = _SPACING_INLINE
-_PROGRESS_AUTO_COLLAPSE_DELAY_MS = 2_000
 _LOG_BODY_HEIGHT_COMPACT = 140
 _LOG_BODY_HEIGHT_STANDARD = 160
 _FORM_FIELD_GAP = _SPACING_STANDARD
@@ -2320,13 +2396,10 @@ _PANEL_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
 _ADMIN_MODE_PENDING_STYLE = "AdminPending.TButton"
 _ADMIN_MODE_ACTIVE_STYLE = "AdminActive.TButton"
 _ADMIN_MODE_DISABLED_STYLE = "AdminDisabled.TButton"
-_TASK_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
-_TASK_ACTION_BUTTON_PADDING = (
-    _STANDARD_BUTTON_PADDING[0] - 1,
-    _STANDARD_BUTTON_PADDING[1],
-)
-_ENVIRONMENT_BUTTON_WIDTH = _SIX_COLUMN_BUTTON_WIDTH
-_ENVIRONMENT_BUTTON_PADDING = (4, 4)
+_TASK_ACTION_BUTTON_WIDTH = _PRIMARY_TASK_BUTTON_WIDTH
+_TASK_ACTION_BUTTON_PADDING = _PRIMARY_TASK_BUTTON_PADDING
+_ENVIRONMENT_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
+_ENVIRONMENT_BUTTON_PADDING = _PRIMARY_TASK_BUTTON_PADDING
 _FORM_FIELD_TITLE_MAX_CHARS = 6
 _FORM_FIELD_ASCII_TITLE_MAX_CHARS = 12
 _BOOLEAN_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
@@ -2343,7 +2416,7 @@ _PERSISTABLE_TASK_OPTION_KINDS = frozenset((
     "value_toggle", "multi_choice",
 ))
 _NONPERSISTENT_TASK_OPTION_KEYS = frozenset((
-    "start_mode", "retry_mode",
+    "start_mode", "retry_mode", "verification_mode", "verify_path_mode",
 ))
 _PERSISTABLE_NUMERIC_OPTION_KEYS: frozenset[str] = frozenset()
 _STORAGE_DISK_CHECKBOX_SIZE = 20
@@ -2487,7 +2560,21 @@ def build_run_jobs(task_key: str,
     return [RunJob(label, merged)]
 
 
-def _field_active(spec: FieldSpec, values: dict[str, object]) -> bool:
+def _verification_selection_complete(values: dict[str, object]) -> bool:
+    """核验来源选完后才允许显示和执行后续字段。"""
+    mode = values.get("verification_mode")
+    return mode == "direct" or (
+        mode == "database"
+        and values.get("verify_path_mode") in ("unchanged", "changed")
+    )
+
+
+def _field_active(
+    spec: FieldSpec, values: dict[str, object], task_key: str | None = None,
+) -> bool:
+    if (task_key == "verify" and spec.key in _VERIFY_READY_FIELD_KEYS
+            and not _verification_selection_complete(values)):
+        return False
     active = all(values.get(key) in allowed
                  for key, allowed in spec.active_when)
     if not active:
@@ -2500,7 +2587,7 @@ def _field_active(spec: FieldSpec, values: dict[str, object]) -> bool:
             hash_mode in ("sample", "all", "incremental", "full")
             or format_mode in ("sample", "all")
             or any(bool(values.get(key)) for key in (
-                "verify_builtin", "verify_exiftool", "verify_ffprobe",
+                "verify_hash", "verify_builtin", "verify_exiftool", "verify_ffprobe",
                 "verify_sevenzip", "raw_deep_validation",
             ))
         )
@@ -2512,7 +2599,10 @@ def active_field_keys(task_key: str,
     """返回当前模式下真正会生效的 GUI 字段，供界面与测试共用。"""
     task = TASK_BY_KEY[task_key]
     merged = _task_values(task, values)
-    return {spec.key for spec in task.fields if _field_active(spec, merged)}
+    return {
+        spec.key for spec in task.fields
+        if _field_active(spec, merged, task_key)
+    }
 
 
 def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
@@ -2541,8 +2631,14 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
             args.append("--control-stdin")
             return args
     if task_key == "verify":
-        # 档案数据核验页不再提供独立哈希核验；显式覆盖统一核验的历史默认值。
-        args += ["--hash", "off"]
+        database_mode = values.get("verification_mode") == "database"
+        if not database_mode:
+            args.append("--direct")
+        args += [
+            "--hash",
+            "all" if database_mode and bool(values.get("verify_hash"))
+            else "off",
+        ]
         selected_format_tools = tuple(
             tool_id
             for key, tool_id in (
@@ -2584,7 +2680,7 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
             args += ["--output-dir", _absolute(output_dir)]
         return args
     for spec in task.fields:
-        if not spec.flag or not _field_active(spec, values):
+        if not spec.flag or not _field_active(spec, values, task_key):
             continue
         if task_key in ("full_scan", "scan") \
                 and spec.key in ("exiftool_path", "ffprobe_path"):
@@ -2626,9 +2722,21 @@ def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
                     if separator else current_path
                 )
                 args += [spec.flag, root_arg]
+        elif spec.kind == "multidir":
+            for item in _lines(value):
+                is_mapping = "=" in item and not os.path.isabs(
+                    item.strip().strip('"'))
+                label, separator, path = (
+                    item.partition("=") if is_mapping else ("", "", item))
+                current_path = _absolute(path if separator else item)
+                root_arg = (
+                    f"{label.strip()}={current_path}"
+                    if separator else current_path
+                )
+                args += [spec.flag, root_arg]
         elif spec.kind in (
-                "multidir", "multiline", "root_label_map",
-                "multi_choice", "parse_modules"):
+                "multiline", "root_label_map", "multi_choice",
+                "parse_modules"):
             for item in _lines(value):
                 args += [spec.flag, item]
         else:
@@ -2709,6 +2817,33 @@ def root_confirmation_text(
     else:
         heading = f"将按{mode_label}模式处理以下文件夹，并生成一个数据库："
     return heading + "\n" + "\n".join(f"• {path}" for path in roots)
+
+
+def verification_confirmation_text(values: dict[str, object]) -> str:
+    """返回数据核验输入方式与实际用户指定路径的确认摘要。"""
+    if values.get("verification_mode") == "direct":
+        roots = [
+            _absolute(_root_path(root_spec))
+            for root_spec in _lines(values.get("direct_roots"))
+        ]
+        return (
+            "将无数据库直接核验以下目录；不会宣称哈希一致：\n"
+            + "\n".join(f"• {path}" for path in roots)
+        ) if roots else ""
+    snapshot = str(values.get("snapshot") or "").strip()
+    if values.get("verify_path_mode") != "changed":
+        return (
+            f"将使用快照中记录的原盘符和路径：\n• {_absolute(snapshot)}"
+            if snapshot else ""
+        )
+    roots = [
+        _absolute(_root_path(root_spec))
+        for root_spec in _lines(values.get("root_map"))
+    ]
+    return (
+        "将按新的根目录映射核验快照：\n"
+        + "\n".join(f"• {path}" for path in roots)
+    ) if roots else ""
 
 
 def validate_values(
@@ -2811,18 +2946,20 @@ def validate_values(
             if not os.path.isdir(_absolute(path)):
                 issues.append(f"档案根目录不存在：{path}")
 
-    for key in ("root_map",):
+    for key in ("root_map", "direct_roots"):
         if key not in active_keys:
             continue
         root_specs = _lines(values.get(key))
-        direct_specs = [
+        unlabeled_specs = [
             spec for spec in root_specs
             if "=" not in spec or os.path.isabs(spec.strip().strip('"'))
         ]
-        if direct_specs and len(root_specs) != 1:
+        if key == "root_map" and unlabeled_specs and len(root_specs) != 1:
             issues.append(
                 "不带根目录名的当前路径只适用于单根快照；"
                 "多根快照应逐项使用「根目录名=当前路径」。")
+        seen_paths: set[str] = set()
+        seen_labels: set[str] = set()
         for root_spec in root_specs:
             is_mapping = "=" in root_spec and not os.path.isabs(
                 root_spec.strip().strip('"'))
@@ -2833,7 +2970,22 @@ def validate_values(
                 issues.append(f"根目录对应应为「根目录名=路径」：{root_spec}")
                 continue
             current_path = path if sep else root_spec
-            if not os.path.isdir(_absolute(current_path)):
+            absolute_path = _absolute(current_path)
+            canonical_path = os.path.normcase(os.path.realpath(absolute_path))
+            if canonical_path in seen_paths:
+                issues.append(f"当前档案根目录重复：{current_path}")
+            seen_paths.add(canonical_path)
+            try:
+                parsed_label, _parsed_path = core.parse_root_spec(root_spec)
+            except core.PreflightError as exc:
+                issues.append(str(exc))
+                continue
+            if key == "direct_roots" and parsed_label in seen_labels:
+                issues.append(
+                    f"直接核验根目录名重复：{parsed_label}；"
+                    "请使用「根目录名=路径」区分")
+            seen_labels.add(parsed_label)
+            if not os.path.isdir(absolute_path):
                 issues.append(f"当前档案根目录不存在：{current_path}")
 
     for key in ("map_root",):
@@ -2901,7 +3053,7 @@ def _tooltip_display_text(
     """按实际字体像素宽度为悬停提示稳定分行。"""
     max_width = max(1, int(max_width))
     wrapped: list[str] = []
-    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    normalized = str(text).replace("\n", "\n").replace("\n", "\n")
 
     def preferred_break(text_value: str) -> int:
         return max(
@@ -3237,14 +3389,12 @@ class AdminModeButton(tk.Frame):
 
 
 class DirectoryListEditor(tk.Frame):
-    """最多九项的目录列表；每项可编辑标签并单独移除。"""
+    """操作区在外、内容池在下的目录列表。"""
 
     def __init__(self, master: tk.Misc, *, initial: object = "",
                  title: str = "档案根目录", on_change=None,
                  max_items: int = _MAX_ROOT_DIRECTORIES) -> None:
-        super().__init__(
-            master, bg=_SURFACE,
-        )
+        super().__init__(master, bg=_SURFACE)
         self.title = title
         self.on_change = on_change
         self.max_items = max_items
@@ -3253,16 +3403,12 @@ class DirectoryListEditor(tk.Frame):
         self._last_directory = _BASE
         self.grid_columnconfigure(0, weight=1)
 
-        self.rows = tk.Frame(self, bg=_SURFACE)
-        self.rows.grid(row=1, column=0, sticky="ew", pady=(2, 4))
-        self.rows.grid_columnconfigure(0, weight=1)
-
-        footer = tk.Frame(self, bg=_SURFACE)
-        footer.grid(row=0, column=0, sticky="ew", pady=(0, 2))
-        footer.grid_columnconfigure(1, weight=1)
+        actions = tk.Frame(self, bg=_SURFACE)
+        actions.grid(row=0, column=0, sticky="ew")
+        actions.grid_columnconfigure(1, weight=1)
         self.add_button = ttk.Button(
-            footer, text="添加", style="FilePicker.TButton",
-            width=_FILE_PICKER_BUTTON_WIDTH,
+            actions, text="添加", style="DiscoveryAction.TButton",
+            width=_FORM_ACTION_BUTTON_WIDTH,
             command=self.add_directory,
         )
         self.add_button.grid(row=0, column=0, sticky="w")
@@ -3271,12 +3417,19 @@ class DirectoryListEditor(tk.Frame):
             f"选择并加入一个{self.title}；最多可添加 {self.max_items} 个目录。",
         )
         self.count_label = tk.Label(
-            footer, bg=_SURFACE, fg=_MUTED,
+            actions, bg=_SURFACE, fg=_MUTED,
             font=("Microsoft YaHei UI", 8), anchor="w",
         )
         self.count_label.grid(
             row=0, column=1, sticky="w",
             padx=(_INLINE_CONTROL_GAP, 0))
+
+        self.rows = tk.Frame(
+            self, bg=_SURFACE,
+            highlightbackground=_TEXT, highlightthickness=1,
+        )
+        self.rows.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        self.rows.grid_columnconfigure(0, weight=1)
         self._render_rows()
 
     def _notify(self) -> None:
@@ -3296,12 +3449,21 @@ class DirectoryListEditor(tk.Frame):
             child.destroy()
         self._variables = []
         if not self._items:
-            self.rows.grid_remove()
-        else:
-            self.rows.grid()
+            tk.Label(
+                self.rows, text=f"尚未添加{self.title}",
+                bg=_SURFACE, fg=_MUTED,
+                font=("Microsoft YaHei UI", 9), anchor="w",
+            ).grid(
+                row=0, column=0, sticky="ew",
+                padx=_SPACING_INLINE, pady=_SPACING_INLINE,
+            )
         for index, item in enumerate(self._items):
             row = tk.Frame(self.rows, bg=_SURFACE)
-            row.grid(row=index, column=0, sticky="ew", pady=(0, 4))
+            row.grid(
+                row=index, column=0, sticky="ew",
+                padx=_SPACING_INLINE,
+                pady=(4 if index == 0 else 0, 4),
+            )
             row.grid_columnconfigure(1, weight=1)
             tk.Label(
                 row, text=f"{index + 1}", width=2,
@@ -3382,7 +3544,7 @@ class DirectoryListEditor(tk.Frame):
 
 
 class RootLabelMapEditor(tk.Frame):
-    """以左右配对表编辑快照根目录名，避免要求用户记忆语法。"""
+    """用两行输入和独立内容池编辑快照根目录名配对。"""
 
     def __init__(
         self, master: tk.Misc, *, initial: object = "", on_change=None,
@@ -3397,9 +3559,7 @@ class RootLabelMapEditor(tk.Frame):
             for line in _lines(initial)
         ][:max_items]
         self._variables: list[tuple[tk.StringVar, tk.StringVar]] = []
-        self.grid_columnconfigure(0, weight=1, uniform="root_label_map")
-        self.grid_columnconfigure(1, minsize=32)
-        self.grid_columnconfigure(2, weight=1, uniform="root_label_map")
+        self.grid_columnconfigure(0, weight=1)
 
         self.hint_label = tk.Label(
             self,
@@ -3411,41 +3571,56 @@ class RootLabelMapEditor(tk.Frame):
             font=("Microsoft YaHei UI", 9), anchor="w",
         )
         self.hint_label.grid(
-            row=0, column=0, columnspan=4, sticky="ew", pady=(0, 5))
+            row=0, column=0, sticky="ew", pady=(0, 5))
+
+        inputs = tk.Frame(self, bg=_SURFACE)
+        inputs.grid(row=1, column=0, sticky="ew")
+        inputs.grid_columnconfigure(1, weight=1)
         self.old_header = tk.Label(
-            self, text="基准根目录名", bg=_SURFACE, fg=_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+            inputs, text="基准根目录名", bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="e",
         )
-        self.old_header.grid(row=1, column=0, sticky="w", pady=(0, 3))
+        self.old_header.grid(
+            row=0, column=0, sticky="e",
+            padx=(0, _INLINE_CONTROL_GAP), pady=(0, 3))
         self.new_header = tk.Label(
-            self, text="对比根目录名", bg=_SURFACE, fg=_TEXT,
-            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+            inputs, text="对比根目录名", bg=_SURFACE, fg=_TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="e",
         )
-        self.new_header.grid(row=1, column=2, sticky="w", pady=(0, 3))
+        self.new_header.grid(
+            row=1, column=0, sticky="e",
+            padx=(0, _INLINE_CONTROL_GAP))
 
         self.old_input = tk.StringVar()
         self.new_input = tk.StringVar()
-        self.old_entry = ttk.Entry(self, textvariable=self.old_input)
-        self.old_entry.grid(row=2, column=0, sticky="ew")
-        self.arrow_label = tk.Label(
-            self, text="→", bg=_SURFACE, fg=_AMBER_DEEP,
-            font=("Microsoft YaHei UI", 10, "bold"), anchor="center",
-        )
-        self.arrow_label.grid(row=2, column=1, sticky="ew")
-        self.new_entry = ttk.Entry(self, textvariable=self.new_input)
-        self.new_entry.grid(row=2, column=2, sticky="ew")
+        self.old_entry = ttk.Entry(inputs, textvariable=self.old_input)
+        self.old_entry.grid(row=0, column=1, sticky="ew", pady=(0, 3))
+        self.new_entry = ttk.Entry(inputs, textvariable=self.new_input)
+        self.new_entry.grid(row=1, column=1, sticky="ew")
+
+        actions = tk.Frame(self, bg=_SURFACE)
+        actions.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+        actions.grid_columnconfigure(1, weight=1)
         self.add_button = ttk.Button(
-            self, text="添加配对", style="FormAction.TButton",
+            actions, text="添加配对", style="DiscoveryAction.TButton",
             width=_FORM_ACTION_BUTTON_WIDTH, command=self.add_pair,
         )
-        self.add_button.grid(
-            row=2, column=3,
-            padx=(_INLINE_CONTROL_GAP, 0), sticky="e")
+        self.add_button.grid(row=0, column=0, sticky="w")
+        self.count_label = tk.Label(
+            actions, bg=_SURFACE, fg=_MUTED,
+            font=("Microsoft YaHei UI", 8), anchor="w",
+        )
+        self.count_label.grid(
+            row=0, column=1, sticky="w",
+            padx=(_INLINE_CONTROL_GAP, 0))
         self.old_entry.bind("<Return>", lambda _event: self.add_pair())
         self.new_entry.bind("<Return>", lambda _event: self.add_pair())
 
-        self.rows = tk.Frame(self, bg=_SURFACE)
-        self.rows.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(5, 0))
+        self.rows = tk.Frame(
+            self, bg=_SURFACE,
+            highlightbackground=_TEXT, highlightthickness=1,
+        )
+        self.rows.grid(row=3, column=0, sticky="ew", pady=(5, 0))
         self.rows.grid_columnconfigure(0, weight=1)
         self._render_rows()
 
@@ -3453,7 +3628,7 @@ class RootLabelMapEditor(tk.Frame):
     def tooltip_widgets(self) -> tuple[tk.Misc, ...]:
         static_widgets: tuple[tk.Misc, ...] = (
             self, self.hint_label, self.old_header, self.new_header,
-            self.old_entry, self.arrow_label, self.new_entry, self.add_button,
+            self.old_entry, self.new_entry, self.add_button, self.count_label,
         )
         return (*static_widgets, *self.rows.winfo_children())
 
@@ -3473,20 +3648,28 @@ class RootLabelMapEditor(tk.Frame):
             child.destroy()
         self._variables = []
         if not self._items:
-            self.rows.grid_remove()
-        else:
-            self.rows.grid()
+            tk.Label(
+                self.rows, text="尚未添加根目录名配对",
+                bg=_SURFACE, fg=_MUTED,
+                font=("Microsoft YaHei UI", 9), anchor="w",
+            ).grid(
+                row=0, column=0, sticky="ew",
+                padx=_SPACING_INLINE, pady=_SPACING_INLINE,
+            )
         for index, (old_label, new_label) in enumerate(self._items):
             row = tk.Frame(self.rows, bg=_SURFACE)
-            row.grid(row=index, column=0, sticky="ew", pady=(0, 4))
-            row.grid_columnconfigure(1, weight=1, uniform="root_label_pair")
-            row.grid_columnconfigure(3, weight=1, uniform="root_label_pair")
+            row.grid(
+                row=index, column=0, sticky="ew",
+                padx=_SPACING_INLINE,
+                pady=(4 if index == 0 else 0, 4),
+            )
+            row.grid_columnconfigure(2, weight=1)
             tk.Label(
                 row, text=f"{index + 1}", width=2,
                 bg=_CONTROL, fg=_AMBER_DEEP,
                 font=("Microsoft YaHei UI", 8, "bold"),
             ).grid(
-                row=0, column=0, sticky="ns",
+                row=0, column=0, rowspan=2, sticky="ns",
                 padx=(0, _INLINE_CONTROL_GAP),
             )
             old_variable = tk.StringVar(value=old_label)
@@ -3498,22 +3681,33 @@ class RootLabelMapEditor(tk.Frame):
                 "write", lambda *_args, i=index, v=new_variable:
                 self._edited(i, 1, v))
             self._variables.append((old_variable, new_variable))
-            ttk.Entry(row, textvariable=old_variable).grid(
-                row=0, column=1, sticky="ew")
             tk.Label(
-                row, text="→", bg=_SURFACE, fg=_AMBER_DEEP,
-                font=("Microsoft YaHei UI", 10, "bold"),
-            ).grid(row=0, column=2, padx=_INLINE_CONTROL_GAP)
+                row, text="基准根目录名", bg=_SURFACE, fg=_TEXT,
+                font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
+            ).grid(
+                row=0, column=1, sticky="e",
+                padx=(0, _INLINE_CONTROL_GAP), pady=(0, 3))
+            ttk.Entry(row, textvariable=old_variable).grid(
+                row=0, column=2, sticky="ew", pady=(0, 3))
+            tk.Label(
+                row, text="对比根目录名", bg=_SURFACE, fg=_TEXT,
+                font=("Microsoft YaHei UI", 8, "bold"), anchor="e",
+            ).grid(
+                row=1, column=1, sticky="e",
+                padx=(0, _INLINE_CONTROL_GAP))
             ttk.Entry(row, textvariable=new_variable).grid(
-                row=0, column=3, sticky="ew")
+                row=1, column=2, sticky="ew")
             remove_button = ttk.Button(
                 row, text="×", width=3, style="Remove.TButton",
                 command=lambda i=index: self.remove(i),
             )
             remove_button.grid(
-                row=0, column=4, padx=(_INLINE_CONTROL_GAP, 0))
+                row=0, column=3, rowspan=2, sticky="ns",
+                padx=(_INLINE_CONTROL_GAP, 0))
             attach_tooltip(
                 remove_button, f"移除第 {index + 1} 组根目录配对。")
+        self.count_label.configure(
+            text=f"已添加 {len(self._items)}/{self.max_items}")
         self.add_button.configure(
             state="disabled" if len(self._items) >= self.max_items else "normal")
 
@@ -3579,7 +3773,7 @@ class RootLabelMapEditor(tk.Frame):
 
 
 class StorageDiskPool(tk.Frame):
-    """展示当次列盘结果，并允许逐盘或一次选择全部可登记联机盘。"""
+    """用与档案根目录一致的描边内容池展示可逐盘选择的硬盘。"""
 
     @staticmethod
     def _checkbox_image(
@@ -3606,10 +3800,7 @@ class StorageDiskPool(tk.Frame):
         options: tuple[StorageDiskOption, ...], initial: object = "",
         on_change=None,
     ) -> None:
-        super().__init__(
-            master, bg=_SURFACE, highlightbackground=_BORDER,
-            highlightthickness=1,
-        )
+        super().__init__(master, bg=_SURFACE)
         self.options = options
         self.on_change = on_change
         selected = set(_lines(initial))
@@ -3619,52 +3810,20 @@ class StorageDiskPool(tk.Frame):
         self._checkbox_images: dict[str, tk.PhotoImage] = {}
         self.grid_columnconfigure(0, weight=1)
 
-        actions = tk.Frame(self, bg=_SURFACE)
-        actions.grid(
-            row=0, column=0, sticky="ew",
-            padx=_SPACING_INLINE, pady=(5, 2))
-        actions.grid_columnconfigure(2, weight=1)
-        self.select_all_button = ttk.Button(
-            actions, text="全选", style="FilePicker.TButton",
-            width=_FILE_PICKER_BUTTON_WIDTH,
-            command=self.select_all_online,
+        rows = tk.Frame(
+            self, bg=_SURFACE,
+            highlightbackground=_TEXT, highlightthickness=1,
         )
-        self.select_all_button.grid(
-            row=0, column=0, sticky="w",
-            padx=(0, _STANDARD_BUTTON_GAP))
-        self.clear_selection_button = ttk.Button(
-            actions, text="取消选择", style="FilePicker.TButton",
-            width=_FILE_PICKER_BUTTON_WIDTH,
-            command=self.clear_selection,
-        )
-        self.clear_selection_button.grid(row=0, column=1, sticky="w")
-        selectable_count = sum(option.selectable for option in options)
-        tk.Label(
-            actions,
-            text=f"可选 {selectable_count}/{len(options)}",
-            bg=_SURFACE, fg=_MUTED,
-            font=("Microsoft YaHei UI", 8), anchor="e",
-        ).grid(row=0, column=2, sticky="e")
-        attach_tooltip(
-            self.select_all_button,
-            "选择本次清单中所有联机且信息完整的硬盘。",
-        )
-        attach_tooltip(
-            self.clear_selection_button,
-            "取消本次清单中的全部选择。",
-        )
-
-        rows = tk.Frame(self, bg=_SURFACE)
-        rows.grid(
-            row=1, column=0, sticky="ew",
-            padx=_SPACING_INLINE, pady=(1, 5))
+        rows.grid(row=0, column=0, sticky="ew")
         rows.grid_columnconfigure(0, weight=1)
         if not options:
             tk.Label(
                 rows, text="尚无硬盘清单，请先点击「检测硬盘」。",
                 bg=_SURFACE, fg=_MUTED,
                 font=("Microsoft YaHei UI", 9), anchor="w",
-            ).grid(row=0, column=0, sticky="ew", padx=4, pady=5)
+            ).grid(
+                row=0, column=0, sticky="ew",
+                padx=_SPACING_INLINE, pady=_SPACING_INLINE)
             return
 
         self._checkbox_images = {
@@ -3683,7 +3842,8 @@ class StorageDiskPool(tk.Frame):
             )
             row.grid(
                 row=row_index, column=0, sticky="nsew",
-                pady=(0, _SPACING_COMPACT),
+                padx=_SPACING_INLINE,
+                pady=(4 if row_index == 0 else 0, 4),
             )
             row.grid_columnconfigure(0, weight=1)
             row.grid_rowconfigure(0, weight=1)
@@ -3724,16 +3884,6 @@ class StorageDiskPool(tk.Frame):
     def _notify(self) -> None:
         if callable(self.on_change):
             self.on_change()
-
-    def select_all_online(self) -> None:
-        for option in self.options:
-            self._variables[option.disk_number].set(option.selectable)
-        self._notify()
-
-    def clear_selection(self) -> None:
-        for variable in self._variables.values():
-            variable.set(False)
-        self._notify()
 
     def get(self) -> str:
         return "\n".join(
@@ -4066,7 +4216,7 @@ class MetadataToolModeButton(tk.Frame):
 
 
 class VerificationToolButtonGroup(tk.Frame):
-    """优先一行显示五个等尺寸按钮，空间不足时按完整按钮自动换行。"""
+    """优先一行显示六个等尺寸按钮，空间不足时按完整按钮自动换行。"""
 
     def __init__(
         self,
@@ -4075,6 +4225,7 @@ class VerificationToolButtonGroup(tk.Frame):
         initial: dict[str, object],
         availability: dict[str, tuple[bool, str]],
         environment_checked: bool,
+        database_mode: bool,
         on_change=None,
     ) -> None:
         super().__init__(master, bg=_SURFACE)
@@ -4119,6 +4270,10 @@ class VerificationToolButtonGroup(tk.Frame):
             side="left", padx=(12, 0))
         definitions = (
             (
+                "verify_hash", "哈希复核",
+                "重新计算 SHA-256，并与封存快照中的有效哈希基准比较。",
+            ),
+            (
                 "verify_builtin", "基本校验",
                 "使用 DAISY 内置校验器检查 ZIP/OOXML 的 CRC，以及 PDF 的基本结构。",
             ),
@@ -4142,6 +4297,8 @@ class VerificationToolButtonGroup(tk.Frame):
         for key, label, help_text in definitions:
             if key == "verify_builtin":
                 enabled, reason = True, ""
+            elif key == "verify_hash" and not database_mode:
+                enabled, reason = False, "无数据库时没有可比较的哈希基准"
             else:
                 enabled, reason = availability.get(
                     key, (False, "需要先运行环境检测"))
@@ -4160,7 +4317,7 @@ class VerificationToolButtonGroup(tk.Frame):
             self.controls[key] = control
             self._ordered_controls.append(control)
         # 先使用两列，避免控件的单排请求宽度反向撑破窄表单；首次 Configure
-        # 会按实际可用宽度恢复默认五列，或保留必要的响应式换行。
+        # 会按实际可用宽度恢复六列，或保留必要的响应式换行。
         self._place_controls(2)
         self.bind("<Configure>", self._fit_to_width)
         self.tooltip_widgets = (
@@ -4988,7 +5145,6 @@ class DaisyApp:
         self.timeout_dialog: tk.Toplevel | None = None
         self.timeout_dialog_label: tk.Label | None = None
         self.timeout_worker_pid: int | None = None
-        self._progress_auto_collapse_after_id: str | None = None
         self.open_result_flash_after_id: str | None = None
         self.events: queue.Queue[tuple] = queue.Queue()
         self._configure_window()
@@ -5310,8 +5466,8 @@ class DaisyApp:
         self.recovery_path_tooltip.text = partial
         if not self.recovery_card.winfo_manager():
             self.recovery_card.pack(
-                side="right", padx=(0, _STANDARD_BUTTON_GAP),
-                before=self.settings_actions,
+                fill="x", padx=_SPACING_OUTER,
+                pady=(0, _SPACING_INLINE),
             )
         self._set_recovery_card_state()
 
@@ -6207,7 +6363,7 @@ class DaisyApp:
                     continue
 
     def _build_task_toolbar(self) -> None:
-        """按工作流建立固定单排、等宽的六个简短功能入口。"""
+        """按工作流建立固定单排、等宽的六个完整功能入口。"""
         panel = tk.Frame(
             self.root, bg=_SURFACE,
             highlightbackground=_BORDER, highlightthickness=1,
@@ -6233,7 +6389,7 @@ class DaisyApp:
         self.task_toolbar_toggle_button = ttk.Button(
             header, text="收起模块", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._toggle_task_toolbar,
+            command=self._toggle_task_toolbar, takefocus=False,
         )
         self.task_toolbar_toggle_button.pack(side="right")
         attach_tooltip(
@@ -6268,7 +6424,8 @@ class DaisyApp:
                 body, text=_TASK_TOOLBAR_LABELS[task_key],
                 width=_TASK_TOOLBAR_BUTTON_WIDTH,
                 relief="flat", bd=0, highlightthickness=1,
-                highlightbackground=_BORDER, highlightcolor=_BORDER,
+                highlightbackground=_PRIMARY_TASK_BUTTON_BORDER,
+                highlightcolor=_PRIMARY_TASK_BUTTON_BORDER,
                 bg=_TASK_TOOLBAR_BACKGROUND,
                 fg=_TASK_TOOLBAR_FOREGROUND,
                 activebackground=_TASK_TOOLBAR_HOVER,
@@ -6314,8 +6471,9 @@ class DaisyApp:
             "secondary": (
                 _CONTROL, _TEXT, _CONTROL_HOVER, _TEXT, _BORDER),
         }
-        background, foreground, active_background, active_foreground, border = (
+        background, foreground, active_background, active_foreground, _border = (
             palettes[tone])
+        border = _PRIMARY_TASK_BUTTON_BORDER
         return tk.Button(
             master, text=text, command=command, state=state,
             width=_TASK_ACTION_BUTTON_WIDTH,
@@ -6408,7 +6566,7 @@ class DaisyApp:
             self.settings_actions, text="收起设置",
             style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._toggle_settings_panel,
+            command=self._toggle_settings_panel, takefocus=False,
         )
         self.settings_toggle_button.grid(row=0, column=2, sticky="ew")
         attach_tooltip(
@@ -6416,8 +6574,10 @@ class DaisyApp:
             "显示或隐藏当前功能的说明和设置。",
         )
 
+        self.recovery_host = tk.Frame(self.task_card, bg=_SURFACE)
+        self.recovery_host.pack(fill="x")
         self.recovery_card = tk.Frame(
-            title_row, bg=_AMBER_SOFT,
+            self.recovery_host, bg=_AMBER_SOFT,
             highlightbackground=_AMBER, highlightthickness=1,
         )
         self.recovery_title_label = tk.Label(
@@ -6546,7 +6706,7 @@ class DaisyApp:
         self.progress_toggle_button = ttk.Button(
             progress_actions, text="收起进度", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._toggle_progress_panel,
+            command=self._toggle_progress_panel, takefocus=False,
         )
         self.progress_toggle_button.grid(row=0, column=2, sticky="ew")
         attach_tooltip(
@@ -6751,7 +6911,7 @@ class DaisyApp:
         self.log_toggle_button = ttk.Button(
             log_actions, text="收起日志", style="FilePicker.TButton",
             width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._toggle_log_panel,
+            command=self._toggle_log_panel, takefocus=False,
         )
         self.log_toggle_button.grid(row=0, column=4, sticky="ew")
         attach_tooltip(
@@ -6972,6 +7132,7 @@ class DaisyApp:
 
     def _toggle_task_toolbar(self) -> None:
         self._set_task_toolbar_expanded(not self.task_toolbar_expanded)
+        self._release_toggle_focus()
 
     def _normal_minimum_size(self) -> tuple[int, int]:
         return self.normal_min_size
@@ -7024,7 +7185,7 @@ class DaisyApp:
             if expanded else self._font_tuple(9, "bold")
         ))
         self.settings_title_row.pack_configure(
-            padx=(_SPACING_OUTER if expanded else _PANEL_HEADER_PADX),
+            padx=_SPACING_OUTER,
             pady=((_SPACING_INLINE, _SPACING_COMPACT) if expanded
                   else _COLLAPSED_SETTINGS_HEADER_PADY),
         )
@@ -7037,6 +7198,7 @@ class DaisyApp:
 
     def _toggle_settings_panel(self) -> None:
         self._set_settings_expanded(not self.settings_expanded)
+        self._release_toggle_focus()
 
     def _set_progress_expanded(self, expanded: bool) -> None:
         self.progress_expanded = expanded
@@ -7059,34 +7221,8 @@ class DaisyApp:
         self._refresh_view_menu_labels()
 
     def _toggle_progress_panel(self) -> None:
-        self._cancel_progress_auto_collapse()
         self._set_progress_expanded(not self.progress_expanded)
-
-    def _cancel_progress_auto_collapse(self) -> None:
-        pending = getattr(self, "_progress_auto_collapse_after_id", None)
-        if pending is None:
-            return
-        self._progress_auto_collapse_after_id = None
-        try:
-            self.root.after_cancel(pending)
-        except (AttributeError, tk.TclError):
-            pass
-
-    def _schedule_progress_auto_collapse(self) -> None:
-        self._cancel_progress_auto_collapse()
-        try:
-            self._progress_auto_collapse_after_id = self.root.after(
-                _PROGRESS_AUTO_COLLAPSE_DELAY_MS,
-                self._auto_collapse_progress,
-            )
-        except (AttributeError, tk.TclError):
-            self._progress_auto_collapse_after_id = None
-
-    def _auto_collapse_progress(self) -> None:
-        self._progress_auto_collapse_after_id = None
-        if self._task_is_active():
-            return
-        self._set_progress_expanded(False)
+        self._release_toggle_focus()
 
     def _set_log_expanded(self, expanded: bool) -> None:
         self.log_expanded = expanded
@@ -7104,6 +7240,14 @@ class DaisyApp:
 
     def _toggle_log_panel(self) -> None:
         self._set_log_expanded(not self.log_expanded)
+        self._release_toggle_focus()
+
+    def _release_toggle_focus(self) -> None:
+        """折叠操作后把焦点交还主窗口，避免按钮残留虚线焦点框。"""
+        try:
+            self.root.focus_set()
+        except tk.TclError:
+            pass
 
     def _set_command_preview_expanded(self, expanded: bool) -> None:
         self.command_preview_expanded = expanded
@@ -7162,7 +7306,7 @@ class DaisyApp:
                 _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
         }
         tone = "stop" if running else "primary"
-        background, foreground, active_background, active_foreground, border = (
+        background, foreground, active_background, active_foreground, _border = (
             palettes[tone])
         self.run_button.configure(
             text="停止" if running else _RUN_BUTTON_TEXT,
@@ -7172,8 +7316,8 @@ class DaisyApp:
             activebackground=active_background,
             activeforeground=active_foreground,
             disabledforeground=foreground,
-            highlightbackground=border,
-            highlightcolor=border,
+            highlightbackground=_PRIMARY_TASK_BUTTON_BORDER,
+            highlightcolor=_PRIMARY_TASK_BUTTON_BORDER,
         )
         tooltip = getattr(self.run_button, "_daisy_tooltip", None)
         if tooltip is not None:
@@ -7625,9 +7769,10 @@ class DaisyApp:
                 bg=background,
                 fg=_TASK_TOOLBAR_FOREGROUND,
                 activebackground=hover,
-                activeforeground=_TASK_TOOLBAR_FOREGROUND,
-                highlightbackground=_BORDER,
-                highlightcolor=_BORDER,
+                activeforeground=(
+                    "white" if selected else _TASK_TOOLBAR_FOREGROUND),
+                highlightbackground=_PRIMARY_TASK_BUTTON_BORDER,
+                highlightcolor=_PRIMARY_TASK_BUTTON_BORDER,
             )
 
     def _set_task_navigation_state(self, state: str) -> None:
@@ -7727,10 +7872,10 @@ class DaisyApp:
         button_grid = tk.Frame(panel, bg=_SURFACE)
         button_grid.grid(
             row=1, column=0, sticky="ew", padx=12, pady=(4, 8))
-        for column in range(_ENVIRONMENT_COLUMN_COUNT):
+        for column in range(_ENVIRONMENT_GRID_COLUMNS):
             button_grid.grid_columnconfigure(
                 column * 2, weight=0, uniform="environment_install")
-            if column < _ENVIRONMENT_COLUMN_COUNT - 1:
+            if column < _ENVIRONMENT_GRID_COLUMNS - 1:
                 button_grid.grid_columnconfigure(
                     column * 2 + 1, minsize=_STANDARD_BUTTON_GAP)
         install_entries = {
@@ -7763,7 +7908,9 @@ class DaisyApp:
             "highlightcolor": _BORDER,
             "takefocus": True,
         }
-        for column, dependency_name in enumerate(_ENVIRONMENT_STATUS_ORDER):
+        for index, dependency_name in enumerate(_ENVIRONMENT_STATUS_ORDER):
+            grid_row, grid_column = divmod(
+                index, _ENVIRONMENT_GRID_COLUMNS)
             if dependency_name not in install_entries:
                 button = tk.Button(
                     button_grid,
@@ -7775,7 +7922,9 @@ class DaisyApp:
                     **button_options,
                 )
                 button.grid(
-                    row=0, column=column * 2, sticky="w",
+                    row=grid_row, column=grid_column * 2, sticky="w",
+                    pady=(0, _STANDARD_BUTTON_GAP)
+                    if grid_row == 0 else 0,
                 )
                 self.environment_install_buttons[dependency_name] = button
                 attach_tooltip(
@@ -7800,13 +7949,18 @@ class DaisyApp:
                 **button_options,
             )
             button.grid(
-                row=0, column=column * 2, sticky="w",
+                row=grid_row, column=grid_column * 2, sticky="w",
+                pady=(0, _STANDARD_BUTTON_GAP) if grid_row == 0 else 0,
             )
             self.install_tool_buttons[dependency_name] = button
             self.environment_install_buttons[dependency_name] = button
             attach_tooltip(
                 button,
                 (
+                    "先查询软件源最新版本；确认后使用 WinGet 安装或更新 "
+                    "Python 3.14。完成后会复检；重启 DAISY 后新解释器才会"
+                    "接管当前界面。"
+                    if dependency_name == "python" else
                     f"先查询软件源最新版本；确认后使用当前 Python 的 pip 安装或更新"
                     f" {display_name}。"
                     if installer == "pip" else
@@ -7830,9 +7984,11 @@ class DaisyApp:
             available, reason = raw_runtime_capability_status(
                 self.runtime_capabilities)
             reason = str(reason).rstrip("。；; ")
+            version = str(raw.get("version") or "").strip()
             return (
                 "available" if available else "missing",
-                f"{display_name}\n{'可用' if available else '不可用'}",
+                f"{display_name}\n{version or '版本未知'}"
+                if available else f"{display_name}\n不可用",
                 f"rawpy/LibRaw：{reason}。点击后重新检测全部环境项目。",
             )
 
@@ -7841,7 +7997,7 @@ class DaisyApp:
         if path and info.get("verified") is True:
             version = str(info.get("version") or "版本未知")
             return (
-                "available", f"{display_name}\n可用",
+                "available", f"{display_name}\n{version}",
                 f"{display_name} 已检测并验证可用。版本：{version}。路径：{path}。"
                 "点击后重新检测全部环境项目。",
             )
@@ -7860,7 +8016,7 @@ class DaisyApp:
         )
 
     def _refresh_environment_status_buttons(self) -> None:
-        """同步六个等尺寸状态按钮，不触发新的环境探测。"""
+        """同步七个等尺寸状态按钮，不触发新的环境探测。"""
         for dependency_name, button in getattr(
                 self, "environment_status_buttons", {}).items():
             state, label, detail = self._environment_status(dependency_name)
@@ -7895,7 +8051,7 @@ class DaisyApp:
     def _build_environment_status(
         self, row: int, form_pad: int,
     ) -> int:
-        """用一行等尺寸按钮显示各环境项目的检测状态。"""
+        """用最多四列的等尺寸双行按钮显示各环境项目检测状态。"""
         panel = tk.Frame(
             self.form_inner, bg=_SURFACE,
             highlightbackground=_BORDER, highlightthickness=1,
@@ -7917,12 +8073,15 @@ class DaisyApp:
         button_grid = tk.Frame(panel, bg=_SURFACE)
         button_grid.grid(
             row=1, column=0, sticky="ew", padx=12, pady=(4, 8))
-        for column, dependency_name in enumerate(_ENVIRONMENT_STATUS_ORDER):
+        for column in range(_ENVIRONMENT_GRID_COLUMNS):
             button_grid.grid_columnconfigure(
                 column * 2, weight=0, uniform="environment_status")
-            if column < _ENVIRONMENT_COLUMN_COUNT - 1:
+            if column < _ENVIRONMENT_GRID_COLUMNS - 1:
                 button_grid.grid_columnconfigure(
                     column * 2 + 1, minsize=_PANEL_ACTION_BUTTON_GAP)
+        for index, dependency_name in enumerate(_ENVIRONMENT_STATUS_ORDER):
+            grid_row, grid_column = divmod(
+                index, _ENVIRONMENT_GRID_COLUMNS)
             button = tk.Button(
                 button_grid,
                 relief="flat", bd=0, highlightthickness=1,
@@ -7935,7 +8094,8 @@ class DaisyApp:
                 takefocus=True, cursor="hand2", command=self._run,
             )
             button.grid(
-                row=0, column=column * 2, sticky="w",
+                row=grid_row, column=grid_column * 2, sticky="w",
+                pady=(0, _STANDARD_BUTTON_GAP) if grid_row == 0 else 0,
             )
             self.environment_status_buttons[dependency_name] = button
             self.environment_status_tooltips[dependency_name] = attach_tooltip(
@@ -8006,13 +8166,10 @@ class DaisyApp:
     def _build_storage_detection(
         self, row: int, form_pad: int,
     ) -> int:
-        panel = tk.Frame(
-            self.form_inner, bg=_SURFACE,
-            highlightbackground=_BORDER, highlightthickness=1,
-        )
+        panel = tk.Frame(self.form_inner, bg=_SURFACE)
         panel.grid(
-            row=row, column=0, columnspan=2, sticky="ew",
-            padx=form_pad, pady=(3, 1),
+            row=row, column=1, sticky="ew",
+            padx=(0, form_pad), pady=(3, 5),
         )
         panel.grid_columnconfigure(1, weight=1)
         found_count = len(self.storage_disk_options)
@@ -8039,10 +8196,10 @@ class DaisyApp:
         )
         self.storage_detect_button.grid(
             row=0, column=0, sticky="w",
-            padx=(_SPACING_STANDARD, _SPACING_STANDARD), pady=3)
+            padx=(0, _SPACING_STANDARD), pady=0)
         detail.grid(
             row=0, column=1, sticky="ew",
-            padx=(0, _SPACING_STANDARD), pady=3)
+            padx=0, pady=0)
         attach_tooltip(
             self.storage_detect_button,
             "读取硬盘、分区、卷与 SMART 信息，并刷新下方可登记硬盘清单。",
@@ -8170,7 +8327,7 @@ class DaisyApp:
             self.task, self.saved_values.get(self.task.key, {}))
         active_specs = [
             spec for spec in self.task.fields
-            if _field_active(spec, saved) and not spec.top_menu
+            if _field_active(spec, saved, self.task.key) and not spec.top_menu
         ]
         section_field_counts: dict[str, int] = {}
         for spec in active_specs:
@@ -8196,7 +8353,7 @@ class DaisyApp:
                 info,
                 text=(
                     "将运行 Script\\Test 中默认安全的自动化测试，并在系统"
-                    "临时目录创建测试夹具；真实 Tk／桌面集成测试默认跳过。"
+                    "临时目录创建测试夹具；界面视觉验收按需手动进行。"
                 ),
                 bg=_SURFACE, fg=_TEXT,
                 font=("Microsoft YaHei UI", 9), anchor="w",
@@ -8339,6 +8496,9 @@ class DaisyApp:
                     },
                     availability=availability,
                     environment_checked=environment_checked,
+                    database_mode=(
+                        saved.get("verification_mode", "database")
+                        == "database"),
                     on_change=self._update_preview,
                 )
                 widget.grid(row=0, column=0, columnspan=3, sticky="ew")
@@ -8436,12 +8596,28 @@ class DaisyApp:
                     widget.bind(
                         "<FocusOut>", self._parse_database_focus_out)
                 if spec.kind in ("dir", "file", "save", "parse_database"):
+                    primary_input = (
+                        spec.kind in ("file", "parse_database")
+                        and spec.section in (
+                            "任务输入", "对比输入", "核验输入", "解析输入",
+                        )
+                        and not (
+                            self.task.key == "diff" and spec.kind == "file"
+                        )
+                    )
                     browse_button = ttk.Button(
                         cell,
-                        text=("选择"
-                              if spec.kind == "parse_database" else "浏览"),
-                        style="FilePicker.TButton",
-                        width=_FILE_PICKER_BUTTON_WIDTH,
+                        text=(
+                            "添加" if primary_input and spec.kind == "file"
+                            else "选择" if spec.kind == "parse_database"
+                            else "浏览"
+                        ),
+                        style=(
+                            "DiscoveryAction.TButton"
+                            if primary_input else "FilePicker.TButton"),
+                        width=(
+                            _FORM_ACTION_BUTTON_WIDTH
+                            if primary_input else _FILE_PICKER_BUTTON_WIDTH),
                         command=lambda s=spec, v=var: self._browse(s, v),
                     )
                     browse_button.grid(
@@ -8501,7 +8677,7 @@ class DaisyApp:
         """模式按钮变化后保存当前值，再展开对应条件字段。"""
         task_key = self.task.key
         scroll_fraction = self.form_canvas.yview()[0]
-        collected = self._collect_values()
+        collected = self._collect_persistable_values()
         self.saved_values[task_key] = collected
         field_key = getattr(source, "_daisy_field_key", None)
         if task_key == "parse_db" and field_key == "preset":
@@ -9089,16 +9265,18 @@ class DaisyApp:
     def _set_open_result_button_highlighted(
         self, highlighted: bool,
     ) -> bool:
-        """在色带绿色提示态与米黄色常态之间切换结果按钮。"""
+        """在绿色提示态与淡青色常态之间切换结果按钮。"""
         button = getattr(self, "open_output_button", None)
         if button is None:
             return False
         palette = (
-            (_GREEN, _GREEN_DEEP, _GREEN_DARK, "white", _GREEN_DARK)
+            (_GREEN, _GREEN_DEEP, _GREEN_DARK, "white",
+             _PRIMARY_TASK_BUTTON_BORDER)
             if highlighted else
             (
                 _TASK_TOOLBAR_BACKGROUND, _TASK_TOOLBAR_FOREGROUND,
-                _TASK_TOOLBAR_HOVER, _TASK_TOOLBAR_FOREGROUND, _BORDER,
+                _TASK_TOOLBAR_HOVER, _TASK_TOOLBAR_FOREGROUND,
+                _PRIMARY_TASK_BUTTON_BORDER,
             )
         )
         background, foreground, active_background, active_foreground, border = (
@@ -9279,7 +9457,7 @@ class DaisyApp:
         self._reset_software_settings()
 
     def _append_log(self, text: str, tag: str | None = None) -> None:
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = text.replace("\n", "\n").replace("\n", "\n")
         for widget in self._active_log_widgets():
             widget.configure(state="normal")
             widget.insert("end", text, tag or ())
@@ -9442,11 +9620,7 @@ class DaisyApp:
             self._build_form()
 
     def _restore_storage_selection_after_detection(self) -> None:
-        """检测成功后返回硬盘选择区；失败路径保留日志供诊断。"""
-        if self.mini_mode:
-            self._leave_mini_mode()
-        self._set_settings_expanded(True)
-        self._set_log_expanded(False)
+        """检测成功后更新说明，但保持用户当前面板状态。"""
         found_count = len(self.storage_disk_options)
         selectable_count = sum(
             option.selectable for option in self.storage_disk_options)
@@ -9458,7 +9632,7 @@ class DaisyApp:
             title = "硬盘检测完成"
             message = (
                 f"检测到 {found_count} 块硬盘，其中 {selectable_count} 块"
-                "可登记。\n\n设置区已展开。请选择硬盘，然后点击「开始任务」。"
+                "可登记。\n\n展开设置区后可选择硬盘，然后点击「开始任务」。"
             )
             show_dialog = messagebox.showinfo
         else:
@@ -9467,7 +9641,7 @@ class DaisyApp:
             title = "没有可登记的硬盘"
             message = (
                 f"检测到 {found_count} 块硬盘，但没有硬盘同时满足联机"
-                "且登记信息完整的条件。\n\n设置区已展开，可查看"
+                "且登记信息完整的条件。\n\n展开设置区可查看"
                 "硬盘清单中的具体原因或重新检测。"
             )
             show_dialog = messagebox.showwarning
@@ -9476,7 +9650,8 @@ class DaisyApp:
             try:
                 if not self.root.winfo_exists():
                     return
-                self._position_form_scroll(0.0)
+                if self.settings_expanded:
+                    self._position_form_scroll(0.0)
                 show_dialog(title, message, parent=self.root)
             except tk.TclError:
                 return
@@ -10180,6 +10355,14 @@ class DaisyApp:
         target_summary = root_confirmation_text(self.task.key, values)
         if target_summary:
             warnings.append(target_summary)
+        if self.task.key == "verify":
+            verification_summary = verification_confirmation_text(values)
+            if verification_summary:
+                warnings.append(verification_summary)
+            if (values.get("verification_mode") == "database"
+                    and values.get("verify_hash")):
+                warnings.append(
+                    "哈希复核会重新读取有 SHA-256 基准的文件全部内容。")
         full_scan_selected = (
             self.task.key == "full_scan"
             or (self.task.key == "scan"
@@ -10256,7 +10439,6 @@ class DaisyApp:
 
     def _begin_run_jobs(self, task_key: str, jobs: list[RunJob]) -> None:
         """锁定界面并启动同一任务的一项或多项目标。"""
-        self._cancel_progress_auto_collapse()
         self._cancel_open_result_flash()
         if task_key == _DEPENDENCY_VERSION_CHECK_KEY:
             self.dependency_version_query_output = ""
@@ -10319,8 +10501,8 @@ class DaisyApp:
             "\n\n"
             "测试不会读取 GUI 表单中的档案目录；测试夹具在工作区测试目录或"
             "系统临时目录中创建并清理，也不会访问真实硬盘。部分集成测试会调用 ExifTool、"
-            "ffprobe 与 7-Zip。为避免反复创建窗口影响桌面稳定性，真实 Tk／"
-            "桌面集成测试默认不在本功能中运行。"
+            "ffprobe 与 7-Zip。自动化套件不包含真实 Tk 窗口测试；界面视觉"
+            "验收由 AI 按需手动打开软件完成。"
             "\n\n"
             "建议先运行「运行环境检测」。\n\n确定继续吗？",
             icon="question", parent=self.root,
@@ -10475,6 +10657,8 @@ class DaisyApp:
                     "复检失败", "复检未返回结果", "未复检")):
             result += "；环境复检未全部通过"
             colour, tag = _WARNING, "warning"
+        if report.tool_name == "python" and report.install_returncode == 0:
+            result += "；重启 DAISY 后当前界面才会使用新 Python"
         self._append_log(
             "\n"
             f"{report.display_name} 安装版本复检：\n"
@@ -10513,7 +10697,6 @@ class DaisyApp:
                 f"未能获取 {display_name} 的最新版本；未执行安装。",
                 _DANGER,
             )
-            self._set_settings_expanded(True)
             messagebox.showerror(
                 "无法获取最新版本",
                 f"未能从软件源获取 {display_name} 的最新版本。"
@@ -10537,7 +10720,6 @@ class DaisyApp:
                 f"无法识别 {display_name} 的最新版本；未执行安装。",
                 _DANGER,
             )
-            self._set_settings_expanded(True)
             messagebox.showerror(
                 "无法识别最新版本",
                 f"软件源返回了 {display_name} 的查询结果，但 DAISY 无法从中"
@@ -10561,6 +10743,10 @@ class DaisyApp:
         if same_version:
             decision = (
                 "两个版本相同，通常无需更新。是否仍让包管理器执行检查？")
+        elif tool_name == "python":
+            decision = (
+                "是否让 WinGet 安装或更新 Python 3.14？安装完成后会自动"
+                "复检版本，但当前 DAISY 进程必须重启后才会使用新解释器。")
         elif installer_kind == "pip":
             decision = (
                 "是否安装或更新到软件源显示的版本？pip 可能同时安装或更新"
@@ -10583,7 +10769,6 @@ class DaisyApp:
                 f"已取消 {display_name} 安装；未修改软件状态。\n", "meta")
             self._set_status(
                 f"已取消 {display_name} 安装；软件源最新版本为 {latest_version}。")
-            self._set_settings_expanded(True)
             return
 
         self._begin_install_version_report(
@@ -11168,22 +11353,9 @@ class DaisyApp:
         self._refresh_scan_controls()
         self._hide_current_file()
         self._close_timeout_dialog()
-        restore_settings = (
-            not self.close_after_stop
-            and not (installing and not stopped)
-            and not (
-                checking_version and returncode == 0 and not stopped)
-        )
-        if restore_settings:
-            if self.mini_mode:
-                self._leave_mini_mode()
-                self._set_progress_expanded(True)
-            self._set_settings_expanded(True)
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         self._set_recovery_card_state()
-        if not self.close_after_stop:
-            self._schedule_progress_auto_collapse()
         if play_completion_sound:
             self.root.after_idle(self._play_completion_sound)
         if result_directory and os.path.isdir(result_directory):
@@ -11199,7 +11371,6 @@ class DaisyApp:
                     "最新版本查询缺少任务上下文；没有执行安装。",
                     _DANGER,
                 )
-                self._set_settings_expanded(True)
             else:
                 self._finish_dependency_version_query(
                     version_query_job, returncode, version_query_output)

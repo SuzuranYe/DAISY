@@ -143,8 +143,14 @@ def open_verification_snapshot(
             "SELECT root_id,root_label,root_path"
             " FROM roots ORDER BY root_id"))
         labels = [str(root[1]) for root in root_rows]
+        supplied_root_specs = _root_specs(root_map, root_specs)
+        if not supplied_root_specs:
+            supplied_root_specs = [
+                f"{label}={recorded_path}"
+                for _root_id, label, recorded_path in root_rows
+            ]
         current_by_label = core.resolve_current_root_specs(
-            labels, _root_specs(root_map, root_specs))
+            labels, supplied_root_specs)
         current_roots: dict[int, str] = {}
         labels_by_root_id: dict[int, str] = {}
         for root_id, label, _recorded_path in root_rows:
