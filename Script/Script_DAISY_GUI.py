@@ -2800,6 +2800,19 @@ def _visible_form_specs(
     return tuple(visible)
 
 
+def _form_section_has_heading(
+    task: TaskSpec,
+    section: str,
+    first_field_label: str,
+) -> bool:
+    """按任务固定结构决定章节标题，避免分阶段展开时整组控件跳动。"""
+    field_count = sum(
+        1 for spec in task.fields
+        if not spec.top_menu and spec.section == section
+    )
+    return field_count > 1 and section != first_field_label
+
+
 def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
     """把 GUI 值转换为统一入口参数；目录参数统一展开为绝对路径。"""
     task = TASK_BY_KEY[task_key]
@@ -8619,10 +8632,6 @@ class DaisyApp:
             parse_database_ready=parse_database_ready,
             storage_inventory_ready=storage_inventory_ready,
         ))
-        section_field_counts: dict[str, int] = {}
-        for spec in active_specs:
-            section_field_counts[spec.section] = (
-                section_field_counts.get(spec.section, 0) + 1)
         self._configure_form_label_column(form_pad)
         row = 0
 
@@ -8671,10 +8680,10 @@ class DaisyApp:
         for spec in active_specs:
             if spec.section != current_section:
                 current_section = spec.section
-                # 单字段分区和“分区名＝首字段名”不增加信息，只会在 1080p
-                # 中重复占用一整行；多字段分组仍保留清晰的彩色标题。
-                if (section_field_counts[current_section] > 1
-                        and current_section != spec.label):
+                # 标题是否存在必须由固定页面结构决定，不能随阶段展开动态
+                # 插入；否则首字段会在点击选择后整体下移。
+                if _form_section_has_heading(
+                        self.task, current_section, spec.label):
                     section = tk.Frame(self.form_inner, bg=_SURFACE)
                     section.grid(
                         row=row, column=0, columnspan=2, sticky="ew",

@@ -3554,6 +3554,19 @@ class TestGuiArguments(unittest.TestCase):
             ("verification_mode", "verify_path_mode"),
         )
 
+    def test_staged_form_section_heading_does_not_change_after_selection(self):
+        verify = gui.TASK_BY_KEY["verify"]
+        for values in ({}, {"verification_mode": "database"}):
+            first_spec = gui._visible_form_specs(verify, values)[0]
+            self.assertEqual(first_spec.section, "核验输入")
+            self.assertTrue(gui._form_section_has_heading(
+                verify, first_spec.section, first_spec.label))
+
+        scan = gui.TASK_BY_KEY["scan"]
+        first_scan_spec = gui._visible_form_specs(scan, {})[0]
+        self.assertFalse(gui._form_section_has_heading(
+            scan, first_scan_spec.section, first_scan_spec.label))
+
     def test_failed_parse_keeps_start_disabled_and_retry_available(self):
         class WidgetProbe:
             def __init__(self):
