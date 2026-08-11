@@ -1665,7 +1665,16 @@ class TestGuiArguments(unittest.TestCase):
             spec = f.read()
         self.assertIn("# DAISY v1.6.8 技术规格", spec)
         self.assertIn(
-            "v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7 → v1.6.8",
+            "稳定生产基线：**v1.4.1 → v1.6.8**",
+            spec,
+        )
+        self.assertIn("状态：**v1.6.8 稳定生产规范**", spec)
+        self.assertIn(
+            "历史兼容稳定生产版本：**v1.4.1**", spec)
+        self.assertIn("v1.5.0 是过渡版本", spec)
+        self.assertIn("v1.5.1 的默认功能自检", spec)
+        self.assertIn(
+            "v1.6.0、未正式发布的 v1.6.1 及 v1.6.2～v1.6.6",
             spec,
         )
         self.assertIn("Windows PowerShell 5.1", spec)
@@ -1693,7 +1702,20 @@ class TestGuiArguments(unittest.TestCase):
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
         self.assertIn(
-            "当前开发版本：**v1.6.8 界面与核验优化版**", readme)
+            "当前稳定生产版：**v1.6.8（界面与核验优化版）**",
+            readme,
+        )
+        self.assertIn(
+            "**v1.4.1**：历史兼容稳定版", readme)
+        self.assertIn(
+            "| v1.5.0 | 过渡版本，不是稳定生产基线 |", readme)
+        self.assertIn(
+            "| v1.5.1 | 问题版本 |", readme)
+        self.assertIn(
+            "| v1.6.0、v1.6.2～v1.6.6 | 问题版本 |", readme)
+        self.assertIn(
+            "| v1.6.1 | 未正式发布的问题阶段 |", readme)
+        self.assertNotIn("当前开发版本", readme)
         self.assertIn("默认窗口目标为 `1920×1080`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
@@ -1703,6 +1725,8 @@ class TestGuiArguments(unittest.TestCase):
             evolution = f.read()
         self.assertIn("Kit_AL v1.0.2", evolution)
         self.assertIn("DAISY v1.4.2", evolution)
+        self.assertIn(
+            "DAISY v1.4.1（历史兼容稳定版）", evolution)
         self.assertIn("DAISY v1.5.0", evolution)
         self.assertIn("DAISY v1.5.1", evolution)
         self.assertIn("DAISY v1.6.0", evolution)
@@ -1714,7 +1738,17 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.7", evolution)
         self.assertIn("DAISY v1.6.8", evolution)
         self.assertIn(
-            "v1.4.1 → v1.6.4 → v1.6.6 → v1.6.7 → v1.6.8",
+            "稳定生产基线：**v1.4.1 → v1.6.8**",
+            evolution,
+        )
+        self.assertIn(
+            "DAISY v1.6.8（稳定生产版）", evolution)
+        self.assertIn(
+            "DAISY v1.6.6（曾用长期稳定版，定位已撤销）",
+            evolution,
+        )
+        self.assertIn(
+            "DAISY v1.6.4（曾用长期稳定版，定位已撤销）",
             evolution,
         )
         self.assertIn("GUI 完整扫描的 SHA-256 采集功能实际失效", evolution)
@@ -2086,6 +2120,10 @@ class TestGuiArguments(unittest.TestCase):
             shell_source.count("pady=_PANEL_HEADER_ACTION_MARGIN"), 3)
         self.assertIn('text="恢复设置"', shell_source)
         self.assertNotIn('text="恢复默认"', shell_source)
+        reset_source = inspect.getsource(
+            gui.DaisyApp._reset_current_task_settings)
+        self.assertIn("当前页面设置已恢复", reset_source)
+        self.assertNotIn("当前页面已恢复默认", reset_source)
         toolbar_source = inspect.getsource(
             gui.DaisyApp._build_task_toolbar)
         self.assertNotIn('text="功能模块"', toolbar_source)
@@ -4205,11 +4243,13 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn(token, title)
         about = gui.about_message()
         for token in (
+                "发布状态：当前稳定生产版",
                 "环境：", "档案：", "硬盘：",
                 f"当前扫描输出数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
                 f"兼容读取快照数据库结构版本：{core.SCHEMA_VERSION}",
                 f"元数据配置版本：{gui.metadata.PROFILE_VERSION}",
                 f"硬盘归档结构版本：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
+                f"历史兼容稳定生产版：v{core.MIN_READER_VERSION}",
                 f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}",
                 "当前扫描续传：按数据库结构版本 4 的续传规则检查",
                 "旧版兼容入口：仅续传数据库生成程序版本相同的数据库结构版本 3 未完成快照",
@@ -4217,6 +4257,14 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn(token, about)
         self.assertIn(gui._PROJECT_CONTACT, about)
         self.assertIn(gui._PROJECT_CONTACT, gui.contact_message())
+
+    def test_cli_top_level_version_is_a_successful_query(self):
+        for argument in ("-V", "--version", "version"):
+            with self.subTest(argument=argument), patch.object(
+                    sys, "argv", [entry.__file__, argument]), patch.object(
+                    sys, "stdout", io.StringIO()) as stdout:
+                self.assertEqual(entry.main(), 0)
+                self.assertEqual(stdout.getvalue(), "DAISY v1.6.8\n")
 
     def test_gui_stream_parser_handles_chunked_events(self):
         prefix = "@@DAISY_GUI@@"

@@ -5,6 +5,7 @@ r"""Script_DAISY_CLI：DAISY 统一入口。
 
 用法：
   python .\Script\Script_DAISY_CLI.py                  # 打印运行指引
+  python .\Script\Script_DAISY_CLI.py --version        # 打印当前版本
   python .\Script\Script_DAISY_CLI.py <子命令> [参数]   # 运行对应工具
   python .\Script\Script_DAISY_CLI.py <子命令> --help   # 全部参数
 """
@@ -123,6 +124,7 @@ def guide() -> str:
         "",
         "用法：在本包目录下用 PowerShell 执行：",
         f"  cd \"{_BASE}\"",
+        "  python .\\Script\\Script_DAISY_CLI.py --version",
         "  python .\\Script\\Script_DAISY_CLI.py <子命令> [参数]"
         "   （子命令后加 --help 看全部参数）",
         "  python .\\Script\\Script_DAISY_CLI.py gui"
@@ -175,6 +177,9 @@ def main() -> int:
                       "按 Enter 关闭）")
             except EOFError:
                 pass
+        return 0
+    if sys.argv[1] in ("-V", "--version", "version"):
+        print(guide().splitlines()[0])
         return 0
     cmd = sys.argv[1]
     if cmd not in COMMANDS:

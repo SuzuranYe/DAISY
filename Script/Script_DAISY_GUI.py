@@ -5264,6 +5264,7 @@ def about_message() -> str:
     return (
         f"{core.PROJECT_NAME} {_version()}\n"
         f"{core.PROJECT_FULL_NAME}\n"
+        "发布状态：当前稳定生产版\n"
         f"作者：{core.PROJECT_AUTHOR}\n"
         f"联系：{_PROJECT_CONTACT}\n\n"
         "环境：检测 Python、外部工具和可选运行能力。\n"
@@ -5277,6 +5278,7 @@ def about_message() -> str:
         f"硬盘归档结构版本：{storage_core.ARCHIVE_SCHEMA_VERSION}\n"
         f"硬盘归档文件名布局：{storage_core.FILENAME_LAYOUT_VERSION}\n\n"
         "兼容性\n"
+        f"历史兼容稳定生产版：v{core.MIN_READER_VERSION}\n"
         f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}\n"
         "当前扫描续传：按数据库结构版本 4 的续传规则检查\n"
         "旧版兼容入口：仅续传数据库生成程序版本相同的数据库结构版本 3 未完成快照\n\n"
@@ -5962,7 +5964,7 @@ class DaisyApp:
         self._refresh_verify_advanced_values()
         self._refresh_diff_advanced_values()
         self._save_gui_preferences()
-        self._set_status("当前页面已恢复默认。")
+        self._set_status("当前页面设置已恢复。")
 
     def _reset_software_settings(self) -> None:
         """恢复软件默认状态；不删除业务产物，也不卸载任何依赖。"""
