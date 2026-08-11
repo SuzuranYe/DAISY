@@ -1665,12 +1665,12 @@ class TestGuiArguments(unittest.TestCase):
             spec = f.read()
         self.assertIn("# DAISY v1.6.9 技术规格", spec)
         self.assertIn(
-            "稳定生产基线：**v1.4.1 → v1.6.8**",
+            "长期稳定生产基线：**v1.4.1 → v1.6.9**",
             spec,
         )
-        self.assertIn("状态：**v1.6.9 开发规范**", spec)
+        self.assertIn("状态：**v1.6.9 长期稳定生产规范**", spec)
         self.assertIn(
-            "历史兼容稳定生产版本：**v1.4.1**", spec)
+            "历史兼容长期稳定生产版本：**v1.4.1**", spec)
         self.assertIn("v1.5.0 是过渡版本", spec)
         self.assertIn("v1.5.1 的默认功能自检", spec)
         self.assertIn(
@@ -1708,12 +1708,12 @@ class TestGuiArguments(unittest.TestCase):
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
         self.assertIn(
-            "当前开发版：**v1.6.9**｜当前稳定生产版："
-            "**v1.6.8（界面与核验优化版）**",
+            "当前长期稳定生产版：**v1.6.9**｜"
+            "历史兼容长期稳定版：**v1.4.1**",
             readme,
         )
         self.assertIn(
-            "**v1.4.1**：历史兼容稳定版", readme)
+            "**v1.4.1**：历史兼容长期稳定版", readme)
         self.assertIn(
             "| v1.5.0 | 过渡版本，不是稳定生产基线 |", readme)
         self.assertIn(
@@ -1722,7 +1722,7 @@ class TestGuiArguments(unittest.TestCase):
             "| v1.6.0、v1.6.2～v1.6.6 | 问题版本 |", readme)
         self.assertIn(
             "| v1.6.1 | 未正式发布的问题阶段 |", readme)
-        self.assertIn("| v1.6.9 | 当前开发版 |", readme)
+        self.assertIn("| v1.6.9 | 当前长期稳定生产版 |", readme)
         self.assertIn("默认窗口目标为 `1920×1080`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
@@ -1735,7 +1735,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("Kit_AL v1.0.2", evolution)
         self.assertIn("DAISY v1.4.2", evolution)
         self.assertIn(
-            "DAISY v1.4.1（历史兼容稳定版）", evolution)
+            "DAISY v1.4.1（历史兼容长期稳定版）", evolution)
         self.assertIn("DAISY v1.5.0", evolution)
         self.assertIn("DAISY v1.5.1", evolution)
         self.assertIn("DAISY v1.6.0", evolution)
@@ -1746,9 +1746,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.6", evolution)
         self.assertIn("DAISY v1.6.7", evolution)
         self.assertIn("DAISY v1.6.8", evolution)
-        self.assertIn("DAISY v1.6.9（开发版）", evolution)
+        self.assertIn("DAISY v1.6.9（长期稳定生产版）", evolution)
         self.assertIn(
-            "稳定生产基线：**v1.4.1 → v1.6.8**",
+            "长期稳定生产基线：**v1.4.1 → v1.6.9**",
             evolution,
         )
         self.assertIn(
@@ -4454,7 +4454,11 @@ class TestGuiArguments(unittest.TestCase):
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
         self.assertEqual(core.SCANNER_VERSION, "1.6.9")
-        self.assertEqual(core.STABLE_PRODUCTION_VERSION, "1.6.8")
+        self.assertEqual(core.STABLE_PRODUCTION_VERSION, "1.6.9")
+        self.assertEqual(
+            core.LONG_TERM_STABLE_VERSIONS,
+            frozenset({"1.4.1", "1.6.9"}),
+        )
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
@@ -4478,14 +4482,14 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn(token, title)
         about = gui.about_message()
         for token in (
-                "发布状态：开发版本",
-                f"当前稳定生产版：v{core.STABLE_PRODUCTION_VERSION}",
+                "发布状态：长期稳定生产版",
+                f"当前长期稳定生产版：v{core.STABLE_PRODUCTION_VERSION}",
                 "环境：", "档案：", "硬盘：",
                 f"当前扫描输出数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
                 f"兼容读取快照数据库结构版本：{core.SCHEMA_VERSION}",
                 f"元数据配置版本：{gui.metadata.PROFILE_VERSION}",
                 f"硬盘归档结构版本：{gui.storage_core.ARCHIVE_SCHEMA_VERSION}",
-                f"历史兼容稳定生产版：v{core.MIN_READER_VERSION}",
+                f"历史兼容长期稳定版：v{core.MIN_READER_VERSION}",
                 f"封存快照只读兼容基线：v{core.MIN_READER_VERSION}",
                 "当前扫描续传：按数据库结构版本 4 的续传规则检查",
                 "旧版兼容入口：仅续传数据库生成程序版本相同的数据库结构版本 3 未完成快照",
