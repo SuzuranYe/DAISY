@@ -3826,7 +3826,26 @@ class TestGuiArguments(unittest.TestCase):
             if key != "raw_deep_validation"
         ))
 
-    def test_staged_form_section_heading_does_not_change_after_selection(self):
+    def test_function_pages_keep_first_section_heading_stable(self):
+        expected_generic_titles = {
+            "scan": "扫描设置",
+            "diff": "对比输入",
+            "verify": "核验输入",
+            "parse_db": "解析输入",
+        }
+        for task_key, expected_title in expected_generic_titles.items():
+            task = gui.TASK_BY_KEY[task_key]
+            first_spec = next(
+                spec for spec in task.fields if not spec.top_menu)
+            self.assertEqual(first_spec.section, expected_title)
+            self.assertTrue(gui._form_section_has_heading(
+                task, first_spec.section, first_spec.label))
+
+        self.assertEqual(gui._CUSTOM_FIRST_SECTION_TITLES, {
+            "storage_collect": "登记准备",
+            "env_check": "检测状态",
+        })
+
         verify = gui.TASK_BY_KEY["verify"]
         for values in ({}, {"verification_mode": "database"}):
             first_spec = gui._visible_form_specs(verify, values)[0]
@@ -3834,10 +3853,15 @@ class TestGuiArguments(unittest.TestCase):
             self.assertTrue(gui._form_section_has_heading(
                 verify, first_spec.section, first_spec.label))
 
-        scan = gui.TASK_BY_KEY["scan"]
-        first_scan_spec = gui._visible_form_specs(scan, {})[0]
+        diff = gui.TASK_BY_KEY["diff"]
+        root_map = next(spec for spec in diff.fields if spec.key == "map_root")
         self.assertFalse(gui._form_section_has_heading(
-            scan, first_scan_spec.section, first_scan_spec.label))
+            diff, root_map.section, root_map.label))
+
+        parse = gui.TASK_BY_KEY["parse_db"]
+        formats = next(spec for spec in parse.fields if spec.key == "formats")
+        self.assertFalse(gui._form_section_has_heading(
+            parse, formats.section, formats.label))
 
     def test_failed_parse_keeps_start_disabled_and_retry_available(self):
         class WidgetProbe:

@@ -2047,7 +2047,7 @@ def _unified_scan_fields() -> tuple[FieldSpec, ...]:
         required=True,
         choices=(("完整扫描", "full"), ("快速扫描", "quick")),
         help="选择完整扫描或快速扫描；随后显示对应设置。",
-        section="扫描模式",
+        section="扫描设置",
     )]
     for original in _task_definition("full_scan").fields:
         spec = original
@@ -2091,7 +2091,7 @@ def _unified_scan_fields() -> tuple[FieldSpec, ...]:
                 choices=(("全新生成", "new"),
                          ("使用续传", "resume")),
                 help="全新生成建立新快照；使用续传继续未完成快照。",
-                section="扫描模式",
+                section="扫描设置",
             )
         elif spec.key == "root_batch_mode":
             spec = replace(
@@ -2413,6 +2413,10 @@ _TASK_DISPLAY_TITLES = {
     "verify": "档案数据核验",
     "parse_db": "档案数据解析",
     "storage_collect": "硬盘信息登记",
+}
+_CUSTOM_FIRST_SECTION_TITLES = {
+    "storage_collect": "登记准备",
+    "env_check": "检测状态",
 }
 
 
@@ -2824,12 +2828,20 @@ def _form_section_has_heading(
     section: str,
     first_field_label: str,
 ) -> bool:
-    """按任务固定结构决定章节标题，避免分阶段展开时整组控件跳动。"""
+    """按固定结构显示首区和多字段区标题，避免分阶段展开时跳动。"""
+    section_title = section.strip()
+    if not section_title or section_title == first_field_label.strip():
+        return False
+    first_section = next((
+        spec.section.strip()
+        for spec in task.fields
+        if not spec.top_menu and spec.section.strip()
+    ), "")
     field_count = sum(
         1 for spec in task.fields
-        if not spec.top_menu and spec.section == section
+        if not spec.top_menu and spec.section.strip() == section_title
     )
-    return field_count > 1 and section != first_field_label
+    return section_title == first_section or field_count > 1
 
 
 def build_tool_args(task_key: str, values: dict[str, object]) -> list[str]:
@@ -8436,6 +8448,27 @@ class DaisyApp:
             if tooltip is not None:
                 tooltip.text = detail
 
+    def _build_form_section_heading(
+        self, row: int, title: str, form_pad: int,
+    ) -> int:
+        """使用统一样式建立表单分区标题。"""
+        section_colour = _NAV_COLOURS.get(
+            self.task.key, (_ACCENT, _ACCENT_DARK))[0]
+        section = tk.Frame(self.form_inner, bg=_SURFACE)
+        section.grid(
+            row=row, column=0, columnspan=2, sticky="ew",
+            padx=form_pad, pady=_FORM_SECTION_PADY,
+        )
+        tk.Frame(
+            section, bg=section_colour, width=4, height=15,
+        ).pack(side="left", fill="y")
+        tk.Label(
+            section, text=title,
+            bg=_SURFACE, fg=section_colour,
+            font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
+        ).pack(side="left", padx=(8, 0))
+        return row + 1
+
     def _build_environment_status(
         self, row: int, form_pad: int,
     ) -> int:
@@ -8454,7 +8487,8 @@ class DaisyApp:
         tk.Frame(header, bg=_GREEN_DARK, width=4, height=18).pack(
             side="left", fill="y")
         tk.Label(
-            header, text="检测状态", bg=_SURFACE, fg=_GREEN_DEEP,
+            header, text=_CUSTOM_FIRST_SECTION_TITLES["env_check"],
+            bg=_SURFACE, fg=_GREEN_DEEP,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         ).pack(side="left", padx=(8, 0))
 
@@ -8767,6 +8801,12 @@ class DaisyApp:
             )
             row = 1
 
+        if self.task.key == "storage_collect":
+            row = self._build_form_section_heading(
+                row,
+                _CUSTOM_FIRST_SECTION_TITLES["storage_collect"],
+                form_pad,
+            )
         if self.task.key in _STORAGE_ADMIN_TASKS:
             row = self._build_admin_requirement_notice(row, form_pad)
         if self.task.key == "storage_collect":
@@ -8776,8 +8816,6 @@ class DaisyApp:
             row = self._build_environment_installation(row, form_pad)
 
         current_section: str | None = None
-        section_colour = _NAV_COLOURS.get(
-            self.task.key, (_ACCENT, _ACCENT_DARK))[0]
         for spec in active_specs:
             if spec.section != current_section:
                 current_section = spec.section
@@ -8785,20 +8823,8 @@ class DaisyApp:
                 # 插入；否则首字段会在点击选择后整体下移。
                 if _form_section_has_heading(
                         self.task, current_section, spec.label):
-                    section = tk.Frame(self.form_inner, bg=_SURFACE)
-                    section.grid(
-                        row=row, column=0, columnspan=2, sticky="ew",
-                        padx=form_pad, pady=_FORM_SECTION_PADY,
-                    )
-                    tk.Frame(
-                        section, bg=section_colour, width=4, height=15,
-                    ).pack(side="left", fill="y")
-                    tk.Label(
-                        section, text=current_section,
-                        bg=_SURFACE, fg=section_colour,
-                        font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
-                    ).pack(side="left", padx=(8, 0))
-                    row += 1
+                    row = self._build_form_section_heading(
+                        row, current_section, form_pad)
 
             current = saved.get(spec.key, spec.default)
             field_help = spec.help
