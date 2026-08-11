@@ -5395,7 +5395,6 @@ class DaisyApp:
         self.current_stage_index = 0
         self.current_stage_total = 0
         self.mini_mode = False
-        self.task_toolbar_expanded = True
         self.settings_expanded = False
         self.progress_expanded = False
         self.log_expanded = False
@@ -5988,7 +5987,6 @@ class DaisyApp:
             self.default_window_size, persist=False)
         if getattr(self, "mini_mode", False):
             self._leave_mini_mode()
-        self._set_task_toolbar_expanded(True)
         self._set_settings_expanded(False)
         self._set_progress_expanded(False)
         self._set_log_expanded(False)
@@ -6553,8 +6551,6 @@ class DaisyApp:
             command=lambda: self._set_result_directory_prompt(
                 self.result_directory_prompt_enabled_var.get()),
         )
-        self.task_toolbar_visible_var = tk.BooleanVar(
-            value=getattr(self, "task_toolbar_expanded", True))
         self.settings_visible_var = tk.BooleanVar(
             value=getattr(self, "settings_expanded", True))
         self.progress_visible_var = tk.BooleanVar(
@@ -6563,14 +6559,12 @@ class DaisyApp:
             value=getattr(self, "log_expanded", False))
         view_menu = tk.Menu(menu, **base_menu_options)
         self.view_menu = view_menu
-        for panel_key, panel_label, variable, setter in (
-            ("task_toolbar", "功能栏", self.task_toolbar_visible_var,
-             self._set_task_toolbar_expanded),
-            ("settings", "设置区", self.settings_visible_var,
+        for panel_label, variable, setter in (
+            ("设置区", self.settings_visible_var,
              self._set_settings_expanded),
-            ("progress", "进度区", self.progress_visible_var,
+            ("进度区", self.progress_visible_var,
              self._set_progress_expanded),
-            ("log", "日志区", self.log_visible_var,
+            ("日志区", self.log_visible_var,
              self._set_log_expanded),
         ):
             view_menu.add_checkbutton(
@@ -6580,8 +6574,6 @@ class DaisyApp:
                 apply(bool(state.get())),
                 selectcolor=_UNIFIED_ACTION_BACKGROUND,
             )
-            if panel_key == "task_toolbar":
-                view_menu.add_separator()
         view_menu.add_separator()
         view_menu.add_command(
             label="小窗模式", command=self._toggle_mini_mode)
@@ -6668,12 +6660,7 @@ class DaisyApp:
             toolbar_row, bg=_SECTION_HEADER_BACKGROUND)
         self.task_toolbar_actions = toolbar_actions
         toolbar_actions.grid(row=0, column=2, sticky="e")
-        toolbar_actions.grid_columnconfigure(
-            0, weight=1, uniform="toolbar_action")
-        toolbar_actions.grid_columnconfigure(
-            1, minsize=_STANDARD_BUTTON_GAP)
-        toolbar_actions.grid_columnconfigure(
-            2, weight=1, uniform="toolbar_action")
+        toolbar_actions.grid_columnconfigure(0, weight=1)
         self.clear_cache_button = ttk.Button(
             toolbar_actions, text="重置软件",
             style=_NEUTRAL_BUTTON_STYLE,
@@ -6684,17 +6671,6 @@ class DaisyApp:
         attach_tooltip(
             self.clear_cache_button,
             "恢复软件默认设置，并清空会话数据与可重建缓存；不会删除任务产物。",
-        )
-        self.task_toolbar_toggle_button = ttk.Button(
-            toolbar_actions, text="收起模块",
-            style=_NEUTRAL_BUTTON_STYLE,
-            width=_PANEL_ACTION_BUTTON_WIDTH,
-            command=self._toggle_task_toolbar, takefocus=False,
-        )
-        self.task_toolbar_toggle_button.grid(row=0, column=2, sticky="ew")
-        attach_tooltip(
-            self.task_toolbar_toggle_button,
-            "展开或收起顶部功能模块。",
         )
         for task_key in _TASK_TOOLBAR_KEYS:
             task = TASK_BY_KEY[task_key]
@@ -7445,7 +7421,7 @@ class DaisyApp:
             self.root.minsize(*self._normal_minimum_size())
 
     def _refresh_view_menu_labels(self) -> None:
-        """同步模式切换文字；面板勾选状态由 BooleanVar 直接驱动。"""
+        """同步模式切换文字；三个内容面板由 BooleanVar 直接驱动。"""
         if hasattr(self, "view_mini_mode_menu_index"):
             self.view_menu.entryconfigure(
                 self.view_mini_mode_menu_index,
@@ -7453,24 +7429,6 @@ class DaisyApp:
                     "完整界面" if self.mini_mode else "小窗模式"
                 ),
             )
-
-    def _set_task_toolbar_expanded(self, expanded: bool) -> None:
-        self.task_toolbar_expanded = expanded
-        if expanded:
-            if not self.task_toolbar_body.winfo_manager():
-                self.task_toolbar_body.grid()
-                self.root.after_idle(self._layout_task_toolbar)
-        else:
-            self.task_toolbar_body.grid_remove()
-        self.task_toolbar_toggle_button.configure(
-            text="收起模块" if expanded else "展开模块")
-        if hasattr(self, "task_toolbar_visible_var"):
-            self.task_toolbar_visible_var.set(expanded)
-        self._refresh_view_menu_labels()
-
-    def _toggle_task_toolbar(self) -> None:
-        self._set_task_toolbar_expanded(not self.task_toolbar_expanded)
-        self._release_toggle_focus()
 
     def _normal_minimum_size(self) -> tuple[int, int]:
         return self.normal_min_size

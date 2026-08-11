@@ -2426,7 +2426,7 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.view_menu.entries
                 if entry["kind"] == "checkbutton"
             ],
-            ["功能栏", "设置区", "进度区", "日志区"],
+            ["设置区", "进度区", "日志区"],
         )
         self.assertEqual(
             [
@@ -2434,7 +2434,7 @@ class TestGuiArguments(unittest.TestCase):
                 for entry in app.view_menu.entries
                 if entry["kind"] == "checkbutton"
             ],
-            [True, True, False, False],
+            [True, False, False],
         )
         help_menu = app.app_menu.entries[-1]["menu"]
         self.assertEqual(
@@ -2798,49 +2798,15 @@ class TestGuiArguments(unittest.TestCase):
             environment_button.options["fg"],
             gui._TASK_TOOLBAR_FOREGROUND)
 
-    def test_top_task_toolbar_collapses_without_changing_selection(self):
-        class BodyProbe:
-            def __init__(self):
-                self.manager = "grid"
-                self.options = {}
-
-            def winfo_manager(self):
-                return self.manager
-
-            def grid(self, **options):
-                self.manager = "grid"
-                self.options = options
-
-            def grid_remove(self):
-                self.manager = ""
-
-        class ValueProbe:
-            def set(self, value):
-                self.value = value
-
-        class ButtonProbe:
-            def configure(self, **options):
-                self.text = options["text"]
-
-        class RootProbe:
-            def after_idle(self, _callback):
-                pass
-
-        app = object.__new__(gui.DaisyApp)
-        app.root = RootProbe()
-        app.task_toolbar_expanded = True
-        app.task_toolbar_body = BodyProbe()
-        app.task_toolbar_toggle_button = ButtonProbe()
-        app.task_toolbar_visible_var = ValueProbe()
-        app._set_task_toolbar_expanded(False)
-        self.assertEqual(app.task_toolbar_body.manager, "")
-        self.assertEqual(app.task_toolbar_toggle_button.text, "展开模块")
-        self.assertFalse(app.task_toolbar_visible_var.value)
-        app._set_task_toolbar_expanded(True)
-        self.assertEqual(app.task_toolbar_body.manager, "grid")
-        self.assertEqual(app.task_toolbar_body.options, {})
-        self.assertEqual(app.task_toolbar_toggle_button.text, "收起模块")
-        self.assertTrue(app.task_toolbar_visible_var.value)
+    def test_top_task_toolbar_uses_reset_as_its_only_action(self):
+        source = inspect.getsource(gui.DaisyApp._build_task_toolbar)
+        self.assertIn('toolbar_actions, text="重置软件"', source)
+        self.assertEqual(source.count("ttk.Button("), 1)
+        self.assertNotIn("task_toolbar_toggle_button", source)
+        self.assertNotIn("展开模块", source)
+        self.assertNotIn("收起模块", source)
+        self.assertFalse(hasattr(gui.DaisyApp, "_toggle_task_toolbar"))
+        self.assertFalse(hasattr(gui.DaisyApp, "_set_task_toolbar_expanded"))
 
     def test_collapsed_settings_header_keeps_title_scale_and_action_position(self):
         class BodyProbe:
@@ -3036,7 +3002,7 @@ class TestGuiArguments(unittest.TestCase):
         class ActionProbe:
             @staticmethod
             def winfo_reqwidth():
-                return 292
+                return 146
 
         class BodyProbe:
             @staticmethod
