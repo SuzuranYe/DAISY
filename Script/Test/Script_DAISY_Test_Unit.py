@@ -2124,7 +2124,11 @@ class TestGuiArguments(unittest.TestCase):
             def map(self, name, **options):
                 self.mappings[name] = options
 
-            def layout(self, name, layout):
+            def layout(self, name, layout=None):
+                if layout is None:
+                    return [(f"{name}.focus", {
+                        "children": [(f"{name}.label", {})],
+                    })]
                 self.layouts[name] = layout
 
             def element_create(self, name, *definition, **options):
@@ -3704,14 +3708,23 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn("请填写「档案根目录」。", issues)
 
     def test_unified_verification_input_modes_activate_only_needed_paths(self):
-        empty_keys = gui.active_field_keys("verify", {})
+        empty_keys = gui.active_field_keys("verify", {
+            "verification_mode": "",
+            "verify_path_mode": "",
+        })
         self.assertEqual(empty_keys, {"verification_mode"})
         self.assertEqual(
-            gui.validate_values("verify", {}),
+            gui.validate_values("verify", {
+                "verification_mode": "",
+                "verify_path_mode": "",
+            }),
             ["请填写「核验方式」。"],
         )
 
-        database_pending = {"verification_mode": "database"}
+        database_pending = {
+            "verification_mode": "database",
+            "verify_path_mode": "",
+        }
         self.assertEqual(
             gui.active_field_keys("verify", database_pending),
             {"verification_mode", "verify_path_mode"},
@@ -3883,7 +3896,7 @@ class TestGuiArguments(unittest.TestCase):
             storage_inventory_ready=True,
         ))
 
-    def test_scan_defaults_visible_while_verify_keeps_selection_gate(self):
+    def test_scan_and_verify_defaults_show_their_complete_common_settings(self):
         scan = gui.TASK_BY_KEY["scan"]
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(scan, {})),
@@ -3905,13 +3918,34 @@ class TestGuiArguments(unittest.TestCase):
         verify = gui.TASK_BY_KEY["verify"]
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(verify, {})),
+            (
+                "verification_mode", "verify_path_mode", "snapshot",
+                "verify_builtin", "report_dir",
+            ),
+        )
+        self.assertEqual(
+            tuple(spec.key for spec in gui._visible_form_specs(
+                verify, {
+                    "verification_mode": "",
+                    "verify_path_mode": "",
+                })),
             ("verification_mode",),
         )
         self.assertEqual(
             tuple(spec.key for spec in gui._visible_form_specs(
-                verify, {"verification_mode": "database"})),
+                verify, {
+                    "verification_mode": "database",
+                    "verify_path_mode": "",
+                })),
             ("verification_mode", "verify_path_mode"),
         )
+
+        defaults = {
+            spec.key: spec.default
+            for spec in verify.fields
+        }
+        self.assertEqual(defaults["verification_mode"], "database")
+        self.assertEqual(defaults["verify_path_mode"], "unchanged")
 
     def test_verification_projects_default_on_except_rawpy(self):
         defaults = {
@@ -3926,6 +3960,85 @@ class TestGuiArguments(unittest.TestCase):
             for key, value in defaults.items()
             if key != "raw_deep_validation"
         ))
+
+    def test_form_rows_do_not_share_height_with_wrapping_controls(self):
+        source = inspect.getsource(gui.DaisyApp._build_form)
+        self.assertIn("minsize=_FORM_SINGLE_ROW_HEIGHT", source)
+        self.assertNotIn('uniform="form_single_row"', source)
+        self.assertIn(
+            "verification_tools", gui._VARIABLE_HEIGHT_FIELD_KINDS)
+
+    def test_ttk_focus_layers_are_removed_without_losing_children(self):
+        layout = [("Button.border", {
+            "sticky": "nswe",
+            "children": [("Button.focus", {
+                "sticky": "nswe",
+                "children": [("Button.padding", {
+                    "sticky": "nswe",
+                    "children": [("Button.label", {"sticky": "nswe"})],
+                })],
+            })],
+        })]
+
+        stripped = gui._strip_ttk_focus_elements(layout)
+
+        flattened = repr(stripped).casefold()
+        self.assertNotIn("focus", flattened)
+        self.assertIn("button.padding", flattened)
+        self.assertIn("button.label", flattened)
+
+    def test_all_button_classes_disable_visual_focus_globally(self):
+        configure_window = inspect.getsource(gui.DaisyApp._configure_window)
+        configure_styles = inspect.getsource(gui.DaisyApp._configure_styles)
+        gui_source = inspect.getsource(gui)
+        self.assertIn("_BUTTON_WIDGET_CLASSES", configure_window)
+        self.assertIn("highlightThickness", configure_window)
+        self.assertIn("_TTK_FOCUSLESS_LAYOUTS", configure_styles)
+        self.assertIn("_strip_ttk_focus_elements", configure_styles)
+        self.assertNotRegex(
+            gui_source,
+            r'(?:takefocus\s*=|["\u0027]takefocus["\u0027]\s*:)\s*True',
+        )
+
+    def test_clicked_button_releases_only_its_own_remaining_focus(self):
+        entry = object()
+
+        class WindowProbe:
+            def __init__(self):
+                self.release_count = 0
+
+            def focus_set(self):
+                self.release_count += 1
+
+        owner = WindowProbe()
+
+        class ButtonProbe:
+            @staticmethod
+            def winfo_toplevel():
+                return owner
+
+        button = ButtonProbe()
+
+        class RootProbe:
+            def __init__(self):
+                self.focus = button
+
+            def after_idle(self, callback):
+                callback()
+
+            def focus_get(self):
+                return self.focus
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app._schedule_button_focus_release(
+            types.SimpleNamespace(widget=button))
+        self.assertEqual(owner.release_count, 1)
+
+        app.root.focus = entry
+        app._schedule_button_focus_release(
+            types.SimpleNamespace(widget=button))
+        self.assertEqual(owner.release_count, 1)
 
     def test_function_pages_keep_first_section_heading_stable(self):
         expected_generic_titles = {

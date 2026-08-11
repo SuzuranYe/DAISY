@@ -2190,15 +2190,15 @@ TASKS = (*TASKS,
         (
             FieldSpec(
                 "verification_mode", "核验方式", None, "choice_buttons",
-                "", required=True,
+                "database", required=True,
                 choices=(("已有数据库", "database"),
                          ("无数据库", "direct")),
-                help="先选择是否使用封存快照作为核验基准。",
+                help="默认使用封存快照作为核验基准；也可切换为无数据库直接核验。",
                 section="核验输入",
             ),
             FieldSpec(
                 "verify_path_mode", "路径状态", None, "choice_buttons",
-                "", required=True,
+                "unchanged", required=True,
                 choices=(("路径未变", "unchanged"),
                          ("路径变化", "changed")),
                 help="快照记录的原路径仍有效时可直接使用；只有原路径失效时才需重新映射。",
@@ -2539,8 +2539,15 @@ _FORM_SCROLL_OVERFLOW_TOLERANCE = 2
 _VARIABLE_HEIGHT_FIELD_KINDS = frozenset((
     "disk_pool", "parse_modules",
     "multidir", "multimapdir", "multiline", "parse_database",
-    "root_label_map",
+    "root_label_map", "verification_tools",
 ))
+_BUTTON_WIDGET_CLASSES = (
+    "Button", "TButton", "Checkbutton", "TCheckbutton",
+    "Radiobutton", "TRadiobutton", "Menubutton", "TMenubutton",
+)
+_TTK_FOCUSLESS_LAYOUTS = (
+    "TButton", "TCheckbutton", "TRadiobutton", "TMenubutton",
+)
 _PERSISTABLE_TASK_OPTION_KINDS = frozenset((
     "bool", "inverse_bool", "choice", "choice_flag", "choice_buttons",
     "metadata_tools", "metadata_controls", "verification_tools",
@@ -2643,6 +2650,25 @@ def _validated_task_options(raw: object) -> dict[str, dict[str, object]]:
 def _lines(value: object) -> list[str]:
     return [line.strip() for line in str(value or "").splitlines()
             if line.strip()]
+
+
+def _strip_ttk_focus_elements(
+    layout: list[tuple[str, dict[str, object]]]
+    | tuple[tuple[str, dict[str, object]], ...],
+) -> list[tuple[str, dict[str, object]]]:
+    """移除 ttk 布局中的焦点绘制层，同时保留其子控件。"""
+    stripped: list[tuple[str, dict[str, object]]] = []
+    for element_name, raw_options in layout:
+        options = dict(raw_options)
+        raw_children = options.pop("children", ())
+        children = _strip_ttk_focus_elements(raw_children)  # type: ignore[arg-type]
+        if "focus" in str(element_name).casefold():
+            stripped.extend(children)
+            continue
+        if children:
+            options["children"] = children
+        stripped.append((element_name, options))
+    return stripped
 
 
 def _task_values(task: TaskSpec,
@@ -3587,7 +3613,7 @@ class AdminModeButton(tk.Frame):
         )
         self.button = ttk.Button(
             self, text="管理员模式", width=_WORKFLOW_ACTION_BUTTON_WIDTH,
-            takefocus=True, command=self._activate,
+            takefocus=False, command=self._activate,
         )
         self.button.pack()
         self._refresh()
@@ -4120,6 +4146,7 @@ class StorageDiskPool(tk.Frame):
                 justify="left", wraplength=650,
                 highlightthickness=0, bd=0, relief="flat",
                 offrelief="flat", overrelief="flat", padx=8, pady=6,
+                takefocus=False,
             )
             checkbox.grid(row=0, column=0, sticky="nsew")
             self.checkboxes.append(checkbox)
@@ -4176,7 +4203,7 @@ class ChoiceButtonGroup(tk.Frame):
                 anchor="center",
                 padx=_STANDARD_BUTTON_PADDING[0],
                 pady=_STANDARD_BUTTON_PADDING[1],
-                takefocus=True,
+                takefocus=False,
                 command=lambda selected=value: self._choose(selected),
             )
             button.grid(
@@ -4251,7 +4278,7 @@ class BooleanToggleButton(tk.Frame):
             width=_BOOLEAN_BUTTON_WIDTH,
             padx=_STANDARD_BUTTON_PADDING[0],
             pady=_STANDARD_BUTTON_PADDING[1],
-            takefocus=True,
+            takefocus=False,
             command=self._toggle,
         )
         self.button.pack(anchor="w")
@@ -4326,7 +4353,7 @@ class ValueToggleButton(tk.Frame):
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
             anchor="center", width=_BOOLEAN_BUTTON_WIDTH,
             padx=_STANDARD_BUTTON_PADDING[0],
-            pady=_STANDARD_BUTTON_PADDING[1], takefocus=True,
+            pady=_STANDARD_BUTTON_PADDING[1], takefocus=False,
             command=self._toggle,
         )
         self.button.pack(anchor="w")
@@ -4450,7 +4477,7 @@ class MetadataToolModeButton(tk.Frame):
             anchor="center", justify="center",
             padx=_STANDARD_BUTTON_PADDING[0],
             pady=_STANDARD_BUTTON_PADDING[1],
-            takefocus=True, command=self._advance,
+            takefocus=False, command=self._advance,
         )
         self.button.pack()
         self.tooltip_widgets = (self, self.button)
@@ -4687,7 +4714,7 @@ class MultiChoicePool(tk.Frame):
                 font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
                 anchor="center", justify="center",
                 padx=_STANDARD_BUTTON_PADDING[0],
-                pady=_STANDARD_BUTTON_PADDING[1], takefocus=True,
+                pady=_STANDARD_BUTTON_PADDING[1], takefocus=False,
                 command=lambda selected_value=value:
                 self._toggle(selected_value),
             )
@@ -4866,7 +4893,7 @@ class ParseModulePool(tk.Frame):
                 anchor="center", justify="center",
                 padx=_STANDARD_BUTTON_PADDING[0],
                 pady=_STANDARD_BUTTON_PADDING[1],
-                takefocus=True,
+                takefocus=False,
                 command=lambda item=module: self._toggle_module(item),
             )
             button._daisy_module = module  # type: ignore[attr-defined]
@@ -5487,6 +5514,16 @@ class DaisyApp:
             self.ui_font_size_delta)
         self.root.option_add(
             "*Font", (selected_family, _UI_BODY_FONT_SIZE))
+        for widget_class in _BUTTON_WIDGET_CLASSES:
+            self.root.option_add(f"*{widget_class}.takeFocus", False)
+            self.root.bind_class(
+                widget_class, "<ButtonRelease-1>",
+                self._schedule_button_focus_release, add="+",
+            )
+        for widget_class in (
+                "Button", "Checkbutton", "Radiobutton", "Menubutton"):
+            self.root.option_add(
+                f"*{widget_class}.highlightThickness", 0)
         self._named_font_base_sizes: dict[str, int] = {}
         for font_name in (
                 "TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
@@ -6041,6 +6078,14 @@ class DaisyApp:
         style = self.style
         if "clam" in style.theme_names():
             style.theme_use("clam")
+        for layout_name in _TTK_FOCUSLESS_LAYOUTS:
+            try:
+                layout = _strip_ttk_focus_elements(
+                    style.layout(layout_name))
+                if layout:
+                    style.layout(layout_name, layout)
+            except tk.TclError:
+                continue
         style.configure("TFrame", background=_SURFACE)
         style.configure(
             "TButton", font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
@@ -6666,6 +6711,7 @@ class DaisyApp:
             style=_NEUTRAL_BUTTON_STYLE,
             width=_PANEL_ACTION_BUTTON_WIDTH,
             command=self._reset_software_settings,
+            takefocus=False,
         )
         self.clear_cache_button.grid(row=0, column=0, sticky="ew")
         attach_tooltip(
@@ -6748,7 +6794,7 @@ class DaisyApp:
             anchor="center", justify="center",
             padx=_TASK_ACTION_BUTTON_PADDING[0],
             pady=_TASK_ACTION_BUTTON_PADDING[1],
-            takefocus=True,
+            takefocus=False,
         )
 
     def _build_shell(self) -> None:
@@ -7589,6 +7635,30 @@ class DaisyApp:
         except tk.TclError:
             pass
 
+    def _schedule_button_focus_release(self, event: tk.Event) -> None:
+        """鼠标命令结束后，仅释放仍停留在按钮上的逻辑焦点。"""
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return
+        try:
+            self.root.after_idle(
+                lambda target=widget:
+                self._release_button_focus_if_current(target))
+        except tk.TclError:
+            pass
+
+    def _release_button_focus_if_current(self, widget: tk.Misc) -> None:
+        """不夺回命令主动交给输入框的焦点。"""
+        try:
+            if self.root.focus_get() is widget:
+                widget.winfo_toplevel().focus_set()
+        except (AttributeError, tk.TclError):
+            try:
+                if self.root.focus_get() is widget:
+                    self.root.focus_set()
+            except (AttributeError, tk.TclError):
+                pass
+
     def _set_command_preview_expanded(self, expanded: bool) -> None:
         self.command_preview_expanded = expanded
         if expanded:
@@ -8309,7 +8379,7 @@ class DaisyApp:
             "disabledforeground": _MUTED,
             "highlightbackground": _BORDER,
             "highlightcolor": _BORDER,
-            "takefocus": True,
+            "takefocus": False,
         }
         for index, dependency_name in enumerate(_ENVIRONMENT_STATUS_ORDER):
             grid_row, grid_column = divmod(
@@ -8519,7 +8589,7 @@ class DaisyApp:
                 height=2,
                 padx=_ENVIRONMENT_BUTTON_PADDING[0],
                 pady=_ENVIRONMENT_BUTTON_PADDING[1],
-                takefocus=True, cursor="hand2", command=self._run,
+                takefocus=False, cursor="hand2", command=self._run,
             )
             button.grid(
                 row=grid_row, column=grid_column * 2, sticky="w",
@@ -8852,7 +8922,6 @@ class DaisyApp:
             if not variable_height:
                 self.form_inner.grid_rowconfigure(
                     row, minsize=_FORM_SINGLE_ROW_HEIGHT,
-                    uniform="form_single_row",
                 )
             field_label = tk.Label(
                 self.form_inner, text=spec.label, bg=_SURFACE, fg=_TEXT,
