@@ -28,7 +28,7 @@ import Script_DAISY_Lib_Verify_Runtime as verifyrun
 
 _STAGES = {
     "stat": (1, "文件状态"),
-    "hash": (2, "哈希复检"),
+    "hash": (2, "哈希复核"),
     "format": (3, "格式校验"),
     "raw": (4, "RAW 深度校验"),
 }
@@ -249,7 +249,7 @@ class VerificationCommandRouter:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "档案数据核验：核对全部文件状态，并可选复检哈希、格式、容器结构与 RAW 解码；"
+            "档案数据核验：核对全部文件状态，并可选复核哈希、格式、容器结构与 RAW 解码；"
             "封存快照保持只读，也支持无数据库直接核验"
         ),
     )
@@ -268,10 +268,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--hash", choices=("off", "sample", "all"),
-        help="哈希复检范围；数据库模式默认抽样，直接模式固定关闭",
+        help="哈希复核范围；数据库模式默认抽样，直接模式固定关闭",
     )
     parser.add_argument(
-        "--hash-sample-percent", type=float, help="哈希复检抽样比例")
+        "--hash-sample-percent", type=float, help="哈希复核抽样比例")
     parser.add_argument(
         "--format", choices=("off", "sample", "all"), default="off",
         help="格式校验范围；默认关闭",
@@ -337,7 +337,7 @@ def verification_options(args: argparse.Namespace) \
     if hash_mode == "off" and (
             args.powershell_path or args.hash_timeout_seconds is not None):
         raise core.PreflightError(
-            "哈希复检关闭时不能指定 PowerShell 路径或哈希超时阈值")
+            "哈希复核关闭时不能指定 PowerShell 路径或哈希超时阈值")
     if args.format == "off" and args.format_tool:
         raise core.PreflightError(
             "--format-tool 仅用于已启用的 --format")

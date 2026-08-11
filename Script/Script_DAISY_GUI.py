@@ -540,7 +540,7 @@ def save_gui_preferences(
         handle.write("\n")
     os.replace(temporary, path)
 
-# v1.6.8 配色锚点以《明日方舟_孤星_配色取样_修复版_v2.pptx》为准。
+# 自 v1.6.8 起，配色锚点以《明日方舟_孤星_配色取样_修复版_v2.pptx》为准。
 # 所有语义色只允许指向下列核心色或用户补充色，不保留表外旧色。
 _ARCHIVE_BLACK = "#131210"
 _SIGNAL_ORANGE = "#f06733"
@@ -1609,12 +1609,12 @@ TASKS = (
                 active_when=_FULL_INCREMENTAL,
             ),
             FieldSpec(
-                "verify_percent", "哈希复检",
+                "verify_percent", "哈希抽检",
                 "--verify-sample-percent", default="1.0",
                 help=(
                     "主 SHA-256 完成后，抽取本次实际计算且有效的条目，"
-                    "再由 PowerShell Get-FileHash 独立复检；默认 1%，至少 "
-                    "100 个（不足则全部复检）。这不是主哈希的覆盖比例。"
+                    "再由 PowerShell Get-FileHash 独立抽检；默认 1%，至少 "
+                    "100 个（不足则全部抽检）。这不是主哈希的覆盖比例。"
                 ),
                 section="哈希比例", top_menu=True,
                 active_when=_FULL_HASHED,
@@ -1649,7 +1649,7 @@ TASKS = (
             FieldSpec(
                 "powershell_path", "PowerShell", "--powershell-path",
                 "file",
-                help="用于独立哈希复检；" + _TOOL_PATH_HELP,
+                help="用于独立哈希抽检；" + _TOOL_PATH_HELP,
                 filetypes=_EXE_TYPES, section="工具路径", top_menu=True,
                 active_when=_FULL_POWERSHELL,
             ),
@@ -2434,6 +2434,7 @@ _WORKFLOW_ACTION_FONT_WEIGHT = "bold"
 _WORKFLOW_EXECUTION_BUTTON_STYLE = "DiscoveryAction.TButton"
 _WORKFLOW_INPUT_BUTTON_STYLE = "InputSelection.TButton"
 _NEUTRAL_BUTTON_STYLE = "FilePicker.TButton"
+_ATTENTION_BUTTON_STYLE = "AttentionFilePicker.TButton"
 _STANDARD_NEUTRAL_BUTTON_STYLE = "Secondary.TButton"
 _DANGER_BUTTON_STYLE = "Stop.TButton"
 _PRIMARY_TASK_BUTTON_WIDTH = 16
@@ -2536,6 +2537,7 @@ _BOOLEAN_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _SCAN_MODE_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _FORM_SINGLE_ROW_HEIGHT = 58
 _FORM_SCROLL_OVERFLOW_TOLERANCE = 2
+_ATTENTION_FLASH_INTERVAL_MS = 500
 _VARIABLE_HEIGHT_FIELD_KINDS = frozenset((
     "disk_pool", "parse_modules",
     "multidir", "multimapdir", "multiline", "parse_database",
@@ -5264,7 +5266,8 @@ def about_message() -> str:
     return (
         f"{core.PROJECT_NAME} {_version()}\n"
         f"{core.PROJECT_FULL_NAME}\n"
-        "发布状态：当前稳定生产版\n"
+        "发布状态：开发版本\n"
+        f"当前稳定生产版：v{core.STABLE_PRODUCTION_VERSION}\n"
         f"作者：{core.PROJECT_AUTHOR}\n"
         f"联系：{_PROJECT_CONTACT}\n\n"
         "环境：检测 Python、外部工具和可选运行能力。\n"
@@ -5459,7 +5462,11 @@ class DaisyApp:
         self.timeout_dialog_label: tk.Label | None = None
         self.timeout_worker_pid: int | None = None
         self.open_result_flash_after_id: str | None = None
-        self.progress_collapse_after_id: str | None = None
+        self.open_result_flash_active = False
+        self.open_result_flash_highlighted = False
+        self.log_toggle_flash_after_id: str | None = None
+        self.log_toggle_flash_active = False
+        self.log_toggle_flash_highlighted = False
         self.events: queue.Queue[tuple] = queue.Queue()
         self._configure_window()
         self._configure_styles()
@@ -5984,7 +5991,8 @@ class DaisyApp:
             icon="warning", parent=self.root,
         ):
             return
-        self._cancel_progress_auto_collapse()
+        self._cancel_open_result_flash()
+        self._cancel_log_toggle_flash()
         session_count = (
             clear_session_tool_cache(self.detected_tools)
             + len(self.manual_tool_paths)
@@ -6242,6 +6250,20 @@ class DaisyApp:
         style.map(
             _NEUTRAL_BUTTON_STYLE,
             background=[("active", _CONTROL_HOVER)],
+        )
+        style.configure(
+            _ATTENTION_BUTTON_STYLE,
+            background=_SKY_BLUE, foreground=_INK_TEAL,
+            bordercolor=_SKY_BLUE,
+            lightcolor=_SKY_BLUE, darkcolor=_SKY_BLUE,
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
+            padding=_FILE_PICKER_BUTTON_PADDING,
+            font=("Microsoft YaHei UI", 9),
+        )
+        style.map(
+            _ATTENTION_BUTTON_STYLE,
+            background=[("active", _RESEARCH_BLUE)],
+            foreground=[("active", _LIGHT_TEXT)],
         )
         style.configure(
             "Remove.TButton", background=_CONTROL, foreground=_TEXT,
@@ -7581,36 +7603,8 @@ class DaisyApp:
         self._refresh_content_row_weights()
 
     def _toggle_progress_panel(self) -> None:
-        self._cancel_progress_auto_collapse()
         self._set_progress_expanded(not self.progress_expanded)
         self._release_toggle_focus()
-
-    def _cancel_progress_auto_collapse(self) -> None:
-        after_id = getattr(self, "progress_collapse_after_id", None)
-        self.progress_collapse_after_id = None
-        if after_id is None:
-            return
-        try:
-            self.root.after_cancel(after_id)
-        except tk.TclError:
-            pass
-
-    def _schedule_progress_auto_collapse(self) -> None:
-        """任务结束两秒后只收起进度，让日志接管释放出的高度。"""
-        self._cancel_progress_auto_collapse()
-
-        def collapse() -> None:
-            self.progress_collapse_after_id = None
-            if (self.process is not None or self.worker_starting
-                    or self.run_jobs):
-                return
-            self._set_progress_expanded(False)
-            if self.mini_mode:
-                self._mini_progress_was_expanded = False
-            else:
-                self._set_log_expanded(True)
-
-        self.progress_collapse_after_id = self.root.after(2000, collapse)
 
     def _set_log_expanded(self, expanded: bool) -> None:
         self.log_expanded = expanded
@@ -7627,8 +7621,18 @@ class DaisyApp:
         self._refresh_content_row_weights()
 
     def _toggle_log_panel(self) -> None:
+        self._cancel_log_toggle_flash()
         self._set_log_expanded(not self.log_expanded)
         self._release_toggle_focus()
+
+    def _restore_idle_panels_after_run(self) -> None:
+        """任务队列真正结束后回到设置界面，并提示可查看日志。"""
+        if getattr(self, "mini_mode", False):
+            self._leave_mini_mode()
+        self._set_settings_expanded(True)
+        self._set_progress_expanded(False)
+        self._set_log_expanded(False)
+        self._flash_log_toggle_button()
 
     def _release_toggle_focus(self) -> None:
         """折叠操作后把焦点交还主窗口，避免按钮残留虚线焦点框。"""
@@ -9890,6 +9894,7 @@ class DaisyApp:
         )
 
     def _open_output(self) -> None:
+        self._cancel_open_result_flash()
         path = self._output_path()
         if not path:
             messagebox.showinfo(
@@ -9912,6 +9917,7 @@ class DaisyApp:
                 "无法打开目录", str(exc), parent=self.root)
 
     def _cancel_open_result_flash(self) -> None:
+        self.open_result_flash_active = False
         after_id = getattr(self, "open_result_flash_after_id", None)
         self.open_result_flash_after_id = None
         if after_id is not None:
@@ -9919,6 +9925,7 @@ class DaisyApp:
                 self.root.after_cancel(after_id)
             except tk.TclError:
                 pass
+        self.open_result_flash_highlighted = False
         self._set_open_result_button_highlighted(False)
 
     def _set_open_result_button_highlighted(
@@ -9952,28 +9959,93 @@ class DaisyApp:
             return False
         return True
 
-    def _advance_open_result_flash(self, step: int) -> None:
-        """执行两次绿色脉冲；每次回到米黄色后才算一次完整闪烁。"""
+    def _advance_open_result_flash(self) -> None:
+        """持续切换产出按钮提示色，直至用户点击该按钮。"""
         self.open_result_flash_after_id = None
-        sequence = (True, False, True, False)
-        if step >= len(sequence):
+        if not getattr(self, "open_result_flash_active", False):
             return
-        if not self._set_open_result_button_highlighted(sequence[step]):
+        highlighted = not getattr(
+            self, "open_result_flash_highlighted", False)
+        if not self._set_open_result_button_highlighted(highlighted):
+            self.open_result_flash_active = False
             return
-        if step + 1 < len(sequence):
-            self.open_result_flash_after_id = self.root.after(
-                230,
-                lambda next_step=step + 1:
-                self._advance_open_result_flash(next_step),
-            )
-
-    def _flash_open_result_button(self) -> None:
-        """任务产出结果后让目录按钮闪烁两次，不抢焦点、不弹窗。"""
-        self._cancel_open_result_flash()
+        self.open_result_flash_highlighted = highlighted
         try:
-            self._advance_open_result_flash(0)
+            self.open_result_flash_after_id = self.root.after(
+                _ATTENTION_FLASH_INTERVAL_MS,
+                self._advance_open_result_flash,
+            )
         except tk.TclError:
             self.open_result_flash_after_id = None
+            self.open_result_flash_active = False
+
+    def _flash_open_result_button(self) -> None:
+        """任务产出结果后持续闪烁目录按钮，不抢焦点、不弹窗。"""
+        self._cancel_open_result_flash()
+        self.open_result_flash_active = True
+        try:
+            self._advance_open_result_flash()
+        except tk.TclError:
+            self.open_result_flash_after_id = None
+            self.open_result_flash_active = False
+
+    def _cancel_log_toggle_flash(self) -> None:
+        self.log_toggle_flash_active = False
+        after_id = getattr(self, "log_toggle_flash_after_id", None)
+        self.log_toggle_flash_after_id = None
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self.log_toggle_flash_highlighted = False
+        self._set_log_toggle_button_highlighted(False)
+
+    def _set_log_toggle_button_highlighted(
+        self, highlighted: bool,
+    ) -> bool:
+        """切换日志按钮提示色，不改变按钮尺寸或焦点。"""
+        button = getattr(self, "log_toggle_button", None)
+        if button is None:
+            return False
+        try:
+            button.configure(style=(
+                _ATTENTION_BUTTON_STYLE
+                if highlighted else _NEUTRAL_BUTTON_STYLE
+            ))
+        except tk.TclError:
+            return False
+        return True
+
+    def _advance_log_toggle_flash(self) -> None:
+        """持续切换展开日志按钮提示色，直至用户点击该按钮。"""
+        self.log_toggle_flash_after_id = None
+        if not getattr(self, "log_toggle_flash_active", False):
+            return
+        highlighted = not getattr(
+            self, "log_toggle_flash_highlighted", False)
+        if not self._set_log_toggle_button_highlighted(highlighted):
+            self.log_toggle_flash_active = False
+            return
+        self.log_toggle_flash_highlighted = highlighted
+        try:
+            self.log_toggle_flash_after_id = self.root.after(
+                _ATTENTION_FLASH_INTERVAL_MS,
+                self._advance_log_toggle_flash,
+            )
+        except tk.TclError:
+            self.log_toggle_flash_after_id = None
+            self.log_toggle_flash_active = False
+
+    def _flash_log_toggle_button(self) -> None:
+        """任务结束并收起日志后，持续提示用户可展开日志。"""
+        self._cancel_log_toggle_flash()
+        self.log_toggle_flash_active = True
+        try:
+            self._advance_log_toggle_flash()
+        except tk.TclError:
+            self.log_toggle_flash_after_id = None
+            self.log_toggle_flash_active = False
 
     def _offer_open_result_directory(self, path: str) -> None:
         """任务完成后询问是否打开本次结果目录。"""
@@ -11161,7 +11233,7 @@ class DaisyApp:
     def _begin_run_jobs(self, task_key: str, jobs: list[RunJob]) -> None:
         """锁定界面并启动同一任务的一项或多项目标。"""
         self._cancel_open_result_flash()
-        self._cancel_progress_auto_collapse()
+        self._cancel_log_toggle_flash()
         if task_key == _DEPENDENCY_VERSION_CHECK_KEY:
             self.dependency_version_query_output = ""
         if task_key == "env_check":
@@ -12112,7 +12184,8 @@ class DaisyApp:
         self._refresh_mini_action()
         self._refresh_tool_cache_labels()
         self._set_recovery_card_state()
-        self._schedule_progress_auto_collapse()
+        if not self.close_after_stop and not (installing and not stopped):
+            self._restore_idle_panels_after_run()
         if play_completion_sound:
             self.root.after_idle(self._play_completion_sound)
         if result_directory and os.path.isdir(result_directory):

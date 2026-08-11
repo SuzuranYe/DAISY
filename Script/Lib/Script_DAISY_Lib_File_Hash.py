@@ -1,7 +1,7 @@
 """DAISY 文件哈希模块：三模式＋溯源＋独立实现抽验。
 
 实现 full/incremental/none 三种模式、五项复用条件、计算溯源、
-schema 3 既有无进展观测、schema 4 受控工作进程和 PowerShell 哈希复检。
+schema 3 既有无进展观测、schema 4 受控工作进程和 PowerShell 哈希抽检／复核。
 哈希 valid 的条件是摘要非空、读取字节等于文件大小，并且读取前后
 size 和 mtime 一致。
 """

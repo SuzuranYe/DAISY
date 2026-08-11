@@ -159,7 +159,7 @@ class TestParseHuman(unittest.TestCase):
     def test_human_rows_translate_issue_and_run_codes(self) -> None:
         cases = (
             ({"section_id": "runtime"}, "section_id", "运行与证据问题"),
-            ({"stage": "verify_hash"}, "stage", "哈希复检"),
+            ({"stage": "verify_hash"}, "stage", "哈希抽检"),
             ({"event": "resume_started"}, "event", "已开始续传"),
             ({"decision": "skip_and_record"}, "decision", "跳过并记录"),
             ({"status": "failed_recoverable"}, "status", "失败但可续传"),

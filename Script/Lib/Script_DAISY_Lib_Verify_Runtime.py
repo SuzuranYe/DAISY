@@ -73,7 +73,7 @@ class VerificationOptions:
 
     def __post_init__(self) -> None:
         if self.hash_mode not in HASH_MODES:
-            raise ValueError(f"未知哈希复检模式：{self.hash_mode}")
+            raise ValueError(f"未知哈希复核模式：{self.hash_mode}")
         if self.format_mode not in FORMAT_MODES:
             raise ValueError(f"未知格式校验模式：{self.format_mode}")
         normalized_tools = tuple(str(item) for item in self.format_tools)
@@ -1247,7 +1247,7 @@ def _run_hash_stage(
         _emit(on_event, "stage_skipped", stage="hash", reason="未选择")
         return {
             "state": "NULL",
-            "reason": "本次未选择哈希复检",
+            "reason": "本次未选择哈希复核",
             "mode": "off",
             "problems": [],
         }, "running", {}
@@ -1389,7 +1389,7 @@ def _run_hash_stage(
                 )
                 return {
                     "state": "failed", "mode": options.hash_mode,
-                    "reason": "PowerShell 工具无法启动，哈希复检已停止",
+                    "reason": "PowerShell 工具无法启动，哈希复核已停止",
                     "selected": len(selected), "processed": processed,
                     "checked": checked, "matched": matched,
                     "unverifiable": unverifiable,
@@ -1478,7 +1478,7 @@ def _run_hash_stage(
                     )
                     return {
                         "state": "failed", "mode": options.hash_mode,
-                        "reason": "PowerShell 连续工具故障，哈希复检已停止",
+                        "reason": "PowerShell 连续工具故障，哈希复核已停止",
                         "selected": len(selected), "processed": processed,
                         "checked": checked, "matched": matched,
                         "unverifiable": unverifiable,
@@ -2232,7 +2232,7 @@ def run_unified_verification(
     stat, initial_stats, state = _run_stat_stage(
         entries, selected_options, owned_control, on_progress, on_event)
     hash_section: dict[str, object] = {
-        "state": "NULL", "reason": "任务在哈希复检前停止", "problems": []}
+        "state": "NULL", "reason": "任务在哈希复核前停止", "problems": []}
     format_section: dict[str, object] = {
         "state": "NULL", "reason": "任务在格式校验前停止",
         "coverage_note": FORMAT_COVERAGE_NOTE, "problems": []}

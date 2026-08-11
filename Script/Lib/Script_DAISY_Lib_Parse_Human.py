@@ -149,7 +149,7 @@ _FIELD_VALUE_NAMES = {
         "metadata": "元数据提取",
         "format": "格式校验",
         "rescan": "文件状态复查",
-        "verify_hash": "哈希复检",
+        "verify_hash": "哈希抽检",
         "verify_format": "格式复检",
         "seal": "快照封存",
         "publish": "结果发布",

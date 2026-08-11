@@ -44,7 +44,7 @@ _STAGES = {
     "metadata": (4, "元数据提取"),
     "format": (5, "格式校验"),
     "rescan": (6, "文件状态复查"),
-    "verify_hash": (7, "哈希复检"),
+    "verify_hash": (7, "哈希抽检"),
     "seal": (8, "封存检查"),
     "publish": (9, "结果发布"),
 }
@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--verify-sample-percent", type=float,
-        help="主哈希完成后的独立复检比例",
+        help="主哈希完成后的独立哈希抽检比例",
     )
     parser.add_argument(
         "--metadata-storage", choices=("complete", "normalized"),
@@ -514,7 +514,7 @@ def _new_config(
         if args.previous_snapshot or args.map_root:
             raise core.PreflightError("快速扫描不接受增量快照或根目录名对应")
         if args.verify_sample_percent is not None:
-            raise core.PreflightError("快速扫描不接受哈希复检比例")
+            raise core.PreflightError("快速扫描不接受哈希抽检比例")
         if args.format_sample_percent is not None:
             raise core.PreflightError("快速扫描不接受格式校验抽样比例")
         if raw_enabled or args.raw_timeout_seconds is not None:
@@ -556,7 +556,7 @@ def _new_config(
     verify_percent = _finite_percent(
         1.0 if args.verify_sample_percent is None
         else args.verify_sample_percent,
-        "哈希复检比例",
+        "哈希抽检比例",
         allow_zero=True,
     )
     format_percent = _finite_percent(

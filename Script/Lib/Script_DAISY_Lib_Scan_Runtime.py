@@ -2384,7 +2384,7 @@ def run_independent_hash_stage_controlled(
     dbstate.require_v4_connection(con)
     if router.state != "running":
         raise core.PreflightError(
-            f"哈希复检要求控制器处于运行状态，实际状态为 {router.state}")
+            f"哈希抽检要求控制器处于运行状态，实际状态为 {router.state}")
     if isinstance(min_count, bool) or not isinstance(min_count, int) \
             or min_count < 0:
         raise ValueError("min_count 不能小于 0")
@@ -2392,7 +2392,7 @@ def run_independent_hash_stage_controlled(
     runtime = dbstate.load_runtime(con)
     if runtime.run_state != "running":
         raise core.PreflightError(
-            f"哈希复检要求任务处于运行状态，实际状态为 {runtime.run_state}")
+            f"哈希抽检要求任务处于运行状态，实际状态为 {runtime.run_state}")
     coverage = str(con.execute(
         "SELECT hash_coverage FROM snapshot_info WHERE id=1"
     ).fetchone()[0])
@@ -2448,9 +2448,9 @@ def run_independent_hash_stage_controlled(
         )
         return saved
     if not isinstance(powershell_path, str) or not powershell_path:
-        raise core.PreflightError("哈希复检缺少冻结的 PowerShell 路径")
+        raise core.PreflightError("哈希抽检缺少冻结的 PowerShell 路径")
     if not isinstance(powershell_version, str) or not powershell_version:
-        raise core.PreflightError("哈希复检缺少冻结的 PowerShell 版本")
+        raise core.PreflightError("哈希抽检缺少冻结的 PowerShell 版本")
 
     _emit_control_event(
         on_event, "stage_started", stage="verify_hash")
@@ -2756,7 +2756,7 @@ def run_independent_hash_stage_controlled(
                     operation="verify_primary_recheck",
                     failure_kind="worker_start_failed",
                     message=(
-                        "主哈希复核工作进程无法启动："
+                        "主哈希复算工作进程无法启动："
                         f"{type(exc).__name__}: {exc}"
                     ),
                     errno=getattr(exc, "errno", None),
@@ -2811,7 +2811,7 @@ def run_independent_hash_stage_controlled(
                             operation="independent_hash_recheck",
                             failure_kind="start_failed",
                             message=(
-                                "PowerShell 独立哈希复核进程无法启动："
+                                "PowerShell 独立哈希再次计算进程无法启动："
                                 f"{type(exc).__name__}: {exc}"
                             ),
                             errno=getattr(exc, "errno", None),
@@ -3907,7 +3907,7 @@ def run_scan_completion_stages(
     _independent_runner=None,
     _primary_runner=None,
 ) -> dict[str, object]:
-    """完成哈希复检、扫描专用阶段收尾、封存与发布。"""
+    """完成哈希抽检、扫描专用阶段收尾、封存与发布。"""
     con = handle.connection
     runtime = dbstate.load_runtime(con)
     if runtime.run_state != "running":

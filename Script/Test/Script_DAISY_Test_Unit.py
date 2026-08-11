@@ -1663,12 +1663,12 @@ class TestGuiArguments(unittest.TestCase):
             gui._BASE, "Spec", "Spec_DAISY_Technical.md")
         with open(spec_path, "r", encoding="utf-8") as f:
             spec = f.read()
-        self.assertIn("# DAISY v1.6.8 技术规格", spec)
+        self.assertIn("# DAISY v1.6.9 技术规格", spec)
         self.assertIn(
             "稳定生产基线：**v1.4.1 → v1.6.8**",
             spec,
         )
-        self.assertIn("状态：**v1.6.8 稳定生产规范**", spec)
+        self.assertIn("状态：**v1.6.9 开发规范**", spec)
         self.assertIn(
             "历史兼容稳定生产版本：**v1.4.1**", spec)
         self.assertIn("v1.5.0 是过渡版本", spec)
@@ -1698,11 +1698,18 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("| `window_size` | `[1920, 1080]` |", spec)
         self.assertIn("已有数据库／无数据库", spec)
         self.assertIn("成功时直接显示实际版本", spec)
+        self.assertIn(
+            "| 扫描后独立重算 | 哈希抽检 |", spec)
+        self.assertIn(
+            "| 数据核验中的重新计算 | 哈希复核 |", spec)
+        self.assertIn(
+            "| 任务运行结束 | 立即展开 | 立即收起 |", spec)
         readme_path = os.path.join(gui._BASE, "README.md")
         with open(readme_path, "r", encoding="utf-8") as f:
             readme = f.read()
         self.assertIn(
-            "当前稳定生产版：**v1.6.8（界面与核验优化版）**",
+            "当前开发版：**v1.6.9**｜当前稳定生产版："
+            "**v1.6.8（界面与核验优化版）**",
             readme,
         )
         self.assertIn(
@@ -1715,10 +1722,12 @@ class TestGuiArguments(unittest.TestCase):
             "| v1.6.0、v1.6.2～v1.6.6 | 问题版本 |", readme)
         self.assertIn(
             "| v1.6.1 | 未正式发布的问题阶段 |", readme)
-        self.assertNotIn("当前开发版本", readme)
+        self.assertIn("| v1.6.9 | 当前开发版 |", readme)
         self.assertIn("默认窗口目标为 `1920×1080`", readme)
         self.assertIn("暂停只适用于当前进程", readme)
         self.assertIn("再由用户开始任务", readme)
+        self.assertIn("末次复扫不会重新枚举目录", readme)
+        self.assertIn("「展开日志」持续", readme)
         evolution_path = os.path.join(
             gui._BASE, "Spec", "Spec_DAISY_Version_Evolution.md")
         with open(evolution_path, "r", encoding="utf-8") as f:
@@ -1737,6 +1746,7 @@ class TestGuiArguments(unittest.TestCase):
         self.assertIn("DAISY v1.6.6", evolution)
         self.assertIn("DAISY v1.6.7", evolution)
         self.assertIn("DAISY v1.6.8", evolution)
+        self.assertIn("DAISY v1.6.9（开发版）", evolution)
         self.assertIn(
             "稳定生产基线：**v1.4.1 → v1.6.8**",
             evolution,
@@ -3363,53 +3373,53 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLess(
             calls.index(("log", True)), calls.index(("start", True)))
 
-    def test_finished_task_collapses_only_progress_after_two_seconds(self):
-        class RootProbe:
-            def __init__(self):
-                self.delay = None
-                self.callback = None
-
-            def after(self, delay, callback):
-                self.delay = delay
-                self.callback = callback
-                return "collapse-progress"
-
-            def after_cancel(self, _after_id):
-                pass
-
+    def test_finished_task_immediately_restores_settings_and_collapses_panels(
+        self,
+    ):
         app = object.__new__(gui.DaisyApp)
-        app.root = RootProbe()
-        app.progress_collapse_after_id = None
-        app.process = None
-        app.worker_starting = False
-        app.run_jobs = []
         app.mini_mode = False
-        app._set_progress_expanded = Mock()
-        app._set_log_expanded = Mock()
+        calls = []
+        app._set_settings_expanded = (
+            lambda expanded: calls.append(("settings", expanded)))
+        app._set_progress_expanded = (
+            lambda expanded: calls.append(("progress", expanded)))
+        app._set_log_expanded = (
+            lambda expanded: calls.append(("log", expanded)))
+        app._flash_log_toggle_button = (
+            lambda: calls.append(("flash_log", True)))
 
-        app._schedule_progress_auto_collapse()
+        app._restore_idle_panels_after_run()
 
-        self.assertEqual(app.root.delay, 2000)
-        app.root.callback()
-        app._set_progress_expanded.assert_called_once_with(False)
-        app._set_log_expanded.assert_called_once_with(True)
+        self.assertEqual(calls, [
+            ("settings", True),
+            ("progress", False),
+            ("log", False),
+            ("flash_log", True),
+        ])
 
         mini = object.__new__(gui.DaisyApp)
-        mini.root = RootProbe()
-        mini.progress_collapse_after_id = None
-        mini.process = None
-        mini.worker_starting = False
-        mini.run_jobs = []
         mini.mini_mode = True
-        mini._mini_progress_was_expanded = True
-        mini._set_progress_expanded = Mock()
-        mini._set_log_expanded = Mock()
+        mini_calls = []
+        mini._leave_mini_mode = (
+            lambda: mini_calls.append(("leave_mini", True)))
+        mini._set_settings_expanded = (
+            lambda expanded: mini_calls.append(("settings", expanded)))
+        mini._set_progress_expanded = (
+            lambda expanded: mini_calls.append(("progress", expanded)))
+        mini._set_log_expanded = (
+            lambda expanded: mini_calls.append(("log", expanded)))
+        mini._flash_log_toggle_button = (
+            lambda: mini_calls.append(("flash_log", True)))
 
-        mini._schedule_progress_auto_collapse()
-        mini.root.callback()
+        mini._restore_idle_panels_after_run()
 
-        self.assertFalse(mini._mini_progress_was_expanded)
-        mini._set_log_expanded.assert_not_called()
+        self.assertEqual(mini_calls, [
+            ("leave_mini", True),
+            ("settings", True),
+            ("progress", False),
+            ("log", False),
+            ("flash_log", True),
+        ])
 
     def test_settings_defaults_expanded_while_progress_and_log_are_collapsed(
         self,
@@ -3455,7 +3465,7 @@ class TestGuiArguments(unittest.TestCase):
             self.assertFalse(gui.should_offer_result_directory(
                 returncodes, stopped=stopped, maintenance=maintenance))
 
-    def test_result_directory_button_runs_two_colour_strip_flashes(self):
+    def test_result_directory_button_flashes_until_cancelled(self):
         class ButtonProbe:
             def __init__(self):
                 self.backgrounds = []
@@ -3467,23 +3477,32 @@ class TestGuiArguments(unittest.TestCase):
             def __init__(self):
                 self.callbacks = []
                 self.delays = []
+                self.cancelled = []
+                self.next_id = 0
 
             def after(self, delay, callback):
                 self.delays.append(delay)
                 self.callbacks.append(callback)
-                return f"after-{len(self.callbacks)}"
+                self.next_id += 1
+                return f"after-{self.next_id}"
 
-            def after_cancel(self, _after_id):
-                return None
+            def after_cancel(self, after_id):
+                self.cancelled.append(after_id)
 
         app = object.__new__(gui.DaisyApp)
         app.root = RootProbe()
         app.open_output_button = ButtonProbe()
         app.open_result_flash_after_id = None
+        app.open_result_flash_active = False
+        app.open_result_flash_highlighted = False
 
         app._flash_open_result_button()
-        while app.root.callbacks:
-            app.root.callbacks.pop(0)()
+        app.root.callbacks.pop(0)()
+        app.root.callbacks.pop(0)()
+
+        self.assertTrue(app.open_result_flash_active)
+        self.assertIsNotNone(app.open_result_flash_after_id)
+        app._cancel_open_result_flash()
 
         self.assertEqual(
             app.open_output_button.backgrounds,
@@ -3493,8 +3512,83 @@ class TestGuiArguments(unittest.TestCase):
                 gui._RESULT_ACTION_BACKGROUND,
             ],
         )
-        self.assertEqual(app.root.delays, [230, 230, 230])
+        self.assertEqual(
+            app.root.delays,
+            [gui._ATTENTION_FLASH_INTERVAL_MS] * 3,
+        )
+        self.assertEqual(app.root.cancelled, ["after-3"])
+        self.assertFalse(app.open_result_flash_active)
         self.assertIsNone(app.open_result_flash_after_id)
+
+    def test_log_toggle_button_flashes_until_cancelled(self):
+        class ButtonProbe:
+            def __init__(self):
+                self.styles = []
+
+            def configure(self, **options):
+                self.styles.append(options["style"])
+
+        class RootProbe:
+            def __init__(self):
+                self.callbacks = []
+                self.delays = []
+                self.cancelled = []
+                self.next_id = 0
+
+            def after(self, delay, callback):
+                self.delays.append(delay)
+                self.callbacks.append(callback)
+                self.next_id += 1
+                return f"after-{self.next_id}"
+
+            def after_cancel(self, after_id):
+                self.cancelled.append(after_id)
+
+        app = object.__new__(gui.DaisyApp)
+        app.root = RootProbe()
+        app.log_toggle_button = ButtonProbe()
+        app.log_toggle_flash_after_id = None
+        app.log_toggle_flash_active = False
+        app.log_toggle_flash_highlighted = False
+
+        app._flash_log_toggle_button()
+        app.root.callbacks.pop(0)()
+        app.root.callbacks.pop(0)()
+
+        self.assertTrue(app.log_toggle_flash_active)
+        self.assertIsNotNone(app.log_toggle_flash_after_id)
+        app._cancel_log_toggle_flash()
+        self.assertEqual(app.log_toggle_button.styles, [
+            gui._NEUTRAL_BUTTON_STYLE,
+            gui._ATTENTION_BUTTON_STYLE,
+            gui._NEUTRAL_BUTTON_STYLE,
+            gui._ATTENTION_BUTTON_STYLE,
+            gui._NEUTRAL_BUTTON_STYLE,
+        ])
+        self.assertEqual(
+            app.root.delays,
+            [gui._ATTENTION_FLASH_INTERVAL_MS] * 3,
+        )
+        self.assertEqual(app.root.cancelled, ["after-3"])
+        self.assertFalse(app.log_toggle_flash_active)
+        self.assertIsNone(app.log_toggle_flash_after_id)
+
+    def test_attention_flashes_stop_when_corresponding_button_is_clicked(self):
+        app = object.__new__(gui.DaisyApp)
+        app.root = object()
+        app.log_expanded = False
+        app._cancel_log_toggle_flash = Mock()
+        app._set_log_expanded = Mock()
+        app._release_toggle_focus = Mock()
+        app._toggle_log_panel()
+        app._cancel_log_toggle_flash.assert_called_once_with()
+        app._set_log_expanded.assert_called_once_with(True)
+
+        app._cancel_open_result_flash = Mock()
+        app._output_path = Mock(return_value="")
+        with patch.object(gui.messagebox, "showinfo"):
+            app._open_output()
+        app._cancel_open_result_flash.assert_called_once_with()
 
 
     def test_completion_sound_requires_completed_business_task(self):
@@ -4219,7 +4313,8 @@ class TestGuiArguments(unittest.TestCase):
 
     def test_project_identity_is_visible_and_canonical(self):
         self.assertEqual(core.PROJECT_NAME, "DAISY")
-        self.assertEqual(core.SCANNER_VERSION, "1.6.8")
+        self.assertEqual(core.SCANNER_VERSION, "1.6.9")
+        self.assertEqual(core.STABLE_PRODUCTION_VERSION, "1.6.8")
         self.assertEqual(core.SCHEMA_VERSION, 3)
         self.assertEqual(core.READABLE_SCHEMA_VERSIONS, frozenset({3}))
         self.assertEqual(core.MIN_READER_VERSION, "1.4.1")
@@ -4243,7 +4338,8 @@ class TestGuiArguments(unittest.TestCase):
             self.assertIn(token, title)
         about = gui.about_message()
         for token in (
-                "发布状态：当前稳定生产版",
+                "发布状态：开发版本",
+                f"当前稳定生产版：v{core.STABLE_PRODUCTION_VERSION}",
                 "环境：", "档案：", "硬盘：",
                 f"当前扫描输出数据库结构版本：{gui.dbstate.SCHEMA_VERSION}",
                 f"兼容读取快照数据库结构版本：{core.SCHEMA_VERSION}",
@@ -4264,7 +4360,7 @@ class TestGuiArguments(unittest.TestCase):
                     sys, "argv", [entry.__file__, argument]), patch.object(
                     sys, "stdout", io.StringIO()) as stdout:
                 self.assertEqual(entry.main(), 0)
-                self.assertEqual(stdout.getvalue(), "DAISY v1.6.8\n")
+                self.assertEqual(stdout.getvalue(), "DAISY v1.6.9\n")
 
     def test_gui_stream_parser_handles_chunked_events(self):
         prefix = "@@DAISY_GUI@@"
