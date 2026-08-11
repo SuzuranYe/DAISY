@@ -502,46 +502,69 @@ def save_gui_preferences(
         handle.write("\n")
     os.replace(temporary, path)
 
-# 《孤星》专项调查取色：米黄色纸面＋薄荷绿、橙黄、深红三种强调色。
-# 三个基准色取自官方素材右上角色条，米白取自设备外壳。
-_BG = "#e9dfcc"
-_SURFACE = "#f7efe1"
-_GREEN = "#87c1af"
+# v1.6.8 配色锚点以《明日方舟_孤星_配色取样_修复版_v2.pptx》为准。
+# 交互所需的深色／浅色阶只从这些锚点延展，不再引入另一套基础色相。
+_ARCHIVE_BLACK = "#131210"
+_SIGNAL_ORANGE = "#f06733"
+_PALE_YELLOW = "#dfd9a9"
+_PIONEER_TEAL = "#88c1b0"
+_ENGINEERING_YELLOW = "#ecaa3c"
+_ARCHIVE_RED = "#9a2d28"
+_DEEP_BACKGROUND = "#11110f"
+_DARK_TEXT = "#171614"
+_LIGHT_TEXT = "#fff9ef"
+_OUTLINE = "#6a6257"
+
+# 用户补充的界面扩展色；用于大面积中性色与信息层级，不替代上方权威核心色。
+_WARM_WHITE = "#f0e7e2"
+_RESEARCH_BLUE = "#5e8cc0"
+_SAGE = "#647b75"
+_GRAY_BROWN = "#a89f98"
+_SLATE = "#2c3240"
+_DUSTY_PINK = "#d3998b"
+_INK_TEAL = "#1f272a"
+_SKY_BLUE = "#80afc3"
+_KHAKI = "#c5b778"
+_STONE_GRAY = "#a9a397"
+_DARK_ORANGE = "#de5123"
+
+_BG = _WARM_WHITE
+_SURFACE = _LIGHT_TEXT
+_GREEN = _PIONEER_TEAL
 _GREEN_DARK = "#347a68"
 _GREEN_DEEP = "#245a4e"
 _GREEN_SOFT = "#dce9e1"
 _ACTION_GREEN = "#b7d5c9"
-_AMBER = "#eca93b"
+_AMBER = _ENGINEERING_YELLOW
 _AMBER_DARK = "#9a6519"
 _AMBER_DEEP = "#70470f"
 _AMBER_SOFT = "#f1ddb2"
-_OLIVE = "#aebd70"
-_OLIVE_DEEP = "#45552a"
-_OLIVE_SOFT = "#dce3bd"
-_RED = "#9a2d28"
+_RED = _ARCHIVE_RED
 _RED_DARK = "#7b2925"
 _RED_DEEP = "#5b1f1c"
 _RED_SOFT = "#e8ccc5"
-_ACCENT = _GREEN_DARK
-_ACCENT_DARK = _GREEN_DEEP
-_ACCENT_SOFT = _GREEN_SOFT
-_TEXT = "#272820"
-_MUTED = "#66685e"
-_BORDER = "#cfc2aa"
-_FIELD = "#fff9ee"
-_CONTROL = "#e8ddc9"
-_MENU_BACKGROUND = "#eee3cf"
-_CONTROL_HOVER = "#d9ccb4"
-_LOG_BG = "#eee4d2"
-_LOG_HEADER = "#dfd3bd"
-_LOG_TEXT = "#303128"
-_LOG_SELECT = "#d2e4dc"
+_ACCENT = _RESEARCH_BLUE
+_ACCENT_DARK = _SLATE
+_ACCENT_SOFT = _SKY_BLUE
+_TEXT = _DARK_TEXT
+_MUTED = _SAGE
+_BORDER = _OUTLINE
+_FIELD = _LIGHT_TEXT
+_CONTROL = _WARM_WHITE
+_MENU_BACKGROUND = _WARM_WHITE
+_CONTROL_HOVER = _STONE_GRAY
+_LOG_BG = _WARM_WHITE
+_LOG_HEADER = _SLATE
+_LOG_TEXT = _INK_TEAL
+_LOG_SELECT = _SKY_BLUE
+_LOG_PANEL_BORDER = _GRAY_BROWN
 _SUCCESS = _GREEN_DARK
 _WARNING = _AMBER_DARK
 _DANGER = _RED_DARK
-_DANGER_SOFT = _RED_SOFT
-_DANGER_HOVER = "#ddb9b1"
-_DANGER_BORDER = "#c99f98"
+_DANGER_SOFT = _DUSTY_PINK
+_DANGER_HOVER = _RED_SOFT
+_DANGER_BORDER = _RED
+_STATUS_READY_BACKGROUND = _SLATE
 
 _TASK_ACCENTS = {
     "env_check": (_GREEN_DARK, _GREEN_DEEP, _GREEN),
@@ -573,9 +596,9 @@ def task_accent_colours(task_key: str) -> tuple[str, str, str]:
 def status_badge_background(
     task_key: str, semantic_colour: str | None = None,
 ) -> str:
-    """返回状态徽标底色；常态随任务，结果态使用语义色。"""
+    """返回状态徽标底色；常态统一为板岩，结果态使用语义色。"""
     return (
-        task_accent_colours(task_key)[0]
+        _STATUS_READY_BACKGROUND
         if semantic_colour is None else semantic_colour
     )
 
@@ -627,7 +650,7 @@ def parse_gui_stream(
     parsed: list[tuple[str, object]] = []
 
     def consume(line: str, newline: bool) -> None:
-        candidate = line.lstrip("\n")
+        candidate = line.lstrip("\r")
         if candidate.startswith(_GUI_EVENT_PREFIX):
             try:
                 payload = json.loads(candidate[len(_GUI_EVENT_PREFIX):])
@@ -1122,7 +1145,7 @@ def parse_winget_latest_version(output: object) -> str | None:
         r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(output or ""))
     lines = [
         line.replace("\b", "").strip()
-        for line in text.replace("\n", "\n").split("\n")
+        for line in text.replace("\r", "\n").split("\n")
     ]
     for line in lines:
         match = re.match(
@@ -2356,21 +2379,34 @@ _STANDARD_BUTTON_PADDING = (12, 6)
 _SIX_COLUMN_BUTTON_WIDTH = 12
 _PRIMARY_TASK_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _PRIMARY_TASK_BUTTON_PADDING = (12, 7)
-_PRIMARY_TASK_BUTTON_BORDER = _TEXT
+_PRIMARY_TASK_BUTTON_BORDER = _ARCHIVE_BLACK
+_BUTTON_BORDER_WIDTH = 0
+_TASK_TOOLBAR_PANEL_BORDER_WIDTH = 0
 _TASK_TOOLBAR_BUTTON_WIDTH = _PRIMARY_TASK_BUTTON_WIDTH
 _TASK_TOOLBAR_BUTTON_PADDING = _PRIMARY_TASK_BUTTON_PADDING
 _TASK_TOOLBAR_MINIMUM_WIDTH = 1180
-_TASK_TOOLBAR_LABEL_COLOUR = _TEXT
-_TASK_TOOLBAR_BACKGROUND = _ACTION_GREEN
-_TASK_TOOLBAR_HOVER = _GREEN
-_TASK_TOOLBAR_SELECTED = _GREEN
-_TASK_TOOLBAR_SELECTED_HOVER = _GREEN_DARK
-_TASK_TOOLBAR_FOREGROUND = _GREEN_DEEP
+_TASK_TOOLBAR_LABEL_COLOUR = _INK_TEAL
+_TASK_TOOLBAR_BACKGROUND = _SKY_BLUE
+_TASK_TOOLBAR_HOVER = _RESEARCH_BLUE
+_TASK_TOOLBAR_SELECTED = _SLATE
+_TASK_TOOLBAR_SELECTED_HOVER = _INK_TEAL
+_TASK_TOOLBAR_FOREGROUND = _INK_TEAL
 _BLOCK_SELECTION_BACKGROUND = _GREEN
 _BLOCK_SELECTION_HOVER = _GREEN
 _BLOCK_SELECTION_FOREGROUND = _GREEN_DEEP
-_UNIFIED_ACTION_BACKGROUND = _GREEN_DARK
-_UNIFIED_ACTION_FOREGROUND = "white"
+_UNIFIED_ACTION_BACKGROUND = _RESEARCH_BLUE
+_UNIFIED_ACTION_FOREGROUND = _LIGHT_TEXT
+_RESULT_ACTION_BACKGROUND = _KHAKI
+_RESULT_ACTION_HOVER = _AMBER
+_RESULT_ACTION_FOREGROUND = _INK_TEAL
+_SECTION_HEADER_BACKGROUND = _GRAY_BROWN
+_SECTION_HEADER_FOREGROUND = _INK_TEAL
+_METADATA_MODE_FONT_WEIGHT = "normal"
+_METADATA_MODE_PALETTES = {
+    "complete": (_SKY_BLUE, _INK_TEAL, _RESEARCH_BLUE),
+    "normalized": (_KHAKI, _INK_TEAL, _AMBER),
+    "off": (_DUSTY_PINK, _INK_TEAL, _DARK_ORANGE),
+}
 _RUN_BUTTON_TEXT = "开始"
 _COLLAPSED_PANEL_TITLE_FONT = ("Microsoft YaHei UI", 9, "bold")
 # 全局布局只使用五档可见间距；控件内部的光学微调不属于布局间距。
@@ -2391,8 +2427,9 @@ _FORM_FIELD_PADY = _FORM_FIELD_GAP // 2
 _FORM_SECTION_PADY = (_SPACING_COMPACT, 0)
 _FORM_ACTION_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _FILE_PICKER_BUTTON_WIDTH = 12
-_FILE_PICKER_BUTTON_PADDING = (10, 5)
+_FILE_PICKER_BUTTON_PADDING = (10, 8)
 _PANEL_ACTION_BUTTON_WIDTH = _FILE_PICKER_BUTTON_WIDTH
+_ENTRY_BORDER_WIDTH = 1
 _ADMIN_MODE_PENDING_STYLE = "AdminPending.TButton"
 _ADMIN_MODE_ACTIVE_STYLE = "AdminActive.TButton"
 _ADMIN_MODE_DISABLED_STYLE = "AdminDisabled.TButton"
@@ -3053,7 +3090,7 @@ def _tooltip_display_text(
     """按实际字体像素宽度为悬停提示稳定分行。"""
     max_width = max(1, int(max_width))
     wrapped: list[str] = []
-    normalized = str(text).replace("\n", "\n").replace("\n", "\n")
+    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
 
     def preferred_break(text_value: str) -> int:
         return max(
@@ -3214,7 +3251,8 @@ class ToolTip:
         self._display_text = _tooltip_display_text(
             self.text, self._measure_font, text_width)
         label = tk.Label(
-            window, text=self._display_text, bg=_TEXT, fg="white",
+            window, text=self._display_text, bg=_DEEP_BACKGROUND,
+            fg=_PALE_YELLOW,
             font=font_spec,
             justify="left",
             relief="solid", bd=1, padx=9, pady=6,
@@ -3299,6 +3337,9 @@ class AdminModeButton(tk.Frame):
         self._style = ttk.Style(self)
         common_style = {
             "padding": _STANDARD_BUTTON_PADDING,
+            "borderwidth": _BUTTON_BORDER_WIDTH,
+            "relief": "flat",
+            "focusthickness": 0,
             "font": (
                 font_family, _UI_BODY_FONT_SIZE + font_size_delta),
         }
@@ -3315,7 +3356,7 @@ class AdminModeButton(tk.Frame):
         )
         self._style.configure(
             _ADMIN_MODE_ACTIVE_STYLE,
-            background=_GREEN_DARK, foreground="white",
+            background=_GREEN_DARK, foreground=_LIGHT_TEXT,
             bordercolor=_GREEN_DARK,
             lightcolor=_GREEN_DARK, darkcolor=_GREEN_DARK,
             **common_style,
@@ -3323,7 +3364,7 @@ class AdminModeButton(tk.Frame):
         self._style.map(
             _ADMIN_MODE_ACTIVE_STYLE,
             background=[("disabled", _GREEN_DARK)],
-            foreground=[("disabled", "white")],
+            foreground=[("disabled", _LIGHT_TEXT)],
             bordercolor=[("disabled", _GREEN_DARK)],
             lightcolor=[("disabled", _GREEN_DARK)],
             darkcolor=[("disabled", _GREEN_DARK)],
@@ -3792,7 +3833,7 @@ class StorageDiskPool(tk.Frame):
                 (9, 12), (10, 11), (11, 10), (12, 9),
                 (13, 8), (14, 7), (15, 6),
             ):
-                image.put("white", to=(x, y, x + 2, y + 2))
+                image.put(_LIGHT_TEXT, to=(x, y, x + 2, y + 2))
         return image
 
     def __init__(
@@ -3917,7 +3958,8 @@ class ChoiceButtonGroup(tk.Frame):
             value = str(raw_value)
             button = tk.Button(
                 self, text=label, width=_SCAN_MODE_BUTTON_WIDTH,
-                relief="flat", bd=0, highlightthickness=1,
+                relief="flat", bd=0,
+                highlightthickness=_BUTTON_BORDER_WIDTH,
                 font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
                 anchor="center",
                 padx=_STANDARD_BUTTON_PADDING[0],
@@ -3984,7 +4026,8 @@ class BooleanToggleButton(tk.Frame):
         self.on_change = on_change
         self.enabled = bool(enabled)
         self.button = tk.Button(
-            self, relief="flat", bd=0, highlightthickness=1,
+            self, relief="flat", bd=0,
+            highlightthickness=_BUTTON_BORDER_WIDTH,
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
             anchor="center", justify="center",
             width=_BOOLEAN_BUTTON_WIDTH,
@@ -4011,7 +4054,7 @@ class BooleanToggleButton(tk.Frame):
             background, foreground = _CONTROL, _MUTED
             state = "disabled"
         elif selected:
-            background, foreground = _GREEN_DARK, "white"
+            background, foreground = _GREEN_DARK, _LIGHT_TEXT
             state = "normal"
         else:
             background, foreground = _AMBER, _AMBER_DEEP
@@ -4057,7 +4100,8 @@ class ValueToggleButton(tk.Frame):
         )
         self.on_change = on_change
         self.button = tk.Button(
-            self, relief="flat", bd=0, highlightthickness=1,
+            self, relief="flat", bd=0,
+            highlightthickness=_BUTTON_BORDER_WIDTH,
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
             anchor="center", width=_BOOLEAN_BUTTON_WIDTH,
             padx=_STANDARD_BUTTON_PADDING[0],
@@ -4079,7 +4123,7 @@ class ValueToggleButton(tk.Frame):
     def _refresh(self) -> None:
         selected = self.variable.get() == self.on_value
         background = _GREEN_DARK if selected else _AMBER
-        foreground = "white" if selected else _AMBER_DEEP
+        foreground = _LIGHT_TEXT if selected else _AMBER_DEEP
         self.button.configure(
             text=self.on_label if selected else self.off_label,
             bg=background, fg=foreground,
@@ -4171,8 +4215,11 @@ class MetadataToolModeButton(tk.Frame):
         self.on_change = on_change
         self.button = tk.Button(
             self, width=_STANDARD_BUTTON_WIDTH,
-            relief="flat", bd=0, highlightthickness=1,
-            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
+            relief="flat", bd=0,
+            highlightthickness=_BUTTON_BORDER_WIDTH,
+            font=(
+                "Microsoft YaHei UI", _UI_BODY_FONT_SIZE,
+                _METADATA_MODE_FONT_WEIGHT),
             anchor="center", justify="center",
             padx=_STANDARD_BUTTON_PADDING[0],
             pady=_STANDARD_BUTTON_PADDING[1],
@@ -4193,15 +4240,8 @@ class MetadataToolModeButton(tk.Frame):
 
     def _refresh(self) -> None:
         mode = self.variable.get()
-        if mode == "complete":
-            background, foreground = _GREEN_DARK, "white"
-            active_background = _GREEN_DEEP
-        elif mode == "normalized":
-            background, foreground = _OLIVE, _OLIVE_DEEP
-            active_background = _OLIVE_SOFT
-        else:
-            background, foreground = _AMBER, _AMBER_DEEP
-            active_background = _AMBER_SOFT
+        background, foreground, active_background = (
+            _METADATA_MODE_PALETTES[mode])
         self.button.configure(
             text=f"{self.tool_label} {self._MODE_LABELS[mode]}",
             bg=background, fg=foreground,
@@ -4415,7 +4455,8 @@ class MultiChoicePool(tk.Frame):
             self.variables[value] = variable
             button = tk.Button(
                 self, text=label, width=_STANDARD_BUTTON_WIDTH,
-                relief="flat", bd=0, highlightthickness=1,
+                relief="flat", bd=0,
+                highlightthickness=_BUTTON_BORDER_WIDTH,
                 font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
                 anchor="center", justify="center",
                 padx=_STANDARD_BUTTON_PADDING[0],
@@ -4442,7 +4483,7 @@ class MultiChoicePool(tk.Frame):
         for value, button in self.buttons.items():
             selected = bool(self.variables[value].get())
             background = _GREEN_DARK if selected else _AMBER
-            foreground = "white" if selected else _AMBER_DEEP
+            foreground = _LIGHT_TEXT if selected else _AMBER_DEEP
             button.configure(
                 bg=background, fg=foreground,
                 activebackground=(
@@ -4585,7 +4626,8 @@ class ParseModulePool(tk.Frame):
             button = tk.Button(
                 self.card_host, text=_parse_module_ui_title(module.spec),
                 width=_STANDARD_BUTTON_WIDTH,
-                relief="flat", bd=0, highlightthickness=1,
+                relief="flat", bd=0,
+                highlightthickness=_BUTTON_BORDER_WIDTH,
                 font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
                 anchor="center", justify="center",
                 padx=_STANDARD_BUTTON_PADDING[0],
@@ -4667,7 +4709,7 @@ class ParseModulePool(tk.Frame):
             active_background, border = _CONTROL_HOVER, _BORDER
             state = "disabled"
         elif selected:
-            background, foreground = _GREEN_DARK, "white"
+            background, foreground = _GREEN_DARK, _LIGHT_TEXT
             active_background, border = _GREEN_DEEP, _GREEN_DARK
             state = "normal" if self.editable else "disabled"
         else:
@@ -5013,7 +5055,7 @@ def _create_daisy_icon(root: tk.Misc, size: int) -> tk.PhotoImage:
             if petal_outer:
                 colour = _GREEN_DARK
             if petal_inner:
-                colour = "#FFFDF5"
+                colour = _LIGHT_TEXT
             if radius_squared <= 24.0:
                 colour = _AMBER_DEEP
             if radius_squared <= 14.0:
@@ -5756,7 +5798,10 @@ class DaisyApp:
             style.theme_use("clam")
         style.configure("TFrame", background=_SURFACE)
         style.configure(
-            "TButton", font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE))
+            "TButton", font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
+            focusthickness=0,
+        )
         style.configure(
             "TLabel", background=_SURFACE, foreground=_TEXT,
             font=("Microsoft YaHei UI", 10),
@@ -5773,6 +5818,7 @@ class DaisyApp:
         style.configure(
             "TEntry", fieldbackground=_FIELD, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            borderwidth=_ENTRY_BORDER_WIDTH, relief="solid",
             padding=(7, 4),
         )
         style.configure(
@@ -5856,6 +5902,7 @@ class DaisyApp:
         style.configure(
             "Browse.TButton", background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
         )
@@ -5864,6 +5911,7 @@ class DaisyApp:
         style.configure(
             "FormAction.TButton", background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
         )
@@ -5875,6 +5923,7 @@ class DaisyApp:
             "DiscoveryAction.TButton",
             background=_GREEN_SOFT, foreground=_GREEN_DEEP,
             bordercolor=_GREEN, lightcolor=_GREEN, darkcolor=_GREEN,
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
         )
@@ -5886,6 +5935,7 @@ class DaisyApp:
         style.configure(
             "FilePicker.TButton", background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER, lightcolor=_BORDER, darkcolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
             padding=_FILE_PICKER_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 9),
         )
@@ -5896,6 +5946,7 @@ class DaisyApp:
         style.configure(
             "Remove.TButton", background=_CONTROL, foreground=_TEXT,
             bordercolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, relief="flat",
             padding=(6, _STANDARD_BUTTON_PADDING[1]),
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
         )
@@ -5904,34 +5955,41 @@ class DaisyApp:
             background=[("active", _CONTROL_HOVER)],
         )
         style.configure(
-            "Primary.TButton", background=_ACCENT, foreground="white",
+            "Primary.TButton", background=_ACCENT,
+            foreground=_LIGHT_TEXT,
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
-            borderwidth=1, bordercolor=_ACCENT_DARK,
+            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_ACCENT_DARK,
             lightcolor=_ACCENT, darkcolor=_ACCENT,
-        )
-        style.map(
-            "Primary.TButton",
-            background=[("active", _ACCENT_DARK), ("disabled", "#afbeb6")],
-            foreground=[("disabled", "#f5f8f6")],
-        )
-        style.configure(
-            "Stop.TButton", background=_AMBER_SOFT,
-            foreground=_AMBER_DEEP,
-            padding=_STANDARD_BUTTON_PADDING,
-            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
-            borderwidth=0, bordercolor=_AMBER_SOFT,
-            lightcolor=_AMBER_SOFT, darkcolor=_AMBER_SOFT,
             relief="flat",
         )
         style.map(
-            "Stop.TButton", background=[("active", _AMBER)])
+            "Primary.TButton",
+            background=[
+                ("active", _ACCENT_DARK), ("disabled", _ACTION_GREEN)],
+            foreground=[("disabled", _MUTED)],
+        )
+        style.configure(
+            "Stop.TButton", background=_SIGNAL_ORANGE,
+            foreground=_ARCHIVE_BLACK,
+            padding=_STANDARD_BUTTON_PADDING,
+            font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
+            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_SIGNAL_ORANGE,
+            lightcolor=_SIGNAL_ORANGE, darkcolor=_SIGNAL_ORANGE,
+            relief="flat",
+        )
+        style.map(
+            "Stop.TButton",
+            background=[("active", _DARK_ORANGE)],
+            foreground=[("active", _LIGHT_TEXT)],
+        )
         style.configure(
             "Secondary.TButton", background=_CONTROL, foreground=_TEXT,
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
-            borderwidth=1, bordercolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_BORDER,
             lightcolor=_BORDER, darkcolor=_BORDER,
+            relief="flat",
         )
         style.map(
             "Secondary.TButton", background=[("active", _CONTROL_HOVER)])
@@ -5939,38 +5997,43 @@ class DaisyApp:
             "Mini.TButton", background=_CONTROL, foreground=_TEXT,
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
-            borderwidth=1, bordercolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_BORDER,
             lightcolor=_BORDER, darkcolor=_BORDER,
+            relief="flat",
         )
         style.map(
             "Mini.TButton", background=[("active", _CONTROL_HOVER)])
         style.configure(
             "PanelHeader.TButton", background=_CONTROL, foreground=_TEXT,
-            padding=_STANDARD_BUTTON_PADDING,
+            padding=_FILE_PICKER_BUTTON_PADDING,
             font=("Microsoft YaHei UI", 10),
-            borderwidth=1, bordercolor=_BORDER,
+            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_BORDER,
             lightcolor=_BORDER, darkcolor=_BORDER,
+            relief="flat",
         )
         style.map(
             "PanelHeader.TButton",
             background=[("active", _CONTROL_HOVER)],
         )
         style.configure(
-            "MiniStop.TButton", background=_AMBER_SOFT,
-            foreground=_AMBER_DEEP,
+            "MiniStop.TButton", background=_SIGNAL_ORANGE,
+            foreground=_ARCHIVE_BLACK,
             padding=_STANDARD_BUTTON_PADDING,
             font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
-            borderwidth=0, bordercolor=_AMBER_SOFT,
-            lightcolor=_AMBER_SOFT, darkcolor=_AMBER_SOFT,
+            borderwidth=_BUTTON_BORDER_WIDTH, bordercolor=_SIGNAL_ORANGE,
+            lightcolor=_SIGNAL_ORANGE, darkcolor=_SIGNAL_ORANGE,
             relief="flat",
         )
         style.map(
-            "MiniStop.TButton", background=[("active", _AMBER)])
+            "MiniStop.TButton",
+            background=[("active", _DARK_ORANGE)],
+            foreground=[("active", _LIGHT_TEXT)],
+        )
         style.configure(
             "Daisy.Vertical.TScrollbar",
             background=_LOG_HEADER, troughcolor=_CONTROL,
             bordercolor=_BORDER, lightcolor=_LOG_HEADER,
-            darkcolor=_LOG_HEADER, arrowcolor=_MUTED,
+            darkcolor=_LOG_HEADER, arrowcolor=_PALE_YELLOW,
             relief="flat", width=16, arrowsize=13, gripcount=0,
         )
         style.layout(
@@ -5994,9 +6057,9 @@ class DaisyApp:
             ],
         )
         for name, colour in (
-                ("Queue", _GREEN_DEEP),
-                ("Stage", _GREEN_DARK),
-                ("Work", _GREEN),
+                ("Queue", _RESEARCH_BLUE),
+                ("Stage", _SAGE),
+                ("Work", _SKY_BLUE),
                 ("Success", _GREEN_DARK),
                 ("Warning", _AMBER_DARK),
                 ("Danger", _RED)):
@@ -6365,13 +6428,13 @@ class DaisyApp:
     def _build_task_toolbar(self) -> None:
         """按工作流建立固定单排、等宽的六个完整功能入口。"""
         panel = tk.Frame(
-            self.root, bg=_SURFACE,
-            highlightbackground=_BORDER, highlightthickness=1,
+            self.root, bg=_SECTION_HEADER_BACKGROUND,
+            highlightthickness=_TASK_TOOLBAR_PANEL_BORDER_WIDTH,
         )
         self.task_toolbar_panel = panel
         panel.pack(fill="x", side="top")
 
-        header = tk.Frame(panel, bg=_SURFACE)
+        header = tk.Frame(panel, bg=_SECTION_HEADER_BACKGROUND)
         form_pad = (
             _SPACING_SECTION if self.compact_layout else _SPACING_OUTER)
         self.task_toolbar_header_horizontal_pad = self.content_pad + form_pad
@@ -6382,7 +6445,7 @@ class DaisyApp:
             pady=(_SPACING_COMPACT, _SPACING_COMPACT),
         )
         tk.Label(
-            header, text="功能模块", bg=_SURFACE,
+            header, text="功能模块", bg=_SECTION_HEADER_BACKGROUND,
             fg=_TASK_TOOLBAR_LABEL_COLOUR,
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="left")
@@ -6408,7 +6471,7 @@ class DaisyApp:
             "恢复软件默认设置，并清空会话数据与可重建缓存；不会删除任务产物。",
         )
 
-        body = tk.Frame(panel, bg=_SURFACE)
+        body = tk.Frame(panel, bg=_SECTION_HEADER_BACKGROUND)
         self.task_toolbar_body = body
         body.pack(
             fill="x", padx=self.task_toolbar_horizontal_pad,
@@ -6423,7 +6486,8 @@ class DaisyApp:
             button = tk.Button(
                 body, text=_TASK_TOOLBAR_LABELS[task_key],
                 width=_TASK_TOOLBAR_BUTTON_WIDTH,
-                relief="flat", bd=0, highlightthickness=1,
+                relief="flat", bd=0,
+                highlightthickness=_BUTTON_BORDER_WIDTH,
                 highlightbackground=_PRIMARY_TASK_BUTTON_BORDER,
                 highlightcolor=_PRIMARY_TASK_BUTTON_BORDER,
                 bg=_TASK_TOOLBAR_BACKGROUND,
@@ -6460,14 +6524,18 @@ class DaisyApp:
         """创建与面板工具同宽、与表单模式同高的任务操作按钮。"""
         palettes = {
             "primary": (
-                _GREEN_DARK, "white", _GREEN_DEEP, "white", _GREEN_DARK),
+                _RESEARCH_BLUE, _LIGHT_TEXT, _SLATE, _LIGHT_TEXT,
+                _RESEARCH_BLUE),
             "control": (
-                _ACTION_GREEN, _GREEN_DEEP, _GREEN, _GREEN_DEEP, _GREEN),
+                _SKY_BLUE, _INK_TEAL, _RESEARCH_BLUE, _LIGHT_TEXT,
+                _SKY_BLUE),
             "stop": (
-                _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
+                _SIGNAL_ORANGE, _ARCHIVE_BLACK, _DARK_ORANGE, _LIGHT_TEXT,
+                _ARCHIVE_BLACK),
             "result": (
-                _TASK_TOOLBAR_BACKGROUND, _TASK_TOOLBAR_FOREGROUND,
-                _TASK_TOOLBAR_HOVER, _TASK_TOOLBAR_FOREGROUND, _BORDER),
+                _RESULT_ACTION_BACKGROUND, _RESULT_ACTION_FOREGROUND,
+                _RESULT_ACTION_HOVER, _RESULT_ACTION_FOREGROUND,
+                _RESULT_ACTION_BACKGROUND),
             "secondary": (
                 _CONTROL, _TEXT, _CONTROL_HOVER, _TEXT, _BORDER),
         }
@@ -6477,7 +6545,8 @@ class DaisyApp:
         return tk.Button(
             master, text=text, command=command, state=state,
             width=_TASK_ACTION_BUTTON_WIDTH,
-            relief="flat", bd=0, highlightthickness=1,
+            relief="flat", bd=0,
+            highlightthickness=_BUTTON_BORDER_WIDTH,
             highlightbackground=border, highlightcolor=border,
             bg=background, fg=foreground,
             activebackground=active_background,
@@ -6526,7 +6595,8 @@ class DaisyApp:
         )
         self.task_card.grid(row=0, column=0, sticky="nsew")
 
-        title_row = tk.Frame(self.task_card, bg=_SURFACE)
+        title_row = tk.Frame(
+            self.task_card, bg=_SECTION_HEADER_BACKGROUND)
         self.settings_title_row = title_row
         title_row.pack(
             fill="x", padx=_SPACING_OUTER,
@@ -6538,11 +6608,13 @@ class DaisyApp:
             "bold",
         )
         self.title_label = tk.Label(
-            title_row, bg=_SURFACE, fg=_TEXT,
+            title_row, bg=_SECTION_HEADER_BACKGROUND,
+            fg=_SECTION_HEADER_FOREGROUND,
             font=self.settings_title_expanded_font, anchor="w",
         )
         self.title_label.pack(side="left")
-        self.settings_actions = tk.Frame(title_row, bg=_SURFACE)
+        self.settings_actions = tk.Frame(
+            title_row, bg=_SECTION_HEADER_BACKGROUND)
         self.settings_actions.pack(side="right")
         self.settings_actions.grid_columnconfigure(
             0, weight=1, uniform="settings_header_action")
@@ -6668,7 +6740,7 @@ class DaisyApp:
         self.root.bind("<Button-5>", self._route_form_scroll, add="+")
 
         progress_panel = tk.Frame(
-            content, bg=_LOG_BG, highlightbackground=_BORDER,
+            content, bg=_LOG_BG, highlightbackground=_LOG_PANEL_BORDER,
             highlightthickness=1,
         )
         self.progress_panel = progress_panel
@@ -6678,7 +6750,8 @@ class DaisyApp:
         self.progress_header = progress_header
         progress_header.pack(fill="x")
         self.progress_title_label = tk.Label(
-            progress_header, text="运行进度", bg=_LOG_HEADER, fg=_TEXT,
+            progress_header, text="运行进度", bg=_LOG_HEADER,
+            fg=_PALE_YELLOW,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
         )
         self.progress_title_label.pack(
@@ -6859,7 +6932,7 @@ class DaisyApp:
             pady=(_SPACING_COMPACT, _SPACING_INLINE))
 
         log_panel = tk.Frame(
-            content, bg=_LOG_BG, highlightbackground=_BORDER,
+            content, bg=_LOG_BG, highlightbackground=_LOG_PANEL_BORDER,
             highlightthickness=1,
         )
         self.log_panel = log_panel
@@ -6869,7 +6942,8 @@ class DaisyApp:
         self.log_header = log_header
         log_header.pack(fill="x")
         self.log_title_label = tk.Label(
-            log_header, text="运行日志", bg=_LOG_HEADER, fg=_TEXT,
+            log_header, text="运行日志", bg=_LOG_HEADER,
+            fg=_PALE_YELLOW,
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         self.log_title_label.pack(
@@ -6979,7 +7053,8 @@ class DaisyApp:
         status_area = tk.Frame(actions, bg=_BG)
         status_area.pack(fill="x")
         self.status_label = tk.Label(
-            status_area, text="就绪", bg=_GREEN_DARK, fg="white",
+            status_area, text="就绪", bg=_STATUS_READY_BACKGROUND,
+            fg=_LIGHT_TEXT,
             font=("Microsoft YaHei UI", 9, "bold"), anchor="w",
             padx=_SPACING_STANDARD, pady=5,
         )
@@ -7301,9 +7376,11 @@ class DaisyApp:
         """让同一按钮在空闲和运行状态间切换，不改变右侧锚点。"""
         palettes = {
             "primary": (
-                _GREEN_DARK, "white", _GREEN_DEEP, "white", _GREEN_DARK),
+                _RESEARCH_BLUE, _LIGHT_TEXT, _SLATE, _LIGHT_TEXT,
+                _RESEARCH_BLUE),
             "stop": (
-                _AMBER, _AMBER_DEEP, _AMBER_DARK, "white", _AMBER_DARK),
+                _SIGNAL_ORANGE, _ARCHIVE_BLACK, _DARK_ORANGE, _LIGHT_TEXT,
+                _ARCHIVE_BLACK),
         }
         tone = "stop" if running else "primary"
         background, foreground, active_background, active_foreground, _border = (
@@ -7767,10 +7844,13 @@ class DaisyApp:
                 if selected else _TASK_TOOLBAR_HOVER)
             button.configure(
                 bg=background,
-                fg=_TASK_TOOLBAR_FOREGROUND,
+                fg=(
+                    _LIGHT_TEXT if selected else _TASK_TOOLBAR_FOREGROUND),
                 activebackground=hover,
                 activeforeground=(
-                    "white" if selected else _TASK_TOOLBAR_FOREGROUND),
+                    _LIGHT_TEXT if selected else _TASK_TOOLBAR_FOREGROUND),
+                disabledforeground=(
+                    _LIGHT_TEXT if selected else _MUTED),
                 highlightbackground=_PRIMARY_TASK_BUTTON_BORDER,
                 highlightcolor=_PRIMARY_TASK_BUTTON_BORDER,
             )
@@ -7891,7 +7971,7 @@ class DaisyApp:
         button_options = {
             "relief": "flat",
             "bd": 0,
-            "highlightthickness": 1,
+            "highlightthickness": _BUTTON_BORDER_WIDTH,
             "font": ("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
             "anchor": "center",
             "justify": "center",
@@ -8022,7 +8102,7 @@ class DaisyApp:
             state, label, detail = self._environment_status(dependency_name)
             if state == "available":
                 background = _GREEN_DARK
-                foreground = "white"
+                foreground = _LIGHT_TEXT
                 active_background = _GREEN_DEEP
                 border = _GREEN_DARK
             elif state == "missing":
@@ -8084,7 +8164,8 @@ class DaisyApp:
                 index, _ENVIRONMENT_GRID_COLUMNS)
             button = tk.Button(
                 button_grid,
-                relief="flat", bd=0, highlightthickness=1,
+                relief="flat", bd=0,
+                highlightthickness=_BUTTON_BORDER_WIDTH,
                 font=("Microsoft YaHei UI", _UI_BODY_FONT_SIZE),
                 anchor="center", justify="center",
                 width=_ENVIRONMENT_BUTTON_WIDTH,
@@ -9270,12 +9351,12 @@ class DaisyApp:
         if button is None:
             return False
         palette = (
-            (_GREEN, _GREEN_DEEP, _GREEN_DARK, "white",
+            (_GREEN, _GREEN_DEEP, _GREEN_DARK, _LIGHT_TEXT,
              _PRIMARY_TASK_BUTTON_BORDER)
             if highlighted else
             (
-                _TASK_TOOLBAR_BACKGROUND, _TASK_TOOLBAR_FOREGROUND,
-                _TASK_TOOLBAR_HOVER, _TASK_TOOLBAR_FOREGROUND,
+                _RESULT_ACTION_BACKGROUND, _RESULT_ACTION_FOREGROUND,
+                _RESULT_ACTION_HOVER, _RESULT_ACTION_FOREGROUND,
                 _PRIMARY_TASK_BUTTON_BORDER,
             )
         )
@@ -9396,7 +9477,7 @@ class DaisyApp:
         header.pack(fill="x")
         tk.Label(
             header, text="运行日志 · 与主界面实时同步",
-            bg=_LOG_HEADER, fg=_TEXT,
+            bg=_LOG_HEADER, fg=_PALE_YELLOW,
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(
             side="left", padx=_PANEL_HEADER_PADX,
@@ -9457,7 +9538,7 @@ class DaisyApp:
         self._reset_software_settings()
 
     def _append_log(self, text: str, tag: str | None = None) -> None:
-        text = text.replace("\n", "\n").replace("\n", "\n")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         for widget in self._active_log_widgets():
             widget.configure(state="normal")
             widget.insert("end", text, tag or ())
@@ -9470,7 +9551,7 @@ class DaisyApp:
     def _set_status(self, text: str, colour: str | None = None) -> None:
         background = status_badge_background(self.task.key, colour)
         self.status_label.configure(
-            text=text, bg=background, fg="white")
+            text=text, bg=background, fg=_LIGHT_TEXT)
 
     def _refresh_tool_cache_labels(self) -> None:
         self.clear_cache_button.configure(

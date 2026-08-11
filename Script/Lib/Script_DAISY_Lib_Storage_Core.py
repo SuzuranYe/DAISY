@@ -380,7 +380,7 @@ def classify_collection_status(
 
 
 def normalise_text(value: str) -> str:
-    return value.replace("\n", "\n").replace("\n", "\n")
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def clean_text(value: Any) -> str:

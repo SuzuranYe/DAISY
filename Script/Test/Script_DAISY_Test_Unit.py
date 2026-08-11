@@ -71,7 +71,7 @@ class TestGuiArguments(unittest.TestCase):
             with open(path, "rb") as handle:
                 raw = handle.read()
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
-        self.assertNotIn(b"\n", raw)
+        self.assertNotIn(b"\r\n", raw)
         self.assertTrue(raw.endswith(b"\n"))
 
     def test_invalid_gui_preferences_fall_back_safely(self):
@@ -1725,16 +1725,81 @@ class TestGuiArguments(unittest.TestCase):
             (gui._RED, gui._RED_DEEP, gui._RED_SOFT),
         )
 
+    def test_lone_trail_palette_matches_authoritative_ppt(self):
+        self.assertEqual(
+            (
+                gui._ARCHIVE_BLACK,
+                gui._SIGNAL_ORANGE,
+                gui._PALE_YELLOW,
+                gui._PIONEER_TEAL,
+                gui._ENGINEERING_YELLOW,
+                gui._ARCHIVE_RED,
+            ),
+            (
+                "#131210", "#f06733", "#dfd9a9",
+                "#88c1b0", "#ecaa3c", "#9a2d28",
+            ),
+        )
+        self.assertEqual(
+            (
+                gui._DEEP_BACKGROUND,
+                gui._DARK_TEXT,
+                gui._LIGHT_TEXT,
+                gui._OUTLINE,
+            ),
+            ("#11110f", "#171614", "#fff9ef", "#6a6257"),
+        )
+        self.assertEqual(
+            (
+                gui._WARM_WHITE,
+                gui._RESEARCH_BLUE,
+                gui._SAGE,
+                gui._GRAY_BROWN,
+                gui._SLATE,
+                gui._DUSTY_PINK,
+                gui._INK_TEAL,
+                gui._SKY_BLUE,
+                gui._KHAKI,
+                gui._STONE_GRAY,
+                gui._DARK_ORANGE,
+            ),
+            (
+                "#f0e7e2", "#5e8cc0", "#647b75", "#a89f98",
+                "#2c3240", "#d3998b", "#1f272a", "#80afc3",
+                "#c5b778", "#a9a397", "#de5123",
+            ),
+        )
+        self.assertEqual(gui._BG, gui._WARM_WHITE)
+        self.assertEqual(gui._SURFACE, gui._LIGHT_TEXT)
+        self.assertEqual(gui._TEXT, gui._DARK_TEXT)
+        self.assertEqual(gui._BORDER, gui._OUTLINE)
+        self.assertEqual(gui._LOG_HEADER, gui._SLATE)
+        self.assertEqual(gui._LOG_BG, gui._WARM_WHITE)
+        self.assertEqual(gui._LOG_TEXT, gui._INK_TEAL)
+        self.assertEqual(gui._LOG_SELECT, gui._SKY_BLUE)
+        self.assertEqual(gui._METADATA_MODE_FONT_WEIGHT, "normal")
+        self.assertEqual(
+            gui._METADATA_MODE_PALETTES,
+            {
+                "complete": (
+                    gui._SKY_BLUE, gui._INK_TEAL, gui._RESEARCH_BLUE),
+                "normalized": (gui._KHAKI, gui._INK_TEAL, gui._AMBER),
+                "off": (
+                    gui._DUSTY_PINK, gui._INK_TEAL, gui._DARK_ORANGE),
+            },
+        )
+
     def test_run_button_label_is_unified(self):
         self.assertEqual(gui._RUN_BUTTON_TEXT, "开始")
 
     def test_top_task_palette_is_light_cyan_with_distinct_selection(self):
-        self.assertEqual(gui._TASK_TOOLBAR_BACKGROUND, gui._ACTION_GREEN)
-        self.assertEqual(gui._TASK_TOOLBAR_HOVER, gui._GREEN)
-        self.assertEqual(gui._TASK_TOOLBAR_SELECTED, gui._GREEN)
-        self.assertEqual(gui._TASK_TOOLBAR_SELECTED_HOVER, gui._GREEN_DARK)
-        self.assertEqual(gui._TASK_TOOLBAR_FOREGROUND, gui._GREEN_DEEP)
-        self.assertEqual(gui._PRIMARY_TASK_BUTTON_BORDER, gui._TEXT)
+        self.assertEqual(gui._TASK_TOOLBAR_BACKGROUND, gui._SKY_BLUE)
+        self.assertEqual(gui._TASK_TOOLBAR_HOVER, gui._RESEARCH_BLUE)
+        self.assertEqual(gui._TASK_TOOLBAR_SELECTED, gui._SLATE)
+        self.assertEqual(gui._TASK_TOOLBAR_SELECTED_HOVER, gui._INK_TEAL)
+        self.assertEqual(gui._TASK_TOOLBAR_FOREGROUND, gui._INK_TEAL)
+        self.assertEqual(gui._BUTTON_BORDER_WIDTH, 0)
+        self.assertEqual(gui._TASK_TOOLBAR_PANEL_BORDER_WIDTH, 0)
         self.assertNotEqual(
             gui._TASK_TOOLBAR_BACKGROUND, gui._TASK_TOOLBAR_SELECTED)
 
@@ -1780,16 +1845,38 @@ class TestGuiArguments(unittest.TestCase):
             primary["background"], gui._UNIFIED_ACTION_BACKGROUND)
         self.assertEqual(
             primary["foreground"], gui._UNIFIED_ACTION_FOREGROUND)
+        self.assertEqual(primary["borderwidth"], 0)
+        self.assertEqual(
+            style.configurations["TEntry"]["borderwidth"], 1)
+        self.assertEqual(
+            style.configurations["FilePicker.TButton"]["padding"],
+            gui._FILE_PICKER_BUTTON_PADDING,
+        )
+        self.assertEqual(
+            style.configurations["PanelHeader.TButton"]["padding"],
+            gui._FILE_PICKER_BUTTON_PADDING,
+        )
+        for name in (
+                "TButton", "Browse.TButton", "FormAction.TButton",
+                "DiscoveryAction.TButton", "FilePicker.TButton",
+                "Remove.TButton", "Primary.TButton", "Stop.TButton",
+                "Secondary.TButton", "Mini.TButton",
+                "PanelHeader.TButton", "MiniStop.TButton"):
+            self.assertEqual(style.configurations[name]["borderwidth"], 0)
         for name in ("Stop.TButton", "MiniStop.TButton"):
             stop = style.configurations[name]
-            self.assertEqual(stop["background"], gui._AMBER_SOFT)
-            self.assertEqual(stop["foreground"], gui._AMBER_DEEP)
+            self.assertEqual(stop["background"], gui._SIGNAL_ORANGE)
+            self.assertEqual(stop["foreground"], gui._ARCHIVE_BLACK)
             self.assertEqual(stop["borderwidth"], 0)
-            self.assertEqual(stop["bordercolor"], gui._AMBER_SOFT)
+            self.assertEqual(stop["bordercolor"], gui._SIGNAL_ORANGE)
             self.assertEqual(stop["relief"], "flat")
             self.assertEqual(
                 style.mappings[name]["background"],
-                [("active", gui._AMBER)],
+                [("active", gui._DARK_ORANGE)],
+            )
+            self.assertEqual(
+                style.mappings[name]["foreground"],
+                [("active", gui._LIGHT_TEXT)],
             )
 
     def test_toolbar_selection_clears_button_focus(self):
@@ -2373,6 +2460,11 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             database_button.options["activebackground"],
             gui._TASK_TOOLBAR_SELECTED_HOVER)
+        self.assertEqual(
+            database_button.options["fg"], gui._LIGHT_TEXT)
+        self.assertEqual(
+            environment_button.options["fg"],
+            gui._TASK_TOOLBAR_FOREGROUND)
 
     def test_top_task_toolbar_collapses_without_changing_selection(self):
         class BodyProbe:
@@ -2560,9 +2652,10 @@ class TestGuiArguments(unittest.TestCase):
             gui._TASK_TOOLBAR_BUTTON_WIDTH,
             gui._ENVIRONMENT_BUTTON_WIDTH,
         )
-        self.assertEqual(gui._PRIMARY_TASK_BUTTON_BORDER, gui._TEXT)
+        self.assertEqual(gui._BUTTON_BORDER_WIDTH, 0)
+        self.assertEqual(gui._TASK_TOOLBAR_PANEL_BORDER_WIDTH, 0)
         self.assertEqual(gui._TASK_TOOLBAR_MINIMUM_WIDTH, 1180)
-        self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._TEXT)
+        self.assertEqual(gui._TASK_TOOLBAR_LABEL_COLOUR, gui._INK_TEAL)
         self.assertEqual(gui._COLOUR_STRIP_HEIGHT, 4)
         with patch.object(
                 gui.DaisyApp, "_fit_task_toolbar_buttons") as fit, \
@@ -2724,11 +2817,13 @@ class TestGuiArguments(unittest.TestCase):
         self.assertLess(
             calls.index(("log", True)), calls.index(("start", True)))
 
-    def test_status_badge_uses_task_or_semantic_colour(self):
+    def test_status_badge_uses_slate_or_semantic_colour(self):
         self.assertEqual(
-            gui.status_badge_background("full_scan"), gui._GREEN_DARK)
+            gui.status_badge_background("full_scan"),
+            gui._STATUS_READY_BACKGROUND)
         self.assertEqual(
-            gui.status_badge_background("diff"), gui._GREEN_DARK)
+            gui.status_badge_background("diff"),
+            gui._STATUS_READY_BACKGROUND)
         self.assertEqual(
             gui.status_badge_background("diff", gui._DANGER),
             gui._DANGER,
@@ -2780,9 +2875,9 @@ class TestGuiArguments(unittest.TestCase):
         self.assertEqual(
             app.open_output_button.backgrounds,
             [
-                gui._TASK_TOOLBAR_BACKGROUND, gui._GREEN,
-                gui._TASK_TOOLBAR_BACKGROUND, gui._GREEN,
-                gui._TASK_TOOLBAR_BACKGROUND,
+                gui._RESULT_ACTION_BACKGROUND, gui._GREEN,
+                gui._RESULT_ACTION_BACKGROUND, gui._GREEN,
+                gui._RESULT_ACTION_BACKGROUND,
             ],
         )
         self.assertEqual(app.root.delays, [230, 230, 230])
