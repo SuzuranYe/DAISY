@@ -3615,6 +3615,49 @@ class TestGuiArguments(unittest.TestCase):
                 returncodes, outcomes, task_key=task_key,
                 stopped=stopped, saved=saved))
 
+    def test_completed_scan_clears_roots_but_failed_scan_preserves_them(self):
+        for returncodes in ([0], [1], [0, 1]):
+            self.assertTrue(gui.should_clear_completed_scan_inputs(
+                returncodes, ["completed"] * len(returncodes),
+                task_key="scan", stopped=False, saved=False,
+            ))
+        for returncodes, outcomes, task_key, stopped, saved in (
+                ([0], ["completed"], "verify", False, False),
+                ([0], ["stopped"], "scan", True, False),
+                ([0], ["save_exit"], "scan", False, True),
+                ([1], ["failed_recoverable"], "scan", False, False),
+                ([2], ["failed"], "scan", False, False),
+                ([None], [None], "scan", False, False)):
+            self.assertFalse(gui.should_clear_completed_scan_inputs(
+                returncodes, outcomes, task_key=task_key,
+                stopped=stopped, saved=saved,
+            ))
+
+        editor = object.__new__(gui.DirectoryListEditor)
+        editor._items = [r"D:\Archive", r"E:\Archive"]
+        editor._render_rows = Mock()
+        editor._notify = Mock()
+        app = object.__new__(gui.DaisyApp)
+        app.task = types.SimpleNamespace(key="scan")
+        app.saved_values = {
+            "scan": {
+                "roots": "D:\\Archive\nE:\\Archive",
+                "output_dir": r"C:\Snapshots",
+            },
+        }
+        app.values = {"roots": editor}
+        app._update_preview = Mock()
+
+        app._clear_completed_scan_root_inputs()
+
+        self.assertEqual(editor._items, [])
+        editor._render_rows.assert_called_once_with()
+        editor._notify.assert_called_once_with()
+        self.assertNotIn("roots", app.saved_values["scan"])
+        self.assertEqual(
+            app.saved_values["scan"]["output_dir"], r"C:\Snapshots")
+        app._update_preview.assert_not_called()
+
     def test_completion_sound_is_async_and_never_invokes_real_audio(self):
         app = object.__new__(gui.DaisyApp)
         app.root = types.SimpleNamespace(bell=Mock())
@@ -4027,6 +4070,103 @@ class TestGuiArguments(unittest.TestCase):
             "storage_collect", selected_disk,
             storage_inventory_ready=True,
         ))
+
+    def test_storage_disk_selection_uses_row_colour_without_checkbox(self):
+        class VariableProbe:
+            def __init__(self, value=False):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        class WidgetProbe:
+            def __init__(self):
+                self.options = {}
+
+            def configure(self, **options):
+                self.options.update(options)
+
+        option = gui.StorageDiskOption(
+            disk_number=3,
+            display="PhysicalDrive3",
+            online=True,
+            registrable=True,
+            reason="可登记",
+        )
+        pool = object.__new__(gui.StorageDiskPool)
+        pool.options = (option,)
+        pool._options_by_number = {3: option}
+        pool._variables = {3: VariableProbe()}
+        pool.slot_frames = {3: WidgetProbe()}
+        pool.selection_buttons = {3: WidgetProbe()}
+        pool.status_labels = {3: WidgetProbe()}
+        pool._notify = Mock()
+
+        pool._toggle_selection(3)
+
+        self.assertTrue(pool._variables[3].get())
+        for widget in (
+                pool.slot_frames[3], pool.selection_buttons[3],
+                pool.status_labels[3]):
+            self.assertEqual(
+                widget.options["bg"], gui._BLOCK_SELECTION_BACKGROUND)
+        self.assertEqual(
+            pool.selection_buttons[3].options["fg"],
+            gui._BLOCK_SELECTION_FOREGROUND,
+        )
+        self.assertNotIn(
+            "tk.Checkbutton(",
+            inspect.getsource(gui.StorageDiskPool.__init__),
+        )
+        pool._notify.assert_called_once_with()
+
+    def test_storage_disk_selection_rebuilds_only_at_empty_boundary(self):
+        app = object.__new__(gui.DaisyApp)
+        app.task = types.SimpleNamespace(key="storage_collect")
+        app.saved_values = {
+            "storage_collect": {
+                "disk_number": "1",
+                "output_dir": r"C:\Storage",
+                "summary_txt": True,
+            },
+        }
+        app.values = {"disk_number": object()}
+        app._collect_persistable_values = Mock(return_value={
+            "disk_number": "1\n2",
+            "output_dir": r"C:\Storage",
+            "summary_txt": True,
+        })
+        app._schedule_staged_form_rebuild = Mock()
+        app._update_preview = Mock()
+
+        app._staged_pool_changed()
+
+        app._schedule_staged_form_rebuild.assert_not_called()
+        app._update_preview.assert_called_once_with()
+        self.assertEqual(
+            app.saved_values["storage_collect"]["disk_number"], "1\n2")
+
+        app._collect_persistable_values.return_value = {"disk_number": ""}
+        app._staged_pool_changed()
+
+        app._schedule_staged_form_rebuild.assert_called_once()
+        rebuilt = app._schedule_staged_form_rebuild.call_args.kwargs["values"]
+        self.assertEqual(rebuilt["disk_number"], "")
+        self.assertEqual(rebuilt["output_dir"], r"C:\Storage")
+        self.assertTrue(rebuilt["summary_txt"])
+
+    def test_directory_remove_action_precedes_index_and_path(self):
+        self.assertLess(
+            gui._DIRECTORY_ROW_REMOVE_COLUMN,
+            gui._DIRECTORY_ROW_INDEX_COLUMN,
+        )
+        self.assertLess(
+            gui._DIRECTORY_ROW_INDEX_COLUMN,
+            gui._DIRECTORY_ROW_VALUE_COLUMN,
+        )
 
     def test_scan_and_verify_defaults_show_their_complete_common_settings(self):
         scan = gui.TASK_BY_KEY["scan"]

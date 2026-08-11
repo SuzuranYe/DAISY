@@ -679,6 +679,27 @@ def should_play_completion_sound(
     )
 
 
+def should_clear_completed_scan_inputs(
+    returncodes: list[int | None] | tuple[int | None, ...],
+    outcomes: list[str | None] | tuple[str | None, ...],
+    *,
+    task_key: str | None,
+    stopped: bool,
+    saved: bool,
+) -> bool:
+    """仅在整批扫描已完成并封存时清除本次根目录输入。"""
+    return (
+        task_key in _SCAN_TASK_KEYS
+        and bool(returncodes)
+        and not stopped
+        and not saved
+        and all(code in (0, 1) for code in returncodes)
+        and not any(outcome in {
+            "failed", "failed_recoverable", "save_exit", "stopped",
+        } for outcome in outcomes)
+    )
+
+
 def parse_gui_stream(
     buffer: str, text: str, *, final: bool = False,
 ) -> tuple[str, list[tuple[str, object]]]:
@@ -2533,6 +2554,9 @@ _ENVIRONMENT_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _ENVIRONMENT_BUTTON_PADDING = _PRIMARY_TASK_BUTTON_PADDING
 _FORM_FIELD_TITLE_MAX_CHARS = 6
 _FORM_FIELD_ASCII_TITLE_MAX_CHARS = 12
+_DIRECTORY_ROW_REMOVE_COLUMN = 0
+_DIRECTORY_ROW_INDEX_COLUMN = 1
+_DIRECTORY_ROW_VALUE_COLUMN = 2
 _BOOLEAN_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _SCAN_MODE_BUTTON_WIDTH = _STANDARD_BUTTON_WIDTH
 _FORM_SINGLE_ROW_HEIGHT = 58
@@ -2560,7 +2584,6 @@ _NONPERSISTENT_TASK_OPTION_KEYS = frozenset((
     "diff_root_mode", "preset", "formats",
 ))
 _PERSISTABLE_NUMERIC_OPTION_KEYS: frozenset[str] = frozenset()
-_STORAGE_DISK_CHECKBOX_SIZE = 20
 
 
 def _option_value_is_inactive(value: object) -> bool:
@@ -3739,13 +3762,13 @@ class DirectoryListEditor(tk.Frame):
                 padx=_SPACING_INLINE,
                 pady=(4 if index == 0 else 0, 4),
             )
-            row.grid_columnconfigure(1, weight=1)
+            row.grid_columnconfigure(_DIRECTORY_ROW_VALUE_COLUMN, weight=1)
             tk.Label(
                 row, text=f"{index + 1}", width=2,
                 bg=_CONTROL, fg=_GREEN_DEEP,
                 font=("Microsoft YaHei UI", 8, "bold"),
             ).grid(
-                row=0, column=0, sticky="ns",
+                row=0, column=_DIRECTORY_ROW_INDEX_COLUMN, sticky="ns",
                 padx=(0, _INLINE_CONTROL_GAP),
             )
             variable = tk.StringVar(value=item)
@@ -3755,13 +3778,14 @@ class DirectoryListEditor(tk.Frame):
             )
             self._variables.append(variable)
             ttk.Entry(row, textvariable=variable).grid(
-                row=0, column=1, sticky="ew")
+                row=0, column=_DIRECTORY_ROW_VALUE_COLUMN, sticky="ew")
             remove_button = ttk.Button(
                 row, text="×", width=3, style="Remove.TButton",
                 command=lambda i=index: self.remove(i),
             )
             remove_button.grid(
-                row=0, column=2, padx=(_INLINE_CONTROL_GAP, 0))
+                row=0, column=_DIRECTORY_ROW_REMOVE_COLUMN,
+                padx=(0, _INLINE_CONTROL_GAP))
             attach_tooltip(remove_button, f"从列表中移除第 {index + 1} 个目录。")
         self.count_label.configure(
             text=f"已添加 {len(self._items)}/{self.max_items}")
@@ -3812,6 +3836,15 @@ class DirectoryListEditor(tk.Frame):
             self._items.pop(index)
             self._render_rows()
             self._notify()
+
+    def clear(self) -> bool:
+        """清空已添加目录；空列表不重复绘制或发送变化。"""
+        if not self._items:
+            return False
+        self._items.clear()
+        self._render_rows()
+        self._notify()
+        return True
 
     def get(self) -> str:
         values = [variable.get().strip() for variable in self._variables]
@@ -4050,29 +4083,7 @@ class RootLabelMapEditor(tk.Frame):
 
 
 class StorageDiskPool(tk.Frame):
-    """用与档案根目录一致的描边内容池展示可逐盘选择的硬盘。"""
-
-    @staticmethod
-    def _checkbox_image(
-        master: tk.Misc, *, selected: bool, disabled: bool = False,
-    ) -> tk.PhotoImage:
-        """绘制 20 px 选择框，避免系统原生小指示器随主题缩得过小。"""
-        size = _STORAGE_DISK_CHECKBOX_SIZE
-        image = tk.PhotoImage(master=master, width=size + 6, height=size)
-        border = (
-            _MUTED if disabled else
-            _SAGE if selected else _FORM_BORDER_COLOUR)
-        fill = _FIELD if disabled or not selected else _GREEN_DEEP
-        image.put(border, to=(1, 1, size - 1, size - 1))
-        image.put(fill, to=(3, 3, size - 3, size - 3))
-        if selected:
-            for x, y in (
-                (5, 10), (6, 11), (7, 12), (8, 13),
-                (9, 12), (10, 11), (11, 10), (12, 9),
-                (13, 8), (14, 7), (15, 6),
-            ):
-                image.put(_LIGHT_TEXT, to=(x, y, x + 2, y + 2))
-        return image
+    """以整行底色表达逐盘选择，不使用勾选框图形。"""
 
     def __init__(
         self, master: tk.Misc, *,
@@ -4084,9 +4095,11 @@ class StorageDiskPool(tk.Frame):
         self.on_change = on_change
         selected = set(_lines(initial))
         self._variables: dict[int, tk.BooleanVar] = {}
-        self.checkboxes: list[tk.Checkbutton] = []
-        self.slot_frames: list[tk.Frame] = []
-        self._checkbox_images: dict[str, tk.PhotoImage] = {}
+        self._options_by_number = {
+            option.disk_number: option for option in options}
+        self.selection_buttons: dict[int, tk.Button] = {}
+        self.slot_frames: dict[int, tk.Frame] = {}
+        self.status_labels: dict[int, tk.Label] = {}
         self.grid_columnconfigure(0, weight=1)
 
         rows = tk.Frame(
@@ -4106,13 +4119,6 @@ class StorageDiskPool(tk.Frame):
                 padx=_SPACING_INLINE, pady=_SPACING_INLINE)
             return
 
-        self._checkbox_images = {
-            "off": self._checkbox_image(self, selected=False),
-            "on": self._checkbox_image(self, selected=True),
-            "disabled": self._checkbox_image(
-                self, selected=False, disabled=True),
-        }
-
         for row_index, option in enumerate(options):
             rows.grid_rowconfigure(
                 row_index, minsize=44, uniform="storage_disk_slot")
@@ -4128,40 +4134,91 @@ class StorageDiskPool(tk.Frame):
             )
             row.grid_columnconfigure(0, weight=1)
             row.grid_rowconfigure(0, weight=1)
-            self.slot_frames.append(row)
+            self.slot_frames[option.disk_number] = row
             variable = tk.BooleanVar(
                 value=option.selectable and option.value in selected)
             self._variables[option.disk_number] = variable
-            base_image = self._checkbox_images[
-                "off" if option.selectable else "disabled"]
-            checkbox = tk.Checkbutton(
-                row, text=option.display, variable=variable,
-                command=self._notify, state=(
+            button = tk.Button(
+                row, text=option.display,
+                command=(
+                    lambda disk_number=option.disk_number:
+                    self._toggle_selection(disk_number)
+                ),
+                state=(
                     "normal" if option.selectable else "disabled"),
-                image=base_image,
-                selectimage=self._checkbox_images["on"],
-                indicatoron=False, compound="left",
                 bg=_FIELD, activebackground=_FIELD,
                 fg=_TEXT, activeforeground=_TEXT,
-                disabledforeground=_MUTED, selectcolor=_FIELD,
+                disabledforeground=_MUTED,
                 font=("Microsoft YaHei UI", 9), anchor="w",
                 justify="left", wraplength=650,
                 highlightthickness=0, bd=0, relief="flat",
-                offrelief="flat", overrelief="flat", padx=8, pady=6,
+                overrelief="flat", padx=8, pady=6,
                 takefocus=False,
             )
-            checkbox.grid(row=0, column=0, sticky="nsew")
-            self.checkboxes.append(checkbox)
+            button.grid(row=0, column=0, sticky="nsew")
+            self.selection_buttons[option.disk_number] = button
             status_colour = _GREEN_DEEP if option.selectable else _MUTED
-            tk.Label(
+            status_label = tk.Label(
                 row, text=option.reason, bg=_FIELD, fg=status_colour,
                 font=("Microsoft YaHei UI", 8), anchor="e",
-            ).grid(row=0, column=1, sticky="e", padx=(10, 8))
+            )
+            status_label.grid(
+                row=0, column=1, sticky="e", padx=(10, 8))
+            self.status_labels[option.disk_number] = status_label
+            if option.selectable:
+                row.bind(
+                    "<Button-1>",
+                    lambda _event, disk_number=option.disk_number:
+                    self._toggle_selection(disk_number),
+                )
+                status_label.bind(
+                    "<Button-1>",
+                    lambda _event, disk_number=option.disk_number:
+                    self._toggle_selection(disk_number),
+                )
             row.bind(
                 "<Configure>",
-                lambda event, widget=checkbox: widget.configure(
+                lambda event, widget=button: widget.configure(
                     wraplength=max(220, event.width - 145)),
             )
+        self._render_selection_states()
+
+    def _toggle_selection(self, disk_number: int) -> None:
+        option = self._options_by_number.get(disk_number)
+        variable = self._variables.get(disk_number)
+        if option is None or variable is None or not option.selectable:
+            return
+        variable.set(not variable.get())
+        self._render_selection_state(disk_number)
+        self._notify()
+
+    def _render_selection_states(self) -> None:
+        for option in self.options:
+            self._render_selection_state(option.disk_number)
+
+    def _render_selection_state(self, disk_number: int) -> None:
+        option = self._options_by_number[disk_number]
+        selected = option.selectable and self._variables[disk_number].get()
+        background = (
+            _BLOCK_SELECTION_BACKGROUND if selected else _FIELD)
+        foreground = (
+            _BLOCK_SELECTION_FOREGROUND
+            if selected else _TEXT if option.selectable else _MUTED)
+        active_background = (
+            _BLOCK_SELECTION_HOVER if selected else _OPTION_IDLE_HOVER)
+        active_foreground = (
+            _BLOCK_SELECTION_FOREGROUND if selected else _TEXT)
+        status_foreground = (
+            _BLOCK_SELECTION_FOREGROUND
+            if selected else _GREEN_DEEP if option.selectable else _MUTED)
+        self.slot_frames[disk_number].configure(bg=background)
+        self.selection_buttons[disk_number].configure(
+            bg=background, fg=foreground,
+            activebackground=active_background,
+            activeforeground=active_foreground,
+        )
+        self.status_labels[disk_number].configure(
+            bg=background, fg=status_foreground)
 
     def _notify(self) -> None:
         if callable(self.on_change):
@@ -9289,8 +9346,27 @@ class DaisyApp:
         )
 
     def _staged_pool_changed(self) -> None:
-        """硬盘选择变化后刷新依赖该选择的输出章节。"""
-        self._schedule_staged_form_rebuild()
+        """原位保存硬盘选择；只在有／无选择边界变化时更新章节。"""
+        task_key = self.task.key
+        previous = dict(self.saved_values.get(task_key, {}))
+        collected = self._collect_persistable_values()
+        values = dict(previous)
+        values.update(collected)
+        previous_has_selection = bool(_lines(previous.get("disk_number")))
+        current_has_selection = bool(_lines(
+            collected.get("disk_number")))
+        self.saved_values[task_key] = values
+        if previous_has_selection != current_has_selection:
+            source = self.values.get("disk_number")
+            self._schedule_staged_form_rebuild(
+                values=values,
+                anchor=(
+                    self._form_rebuild_anchor(source)
+                    if isinstance(source, tk.Misc) else None
+                ),
+            )
+            return
+        self._update_preview()
 
     def _staged_file_focus_out(self, _event: tk.Event) -> None:
         """手动输入快照路径后，按两份输入是否齐全推进快照对比。"""
@@ -11283,6 +11359,16 @@ class DaisyApp:
             self._set_status(f"队列已准备：{len(jobs)} 项。")
         self._start_next_job()
 
+    def _clear_completed_scan_root_inputs(self) -> None:
+        """扫描封存完成后清空本次添加的根目录，不影响失败重试。"""
+        saved = dict(self.saved_values.get(self.task.key, {}))
+        saved.pop("roots", None)
+        self.saved_values[self.task.key] = saved
+        editor = self.values.get("roots")
+        if isinstance(editor, DirectoryListEditor) and editor.clear():
+            return
+        self._update_preview()
+
     def _run_self_test(self) -> None:
         if self.process is not None or self.run_jobs:
             return
@@ -12012,6 +12098,13 @@ class DaisyApp:
             outcome == "failed_recoverable" for outcome in self.run_outcomes)
         failed = any(outcome == "failed" for outcome in self.run_outcomes)
         stopped = self.stop_requested
+        clear_completed_scan_inputs = should_clear_completed_scan_inputs(
+            self.run_results,
+            self.run_outcomes,
+            task_key=self.process_task_key,
+            stopped=stopped,
+            saved=saved,
+        )
         play_completion_sound = (
             self.completion_sound_enabled
             and should_play_completion_sound(
@@ -12153,6 +12246,9 @@ class DaisyApp:
         elif finishing_install_recheck:
             self._finish_install_version_report(
                 recheck_returncode=returncode)
+
+        if clear_completed_scan_inputs:
+            self._clear_completed_scan_root_inputs()
 
         idle_run_state = (
             "disabled"
