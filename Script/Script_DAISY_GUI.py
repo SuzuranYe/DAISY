@@ -5395,7 +5395,7 @@ class DaisyApp:
         self.current_stage_index = 0
         self.current_stage_total = 0
         self.mini_mode = False
-        self.settings_expanded = False
+        self.settings_expanded = True
         self.progress_expanded = False
         self.log_expanded = False
         self.command_preview_expanded = False
@@ -5436,7 +5436,7 @@ class DaisyApp:
         self._configure_styles()
         self._build_shell()
         self._build_menu()
-        self._set_settings_expanded(False)
+        self._set_settings_expanded(True)
         self._set_progress_expanded(False)
         self._set_log_expanded(False)
         self._select_task(self.task.key, save_current=False)
@@ -5987,7 +5987,7 @@ class DaisyApp:
             self.default_window_size, persist=False)
         if getattr(self, "mini_mode", False):
             self._leave_mini_mode()
-        self._set_settings_expanded(False)
+        self._set_settings_expanded(True)
         self._set_progress_expanded(False)
         self._set_log_expanded(False)
         self._set_command_preview_expanded(False)
@@ -8013,6 +8013,52 @@ class DaisyApp:
             0.0, min(1.0, float(fraction)))
         self.form_canvas.yview_moveto(target)
 
+    @staticmethod
+    def _form_rebuild_anchor(
+        widget: tk.Misc,
+    ) -> tuple[str, int] | None:
+        """记录触发分阶段重建的字段及其当前屏幕纵坐标。"""
+        field_key = str(getattr(widget, "_daisy_field_key", "") or "")
+        if not field_key:
+            return None
+        try:
+            return field_key, int(widget.winfo_rooty())
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return None
+
+    def _restore_form_rebuild_anchor(
+        self, anchor: tuple[str, int],
+    ) -> bool:
+        """按像素恢复原字段位置，避免内容变高时按比例滚动造成跳动。"""
+        field_key, previous_root_y = anchor
+        widget = self.values.get(field_key)
+        if widget is None:
+            return False
+        try:
+            widget.update_idletasks()
+            delta = int(widget.winfo_rooty()) - int(previous_root_y)
+            content_height = max(1, int(self._form_content_height()))
+            viewport_height = max(1, int(self.form_canvas.winfo_height()))
+            max_offset = max(0, content_height - viewport_height)
+            current_offset = float(self.form_canvas.canvasy(0))
+        except (AttributeError, tk.TclError, TypeError, ValueError):
+            return False
+        if max_offset <= 0 or abs(delta) <= 1:
+            return True
+        target_offset = min(max_offset, max(0.0, current_offset + delta))
+        self.form_canvas.yview_moveto(target_offset / content_height)
+        return True
+
+    def _position_rebuilt_form(
+        self,
+        fraction: float,
+        anchor: tuple[str, int] | None,
+    ) -> None:
+        """先恢复原滚动范围，再固定触发选择的字段位置。"""
+        self._position_form_scroll(fraction)
+        if anchor is not None:
+            self._restore_form_rebuild_anchor(anchor)
+
     def _save_current_values(self) -> None:
         if self.values:
             self.saved_values[self.task.key] = self._collect_persistable_values()
@@ -8691,7 +8737,12 @@ class DaisyApp:
             0, weight=0, minsize=widest + form_pad + label_gap + 6)
         self.form_inner.grid_columnconfigure(1, weight=1)
 
-    def _build_form(self, scroll_fraction: float = 0.0) -> None:
+    def _build_form(
+        self,
+        scroll_fraction: float = 0.0,
+        *,
+        anchor: tuple[str, int] | None = None,
+    ) -> None:
         previous_inner = self.form_inner
         next_inner = tk.Frame(self.form_canvas, bg=_SURFACE)
         next_inner.bind(
@@ -9069,11 +9120,12 @@ class DaisyApp:
             raise
         previous_inner.destroy()
         self.form_canvas.update_idletasks()
-        self._position_form_scroll(scroll_fraction)
+        self._position_rebuilt_form(scroll_fraction, anchor)
         task_key = self.task.key
         self.root.after_idle(
-            lambda key=task_key, fraction=scroll_fraction:
-            self._position_form_scroll(fraction)
+            lambda key=task_key, fraction=scroll_fraction,
+            fixed_anchor=anchor:
+            self._position_rebuilt_form(fraction, fixed_anchor)
             if self.task.key == key else None
         )
         self._update_preview()
@@ -9098,7 +9150,8 @@ class DaisyApp:
         }
         self.saved_values[self.task.key] = self._collect_persistable_values()
         if field_key in layout_controllers:
-            self._schedule_staged_form_rebuild()
+            self._schedule_staged_form_rebuild(
+                anchor=self._form_rebuild_anchor(source))
             return True
         self._update_preview()
         return False
@@ -9128,15 +9181,19 @@ class DaisyApp:
             self._refresh_scan_advanced_values()
             self._update_preview()
             return False
-        self._schedule_staged_form_rebuild(scroll_fraction)
+        self._schedule_staged_form_rebuild(
+            scroll_fraction,
+            anchor=self._form_rebuild_anchor(source),
+        )
         return True
 
     def _schedule_staged_form_rebuild(
         self,
         scroll_fraction: float | None = None,
         values: dict[str, object] | None = None,
+        anchor: tuple[str, int] | None = None,
     ) -> None:
-        """合并同一轮变化，并在下一事件轮次重建当前分阶段表单。"""
+        """合并同一轮变化，并保持触发字段在屏幕中的纵向位置。"""
         task_key = self.task.key
         if scroll_fraction is None:
             scroll_fraction = self.form_canvas.yview()[0]
@@ -9149,8 +9206,9 @@ class DaisyApp:
         self._staged_form_rebuild_generation = generation
         self.root.after(
             0,
-            lambda key=task_key, fraction=scroll_fraction, token=generation:
-            self._build_form(fraction)
+            lambda key=task_key, fraction=scroll_fraction, token=generation,
+            fixed_anchor=anchor:
+            self._build_form(fraction, anchor=fixed_anchor)
             if self.task.key == key
             and self._staged_form_rebuild_generation == token else None
         )

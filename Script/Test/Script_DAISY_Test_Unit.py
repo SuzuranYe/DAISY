@@ -3151,6 +3151,78 @@ class TestGuiArguments(unittest.TestCase):
         group.on_change.assert_called_once_with()
         group._refresh.assert_not_called()
 
+    def test_staged_choice_rebuild_keeps_trigger_field_as_pixel_anchor(self):
+        class SourceProbe:
+            _daisy_field_key = "verify_path_mode"
+
+            @staticmethod
+            def winfo_rooty():
+                return 318
+
+        class CanvasProbe:
+            @staticmethod
+            def yview():
+                return 0.2, 0.6
+
+        app = object.__new__(gui.DaisyApp)
+        app.task = gui.TASK_BY_KEY["verify"]
+        app.form_canvas = CanvasProbe()
+        app.saved_values = {}
+        app._collect_persistable_values = Mock(return_value={
+            "verification_mode": "database",
+            "verify_path_mode": "unchanged",
+        })
+        app._schedule_staged_form_rebuild = Mock()
+
+        self.assertTrue(app._choice_button_changed(SourceProbe()))
+
+        app._schedule_staged_form_rebuild.assert_called_once_with(
+            0.2,
+            anchor=("verify_path_mode", 318),
+        )
+
+    def test_form_rebuild_anchor_restores_absolute_pixel_position(self):
+        class WidgetProbe:
+            _daisy_field_key = "verify_path_mode"
+
+            def __init__(self, root_y):
+                self.root_y = root_y
+
+            def update_idletasks(self):
+                pass
+
+            def winfo_rooty(self):
+                return self.root_y
+
+        class CanvasProbe:
+            def __init__(self):
+                self.positions = []
+
+            @staticmethod
+            def winfo_height():
+                return 400
+
+            @staticmethod
+            def canvasy(_value):
+                return 100
+
+            def yview_moveto(self, fraction):
+                self.positions.append(fraction)
+
+        old_widget = WidgetProbe(200)
+        self.assertEqual(
+            gui.DaisyApp._form_rebuild_anchor(old_widget),
+            ("verify_path_mode", 200),
+        )
+        app = object.__new__(gui.DaisyApp)
+        app.values = {"verify_path_mode": WidgetProbe(250)}
+        app.form_canvas = CanvasProbe()
+        app._form_content_height = lambda: 1000
+
+        self.assertTrue(app._restore_form_rebuild_anchor(
+            ("verify_path_mode", 200)))
+        self.assertEqual(app.form_canvas.positions, [0.15])
+
     def test_parse_module_grid_uses_fixed_button_and_gap_columns(self):
         source = inspect.getsource(gui.ParseModulePool._layout_cards)
         self.assertIn('"parse_module_button"', source)
@@ -3297,11 +3369,17 @@ class TestGuiArguments(unittest.TestCase):
         self.assertFalse(mini._mini_progress_was_expanded)
         mini._set_log_expanded.assert_not_called()
 
-    def test_settings_progress_and_log_default_to_collapsed(self):
+    def test_settings_defaults_expanded_while_progress_and_log_are_collapsed(
+        self,
+    ):
         source = inspect.getsource(gui.DaisyApp.__init__)
-        for attribute in (
-                "settings_expanded", "progress_expanded", "log_expanded"):
+        self.assertIn("self.settings_expanded = True", source)
+        self.assertIn("self._set_settings_expanded(True)", source)
+        for attribute in ("progress_expanded", "log_expanded"):
             self.assertIn(f"self.{attribute} = False", source)
+        reset_source = inspect.getsource(
+            gui.DaisyApp._reset_software_settings)
+        self.assertIn("self._set_settings_expanded(True)", reset_source)
         layout_source = inspect.getsource(
             gui.DaisyApp._refresh_content_row_weights)
         self.assertIn("self.progress_inner.winfo_reqheight()", layout_source)
